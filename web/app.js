@@ -1,5 +1,5 @@
 /**
- * Minimal RMM web operator UI — uses /api/v1/ on same origin.
+ * Minimal RMM web operator UI — REST API + WebSocket event stream.
  */
 const STORAGE_KEY = "rmm_api_token";
 
@@ -8,7 +8,8 @@ const state = {
   sessions: [],
   selectedId: null,
   lastEventId: 0,
-  pollTimer: null,
+  ws: null,
+  wsConnected: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -34,6 +35,12 @@ async function api(path, options = {}) {
   return { status: res.status, data };
 }
 
+function artifactSrc(url) {
+  if (!url) return "";
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(state.token)}`;
+}
+
 function show(el) {
   el.classList.remove("hidden");
 }
@@ -53,6 +60,81 @@ function escapeHtml(s) {
   const d = document.createElement("div");
   d.textContent = s;
   return d.innerHTML;
+}
+
+function setWsStatus(connected) {
+  state.wsConnected = connected;
+  const dot = $("#ws-status");
+  dot.classList.toggle("connected", connected);
+  dot.title = connected ? "WebSocket connected" : "WebSocket disconnected";
+}
+
+function wsUrl() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const q = new URLSearchParams({
+    token: state.token,
+  });
+  if (state.selectedId) {
+    q.set("session", state.selectedId);
+  }
+  return `${proto}//${location.host}/api/v1/ws?${q}`;
+}
+
+function connectWebSocket() {
+  disconnectWebSocket();
+  if (!state.token) return;
+
+  const ws = new WebSocket(wsUrl());
+  state.ws = ws;
+
+  ws.onopen = () => setWsStatus(true);
+
+  ws.onclose = () => {
+    setWsStatus(false);
+    if (state.token && $("#app").classList.contains("hidden") === false) {
+      setTimeout(connectWebSocket, 3000);
+    }
+  };
+
+  ws.onerror = () => setWsStatus(false);
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    if (msg.op === "sessions") {
+      state.sessions = msg.sessions || [];
+      renderSessionList();
+      return;
+    }
+    if (msg.op === "event") {
+      if (!state.selectedId || msg.session_id === state.selectedId) {
+        appendEvent(msg.event);
+      }
+      return;
+    }
+    if (msg.op === "ping") {
+      ws.send(JSON.stringify({ op: "pong" }));
+    }
+  };
+}
+
+function disconnectWebSocket() {
+  if (state.ws) {
+    state.ws.onclose = null;
+    state.ws.close();
+    state.ws = null;
+  }
+  setWsStatus(false);
+}
+
+function wsSubscribe(sessionId) {
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ op: "subscribe", session_id: sessionId }));
+  }
 }
 
 // --- Views ---
@@ -84,12 +166,12 @@ async function connect() {
   }
   sessionStorage.setItem(STORAGE_KEY, token);
   showApp();
+  connectWebSocket();
   await refreshSessions();
-  startSessionPoll();
 }
 
 function disconnect() {
-  stopPolling();
+  disconnectWebSocket();
   sessionStorage.removeItem(STORAGE_KEY);
   state.token = "";
   state.selectedId = null;
@@ -114,7 +196,6 @@ function renderSessionList() {
     const li = document.createElement("li");
     li.className =
       "session-item" + (s.id === state.selectedId ? " active" : "");
-    li.dataset.id = s.id;
     li.innerHTML = `
       <div class="id">${escapeHtml(s.id.slice(0, 8))}</div>
       <div class="meta">${escapeHtml(s.username)}@${escapeHtml(s.hostname)}</div>
@@ -141,71 +222,57 @@ async function selectSession(id) {
   $("#jitter-input").value = s.jitter_percent;
   $("#output-log").innerHTML = "";
 
-  await loadEvents();
-  startEventPoll();
+  connectWebSocket();
+  wsSubscribe(id);
+
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(id)}/events?since=0&limit=200`
+  );
+  if (status === 200) {
+    for (const ev of data.events || []) {
+      appendEvent(ev);
+    }
+  }
 }
 
 function showEmptyConsole() {
   state.selectedId = null;
-  stopEventPoll();
   show($("#empty-state"));
   hide($("#console-panel"));
   renderSessionList();
+  connectWebSocket();
+}
+
+function renderEventBody(ev) {
+  const body = String(ev.body || "");
+  if (ev.type === "screenshot" && ev.artifact_url) {
+    const src = artifactSrc(ev.artifact_url);
+    return `<img class="screenshot-preview" src="${escapeHtml(src)}" alt="screenshot">`;
+  }
+  if (ev.type === "file_upload" && ev.artifact_url) {
+    const src = artifactSrc(ev.artifact_url);
+    return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" download>Download file</a>`;
+  }
+  if (ev.artifact_url) {
+    const src = artifactSrc(ev.artifact_url);
+    return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" target="_blank" rel="noopener">Open artifact</a>`;
+  }
+  return escapeHtml(body);
 }
 
 function appendEvent(ev) {
+  if (ev.id <= state.lastEventId) return;
   const log = $("#output-log");
   const block = document.createElement("div");
   block.className = "output-line";
   const cmd = ev.command ? ` » ${ev.command}` : "";
-  const artifact = ev.artifact
-    ? `\n[artifact] ${ev.artifact}`
-    : "";
   block.innerHTML = `
     <div class="head">[${ev.id}] ${escapeHtml(ev.type)}${escapeHtml(cmd)} · ${formatTime(ev.timestamp)}</div>
-    <div class="body">${escapeHtml(String(ev.body || ""))}${escapeHtml(artifact)}</div>
+    <div class="body">${renderEventBody(ev)}</div>
   `;
   log.appendChild(block);
   log.scrollTop = log.scrollHeight;
-  if (ev.id > state.lastEventId) state.lastEventId = ev.id;
-}
-
-async function loadEvents() {
-  if (!state.selectedId) return;
-  const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/events?since=${state.lastEventId}&limit=100`
-  );
-  if (status !== 200) return;
-  for (const ev of data.events || []) {
-    appendEvent(ev);
-  }
-}
-
-function startSessionPoll() {
-  if (state.pollTimer) clearInterval(state.pollTimer);
-  state.pollTimer = setInterval(refreshSessions, 5000);
-}
-
-function stopPolling() {
-  if (state.pollTimer) {
-    clearInterval(state.pollTimer);
-    state.pollTimer = null;
-  }
-  stopEventPoll();
-}
-
-let eventPollTimer = null;
-
-function startEventPoll() {
-  stopEventPoll();
-  eventPollTimer = setInterval(loadEvents, 2000);
-}
-
-function stopEventPoll() {
-  if (eventPollTimer) {
-    clearInterval(eventPollTimer);
-    eventPollTimer = null;
-  }
+  state.lastEventId = ev.id;
 }
 
 async function runCommand(wait) {
@@ -260,7 +327,7 @@ async function runCommand(wait) {
           id: state.lastEventId + 1,
           type: "queued",
           timestamp: new Date().toISOString(),
-          body: "Command queued — output will appear when the agent beacons",
+          body: "Command queued — waiting for agent beacon",
           command: cmd,
         });
       } else {
@@ -277,6 +344,76 @@ async function runCommand(wait) {
     btnRun.disabled = false;
     btnExec.disabled = false;
   }
+}
+
+async function queueDownload() {
+  const remote = $("#download-remote").value.trim();
+  if (!remote || !state.selectedId) return;
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/download`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remote_path: remote }),
+    }
+  );
+  appendEvent({
+    id: state.lastEventId + 1,
+    type: status === 200 ? "queued" : "error",
+    timestamp: new Date().toISOString(),
+    body: status === 200 ? `Download queued: ${remote}` : (data.error || `HTTP ${status}`),
+    command: `__DOWNLOAD__ ${remote}`,
+  });
+}
+
+async function queueScreenshot() {
+  if (!state.selectedId) return;
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/screenshot`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+  );
+  appendEvent({
+    id: state.lastEventId + 1,
+    type: status === 200 ? "queued" : "error",
+    timestamp: new Date().toISOString(),
+    body: status === 200 ? "Screenshot queued" : (data.error || `HTTP ${status}`),
+    command: "__SCREENSHOT__",
+  });
+}
+
+async function queueUpload() {
+  const fileInput = $("#upload-file");
+  const remote = $("#upload-remote").value.trim();
+  if (!state.selectedId || !fileInput.files?.length || !remote) return;
+
+  const file = fileInput.files[0];
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const content_b64 = btoa(binary);
+
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/upload`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remote_path: remote, content_b64 }),
+    }
+  );
+  appendEvent({
+    id: state.lastEventId + 1,
+    type: status === 200 ? "queued" : "error",
+    timestamp: new Date().toISOString(),
+    body:
+      status === 200
+        ? `Upload queued: ${file.name} → ${remote}`
+        : data.error || `HTTP ${status}`,
+    command: `__UPLOAD__ ${remote}`,
+  });
+  fileInput.value = "";
 }
 
 async function killSession() {
@@ -298,15 +435,10 @@ async function applyConfig() {
   await api(`/sessions/${encodeURIComponent(state.selectedId)}/config`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sleep_seconds: sleep,
-      jitter_percent: jitter,
-    }),
+    body: JSON.stringify({ sleep_seconds: sleep, jitter_percent: jitter }),
   });
   await refreshSessions();
 }
-
-// --- Init ---
 
 document.addEventListener("DOMContentLoaded", () => {
   $("#connect-btn").addEventListener("click", connect);
@@ -319,6 +451,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-exec").addEventListener("click", () => runCommand(true));
   $("#btn-kill").addEventListener("click", killSession);
   $("#btn-config").addEventListener("click", applyConfig);
+  $("#btn-download").addEventListener("click", queueDownload);
+  $("#btn-screenshot").addEventListener("click", queueScreenshot);
+  $("#btn-upload").addEventListener("click", queueUpload);
   $("#command-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
