@@ -16,15 +16,22 @@ from __future__ import annotations
 
 import argparse
 import base64
-import getpass
 import json
 import os
+import socket
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# Line-buffered stdout so Exegol/Docker terminals show output immediately
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
 
 try:
     import readline
@@ -73,11 +80,11 @@ class RmmApiClient:
             return e.code, payload
         except urllib.error.URLError as e:
             return 0, {"error": "connection_failed", "detail": str(e.reason)}
-        except TimeoutError:
+        except (TimeoutError, socket.timeout):
             return 0, {"error": "timeout", "detail": "request timed out"}
 
-    def health(self):
-        return self.request("GET", "/api/v1/health")
+    def health(self, timeout: float = 5):
+        return self.request("GET", "/api/v1/health", timeout=timeout)
 
     def list_sessions(self):
         return self.request("GET", "/api/v1/sessions")
@@ -176,31 +183,35 @@ def warn(msg: str):
     say(msg, err=True)
 
 
-def ensure_client(url: str, token: str, *, prompt_token: bool = False) -> tuple:
-    """Verify server reachability and API auth; optionally prompt for token."""
+def ensure_client(url: str, token: str) -> tuple:
+    """Verify server reachability and API auth."""
+    token = (token or "").strip()
     client = RmmApiClient(url, token)
-    code, data = client.health()
+
+    say(f"Connecting to {url} ...")
+    code, data = client.health(timeout=5)
 
     if code == 0:
         detail = data.get("detail") or data.get("error") or "unknown error"
         die(
             f"Cannot connect to {url}\n"
             f"  {detail}\n"
-            f"  Is the server running? Check --url / RMM_SERVER_URL (default {DEFAULT_URL})."
+            f"  Start the server: python server_rmm.py\n"
+            f"  Exegol/Docker: use host IP or host.docker.internal, not 127.0.0.1\n"
+            f"  Example: export RMM_SERVER_URL=http://host.docker.internal:8080"
         )
 
-    if code == 401 and prompt_token and sys.stdin.isatty():
-        if not client.token:
-            client.token = getpass.getpass("API token (RMM_API_TOKEN): ").strip()
-        else:
-            client.token = getpass.getpass("Invalid token. Enter API token: ").strip()
-        code, data = client.health()
-
     if code == 401:
+        if not token:
+            die(
+                f"API authentication required by {url}\n"
+                f"  export RMM_API_TOKEN='same-value-as-server'\n"
+                f"  python rmm_cli.py --token 'YOUR_TOKEN' --url {url}\n"
+                f"  Lab only: start server with --insecure to skip tokens"
+            )
         die(
-            "API authentication failed (401).\n"
-            "  Set RMM_API_TOKEN or run: export RMM_API_TOKEN='your-token'\n"
-            "  Must match the token used when starting server_rmm.py"
+            f"API authentication failed (401) against {url}\n"
+            f"  RMM_API_TOKEN does not match server_rmm.py --token"
         )
 
     if code != 200:
@@ -482,10 +493,10 @@ def run_interactive(
             try:
                 line = input(_prompt(state))
             except EOFError:
-                print()
+                say()
                 break
             except KeyboardInterrupt:
-                print()
+                say()
                 continue
 
             if not line.strip():
@@ -831,13 +842,14 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     state = load_state()
+    token = args.token or DEFAULT_TOKEN
 
     if args.command is None or getattr(args, "interactive", False):
-        client, data = ensure_client(args.url, args.token or DEFAULT_TOKEN, prompt_token=True)
+        client, data = ensure_client(args.url, token)
         run_interactive(client, state, json_mode=getattr(args, "json", False), start_data=data)
         return
 
-    client, _ = ensure_client(args.url, args.token or DEFAULT_TOKEN, prompt_token=False)
+    client, _ = ensure_client(args.url, token)
 
     if args.command == "health":
         cmd_health(client, args)
