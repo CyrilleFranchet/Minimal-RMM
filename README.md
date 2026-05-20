@@ -1,62 +1,185 @@
 # minimal_rmm
 
-A minimal **remote monitoring and management (RMM)** proof of concept: a Python HTTP server with an interactive CLI, and a Windows PowerShell client that **polls (beacons)** for work, executes commands, and posts results back.
+A minimal **remote monitoring and management (RMM)** proof of concept: a Python HTTP server with a **REST operator API**, a **CLI client** for automation, and a Windows PowerShell beacon client.
 
 **Use only on systems you own or are explicitly authorized to manage.** Misuse may violate law and policy.
 
 ---
 
-## How it works
+## Architecture
 
-1. **Server** listens on HTTP (`0.0.0.0` and a configurable port). A **thread** serves requests; the **main thread** runs the interactive RMM console.
-2. **Client** registers once (`GET /register`), then loops: sleep (base interval ± jitter) → **`GET /cmd`** → run work → **`POST /result`** when needed.
-3. **Commands** you type in the server CLI are **queued per session** (FIFO). Between queued jobs, the server may return a **`__CONFIG__`** pseudo-command so the client updates sleep/jitter.
-4. **Output** from the client is printed in the server console; file pulls, screenshots, and keylog dumps are stored under `RMM_logs/`.
+| Component | Role |
+|-----------|------|
+| `server_rmm.py` | HTTP server: **beacon API** (`/register`, `/cmd`, `/result`) + **operator API** (`/api/v1/…`) |
+| `rmm_cli.py` | Operator CLI — calls the REST API (scriptable, `--json`) |
+| `web/` | Operator **web UI** — served at `/ui/` (same origin as API) |
+| `client_rmm.ps1` | Windows beacon — unchanged protocol |
+
+1. **Server** listens on HTTP. By default it runs **headless** (API only). Use `--cli` for the legacy embedded console.
+2. **Beacon client** registers, polls `/cmd`, posts results to `/result`.
+3. **Operator** uses `rmm_cli.py` (or any HTTP client) to list sessions, queue commands, wait for output, etc.
 
 There is no interactive TCP shell: latency is at least one beacon interval (plus jitter).
 
 ---
 
-## HTTP API
+## Security
 
-Base URL is whatever you expose (e.g. Cloudflare Tunnel HTTPS URL). All paths use query parameters as below.
+The server **requires secrets by default** (no `--insecure`):
 
-| Method | Path | Query | Response / body |
-|--------|------|--------|------------------|
-| `GET` | `/register` | `id` (session GUID), `h` (hostname), `u` (username) | `200` body `REGISTERED` (new) or `UPDATED` (existing). **`403` `TERMINATED`** if that session id was **killed** (client should exit). |
-| `GET` | `/cmd` | `id` | `200` JSON: `{"command": "<string>", "type": "<type>"}` — see [Command channel](#command-channel). |
-| `GET` | `/ping` | `id` | `200` `PONG` (simple liveness; optional use). |
-| `POST` | `/result` | `id`, `type` (optional, default `output`) | Body: text, raw base64 (screenshot), JSON for file upload, etc. — see [Result types](#result-types). |
+| Secret | Env / flag | Protects |
+|--------|------------|----------|
+| Operator API | `RMM_API_TOKEN` / `--token` | `/api/v1/*` — list sessions, queue commands, full control |
+| Beacon | `RMM_BEACON_SECRET` / `--beacon-secret` | `/register`, `/cmd`, `/result`, `/ping` — impersonation / hijack |
 
-`Access-Control-Allow-Origin: *` is set on responses (browser-friendly; not a security boundary).
+Also: listens on **127.0.0.1** by default (`--bind 0.0.0.0` only behind a firewall), **path traversal** blocked on uploaded filenames, **10 MB** POST body cap, constant-time token checks.
+
+**Lab only:** `python server_rmm.py --insecure` restores the old open API/beacon (never on a real network).
+
+Set the same `RMM_BEACON_SECRET` on Windows clients (`$env:RMM_BEACON_SECRET = "…"`).
 
 ---
 
-## Command channel
+## Quick start
+
+### Server (headless, recommended)
+
+```bash
+cd minimal_rmm
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt   # optional: prompt_toolkit for --cli
+export RMM_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+python server_rmm.py              # default port 8080, bind 127.0.0.1
+python server_rmm.py 9000 --bind 0.0.0.0   # expose on LAN (use firewall + secrets)
+```
+
+### Operator CLI
+
+```bash
+export RMM_SERVER_URL="http://127.0.0.1:8080"
+export RMM_API_TOKEN="change-me"   # if server uses a token
+
+python rmm_cli.py health
+python rmm_cli.py sessions list
+python rmm_cli.py session use abc12345    # prefix ok (4+ chars)
+python rmm_cli.py exec whoami --wait 120
+python rmm_cli.py run "dir C:\\"          # queue only, no wait
+python rmm_cli.py events --since 0
+```
+
+Selected session is stored in `~/.rmm_cli_state.json`.
+
+### Web UI
+
+With the server running, open **http://127.0.0.1:8080/ui/** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. You can list sessions, queue or run commands, poll output, adjust sleep/jitter, and kill sessions. The token is kept in `sessionStorage` for the browser tab only.
+
+Same-origin hosting avoids CORS; do not expose `/ui/` on the public internet without TLS and a strong API token.
+
+### Embedded console (optional)
+
+```bash
+python server_rmm.py --cli
+```
+
+### Tunnel (example)
+
+```bash
+cloudflared tunnel --url http://localhost:8080
+```
+
+Use the HTTPS URL as `RMM_BASE_URL` on the client (no trailing slash).
+
+### Windows client
+
+```powershell
+$env:RMM_BASE_URL = "https://your-tunnel-or-host.example.com"
+$env:RMM_BEACON_SECRET = "same-value-as-server"
+powershell -ExecutionPolicy Bypass -File .\client_rmm.ps1
+```
+
+---
+
+## Operator REST API (`/api/v1/`)
+
+Base: `http://<host>:<port>/api/v1/`
+
+Send operator token on every `/api/v1/*` request:
+
+- `Authorization: Bearer <token>`, or
+- `X-RMM-Token: <token>`
+
+Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `beacon_token=`) unless the server was started with `--insecure`.
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| `GET` | `/health` | — | `{"status":"ok","sessions":N}` |
+| `GET` | `/sessions` | — | List active sessions |
+| `GET` | `/sessions/{id}` | — | Session detail (`id` = full GUID or unique prefix) |
+| `DELETE` | `/sessions/{id}` | — | Kill session (client gets `__EXIT__` on next beacon) |
+| `PATCH` | `/sessions/{id}/config` | `{"sleep_seconds":60,"jitter_percent":30}` | Beacon tuning |
+| `POST` | `/sessions/{id}/commands` | `{"command":"…","type":"oneshot\|persistent"}` | Queue command |
+| `POST` | `/sessions/{id}/exec` | `{"command":"…","timeout":120}` | Queue and **wait** for next result event |
+| `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
+| `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (output, files, screenshots, …) |
+
+### Automation example (curl)
+
+```bash
+curl -s -H "Authorization: Bearer $RMM_API_TOKEN" \
+  "$RMM_SERVER_URL/api/v1/sessions" | jq .
+
+curl -s -X POST -H "Authorization: Bearer $RMM_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"command":"whoami","timeout":180}' \
+  "$RMM_SERVER_URL/api/v1/sessions/SESSION_PREFIX/exec" | jq .
+```
+
+---
+
+## Beacon HTTP API (client)
+
+Unchanged — used by `client_rmm.ps1`.
+
+| Method | Path | Query | Response |
+|--------|------|--------|----------|
+| `GET` | `/register` | `id`, `h`, `u` | `REGISTERED` / `UPDATED` / `403 TERMINATED` |
+| `GET` | `/cmd` | `id` | JSON `{"command":"…","type":"…"}` |
+| `GET` | `/ping` | `id` | `PONG` |
+| `POST` | `/result` | `id`, `type` | Body: output, file JSON, screenshot base64, … |
+
+See sections below for command tokens and result types.
+
+---
+
+## Command channel (beacon)
 
 `GET /cmd?id=<session_id>` returns JSON:
 
 | `type` | Meaning |
 |--------|---------|
-| `execute` | One-shot command string (user command or internal token). |
-| `persistent` | Same command is returned on every poll until cleared with `__STOP__`. |
-| `config` | Server uses this for `__CONFIG__ …` idle traffic; client applies sleep/jitter. |
-| `none` | Empty command (e.g. unknown session id with no kill flag). |
+| `execute` | One-shot command |
+| `persistent` | Repeated until `__STOP__` |
+| `config` | `__CONFIG__ <sleep> <jitter>` |
+| `none` | Empty (unknown session) |
 
 ### Server → client: special `command` values
 
 | `command` | Purpose |
 |-----------|---------|
-| `__CONFIG__ <sleep> <jitter>` | Push beacon interval (seconds) and jitter percent (0–100). |
-| `__EXIT__` | Session was **killed**; client exits cleanly. |
-| `__STOP__` | Clear **persistent** command (also used when you run `stop` in the CLI). |
-| `__DOWNLOAD__ <path>` | Client reads **remote** file, posts it as `type=file_upload`. |
-| `__UPLOAD__ <path>` + newline + JSON | JSON has `content` (base64); client writes **remote** file. |
-| `__SCREENSHOT__` | Client captures screen; posts PNG as `type=screenshot` (body base64). |
-| `__KEYLOG__ start` \| `stop` \| `dump` | Keylogger control on the client. |
-| `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | Client installs or removes its persistence hooks (see client script). |
+| `__CONFIG__ <sleep> <jitter>` | Push beacon interval and jitter % |
+| `__EXIT__` | Session killed — client exits |
+| `__STOP__` | Clear persistent command |
+| `__DOWNLOAD__ <path>` | Client uploads file (`type=file_upload`) |
+| `__UPLOAD__ <path>` + newline + JSON | Client writes remote file |
+| `__SCREENSHOT__` | Screenshot PNG |
+| `__KEYLOG__ start\|stop\|dump` | Keylogger |
+| `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | Client persistence hooks |
 
-Any other string is treated as a **user command** (CMD by default; `PS:`, `powershell:`, `pwsh:`, `cmd:` prefixes are interpreted on the client — see **Remote command prefixes** below).
+Other strings are user commands (`PS:`, `powershell:`, `pwsh:`, `cmd:` prefixes on the client).
+
+Queue the same tokens via `rmm_cli.py run` / `exec` or `POST …/commands`.
 
 ---
 
@@ -64,150 +187,64 @@ Any other string is treated as a **user command** (CMD by default; `PS:`, `power
 
 | `type` | Body |
 |--------|------|
-| `output` (default) | Prefer JSON `{"rmm_cmd": "…", "rmm_output": "…"}` so the server can label output; plain text also accepted. |
-| `file_upload` | JSON `{"filename": "…", "content": "<base64>"}` — server writes under `RMM_logs/downloads/`. |
-| `screenshot` | Raw base64-encoded PNG. |
-| `keylog` | Text blob — saved under `RMM_logs/keylogs/`. |
-| `config_ack` | Acknowledgment string for config changes (logged). |
+| `output` (default) | JSON `{"rmm_cmd":"…","rmm_output":"…"}` or plain text |
+| `file_upload` | JSON with base64 `content` → `RMM_logs/downloads/` |
+| `screenshot` | Base64 PNG → `RMM_logs/screenshots/` |
+| `keylog` | Text → `RMM_logs/keylogs/` |
+| `config_ack` | Logged / event stream |
+
+Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 ---
 
-## Server CLI reference
-
-Select a session with `use <id>` (full GUID or **prefix**, minimum **4 characters** if multiple matches would be ambiguous). Most actions require a selected session.
-
-### Aliases
-
-| Alias | Maps to |
-|-------|---------|
-| `sessions` | `list` |
-| `help` | `?` |
-| `exit` | `quit` |
-| `ls` | `dir` (treated as a normal remote command when a session is selected) |
-
-### Session management
+## CLI reference (`rmm_cli.py`)
 
 | Command | Description |
 |---------|-------------|
-| `list` | List active sessions (id prefix, user, host, sleep, jitter, last seen). |
-| `use <session_id>` | Select session (prefix allowed). |
-| `background` | Clear current session (global view). |
-| `info` | Show metadata for the current session. |
-| `kill <session_id>` | Marks session id as terminated, removes it from the active map, and on the **next** `/cmd` returns `__EXIT__` so the client exits. That id stays **blocked** for re-registration until the **server process restarts** (in-memory set). |
+| `health` | API health |
+| `sessions list` | List sessions (`--json`) |
+| `session use <id>` | Select session (saved in `~/.rmm_cli_state.json`) |
+| `session info` | Session metadata |
+| `session kill` | Kill session |
+| `run <command>` | Queue command (`--type oneshot\|persistent`) |
+| `exec <command>` | Run and wait (`--wait` seconds, `-f` command file) |
+| `config set-sleep <n>` | 1–3600 |
+| `config set-jitter <n>` | 0–100 |
+| `download <remote_path>` | Queue `__DOWNLOAD__` |
+| `upload <local> <remote>` | Queue `__UPLOAD__` |
+| `events` | Poll result events (`--since`, `--limit`) |
 
-### Beacon configuration (current session)
-
-| Command | Description |
-|---------|-------------|
-| `set_sleep <seconds>` | 1–3600; applied on next idle `__CONFIG__`. |
-| `set_jitter <percent>` | 0–100; same. |
-| `show_config` | Show sleep, jitter, and effective delay range. |
-
-### Command execution (current session)
-
-| Command | Description |
-|---------|-------------|
-| `<anything not matching a builtin>` | **Whole line** is queued as a one-shot command (e.g. `dir`, `whoami`). |
-| `shell <command>` / `exec <command>` | Same as above with explicit verb. |
-| `persist <command>` | **Persistent** command: repeated every beacon until `stop`. |
-| `stop` | Sends `__STOP__` to clear persistent command. |
-
-**Windows CMD tips (from in-app help):** use double quotes for paths with spaces; for `NET GROUP`, put the group name before `/domain`.
-
-### File and recon (current session)
-
-| Command | Description |
-|---------|-------------|
-| `download <remote_file>` | Queue `__DOWNLOAD__`; artifact under `RMM_logs/downloads/`. |
-| `upload <local_file> <remote_file>` | Reads local file on **server** machine, queues `__UPLOAD__` for **client** path. |
-| `screenshot` | Queue `__SCREENSHOT__`. |
-| `keylog` / `keylogger` `start` \| `stop` \| `dump` | Queue `__KEYLOG__ …`. |
-
-### Persistence (current session)
-
-| Command | Description |
-|---------|-------------|
-| `install_persist` | Queue `__INSTALL_PERSIST__` (client copies script to Startup, registry run key — **lab use only**). |
-| `remove_persist` | Queue `__REMOVE_PERSIST__`. |
-
-### Other
-
-| Command | Description |
-|---------|-------------|
-| `help` / `?` | Print full help in the console. |
-| `clear` | Clear terminal (`cls` / `clear`). |
-| `quit` | Shut down the HTTP server and exit. |
-
-**Ctrl+C** cancels the current input line (does **not** exit the server). **Ctrl+D** (EOF) exits when using prompt_toolkit. Prefer `quit` to shut down cleanly.
-
-The prompt shows **date and time** (local) plus `RMM` or `RMM [<session id prefix>]` when a session is selected.
+Global flags: `--url`, `--token` (or `RMM_SERVER_URL`, `RMM_API_TOKEN`).
 
 ---
 
-## Client (`client_rmm.ps1`) behavior
+## Embedded server CLI (`--cli`)
 
-- **URL:** set `RMM_BASE_URL` to the server base URL (no trailing slash), or edit `$u` in the script. If the value still contains the placeholder `REPLACE-WITH-YOUR-CLOUDFLARED-URL`, the script exits.
-- **Session id:** generated as a new GUID each run (unless you change the script).
-- **Registration:** retries with backoff; **403** during register means the session was killed on the server — exit.
-- **Remote command prefixes** (handled on the client): `PS:` / `powershell:`, `pwsh:`, `cmd:` — otherwise the command runs via the default CMD-style path used in the script.
+Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Prefer `rmm_cli.py` for automation.
 
 ---
 
-## Features summary
+## Client (`client_rmm.ps1`)
 
-- Multi-session CLI, tab completion and history (with **prompt_toolkit**; else readline + `input()`).
-- Dynamic sleep/jitter; FIFO queue + optional persistent command.
-- File up/download, screenshot, keylog helpers, persistence install/remove.
-- **`kill`** stops the remote client on the next beacon and blocks that session id until server restart.
-
----
-
-## Requirements
-
-- **Server:** Python 3.8+; optional `pip install -r requirements.txt` for `prompt_toolkit`.
-- **Client:** Windows PowerShell.
+- **URL:** `RMM_BASE_URL` or edit `$u` in the script.
+- **Beacon secret:** `RMM_BEACON_SECRET` (must match the server).
+- **Session id:** new GUID each run unless changed in script.
+- **Registration:** retries; `403` on register = session killed.
 
 ---
 
-## Quick start
-
-### Server
-
-```bash
-cd minimal_rmm
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python server_rmm.py          # default port 8080
-python server_rmm.py 9000     # custom port
-```
-
-### Expose with a tunnel (example)
-
-```bash
-cloudflared tunnel --url http://localhost:8080
-```
-
-Use the printed HTTPS URL as the client base URL (no trailing slash).
-
-### Client
-
-```powershell
-$env:RMM_BASE_URL = "https://your-tunnel-or-host.example.com"
-powershell -ExecutionPolicy Bypass -File .\client_rmm.ps1
-```
-
----
-
-## Files and directories
+## Files
 
 | Path | Role |
 |------|------|
-| `server_rmm.py` | HTTP server + interactive console |
-| `client_rmm.ps1` | Windows beacon client |
-| `requirements.txt` | Optional: `prompt_toolkit` |
-| `RMM_logs/` | Created at runtime: `sessions.json`, `downloads/`, `screenshots/`, `keylogs/` |
-| `~/.RMM_history` | CLI command history (readline / prompt_toolkit) |
+| `server_rmm.py` | HTTP server + operator API |
+| `rmm_cli.py` | Operator CLI |
+| `web/` | Static web operator UI (`index.html`, `app.js`, `style.css`) |
+| `client_rmm.ps1` | Windows beacon |
+| `requirements.txt` | Optional: `prompt_toolkit` for `--cli` |
+| `RMM_logs/` | Runtime logs and artifacts |
+| `~/.rmm_cli_state.json` | CLI selected session |
+| `~/.RMM_history` | Embedded CLI history |
 
 ---
 
