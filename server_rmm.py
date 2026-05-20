@@ -35,6 +35,8 @@ try:
 except ImportError:
     _PTCompleterBase = object  # RMMPTKCompleter only used when prompt_toolkit is installed
 
+from rmm_ws import OperatorEventHub, WebSocketConnection
+
 # History: GNU readline loads this in _run_cli_readline; prompt_toolkit FileHistory uses the same path in _run_cli_prompt_toolkit
 HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 
@@ -337,6 +339,7 @@ class RMMServer:
         self._cli_use_ptk = False  # True when using prompt_toolkit (skip readline.redisplay in handle_result)
         self.current_session = None
         self.running = True
+        self.event_hub = OperatorEventHub()
 
     def tty_print(self, msg="", *, ansi=True, end="\n", flush=True):
         """Stdout for CLI/logs. Under prompt_toolkit.patch_stdout, plain print() corrupts ESC (shows as '?')."""
@@ -405,7 +408,19 @@ class RMMServer:
             return self.find_session_by_prefix(session_id_or_prefix)
         return None
 
+    @staticmethod
+    def _artifact_public_url(filepath):
+        if not filepath:
+            return None
+        real = os.path.realpath(filepath)
+        for kind in ("downloads", "screenshots"):
+            base = os.path.realpath(os.path.join(LOG_DIR, kind))
+            if real == base or real.startswith(base + os.sep):
+                return f"{API_PREFIX}/artifacts/{kind}/{os.path.basename(real)}"
+        return None
+
     def _record_event(self, session, event_type, body, command=None, artifact=None):
+        artifact_url = self._artifact_public_url(artifact) if artifact else None
         with self.session_lock:
             session._event_seq += 1
             ev = {
@@ -415,8 +430,10 @@ class RMMServer:
                 "body": body,
                 "command": command,
                 "artifact": artifact,
+                "artifact_url": artifact_url,
             }
             session.result_events.append(ev)
+        self.event_hub.broadcast_event(session.id, ev)
         with session.wait_lock:
             if session.wait_event is not None:
                 session.wait_result = ev
@@ -436,6 +453,7 @@ class RMMServer:
                 del self.sessions[session.id]
             if self.current_session == session.id:
                 self.current_session = None
+        self.event_hub.broadcast_sessions(self.sessions_to_json())
         return True, session.id
 
     def exec_and_wait(self, session_id_or_prefix, command, timeout=120):
@@ -479,6 +497,7 @@ class RMMServer:
                 self.sessions[session_id] = session
                 self.save_session(session)
                 self.log(f"New session: {session}", "SUCCESS")
+                self.event_hub.broadcast_sessions(self.sessions_to_json())
                 return True
             else:
                 s = self.sessions[session_id]
@@ -698,21 +717,91 @@ class RMMHandler(BaseHTTPRequestHandler):
             return {}
         return json.loads(raw)
 
-    def _api_token_from_request(self):
+    def _api_token_from_request(self, qs=None):
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             return auth[7:].strip()
-        return self.headers.get("X-RMM-Token", "").strip()
+        header = self.headers.get("X-RMM-Token", "").strip()
+        if header:
+            return header
+        if qs:
+            return qs.get("token", [""])[0].strip()
+        return ""
 
-    def _api_authorized(self):
+    def _api_authorized(self, qs=None):
         if INSECURE and not API_TOKEN:
             return True
         if not API_TOKEN:
             return False
-        return secure_compare(self._api_token_from_request(), API_TOKEN)
+        return secure_compare(self._api_token_from_request(qs), API_TOKEN)
 
     def _api_unauthorized(self):
         self._json(401, {"error": "unauthorized", "detail": "Valid RMM_API_TOKEN required (Bearer or X-RMM-Token)"})
+
+    def _handle_websocket_upgrade(self, qs):
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            self._respond(400, "Expected WebSocket upgrade")
+            return True
+        if not self._api_authorized(qs):
+            self._respond(401, "Unauthorized")
+            return True
+
+        ws = WebSocketConnection.from_http_request(
+            self.connection,
+            {k: self.headers[k] for k in self.headers},
+            self.path,
+        )
+        if not ws:
+            self._respond(400, "WebSocket handshake failed")
+            return True
+
+        session_filter = qs.get("session", [None])[0]
+        hub = self.server_instance.event_hub
+        hub.add(ws, session_filter)
+        self.close_connection = False
+
+        try:
+            hub.broadcast_sessions(self.server_instance.sessions_to_json())
+            while self.server_instance.running and not ws.closed:
+                msg = ws.recv_json()
+                if msg is None:
+                    break
+                if msg.get("op") == "_timeout":
+                    ws.send_json({"op": "ping"})
+                    continue
+                if msg.get("op") == "subscribe":
+                    hub.set_filter(ws, msg.get("session_id"))
+                    ws.send_json({"op": "subscribed", "session_id": msg.get("session_id")})
+        finally:
+            hub.remove(ws)
+            ws.close()
+        return True
+
+    def _serve_artifact(self, kind: str, filename: str):
+        if kind not in ("downloads", "screenshots"):
+            self._json(404, {"error": "not_found"})
+            return True
+        safe = safe_storage_filename(filename, "")
+        if not safe:
+            self._json(400, {"error": "invalid_filename"})
+            return True
+        try:
+            path = safe_join_under(os.path.join(LOG_DIR, kind), safe)
+        except ValueError:
+            self._json(403, {"error": "forbidden"})
+            return True
+        if not os.path.isfile(path):
+            self._json(404, {"error": "not_found"})
+            return True
+        mime = "image/png" if kind == "screenshots" else "application/octet-stream"
+        with open(path, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
 
     def _beacon_token_from_request(self, qs):
         header = self.headers.get("X-RMM-Beacon-Token", "").strip()
@@ -772,7 +861,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         return [p for p in rest.split("/") if p]
 
     def _handle_api_get(self, path, qs):
-        if not self._api_authorized():
+        if not self._api_authorized(qs):
             self._api_unauthorized()
             return True
         parts = self._api_path_parts(path)
@@ -805,6 +894,9 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             self._json(200, {"events": events})
             return True
+
+        if len(parts) == 3 and parts[0] == "artifacts":
+            return self._serve_artifact(parts[1], parts[2])
 
         self._json(404, {"error": "not_found"})
         return True
@@ -869,6 +961,28 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "session_id": session.id})
             return True
 
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "download":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            remote_path = body.get("remote_path", "").strip()
+            if not remote_path:
+                self._json(400, {"error": "missing_remote_path"})
+                return True
+            srv.set_command(session.id, f"__DOWNLOAD__ {remote_path}", "oneshot")
+            self._json(200, {"ok": True, "session_id": session.id, "queued": f"__DOWNLOAD__ {remote_path}"})
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "screenshot":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            srv.set_command(session.id, "__SCREENSHOT__", "oneshot")
+            self._json(200, {"ok": True, "session_id": session.id, "queued": "__SCREENSHOT__"})
+            return True
+
         self._json(404, {"error": "not_found"})
         return True
 
@@ -924,6 +1038,10 @@ class RMMHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
+
+        if path == f"{API_PREFIX}/ws":
+            if self._handle_websocket_upgrade(qs):
+                return
 
         if path.startswith(API_PREFIX):
             if self._handle_api_get(path, qs):
