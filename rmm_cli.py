@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import getpass
 import json
 import os
 import sys
@@ -70,6 +71,10 @@ class RmmApiClient:
             except json.JSONDecodeError:
                 payload = {"error": raw or e.reason}
             return e.code, payload
+        except urllib.error.URLError as e:
+            return 0, {"error": "connection_failed", "detail": str(e.reason)}
+        except TimeoutError:
+            return 0, {"error": "timeout", "detail": "request timed out"}
 
     def health(self):
         return self.request("GET", "/api/v1/health")
@@ -156,13 +161,52 @@ def set_current_session(state: dict, session_id: str):
     save_state(state)
 
 
+def say(msg: str = "", *, err: bool = False):
+    stream = sys.stderr if err else sys.stdout
+    print(msg, file=stream)
+    stream.flush()
+
+
 def die(msg: str, code: int = 1):
-    print(msg, file=sys.stderr)
+    say(msg, err=True)
     sys.exit(code)
 
 
 def warn(msg: str):
-    print(msg, file=sys.stderr)
+    say(msg, err=True)
+
+
+def ensure_client(url: str, token: str, *, prompt_token: bool = False) -> tuple:
+    """Verify server reachability and API auth; optionally prompt for token."""
+    client = RmmApiClient(url, token)
+    code, data = client.health()
+
+    if code == 0:
+        detail = data.get("detail") or data.get("error") or "unknown error"
+        die(
+            f"Cannot connect to {url}\n"
+            f"  {detail}\n"
+            f"  Is the server running? Check --url / RMM_SERVER_URL (default {DEFAULT_URL})."
+        )
+
+    if code == 401 and prompt_token and sys.stdin.isatty():
+        if not client.token:
+            client.token = getpass.getpass("API token (RMM_API_TOKEN): ").strip()
+        else:
+            client.token = getpass.getpass("Invalid token. Enter API token: ").strip()
+        code, data = client.health()
+
+    if code == 401:
+        die(
+            "API authentication failed (401).\n"
+            "  Set RMM_API_TOKEN or run: export RMM_API_TOKEN='your-token'\n"
+            "  Must match the token used when starting server_rmm.py"
+        )
+
+    if code != 200:
+        die(f"Server returned HTTP {code}: {data}")
+
+    return client, data
 
 
 def print_event(ev: dict, json_mode: bool = False):
@@ -171,15 +215,15 @@ def print_event(ev: dict, json_mode: bool = False):
         return
     cmd = ev.get("command") or ""
     suffix = f" » {cmd}" if cmd else ""
-    print(f"\n[{ev['id']}] {ev.get('type', 'output')}{suffix}")
+    say(f"\n[{ev['id']}] {ev.get('type', 'output')}{suffix}")
     if ev.get("artifact"):
-        print(f"  artifact: {ev['artifact']}")
+        say(f"  artifact: {ev['artifact']}")
     if ev.get("artifact_url"):
-        print(f"  url: {ev['artifact_url']}")
+        say(f"  url: {ev['artifact_url']}")
     body = ev.get("body", "")
     if body:
-        print(body.rstrip())
-    print("-" * 60)
+        say(body.rstrip())
+    say("-" * 60)
 
 
 def session_or_none(state: dict, session_arg: str | None = None) -> str | None:
@@ -280,6 +324,7 @@ def cmd_exec(client: RmmApiClient, state: dict, args):
         command = Path(args.command_file).read_text(encoding="utf-8").strip()
     if not command:
         die("Missing command")
+    say(f"Waiting for agent (up to {args.wait:.0f}s)...")
     code, data = client.exec_command(sid, command, timeout=args.wait)
     if code == 408:
         die(f"timeout after {args.wait}s", 2)
@@ -379,15 +424,38 @@ def _event_poller(client: RmmApiClient, state: dict, json_mode: bool):
                     if ev["id"] > since:
                         print_event(ev, json_mode)
                         state["last_event_id"] = ev["id"]
+            elif code == 401:
+                state["interactive_running"] = False
+                break
         time.sleep(2)
 
 
-def run_interactive(client: RmmApiClient, state: dict, json_mode: bool = False):
-    code, data = client.health()
+def _active_session(client: RmmApiClient, state: dict) -> str | None:
+    sid = session_or_none(state)
+    if not sid:
+        return None
+    code, _ = client.get_session(sid)
+    if code == 404:
+        warn(f"Session {sid[:8]} no longer active (cleared selection)")
+        state.pop("current_session", None)
+        save_state(state)
+        return None
     if code == 401:
-        die("Invalid API token")
+        warn("API token rejected — reconnect (quit and restart with RMM_API_TOKEN)")
+        return None
     if code != 200:
-        die(f"Cannot reach server ({code}): {data}")
+        warn(f"Cannot verify session (HTTP {code})")
+        return None
+    return sid
+
+
+def run_interactive(
+    client: RmmApiClient,
+    state: dict,
+    json_mode: bool = False,
+    start_data: dict | None = None,
+):
+    data = start_data or {}
 
     if readline and os.path.exists(HISTORY_FILE):
         try:
@@ -403,7 +471,10 @@ def run_interactive(client: RmmApiClient, state: dict, json_mode: bool = False):
     )
     poller.start()
 
-    print(f"Connected to {client.base_url} ({data.get('sessions', 0)} sessions). Type help.")
+    say(f"Connected to {client.base_url} ({data.get('sessions', 0)} session(s)).")
+    if data.get("sessions", 0) == 0:
+        say("  No agents connected — start client_rmm.ps1 on a target (RMM_BASE_URL + RMM_BEACON_SECRET).")
+    say("Type 'list' or 'help'. Ctrl+C clears the line; 'quit' exits.\n")
     _show_help()
 
     try:
@@ -443,7 +514,8 @@ def run_interactive(client: RmmApiClient, state: dict, json_mode: bool = False):
                     continue
                 sessions = sdata.get("sessions", [])
                 if not sessions:
-                    print("No active sessions")
+                    say("No active sessions.")
+                    say("  Start the Windows client: $env:RMM_BASE_URL / $env:RMM_BEACON_SECRET then client_rmm.ps1")
                     continue
                 print(f"{'ID':<10} {'User':<15} {'Host':<20} {'Sleep':<8} {'Jitter':<8}")
                 print("-" * 65)
@@ -595,11 +667,12 @@ def run_interactive(client: RmmApiClient, state: dict, json_mode: bool = False):
                 if not rest:
                     warn("Usage: exec <command>")
                     continue
-                sid = session_or_none(state)
+                sid = _active_session(client, state)
                 if not sid:
-                    warn("No session selected")
+                    warn("No session selected. Use: use <id>")
                     continue
                 command = " ".join(rest)
+                say("Waiting for agent (up to 120s — depends on beacon interval)...")
                 code, edata = client.exec_command(sid, command, timeout=120)
                 if code == 408:
                     warn("Timeout waiting for agent")
@@ -632,14 +705,14 @@ def run_interactive(client: RmmApiClient, state: dict, json_mode: bool = False):
                 continue
 
             # Default: remote command (queued), like embedded server CLI
-            sid = session_or_none(state)
+            sid = _active_session(client, state)
             if not sid:
                 warn("No session selected. Use: use <id>")
                 continue
             command = line.strip()
             code, _ = client.queue_command(sid, command)
             if code == 200:
-                print("Command sent...")
+                say("Command queued (output appears after next agent beacon).")
             else:
                 warn(f"queue failed ({code})")
 
@@ -650,7 +723,7 @@ def run_interactive(client: RmmApiClient, state: dict, json_mode: bool = False):
                 readline.write_history_file(HISTORY_FILE)
             except OSError:
                 pass
-    print("Goodbye.")
+    say("Goodbye.")
 
 
 def cmd_events(client: RmmApiClient, state: dict, args):
@@ -757,12 +830,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_parser()
     args = parser.parse_args()
-    client = RmmApiClient(args.url, args.token)
     state = load_state()
 
     if args.command is None or getattr(args, "interactive", False):
-        run_interactive(client, state, json_mode=getattr(args, "json", False))
+        client, data = ensure_client(args.url, args.token or DEFAULT_TOKEN, prompt_token=True)
+        run_interactive(client, state, json_mode=getattr(args, "json", False), start_data=data)
         return
+
+    client, _ = ensure_client(args.url, args.token or DEFAULT_TOKEN, prompt_token=False)
 
     if args.command == "health":
         cmd_health(client, args)
