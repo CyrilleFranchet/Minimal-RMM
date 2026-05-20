@@ -73,7 +73,7 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 ### Web UI
 
-With the server running, open **http://127.0.0.1:8080/ui/** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. You can list sessions, queue or run commands, poll output, adjust sleep/jitter, and kill sessions. The token is kept in `sessionStorage` for the browser tab only.
+With the server running, open **http://127.0.0.1:8080/ui/** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates, and supports **download**, **upload**, and **screenshot** actions. The token is kept in `sessionStorage` for the browser tab only.
 
 Same-origin hosting avoids CORS; do not expose `/ui/` on the public internet without TLS and a strong API token.
 
@@ -122,7 +122,11 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/commands` | `{"command":"…","type":"oneshot\|persistent"}` | Queue command |
 | `POST` | `/sessions/{id}/exec` | `{"command":"…","timeout":120}` | Queue and **wait** for next result event |
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
-| `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (output, files, screenshots, …) |
+| `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
+| `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
+| `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (fallback) |
+| `GET` | `/artifacts/{downloads\|screenshots}/{filename}` | `?token=` | Download saved artifact (auth required) |
+| `WS` | `/ws?token=…&session=…` | — | Live events + session list (WebSocket) |
 
 ### Automation example (curl)
 
