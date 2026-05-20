@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Minimal RMM</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="login" class="login-wrap">
+    <div class="login-card">
+      <h1>Minimal RMM</h1>
+      <p>Web console for the operator API. Enter the same token as <code>RMM_API_TOKEN</code>.</p>
+      <label for="token-input">API token</label>
+      <input type="password" id="token-input" placeholder="Bearer token" autocomplete="current-password">
+      <button type="button" id="connect-btn">Connect</button>
+      <p id="login-error" class="error-msg hidden"></p>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
+    <header class="app-header">
+      <span class="status-dot" title="Connected"></span>
+      <h1>Minimal RMM</h1>
+      <span class="spacer"></span>
+      <button type="button" class="secondary" id="refresh-btn">Refresh</button>
+      <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
+    </header>
+
+    <div class="app-body">
+      <aside class="sidebar">
+        <h2>Sessions</h2>
+        <ul id="session-list" class="session-list"></ul>
+      </aside>
+
+      <main class="main-panel">
+        <div id="empty-state" class="empty-state">
+          Select a session to run commands and view output.
+        </div>
+
+        <div id="console-panel" class="hidden" style="display: flex; flex-direction: column; flex: 1; min-height: 0;">
+          <div class="console-header">
+            <h2 id="console-title">—</h2>
+            <div id="console-detail" class="detail"></div>
+          </div>
+          <div id="output-log" class="output-log"></div>
+          <div class="command-bar">
+            <label for="command-input">Command</label>
+            <div class="row">
+              <textarea id="command-input" class="cmd-input" rows="2" placeholder="whoami, dir, PS: Get-Process, …"></textarea>
+            </div>
+            <div class="toolbar">
+              <button type="button" id="btn-run" class="secondary">Queue</button>
+              <button type="button" id="btn-exec">Run &amp; wait</button>
+              <button type="button" id="btn-kill" class="danger">Kill session</button>
+            </div>
+            <div class="config-row">
+              <label>Sleep</label>
+              <input type="number" id="sleep-input" min="1" max="3600" value="60">
+              <label>Jitter %</label>
+              <input type="number" id="jitter-input" min="0" max="100" value="30">
+              <button type="button" id="btn-config" class="secondary">Apply beacon config</button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
