@@ -61,6 +61,7 @@ python server_rmm.py 9000 --bind 0.0.0.0   # expose on LAN (use firewall + secre
 export RMM_SERVER_URL="http://127.0.0.1:8080"
 export RMM_API_TOKEN="change-me"   # if server uses a token
 
+python rmm_cli.py                  # interactive console (default)
 python rmm_cli.py health
 python rmm_cli.py sessions list
 python rmm_cli.py session use abc12345    # prefix ok (4+ chars)
@@ -203,8 +204,11 @@ Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 ## CLI reference (`rmm_cli.py`)
 
+Run **`python rmm_cli.py`** with no arguments for an **interactive console** (like the server’s embedded CLI): `list`, `use <id>`, remote commands, `exec`, `download`, `upload`, `screenshot`, etc. Agent output streams in the background while a session is selected.
+
 | Command | Description |
 |---------|-------------|
+| *(default)* / `interactive` | Interactive REPL |
 | `health` | API health |
 | `sessions list` | List sessions (`--json`) |
 | `session use <id>` | Select session (saved in `~/.rmm_cli_state.json`) |
