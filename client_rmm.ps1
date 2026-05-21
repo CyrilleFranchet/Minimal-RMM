@@ -314,18 +314,19 @@ function Invoke-RmmRestMethod {
     } catch [System.Net.WebException] {
         $we = $_.Exception
         $eb = ''
+        $logLevel = if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore') { 'DEBUG' } else { 'ERROR' }
         if ($we.Response) {
             $st = [int]$we.Response.StatusCode
-            Write-RmmLog "WebException HTTP $st on $Method $origUri — $($we.Message)" -Level ERROR
+            Write-RmmLog "WebException HTTP $st on $Method $origUri — $($we.Message)" -Level $logLevel
             $hint = Get-RmmHttpStatusHint -StatusCode $st
-            if ($hint) { Write-RmmLog $hint -Level WARN }
+            if ($hint) { Write-RmmLog $hint -Level $(if ($logLevel -eq 'DEBUG') { 'DEBUG' } else { 'WARN' }) }
             $eb = Get-RmmHttpErrorBody -Response $we.Response
             if ($eb) {
                 $pv = if ($eb.Length -gt 300) { $eb.Substring(0, 300) + '...' } else { $eb }
                 Write-RmmLog "Response body: $pv" -Level DEBUG
             }
         } else {
-            Write-RmmLog "WebException on $Method $origUri — $($we.Message)" -Level ERROR
+            Write-RmmLog "WebException on $Method $origUri — $($we.Message)" -Level $logLevel
         }
         $enriched = $we.Message
         if ($we.Response) {
@@ -442,10 +443,15 @@ function Update-Configuration {
                 try {
                     $ackUrl = "$u/result?id=$sessionId&type=config_ack"
                     $ackBody = "Configuration updated: Sleep=$baseSleepSeconds, Jitter=$jitterPercent%"
-                    Invoke-RmmRestMethod -Uri $ackUrl -Method Post -Body $ackBody -RestErrorAction SilentlyContinue
-                    Write-Host "[+] Configuration acknowledgment sent" -ForegroundColor DarkGray
+                    $ackHeaders = Get-RmmRequestHeaders
+                    $ackResult = Invoke-RmmRestMethod -Uri $ackUrl -Method Post -Body $ackBody -Headers $ackHeaders -RestErrorAction SilentlyContinue
+                    if ($null -ne $ackResult) {
+                        Write-Host "[+] Configuration acknowledgment sent" -ForegroundColor DarkGray
+                    } else {
+                        Write-RmmLog "Configuration acknowledgment failed (server rejected POST /result)" -Level WARN
+                    }
                 } catch {
-                    # Silently ignore ACK errors
+                    Write-RmmLog "Configuration acknowledgment failed: $($_.Exception.Message)" -Level WARN
                 }
             }
         } catch {
