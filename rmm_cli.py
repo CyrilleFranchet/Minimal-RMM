@@ -82,6 +82,8 @@ DEFAULT_URL = _default_server_url()
 DEFAULT_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
 STATE_FILE = os.path.expanduser("~/.rmm_cli_state.json")
 HISTORY_FILE = os.path.expanduser("~/.rmm_cli_history")
+# When True, prompt_toolkit keeps the input line fixed at the bottom (patch_stdout).
+_cli_use_ptk = False
 
 
 class RmmApiClient:
@@ -209,6 +211,16 @@ def set_current_session(state: dict, session_id: str):
 
 
 def say(msg: str = "", *, err: bool = False):
+    if _cli_use_ptk:
+        from prompt_toolkit import print_formatted_text
+        from prompt_toolkit.formatted_text import ANSI
+
+        if not msg:
+            print_formatted_text("")
+            return
+        text = f"\x1b[91m{msg}\x1b[0m" if err else msg
+        print_formatted_text(ANSI(text))
+        return
     stream = sys.stderr if err else sys.stdout
     print(msg, file=stream)
     stream.flush()
@@ -276,6 +288,11 @@ def print_event(ev: dict, json_mode: bool = False, session_prefix: str | None = 
         say(f"\n[+] {tag}Agent accepted configuration change")
         if body:
             say(f"    {body}")
+        say("-" * 60)
+        return
+
+    if ev_type == "operator":
+        say(f"\n[>] {tag}{body}")
         say("-" * 60)
         return
 
@@ -715,13 +732,18 @@ def run_interactive(
         say("  No agents yet — wait for the PowerShell client to register, then run: list")
     else:
         say("  Run: list   then: use <first-8-chars-of-id>   then: exec whoami  (or type a command to queue)")
+    global _cli_use_ptk
+    _cli_use_ptk = use_ptk
     if use_ptk:
-        say("Interactive mode: TAB completion (prompt_toolkit). Ctrl+C clears the line.\n")
+        say("Interactive mode: fixed prompt at bottom (prompt_toolkit). Agent output scrolls above.\n")
     else:
-        say("Interactive mode: TAB completion" + (" (readline)" if readline else " — pip install prompt_toolkit for richer completion") + ". Ctrl+C clears the line.\n")
+        say(
+            "Interactive mode: pip install -r requirements.txt for a fixed bottom prompt "
+            "(prompt_toolkit). Output may scroll over the input line otherwise.\n"
+        )
     _show_help()
 
-    try:
+    def _interactive_loop():
         while True:
             try:
                 if ptk_session is not None:
@@ -975,8 +997,17 @@ def run_interactive(
             else:
                 warn(f"queue failed ({code})")
 
+    try:
+        if use_ptk:
+            from prompt_toolkit.patch_stdout import patch_stdout
+
+            with patch_stdout():
+                _interactive_loop()
+        else:
+            _interactive_loop()
     finally:
         state["interactive_running"] = False
+        _cli_use_ptk = False
         if readline and not use_ptk:
             try:
                 readline.write_history_file(HISTORY_FILE)

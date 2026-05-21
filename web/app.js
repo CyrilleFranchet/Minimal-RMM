@@ -2,6 +2,7 @@
  * Minimal RMM web operator UI — REST API + WebSocket event stream.
  */
 const STORAGE_KEY = "rmm_api_token";
+const EVENT_CURSORS_KEY = "rmm_event_cursors";
 
 const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
@@ -286,14 +287,17 @@ async function selectSession(id) {
   startEventPolling();
 
   const { status, data } = await api(
-    `/sessions/${encodeURIComponent(id)}/events?since=0&limit=200`
+    `/sessions/${encodeURIComponent(id)}/events?since=0&limit=500`
   );
   if (status === 200) {
     const events = data.events || [];
     for (const ev of events) {
       appendEvent(ev);
     }
-    state.lastEventId = events.reduce((m, e) => Math.max(m, e.id || 0), 0);
+    if (events.length) {
+      state.lastEventId = events.reduce((m, e) => Math.max(m, e.id || 0), 0);
+      saveEventCursor(id, state.lastEventId);
+    }
   }
 }
 
@@ -333,11 +337,29 @@ function appendLocalEvent(partial) {
   );
 }
 
+function loadEventCursors() {
+  try {
+    return JSON.parse(sessionStorage.getItem(EVENT_CURSORS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveEventCursor(sessionId, eventId) {
+  if (!sessionId || typeof eventId !== "number") return;
+  const cursors = loadEventCursors();
+  cursors[sessionId] = Math.max(cursors[sessionId] || 0, eventId);
+  sessionStorage.setItem(EVENT_CURSORS_KEY, JSON.stringify(cursors));
+}
+
 function appendEvent(ev, { local = false } = {}) {
   if (!local) {
     if (typeof ev.id === "number" && ev.id <= state.lastEventId) return;
     if (typeof ev.id === "number") {
       state.lastEventId = Math.max(state.lastEventId, ev.id);
+      if (state.selectedId) {
+        saveEventCursor(state.selectedId, state.lastEventId);
+      }
     }
   }
   const log = $("#output-log");
@@ -345,8 +367,9 @@ function appendEvent(ev, { local = false } = {}) {
   block.className = "output-line" + (local ? " output-line-local" : "");
   const cmd = ev.command ? ` » ${ev.command}` : "";
   const idLabel = local ? "·" : `[${ev.id}]`;
+  const typeClass = ev.type === "operator" ? "ev-operator" : ev.type === "output" ? "ev-output" : "";
   block.innerHTML = `
-    <div class="head">${idLabel} ${escapeHtml(ev.type)}${escapeHtml(cmd)} · ${formatTime(ev.timestamp)}</div>
+    <div class="head ${typeClass}">${idLabel} ${escapeHtml(ev.type)}${escapeHtml(cmd)} · ${formatTime(ev.timestamp)}</div>
     <div class="body">${renderEventBody(ev)}</div>
   `;
   log.appendChild(block);
@@ -414,6 +437,7 @@ async function runCommand(wait) {
   } finally {
     btnRun.disabled = false;
     btnExec.disabled = false;
+    $("#command-input").value = "";
   }
 }
 

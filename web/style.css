@@ -323,6 +323,14 @@ button:disabled {
   font-style: italic;
 }
 
+.output-line .head.ev-operator {
+  color: var(--accent);
+}
+
+.output-line .head.ev-output {
+  color: var(--success);
+}
+
 .output-line {
   margin-bottom: 1rem;
   padding-bottom: 1rem;

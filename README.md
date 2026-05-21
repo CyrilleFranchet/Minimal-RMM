@@ -255,7 +255,10 @@ Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Pref
 | `requirements.txt` | Optional: `prompt_toolkit` for `--cli` |
 | `RMM_logs/` | Runtime logs and artifacts |
 | `~/.rmm_cli_state.json` | CLI selected session |
+| `~/.rmm_cli_history` | Operator command history (prompt_toolkit / readline) |
 | `~/.RMM_history` | Embedded CLI history |
+
+**Shared transcript:** commands and agent output for a session are stored on the server as **events** (`operator`, `output`, `config_ack`, …). Web UI and `rmm_cli.py` both poll `/api/v1/sessions/{id}/events` and receive WebSocket broadcasts — reopening a session shows the same history from any operator client.
 
 ---
 

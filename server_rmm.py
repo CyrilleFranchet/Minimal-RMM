@@ -452,6 +452,12 @@ class RMMServer:
                 return f"{API_PREFIX}/artifacts/{kind}/{os.path.basename(real)}"
         return None
 
+    def record_operator_action(self, session, command: str, action: str = "queued"):
+        """Log operator commands for shared history (web UI, rmm_cli, API)."""
+        if not session or not command:
+            return
+        self._record_event(session, "operator", f"{action}: {command}", command=command)
+
     def _record_event(self, session, event_type, body, command=None, artifact=None):
         artifact_url = self._artifact_public_url(artifact) if artifact else None
         with self.session_lock:
@@ -985,6 +991,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "missing_command"})
                 return True
             srv.set_command(session.id, command, cmd_type)
+            srv.record_operator_action(session, command, "queued" if cmd_type == "oneshot" else "persist")
             self._json(200, {"ok": True, "session_id": session.id})
             return True
 
@@ -994,6 +1001,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not command:
                 self._json(400, {"error": "missing_command"})
                 return True
+            session = srv.resolve_session(parts[1])
+            if session:
+                srv.record_operator_action(session, command, "exec")
             result, status = srv.exec_and_wait(parts[1], command, timeout=timeout)
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -1018,7 +1028,9 @@ class RMMHandler(BaseHTTPRequestHandler):
                 "filename": os.path.basename(remote_file),
                 "content": local_b64,
             })
-            srv.set_command(session.id, f"__UPLOAD__ {remote_file}\n{data}", "oneshot")
+            cmd = f"__UPLOAD__ {remote_file}"
+            srv.set_command(session.id, f"{cmd}\n{data}", "oneshot")
+            srv.record_operator_action(session, cmd, "upload")
             self._json(200, {"ok": True, "session_id": session.id})
             return True
 
@@ -1031,8 +1043,10 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not remote_path:
                 self._json(400, {"error": "missing_remote_path"})
                 return True
-            srv.set_command(session.id, f"__DOWNLOAD__ {remote_path}", "oneshot")
-            self._json(200, {"ok": True, "session_id": session.id, "queued": f"__DOWNLOAD__ {remote_path}"})
+            cmd = f"__DOWNLOAD__ {remote_path}"
+            srv.set_command(session.id, cmd, "oneshot")
+            srv.record_operator_action(session, cmd, "download")
+            self._json(200, {"ok": True, "session_id": session.id, "queued": cmd})
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "screenshot":
@@ -1041,6 +1055,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "session_not_found"})
                 return True
             srv.set_command(session.id, "__SCREENSHOT__", "oneshot")
+            srv.record_operator_action(session, "__SCREENSHOT__", "screenshot")
             self._json(200, {"ok": True, "session_id": session.id, "queued": "__SCREENSHOT__"})
             return True
 
@@ -1067,6 +1082,13 @@ class RMMHandler(BaseHTTPRequestHandler):
                 jitter_percent=body.get("jitter_percent"),
             )
             if ok:
+                parts_cfg = []
+                if body.get("sleep_seconds") is not None:
+                    parts_cfg.append(f"sleep={body['sleep_seconds']}")
+                if body.get("jitter_percent") is not None:
+                    parts_cfg.append(f"jitter={body['jitter_percent']}")
+                if parts_cfg:
+                    srv.record_operator_action(session, " ".join(parts_cfg), "config")
                 self._json(200, {"ok": True, "session": session.to_dict()})
             else:
                 self._json(404, {"error": "session_not_found"})
