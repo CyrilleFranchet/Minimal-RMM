@@ -692,13 +692,30 @@ class RMMHandler(BaseHTTPRequestHandler):
     
     def log_message(self, format, *args):
         pass
+
+    def handle(self):
+        """Suppress BrokenPipe when clients close before reading the response."""
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _safe_write(self, data: bytes) -> None:
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
     
     def _respond(self, code, body="", content_type="text/plain"):
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.end_headers()
-        if body:
-            self.wfile.write(body.encode() if isinstance(body, str) else body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.end_headers()
+            if body:
+                payload = body.encode() if isinstance(body, str) else body
+                self._safe_write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _json(self, code, payload):
         self._respond(code, json.dumps(payload), "application/json")
@@ -800,7 +817,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        self._safe_write(data)
         return True
 
     def _beacon_token_from_request(self, qs):
@@ -851,7 +868,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", WEB_MIME.get(ext, "application/octet-stream"))
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        self.wfile.write(data)
+        self._safe_write(data)
         return True
 
     def _api_path_parts(self, path):
