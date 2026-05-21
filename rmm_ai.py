@@ -229,6 +229,12 @@ def run_ai_chat(
     if not openai_api_key or not openai_api_key.strip():
         raise ValueError("openai_api_key required")
 
+    rmm_token = (rmm_token or "").strip()
+    if not rmm_token:
+        raise ValueError(
+            "RMM API token required for tool calls (same as RMM_API_TOKEN / web UI login)"
+        )
+
     from rmm_mcp_client import mcp_available, use_mcp_for_ai
 
     if use_mcp_for_ai() and mcp_available():

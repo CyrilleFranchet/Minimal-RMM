@@ -19,9 +19,12 @@ def make_client(
     base_url: str | None = None,
     token: str | None = None,
 ) -> RmmApiClient:
+    resolved_token = DEFAULT_RMM_TOKEN if token is None else str(token).strip()
+    if not resolved_token:
+        resolved_token = DEFAULT_RMM_TOKEN
     return RmmApiClient(
         (base_url or DEFAULT_RMM_URL).rstrip("/"),
-        (token if token is not None else DEFAULT_RMM_TOKEN),
+        resolved_token,
     )
 
 
@@ -58,6 +61,13 @@ def _resolve_session_id(client: RmmApiClient, session_ref: str) -> tuple[str | N
 
 
 def tool_list_sessions(client: RmmApiClient) -> str:
+    if not client.token:
+        return _json_result({
+            "ok": False,
+            "status": 401,
+            "error": "missing_api_token",
+            "detail": "Set RMM_API_TOKEN (MCP env or web UI login Bearer token)",
+        })
     code, data = client.list_sessions()
     if code != 200:
         return _json_result({"ok": False, "status": code, "data": data})

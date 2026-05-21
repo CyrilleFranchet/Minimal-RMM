@@ -1117,12 +1117,19 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             model = str(body.get("model") or "gpt-4o-mini")
             selected = body.get("selected_session_id")
+            rmm_token = (self._api_token_from_request() or API_TOKEN or "").strip()
+            if not rmm_token:
+                self._json(401, {
+                    "error": "unauthorized",
+                    "detail": "Valid RMM_API_TOKEN required for AI tool calls",
+                })
+                return True
             try:
                 from rmm_ai import run_ai_chat
 
                 result = run_ai_chat(
-                    rmm_base_url=self._request_base_url(),
-                    rmm_token=self._api_token_from_request() or API_TOKEN,
+                    rmm_base_url=self._operator_api_base_url(),
+                    rmm_token=rmm_token,
                     openai_api_key=openai_key,
                     messages=messages,
                     model=model,
@@ -1147,6 +1154,15 @@ class RMMHandler(BaseHTTPRequestHandler):
         if proto not in ("http", "https"):
             proto = "http"
         return f"{proto}://{host}"
+
+    def _operator_api_base_url(self) -> str:
+        """Loopback URL for in-process clients (AI/MCP) calling the operator API."""
+        host = LISTEN_HOST
+        if host in ("0.0.0.0", "::", ""):
+            host = "127.0.0.1"
+        elif host == "::1":
+            host = "127.0.0.1"
+        return f"http://{host}:{PORT}"
 
     def _handle_api_patch(self, path, body):
         if not self._api_authorized():

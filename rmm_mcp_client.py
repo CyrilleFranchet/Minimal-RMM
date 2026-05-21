@@ -73,7 +73,11 @@ class McpRmmSession:
 
         env = dict(os.environ)
         env["RMM_SERVER_URL"] = self.rmm_base_url
-        env["RMM_API_TOKEN"] = self.rmm_token
+        token = (self.rmm_token or "").strip()
+        if token:
+            env["RMM_API_TOKEN"] = token
+        else:
+            env.pop("RMM_API_TOKEN", None)
         env.pop("RMM_BASE_URL", None)
 
         params = StdioServerParameters(
