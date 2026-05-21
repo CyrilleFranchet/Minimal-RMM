@@ -238,6 +238,9 @@ Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Pref
 - **Beacon secret:** `RMM_BEACON_SECRET` (must match the server).
 - **Session id:** new GUID each run unless changed in script.
 - **Registration:** retries; `403` on register = session killed.
+- **Debug:** `RMM_VERBOSE=1` logs each HTTP call (logical URL, wire IPv4, `Host` header, status, error bodies).
+
+**HTTP 524 (Cloudflare):** the tunnel reached Cloudflare but the origin did not answer in time. On the host running `cloudflared`, ensure `python server_rmm.py --bind 0.0.0.0` is up and the tunnel targets `http://127.0.0.1:8080` (or your port). This is not a wrong beacon token (that is usually `401`/`403`).
 
 ---
 

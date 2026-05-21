@@ -38,7 +38,16 @@ try:
 except ImportError:
     readline = None
 
-DEFAULT_URL = os.environ.get("RMM_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
+def _default_server_url() -> str:
+    """Operator CLI URL: RMM_SERVER_URL, else same as beacon client (RMM_BASE_URL)."""
+    for key in ("RMM_SERVER_URL", "RMM_BASE_URL"):
+        val = os.environ.get(key, "").strip().rstrip("/")
+        if val:
+            return val
+    return "http://127.0.0.1:8080"
+
+
+DEFAULT_URL = _default_server_url()
 DEFAULT_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
 STATE_FILE = os.path.expanduser("~/.rmm_cli_state.json")
 HISTORY_FILE = os.path.expanduser("~/.rmm_cli_history")
@@ -184,11 +193,14 @@ def warn(msg: str):
 
 
 def ensure_client(url: str, token: str) -> tuple:
-    """Verify server reachability and API auth."""
+    """Verify server reachability and API auth (operator token, not RMM_BEACON_SECRET)."""
+    url = (url or _default_server_url()).strip().rstrip("/")
     token = (token or "").strip()
     client = RmmApiClient(url, token)
 
     say(f"Connecting to {url} ...")
+    if not token:
+        say("  (no RMM_API_TOKEN — required unless server was started with --insecure)", err=True)
     code, data = client.health(timeout=5)
 
     if code == 0:
@@ -205,13 +217,14 @@ def ensure_client(url: str, token: str) -> tuple:
         if not token:
             die(
                 f"API authentication required by {url}\n"
-                f"  export RMM_API_TOKEN='same-value-as-server'\n"
-                f"  python rmm_cli.py --token 'YOUR_TOKEN' --url {url}\n"
-                f"  Lab only: start server with --insecure to skip tokens"
+                f"  The PowerShell client uses RMM_BEACON_SECRET — that is NOT enough for this CLI.\n"
+                f"  export RMM_API_TOKEN='same-as-server'  # server --token / RMM_API_TOKEN\n"
+                f"  export RMM_SERVER_URL='{url}'  # or RMM_BASE_URL (same URL as the .ps1 client)\n"
+                f"  python rmm_cli.py --url \"$RMM_SERVER_URL\" --token \"$RMM_API_TOKEN\""
             )
         die(
             f"API authentication failed (401) against {url}\n"
-            f"  RMM_API_TOKEN does not match server_rmm.py --token"
+            f"  RMM_API_TOKEN must match server_rmm.py --token (not RMM_BEACON_SECRET)"
         )
 
     if code != 200:
@@ -482,10 +495,13 @@ def run_interactive(
     )
     poller.start()
 
-    say(f"Connected to {client.base_url} ({data.get('sessions', 0)} session(s)).")
-    if data.get("sessions", 0) == 0:
-        say("  No agents connected — start client_rmm.ps1 on a target (RMM_BASE_URL + RMM_BEACON_SECRET).")
-    say("Type 'list' or 'help'. Ctrl+C clears the line; 'quit' exits.\n")
+    n = data.get("sessions", 0)
+    say(f"Connected to {client.base_url} ({n} session(s)).")
+    if n == 0:
+        say("  No agents yet — wait for the PowerShell client to register, then run: list")
+    else:
+        say("  Run: list   then: use <first-8-chars-of-id>   then: exec whoami  (or type a command to queue)")
+    say("Type 'help' or 'quit'. Ctrl+C clears the line.\n")
     _show_help()
 
     try:
@@ -762,7 +778,11 @@ def build_parser() -> argparse.ArgumentParser:
     shared.add_argument("--json", action="store_true", help="JSON output")
 
     p = argparse.ArgumentParser(description="RMM operator CLI (REST API client)")
-    p.add_argument("--url", default=DEFAULT_URL, help=f"Server base URL (default: {DEFAULT_URL})")
+    p.add_argument(
+        "--url",
+        default=DEFAULT_URL,
+        help="Server URL (env: RMM_SERVER_URL or RMM_BASE_URL; default: %(default)s)",
+    )
     p.add_argument("--token", default=DEFAULT_TOKEN, help="API token (or RMM_API_TOKEN)")
 
     sub = p.add_subparsers(dest="command", required=False)
