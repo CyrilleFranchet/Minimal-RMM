@@ -19,6 +19,7 @@ import base64
 import glob
 import json
 import os
+import queue
 import socket
 import sys
 import threading
@@ -82,8 +83,10 @@ DEFAULT_URL = _default_server_url()
 DEFAULT_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
 STATE_FILE = os.path.expanduser("~/.rmm_cli_state.json")
 HISTORY_FILE = os.path.expanduser("~/.rmm_cli_history")
-# When True, prompt_toolkit keeps the input line fixed at the bottom (patch_stdout).
+# Interactive mode: prompt_toolkit + patch_stdout (input line fixed at bottom).
 _cli_use_ptk = False
+_cli_output_queue: queue.Queue = queue.Queue()
+_main_thread_id: int | None = None
 
 
 class RmmApiClient:
@@ -210,16 +213,32 @@ def set_current_session(state: dict, session_id: str):
     save_state(state)
 
 
+def _ptk_emit(msg: str, *, err: bool = False) -> None:
+    from prompt_toolkit import print_formatted_text
+    from prompt_toolkit.formatted_text import ANSI
+
+    if not msg:
+        print_formatted_text("")
+        return
+    text = f"\x1b[91m{msg}\x1b[0m" if err else msg
+    print_formatted_text(ANSI(text))
+
+
+def _drain_cli_output() -> None:
+    while True:
+        try:
+            msg, err = _cli_output_queue.get_nowait()
+        except queue.Empty:
+            break
+        _ptk_emit(msg, err=err)
+
+
 def say(msg: str = "", *, err: bool = False):
     if _cli_use_ptk:
-        from prompt_toolkit import print_formatted_text
-        from prompt_toolkit.formatted_text import ANSI
-
-        if not msg:
-            print_formatted_text("")
+        if _main_thread_id is not None and threading.current_thread().ident != _main_thread_id:
+            _cli_output_queue.put((msg, err))
             return
-        text = f"\x1b[91m{msg}\x1b[0m" if err else msg
-        print_formatted_text(ANSI(text))
+        _ptk_emit(msg, err=err)
         return
     stream = sys.stderr if err else sys.stdout
     print(msg, file=stream)
@@ -528,7 +547,7 @@ def _prompt(state: dict) -> str:
 
 
 def _show_help():
-    print("""
+    help_text = """
 Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <s> | set_jitter <%> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
@@ -538,7 +557,9 @@ Other:    events [since] | health | help | quit
 Tip: agent output and config_ack events stream for all connected sessions (prefix [session8]).
 Tip: TAB completes commands and session id prefixes (after list).
 Status: online = recent poll; stale = late; offline = likely dead (re-run list to refresh).
-""")
+""".strip()
+    for line in help_text.split("\n"):
+        say(line)
 
 
 def _refresh_completion_sessions(client: "RmmApiClient", state: dict) -> None:
@@ -678,78 +699,38 @@ def run_interactive(
     json_mode: bool = False,
     start_data: dict | None = None,
 ):
-    data = start_data or {}
-
-    _refresh_completion_sessions(client, state)
-
-    use_ptk = False
-    ptk_session = None
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
-
-        ptk_session = PromptSession(
-            history=FileHistory(HISTORY_FILE),
-            completer=RmmCliPTKCompleter(state),
-            complete_style="COLUMN",
-            enable_history_search=True,
-        )
-        use_ptk = True
+        from prompt_toolkit.patch_stdout import patch_stdout
     except ImportError:
-        pass
+        die(
+            "Interactive mode requires prompt_toolkit (fixed input line at the bottom).\n"
+            "  pip install -r requirements.txt"
+        )
 
-    if readline and not use_ptk:
-        if os.path.exists(HISTORY_FILE):
-            try:
-                readline.read_history_file(HISTORY_FILE)
-            except OSError:
-                pass
-        readline.set_history_length(2000)
-        readline.set_completer(RmmCliCompleter(state).complete)
-        readline.parse_and_bind("tab: complete")
-        readline.set_completer_delims(" \t\n;")
-    elif readline and use_ptk and os.path.exists(HISTORY_FILE):
-        try:
-            readline.read_history_file(HISTORY_FILE)
-        except OSError:
-            pass
+    data = start_data or {}
+    _refresh_completion_sessions(client, state)
+
+    global _cli_use_ptk, _main_thread_id
+    _cli_use_ptk = True
+    _main_thread_id = threading.current_thread().ident
+
+    ptk_session = PromptSession(
+        history=FileHistory(HISTORY_FILE),
+        completer=RmmCliPTKCompleter(state),
+        complete_style="COLUMN",
+        enable_history_search=True,
+    )
 
     state["interactive_running"] = True
     _event_cursor(state)
-    poller = threading.Thread(
-        target=_event_poller, args=(client, state, json_mode), daemon=True
-    )
-    poller.start()
-
-    code, sdata = client.list_sessions()
-    if code == 200:
-        for s in sdata.get("sessions", []):
-            _sync_event_cursor(client, state, s["id"])
-
-    n = data.get("sessions", 0)
-    say(f"Connected to {client.base_url} ({n} session(s)).")
-    if n == 0:
-        say("  No agents yet — wait for the PowerShell client to register, then run: list")
-    else:
-        say("  Run: list   then: use <first-8-chars-of-id>   then: exec whoami  (or type a command to queue)")
-    global _cli_use_ptk
-    _cli_use_ptk = use_ptk
-    if use_ptk:
-        say("Interactive mode: fixed prompt at bottom (prompt_toolkit). Agent output scrolls above.\n")
-    else:
-        say(
-            "Interactive mode: pip install -r requirements.txt for a fixed bottom prompt "
-            "(prompt_toolkit). Output may scroll over the input line otherwise.\n"
-        )
-    _show_help()
 
     def _interactive_loop():
         while True:
+            _drain_cli_output()
             try:
-                if ptk_session is not None:
-                    line = ptk_session.prompt(_prompt(state))
-                else:
-                    line = input(_prompt(state))
+                line = ptk_session.prompt(_prompt(state))
             except EOFError:
                 say()
                 break
@@ -770,11 +751,14 @@ def run_interactive(
                 _show_help()
                 continue
             if cmd == "clear":
-                os.system("clear" if os.name != "nt" else "cls")
+                _ptk_emit("\x1b[2J\x1b[H")
                 continue
             if cmd == "health":
                 code, hdata = client.health()
-                print(f"ok ({hdata.get('sessions', 0)} sessions)" if code == 200 else warn(f"health {code}"))
+                if code == 200:
+                    say(f"ok ({hdata.get('sessions', 0)} sessions)")
+                else:
+                    warn(f"health {code}")
                 continue
             if cmd == "list":
                 code, sdata = client.list_sessions()
@@ -786,11 +770,11 @@ def run_interactive(
                     say("No active sessions.")
                     say("  Start the Windows client: $env:RMM_BASE_URL / $env:RMM_BEACON_SECRET then client_rmm.ps1")
                     continue
-                print(f"{'ID':<10} {'User':<15} {'Host':<20} {'Sleep':<8} {'Jitter':<8} {'Last seen':<12} {'Status':<8}")
-                print("-" * 95)
+                say(f"{'ID':<10} {'User':<15} {'Host':<20} {'Sleep':<8} {'Jitter':<8} {'Last seen':<12} {'Status':<8}")
+                say("-" * 95)
                 for s in sessions:
                     ago, status = _session_last_seen_display(s)
-                    print(
+                    say(
                         f"{s['id'][:8]:<10} {s['username']:<15} {s['hostname']:<20} "
                         f"{s['sleep_seconds']:<8} {s['jitter_percent']:<7}% "
                         f"{ago:<12} {status:<8}"
@@ -811,12 +795,12 @@ def run_interactive(
                 code, sdata = client.get_session(full)
                 if code == 200:
                     s = sdata["session"]
-                    print(f"Selected {s['username']}@{s['hostname']} [{full[:8]}]")
+                    say(f"Selected {s['username']}@{s['hostname']} [{full[:8]}]")
                 continue
             if cmd == "background":
                 state.pop("current_session", None)
                 save_state(state)
-                print("Returned to global view")
+                say("Returned to global view")
                 continue
             if cmd == "info" or cmd == "show_config":
                 sid = session_or_none(state)
@@ -829,12 +813,12 @@ def run_interactive(
                     continue
                 s = sdata["session"]
                 for k, v in s.items():
-                    print(f"  {k}: {v}")
+                    say(f"  {k}: {v}")
                 if cmd == "show_config":
                     j = s["jitter_percent"] / 100.0
                     lo = s["sleep_seconds"] * (1 - j)
                     hi = s["sleep_seconds"] * (1 + j)
-                    print(f"  effective_range: {lo:.1f}s - {hi:.1f}s")
+                    say(f"  effective_range: {lo:.1f}s - {hi:.1f}s")
                 continue
             if cmd == "kill":
                 sid_arg = rest[0] if rest else None
@@ -851,7 +835,7 @@ def run_interactive(
                 if state.get("current_session") == kdata.get("session_id", sid):
                     state.pop("current_session", None)
                     save_state(state)
-                print(f"Killed {kdata.get('session_id', sid)[:8]}")
+                say(f"Killed {kdata.get('session_id', sid)[:8]}")
                 _refresh_completion_sessions(client, state)
                 continue
             if cmd == "set_sleep":
@@ -907,7 +891,10 @@ def run_interactive(
                     continue
                 remote = " ".join(rest)
                 code, _ = client.queue_download(sid, remote)
-                print("Download queued" if code == 200 else warn(f"failed ({code})"))
+                if code == 200:
+                    say("Download queued")
+                else:
+                    warn(f"failed ({code})")
                 continue
             if cmd == "upload":
                 if len(rest) < 2:
@@ -922,7 +909,10 @@ def run_interactive(
                     warn(f"Not found: {local}")
                     continue
                 code, _ = client.upload_file(sid, local, remote)
-                print(f"Upload queued -> {remote}" if code == 200 else warn(f"failed ({code})"))
+                if code == 200:
+                    say(f"Upload queued -> {remote}")
+                else:
+                    warn(f"failed ({code})")
                 continue
             if cmd == "screenshot":
                 sid = session_or_none(state)
@@ -930,7 +920,10 @@ def run_interactive(
                     warn("No session selected")
                     continue
                 code, _ = client.queue_screenshot(sid)
-                print("Screenshot queued" if code == 200 else warn(f"failed ({code})"))
+                if code == 200:
+                    say("Screenshot queued")
+                else:
+                    warn(f"failed ({code})")
                 continue
             if cmd == "run":
                 if not rest:
@@ -942,7 +935,10 @@ def run_interactive(
                     continue
                 command = " ".join(rest)
                 code, _ = client.queue_command(sid, command)
-                print("Queued" if code == 200 else warn(f"failed ({code})"))
+                if code == 200:
+                    say("Queued")
+                else:
+                    warn(f"failed ({code})")
                 continue
             if cmd == "exec":
                 if not rest:
@@ -974,7 +970,10 @@ def run_interactive(
                     warn("No session selected")
                     continue
                 code, _ = client.queue_command(sid, " ".join(rest), "persistent")
-                print("Persistent command set" if code == 200 else warn(f"failed ({code})"))
+                if code == 200:
+                    say("Persistent command set")
+                else:
+                    warn(f"failed ({code})")
                 continue
             if cmd == "stop":
                 sid = session_or_none(state)
@@ -982,7 +981,10 @@ def run_interactive(
                     warn("No session selected")
                     continue
                 code, _ = client.queue_command(sid, "__STOP__")
-                print("Persistent command stopped" if code == 200 else warn(f"failed ({code})"))
+                if code == 200:
+                    say("Persistent command stopped")
+                else:
+                    warn(f"failed ({code})")
                 continue
 
             # Default: remote command (queued), like embedded server CLI
@@ -997,22 +999,32 @@ def run_interactive(
             else:
                 warn(f"queue failed ({code})")
 
-    try:
-        if use_ptk:
-            from prompt_toolkit.patch_stdout import patch_stdout
+    with patch_stdout():
+        poller = threading.Thread(
+            target=_event_poller, args=(client, state, json_mode), daemon=True
+        )
+        poller.start()
 
-            with patch_stdout():
-                _interactive_loop()
+        code, sdata = client.list_sessions()
+        if code == 200:
+            for s in sdata.get("sessions", []):
+                _sync_event_cursor(client, state, s["id"])
+
+        n = data.get("sessions", 0)
+        say(f"Connected to {client.base_url} ({n} session(s)).")
+        if n == 0:
+            say("  No agents yet — wait for the PowerShell client to register, then run: list")
         else:
+            say("  Run: list   then: use <first-8-chars-of-id>   then: exec whoami")
+        say("Input line stays at the bottom; agent output scrolls above.\n")
+        _show_help()
+        try:
             _interactive_loop()
-    finally:
-        state["interactive_running"] = False
-        _cli_use_ptk = False
-        if readline and not use_ptk:
-            try:
-                readline.write_history_file(HISTORY_FILE)
-            except OSError:
-                pass
+        finally:
+            state["interactive_running"] = False
+
+    _cli_use_ptk = False
+    _main_thread_id = None
     say("Goodbye.")
 
 

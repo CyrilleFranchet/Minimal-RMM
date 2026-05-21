@@ -48,7 +48,7 @@ Set the same `RMM_BEACON_SECRET` on Windows clients (`$env:RMM_BEACON_SECRET = "
 cd minimal_rmm
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt   # optional: prompt_toolkit for --cli
+pip install -r requirements.txt   # required for rmm_cli interactive; optional for server --cli
 export RMM_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python server_rmm.py              # default port 8080, bind 127.0.0.1
@@ -252,7 +252,7 @@ Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Pref
 | `rmm_cli.py` | Operator CLI |
 | `web/` | Static web operator UI (`index.html`, `app.js`, `style.css`) |
 | `client_rmm.ps1` | Windows beacon |
-| `requirements.txt` | Optional: `prompt_toolkit` for `--cli` |
+| `requirements.txt` | `prompt_toolkit` (required for `rmm_cli.py` interactive) |
 | `RMM_logs/` | Runtime logs and artifacts |
 | `~/.rmm_cli_state.json` | CLI selected session |
 | `~/.rmm_cli_history` | Operator command history (prompt_toolkit / readline) |
