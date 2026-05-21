@@ -1,5 +1,5 @@
 """
-OpenAI chat loop with RMM tool execution (used by web UI /api/v1/ai/chat).
+OpenAI chat loop with RMM tools via MCP (mcp_rmm_server.py) or direct rmm_tools fallback.
 """
 
 from __future__ import annotations
@@ -37,30 +37,17 @@ def _openai_request(api_key: str, body: dict, timeout: float = 180) -> dict:
         raise RuntimeError(err.get("error", {}).get("message", raw or str(e))) from e
 
 
-def run_ai_chat(
-    *,
-    rmm_base_url: str,
-    rmm_token: str,
-    openai_api_key: str,
+def _selected_session_context(selected_session_id: str | None) -> str:
+    if not selected_session_id:
+        return ""
+    return f"\nThe operator currently has this session selected in the UI: {selected_session_id}"
+
+
+def _build_convo(
     messages: list[dict],
-    model: str = "gpt-4o-mini",
-    selected_session_id: str | None = None,
-    max_rounds: int = MAX_TOOL_ROUNDS,
-) -> dict:
-    """
-    Run agent loop; returns {message, tool_calls_made, messages} for the client.
-    """
-    if not openai_api_key or not openai_api_key.strip():
-        raise ValueError("openai_api_key required")
-
-    client = make_client(rmm_base_url, rmm_token)
-    context = ""
-    if selected_session_id:
-        context = f"\nThe operator currently has this session selected in the UI: {selected_session_id}"
-
-    convo: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT + context},
-    ]
+    system_content: str,
+) -> list[dict]:
+    convo: list[dict] = [{"role": "system", "content": system_content}]
     for m in messages:
         role = m.get("role")
         if role in ("user", "assistant") and m.get("content"):
@@ -71,9 +58,107 @@ def run_ai_chat(
                 "tool_call_id": m["tool_call_id"],
                 "content": m["content"],
             })
+    return convo
+
+
+def _run_ai_chat_mcp(
+    *,
+    rmm_base_url: str,
+    rmm_token: str,
+    openai_api_key: str,
+    messages: list[dict],
+    model: str,
+    selected_session_id: str | None,
+    max_rounds: int,
+) -> dict:
+    from rmm_mcp_client import McpRmmSession, run_with_mcp_session
+
+    context = _selected_session_context(selected_session_id)
+
+    async def _chat(mcp: McpRmmSession) -> dict:
+        system = (mcp.server_instructions or SYSTEM_PROMPT) + context
+        convo = _build_convo(messages, system)
+        tools = mcp.openai_tools
+
+        tool_log: list[dict] = []
+        for _ in range(max_rounds):
+            body = {
+                "model": model,
+                "messages": convo,
+                "tools": tools,
+                "tool_choice": "auto",
+            }
+            resp = _openai_request(openai_api_key.strip(), body)
+            choice = (resp.get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            tool_calls = msg.get("tool_calls") or []
+
+            if not tool_calls:
+                return {
+                    "ok": True,
+                    "message": msg.get("content") or "",
+                    "tool_calls_made": tool_log,
+                    "usage": resp.get("usage"),
+                    "via": "mcp",
+                }
+
+            convo.append({
+                "role": "assistant",
+                "content": msg.get("content"),
+                "tool_calls": tool_calls,
+            })
+
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                name = fn.get("name", "")
+                args_raw = fn.get("arguments") or "{}"
+                try:
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                except json.JSONDecodeError:
+                    args = {}
+                result = await mcp.call_tool(name, args)
+                tool_log.append({
+                    "name": name,
+                    "arguments": args,
+                    "result_preview": result[:500],
+                })
+                convo.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id"),
+                    "content": result,
+                })
+
+        return {
+            "ok": False,
+            "error": "max_tool_rounds_exceeded",
+            "tool_calls_made": tool_log,
+            "via": "mcp",
+        }
+
+    try:
+        return run_with_mcp_session(rmm_base_url, rmm_token, _chat)
+    except Exception as e:
+        raise RuntimeError(
+            f"MCP server failed: {e}. "
+            "Install MCP support: pip install -r requirements-mcp.txt (Python 3.10+)."
+        ) from e
+
+
+def _run_ai_chat_direct(
+    *,
+    rmm_base_url: str,
+    rmm_token: str,
+    openai_api_key: str,
+    messages: list[dict],
+    model: str,
+    selected_session_id: str | None,
+    max_rounds: int,
+) -> dict:
+    client = make_client(rmm_base_url, rmm_token)
+    system = SYSTEM_PROMPT + _selected_session_context(selected_session_id)
+    convo = _build_convo(messages, system)
 
     tool_log: list[dict] = []
-
     for _ in range(max_rounds):
         body = {
             "model": model,
@@ -87,12 +172,12 @@ def run_ai_chat(
         tool_calls = msg.get("tool_calls") or []
 
         if not tool_calls:
-            content = msg.get("content") or ""
             return {
                 "ok": True,
-                "message": content,
+                "message": msg.get("content") or "",
                 "tool_calls_made": tool_log,
                 "usage": resp.get("usage"),
+                "via": "direct",
             }
 
         convo.append({
@@ -121,4 +206,48 @@ def run_ai_chat(
         "ok": False,
         "error": "max_tool_rounds_exceeded",
         "tool_calls_made": tool_log,
+        "via": "direct",
     }
+
+
+def run_ai_chat(
+    *,
+    rmm_base_url: str,
+    rmm_token: str,
+    openai_api_key: str,
+    messages: list[dict],
+    model: str = "gpt-4o-mini",
+    selected_session_id: str | None = None,
+    max_rounds: int = MAX_TOOL_ROUNDS,
+) -> dict:
+    """
+    Run agent loop; returns {message, tool_calls_made, via, ...} for the client.
+
+    By default uses the MCP server (mcp_rmm_server.py). Set RMM_AI_USE_MCP=0 to call
+    rmm_tools directly without spawning MCP.
+    """
+    if not openai_api_key or not openai_api_key.strip():
+        raise ValueError("openai_api_key required")
+
+    from rmm_mcp_client import mcp_available, use_mcp_for_ai
+
+    if use_mcp_for_ai() and mcp_available():
+        return _run_ai_chat_mcp(
+            rmm_base_url=rmm_base_url,
+            rmm_token=rmm_token,
+            openai_api_key=openai_api_key,
+            messages=messages,
+            model=model,
+            selected_session_id=selected_session_id,
+            max_rounds=max_rounds,
+        )
+
+    return _run_ai_chat_direct(
+        rmm_base_url=rmm_base_url,
+        rmm_token=rmm_token,
+        openai_api_key=openai_api_key,
+        messages=messages,
+        model=model,
+        selected_session_id=selected_session_id,
+        max_rounds=max_rounds,
+    )

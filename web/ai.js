@@ -1,5 +1,5 @@
 /**
- * Web AI assistant — OpenAI chat with RMM tools via POST /api/v1/ai/chat
+ * Web AI assistant — OpenAI chat via MCP (mcp_rmm_server.py) at POST /api/v1/ai/chat
  */
 (function () {
   const OPENAI_KEY_STORAGE = "rmm_openai_api_key";
@@ -158,7 +158,7 @@
 
     appendChatMessage(
       "assistant",
-      "I can list RMM sessions, run commands on agents, change beacon sleep, and more — using the same tools as the MCP server. Select a session in the sidebar for context."
+      "I control RMM agents through the MCP server (list sessions, run commands, change beacon sleep, etc.). Select a session in the sidebar for context."
     );
     chatHistory = [];
   }
