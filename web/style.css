@@ -243,6 +243,31 @@ button:disabled {
   color: var(--muted);
 }
 
+.beacon-status {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+}
+
+.beacon-status.status-online {
+  color: var(--success);
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.beacon-status.status-stale {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.beacon-status.status-offline {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.12);
+}
+
 .main-panel {
   display: flex;
   flex-direction: column;
@@ -291,6 +316,11 @@ button:disabled {
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.output-line-local .head {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .output-line {

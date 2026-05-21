@@ -60,10 +60,10 @@
             </div>
 
             <h3 class="section-label">Command</h3>
-            <textarea id="command-input" class="cmd-input" rows="2" placeholder="whoami, dir, PS: Get-Process, …"></textarea>
+            <textarea id="command-input" class="cmd-input" rows="2" placeholder="whoami, dir, PS: Get-Process, … (Enter = run &amp; wait)"></textarea>
             <div class="toolbar">
-              <button type="button" id="btn-run" class="secondary">Queue</button>
-              <button type="button" id="btn-exec">Run &amp; wait</button>
+              <button type="button" id="btn-run" class="secondary" title="Queue for next beacon only">Queue</button>
+              <button type="button" id="btn-exec" title="POST /exec and wait for output (up to 120s)">Run &amp; wait</button>
               <button type="button" id="btn-kill" class="danger">Kill session</button>
             </div>
             <div class="config-row">

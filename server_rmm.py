@@ -133,7 +133,19 @@ class Session:
         self.wait_event = None
         self.wait_result = None
     
+    def beacon_status(self):
+        """online / stale / offline from last beacon poll vs configured sleep+jitter."""
+        elapsed = (datetime.now() - self.last_seen).total_seconds()
+        jitter_max = self.sleep_seconds * (self.jitter_percent / 100.0)
+        expected_max = self.sleep_seconds + jitter_max + 15
+        if elapsed <= expected_max * 1.5:
+            return "online"
+        if elapsed <= expected_max * 4:
+            return "stale"
+        return "offline"
+
     def to_dict(self):
+        elapsed = int((datetime.now() - self.last_seen).total_seconds())
         return {
             "id": self.id,
             "hostname": self.hostname,
@@ -141,6 +153,8 @@ class Session:
             "ip": self.ip,
             "first_seen": self.first_seen.isoformat(),
             "last_seen": self.last_seen.isoformat(),
+            "last_seen_ago_seconds": elapsed,
+            "beacon_status": self.beacon_status(),
             "work_dir": self.work_dir,
             "os_type": self.os_type,
             "sleep_seconds": self.sleep_seconds,
@@ -341,6 +355,16 @@ class RMMServer:
         self.running = True
         self.event_hub = OperatorEventHub()
 
+    @staticmethod
+    def _format_ago(seconds):
+        if seconds < 60:
+            return f"{seconds}s ago"
+        if seconds < 3600:
+            return f"{seconds // 60}m ago"
+        if seconds < 86400:
+            return f"{seconds // 3600}h ago"
+        return f"{seconds // 86400}d ago"
+
     def tty_print(self, msg="", *, ansi=True, end="\n", flush=True):
         """Stdout for CLI/logs. Under prompt_toolkit.patch_stdout, plain print() corrupts ESC (shows as '?')."""
         if self._cli_use_ptk:
@@ -377,6 +401,15 @@ class RMMServer:
         with open(SESSION_FILE, 'w') as f:
             json.dump(sessions_data, f, indent=2)
     
+    def touch_session(self, session_id):
+        """Update last_seen when a beacon polls or posts a result."""
+        with self.session_lock:
+            session = self.sessions.get(session_id)
+            if session:
+                session.last_seen = datetime.now()
+                return True
+        return False
+
     def get_session(self, session_id):
         with self.session_lock:
             return self.sessions.get(session_id)
@@ -535,15 +568,18 @@ class RMMServer:
 
             self.tty_print(f"\n{Colors.BOLD}Active Sessions:{Colors.END}")
             self.tty_print(
-                f"{'ID':<10} {'User':<15} {'Hostname':<20} {'Sleep':<8} {'Jitter':<8} {'Last Seen':<20}",
+                f"{'ID':<10} {'User':<15} {'Hostname':<20} {'Sleep':<8} {'Jitter':<8} "
+                f"{'Last seen':<12} {'Status':<8}",
                 ansi=False,
             )
-            self.tty_print("-" * 85, ansi=False)
+            self.tty_print("-" * 95, ansi=False)
             for sid, session in self.sessions.items():
+                ago = int((datetime.now() - session.last_seen).total_seconds())
+                status = session.beacon_status()
                 self.tty_print(
                     f"{sid[:8]:<10} {session.username:<15} {session.hostname:<20} "
                     f"{session.sleep_seconds:<8} {session.jitter_percent:<8}% "
-                    f"{session.last_seen.strftime('%Y-%m-%d %H:%M:%S'):<20}",
+                    f"{self._format_ago(ago):<12} {status:<8}",
                     ansi=False,
                 )
             self.tty_print("", ansi=False)
@@ -574,6 +610,7 @@ class RMMServer:
         session = self.get_session(session_id)
         if not session:
             return ("", "none")
+        self.touch_session(session_id)
         with self.session_lock:
             if session.persistent_cmd is not None:
                 return (session.persistent_cmd, "persistent")
@@ -608,7 +645,8 @@ class RMMServer:
         session = self.get_session(session_id)
         if not session:
             return
-        
+        self.touch_session(session_id)
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tty_lines = []
         artifact = None
@@ -1107,6 +1145,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         elif path == "/ping":
             session_id = qs.get("id", [None])[0]
             if session_id:
+                self.server_instance.touch_session(session_id)
                 self._respond(200, "PONG")
             else:
                 self._respond(400, "Missing session ID")

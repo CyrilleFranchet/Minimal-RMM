@@ -210,7 +210,7 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 |---------|-------------|
 | *(default)* / `interactive` | Interactive REPL |
 | `health` | API health |
-| `sessions list` | List sessions (`--json`) |
+| `sessions list` | List sessions with **last seen** and **beacon_status** (`online` / `stale` / `offline`; `--json`) |
 | `session use <id>` | Select session (saved in `~/.rmm_cli_state.json`) |
 | `session info` | Session metadata |
 | `session kill` | Kill session |

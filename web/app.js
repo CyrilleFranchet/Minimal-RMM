@@ -8,8 +8,10 @@ const state = {
   sessions: [],
   selectedId: null,
   lastEventId: 0,
+  localEventSeq: 0,
   ws: null,
   wsConnected: false,
+  pollTimer: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -56,6 +58,22 @@ function formatTime(iso) {
   }
 }
 
+function formatAgo(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s < 0) return "?";
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function statusClass(status) {
+  if (status === "online") return "status-online";
+  if (status === "stale") return "status-stale";
+  if (status === "offline") return "status-offline";
+  return "";
+}
+
 function escapeHtml(s) {
   const d = document.createElement("div");
   d.textContent = s;
@@ -87,7 +105,12 @@ function connectWebSocket() {
   const ws = new WebSocket(wsUrl());
   state.ws = ws;
 
-  ws.onopen = () => setWsStatus(true);
+  ws.onopen = () => {
+    setWsStatus(true);
+    if (state.selectedId) {
+      wsSubscribe(state.selectedId);
+    }
+  };
 
   ws.onclose = () => {
     setWsStatus(false);
@@ -131,6 +154,35 @@ function disconnectWebSocket() {
   setWsStatus(false);
 }
 
+function stopEventPolling() {
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+}
+
+async function pollSessionEvents() {
+  if (!state.selectedId || !state.token) return;
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/events?since=${state.lastEventId}&limit=100`
+  );
+  if (status === 401) {
+    disconnect();
+    return;
+  }
+  if (status !== 200) return;
+  for (const ev of data.events || []) {
+    appendEvent(ev);
+  }
+}
+
+function startEventPolling() {
+  stopEventPolling();
+  state.pollTimer = setInterval(() => {
+    pollSessionEvents().catch(() => {});
+  }, 2500);
+}
+
 function wsSubscribe(sessionId) {
   if (state.ws && state.ws.readyState === WebSocket.OPEN) {
     state.ws.send(JSON.stringify({ op: "subscribe", session_id: sessionId }));
@@ -167,11 +219,13 @@ async function connect() {
   sessionStorage.setItem(STORAGE_KEY, token);
   showApp();
   connectWebSocket();
+  startEventPolling();
   await refreshSessions();
 }
 
 function disconnect() {
   disconnectWebSocket();
+  stopEventPolling();
   sessionStorage.removeItem(STORAGE_KEY);
   state.token = "";
   state.selectedId = null;
@@ -196,10 +250,15 @@ function renderSessionList() {
     const li = document.createElement("li");
     li.className =
       "session-item" + (s.id === state.selectedId ? " active" : "");
+    const ago =
+      s.last_seen_ago_seconds != null
+        ? formatAgo(s.last_seen_ago_seconds)
+        : formatTime(s.last_seen);
+    const st = s.beacon_status || "?";
     li.innerHTML = `
-      <div class="id">${escapeHtml(s.id.slice(0, 8))}</div>
+      <div class="id">${escapeHtml(s.id.slice(0, 8))} <span class="beacon-status ${statusClass(st)}">${escapeHtml(st)}</span></div>
       <div class="meta">${escapeHtml(s.username)}@${escapeHtml(s.hostname)}</div>
-      <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}%</div>
+      <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)}</div>
     `;
     li.addEventListener("click", () => selectSession(s.id));
     ul.appendChild(li);
@@ -224,14 +283,17 @@ async function selectSession(id) {
 
   connectWebSocket();
   wsSubscribe(id);
+  startEventPolling();
 
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(id)}/events?since=0&limit=200`
   );
   if (status === 200) {
-    for (const ev of data.events || []) {
+    const events = data.events || [];
+    for (const ev of events) {
       appendEvent(ev);
     }
+    state.lastEventId = events.reduce((m, e) => Math.max(m, e.id || 0), 0);
   }
 }
 
@@ -260,19 +322,35 @@ function renderEventBody(ev) {
   return escapeHtml(body);
 }
 
-function appendEvent(ev) {
-  if (ev.id <= state.lastEventId) return;
+function appendLocalEvent(partial) {
+  appendEvent(
+    {
+      id: `local-${++state.localEventSeq}`,
+      timestamp: new Date().toISOString(),
+      ...partial,
+    },
+    { local: true }
+  );
+}
+
+function appendEvent(ev, { local = false } = {}) {
+  if (!local) {
+    if (typeof ev.id === "number" && ev.id <= state.lastEventId) return;
+    if (typeof ev.id === "number") {
+      state.lastEventId = Math.max(state.lastEventId, ev.id);
+    }
+  }
   const log = $("#output-log");
   const block = document.createElement("div");
-  block.className = "output-line";
+  block.className = "output-line" + (local ? " output-line-local" : "");
   const cmd = ev.command ? ` » ${ev.command}` : "";
+  const idLabel = local ? "·" : `[${ev.id}]`;
   block.innerHTML = `
-    <div class="head">[${ev.id}] ${escapeHtml(ev.type)}${escapeHtml(cmd)} · ${formatTime(ev.timestamp)}</div>
+    <div class="head">${idLabel} ${escapeHtml(ev.type)}${escapeHtml(cmd)} · ${formatTime(ev.timestamp)}</div>
     <div class="body">${renderEventBody(ev)}</div>
   `;
   log.appendChild(block);
   log.scrollTop = log.scrollHeight;
-  state.lastEventId = ev.id;
 }
 
 async function runCommand(wait) {
@@ -295,20 +373,16 @@ async function runCommand(wait) {
         }
       );
       if (status === 408) {
-        appendEvent({
-          id: state.lastEventId + 1,
+        appendLocalEvent({
           type: "error",
-          timestamp: new Date().toISOString(),
-          body: "Command timed out (beacon interval may be long)",
+          body: "Command timed out (beacon interval may be long — try Queue + wait for poll)",
           command: cmd,
         });
       } else if (status === 200 && data.event) {
         appendEvent(data.event);
       } else {
-        appendEvent({
-          id: state.lastEventId + 1,
+        appendLocalEvent({
           type: "error",
-          timestamp: new Date().toISOString(),
           body: data.error || `HTTP ${status}`,
           command: cmd,
         });
@@ -323,18 +397,15 @@ async function runCommand(wait) {
         }
       );
       if (status === 200) {
-        appendEvent({
-          id: state.lastEventId + 1,
+        appendLocalEvent({
           type: "queued",
-          timestamp: new Date().toISOString(),
-          body: "Command queued — waiting for agent beacon",
+          body: "Command queued — result appears after the next agent beacon (polling + WebSocket)",
           command: cmd,
         });
+        pollSessionEvents().catch(() => {});
       } else {
-        appendEvent({
-          id: state.lastEventId + 1,
+        appendLocalEvent({
           type: "error",
-          timestamp: new Date().toISOString(),
           body: data.error || `HTTP ${status}`,
           command: cmd,
         });
@@ -357,10 +428,8 @@ async function queueDownload() {
       body: JSON.stringify({ remote_path: remote }),
     }
   );
-  appendEvent({
-    id: state.lastEventId + 1,
+  appendLocalEvent({
     type: status === 200 ? "queued" : "error",
-    timestamp: new Date().toISOString(),
     body: status === 200 ? `Download queued: ${remote}` : (data.error || `HTTP ${status}`),
     command: `__DOWNLOAD__ ${remote}`,
   });
@@ -372,10 +441,8 @@ async function queueScreenshot() {
     `/sessions/${encodeURIComponent(state.selectedId)}/screenshot`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
   );
-  appendEvent({
-    id: state.lastEventId + 1,
+  appendLocalEvent({
     type: status === 200 ? "queued" : "error",
-    timestamp: new Date().toISOString(),
     body: status === 200 ? "Screenshot queued" : (data.error || `HTTP ${status}`),
     command: "__SCREENSHOT__",
   });
@@ -403,10 +470,8 @@ async function queueUpload() {
       body: JSON.stringify({ remote_path: remote, content_b64 }),
     }
   );
-  appendEvent({
-    id: state.lastEventId + 1,
+  appendLocalEvent({
     type: status === 200 ? "queued" : "error",
-    timestamp: new Date().toISOString(),
     body:
       status === 200
         ? `Upload queued: ${file.name} → ${remote}`
@@ -457,7 +522,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#command-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      runCommand(e.ctrlKey || e.metaKey);
+      // Enter = run and wait; Shift+Enter = newline; Queue button = queue only
+      runCommand(true);
     }
   });
 

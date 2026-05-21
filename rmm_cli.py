@@ -264,21 +264,46 @@ def ensure_client(url: str, token: str) -> tuple:
     return client, data
 
 
-def print_event(ev: dict, json_mode: bool = False):
+def print_event(ev: dict, json_mode: bool = False, session_prefix: str | None = None):
     if json_mode:
         print_json(ev)
         return
+    tag = f"[{session_prefix}] " if session_prefix else ""
+    ev_type = ev.get("type", "output")
+    body = (ev.get("body") or "").strip()
+
+    if ev_type == "config_ack":
+        say(f"\n[+] {tag}Agent accepted configuration change")
+        if body:
+            say(f"    {body}")
+        say("-" * 60)
+        return
+
     cmd = ev.get("command") or ""
     suffix = f" » {cmd}" if cmd else ""
-    say(f"\n[{ev['id']}] {ev.get('type', 'output')}{suffix}")
+    say(f"\n[{ev['id']}] {tag}{ev_type}{suffix}")
     if ev.get("artifact"):
         say(f"  artifact: {ev['artifact']}")
     if ev.get("artifact_url"):
         say(f"  url: {ev['artifact_url']}")
-    body = ev.get("body", "")
     if body:
-        say(body.rstrip())
+        say(body)
     say("-" * 60)
+
+
+def _event_cursor(state: dict) -> dict[str, int]:
+    return state.setdefault("last_event_by_session", {})
+
+
+def _sync_event_cursor(client: RmmApiClient, state: dict, session_id: str) -> None:
+    """Skip historical events when selecting a session (only show new activity)."""
+    code, data = client.get_events(session_id, since=0, limit=500)
+    cursor = _event_cursor(state)
+    if code == 200:
+        events = data.get("events", [])
+        cursor[session_id] = max((e["id"] for e in events), default=0)
+    else:
+        cursor.setdefault(session_id, 0)
 
 
 def session_or_none(state: dict, session_arg: str | None = None) -> str | None:
@@ -317,13 +342,14 @@ def cmd_sessions_list(client: RmmApiClient, args):
     if not sessions:
         print("No active sessions")
         return
-    print(f"{'ID':<10} {'User':<15} {'Host':<20} {'Sleep':<8} {'Jitter':<8} Last seen")
-    print("-" * 85)
+    print(f"{'ID':<10} {'User':<15} {'Host':<20} {'Sleep':<8} {'Jitter':<8} {'Last seen':<12} {'Status':<8}")
+    print("-" * 95)
     for s in sessions:
+        ago, status = _session_last_seen_display(s)
         print(
             f"{s['id'][:8]:<10} {s['username']:<15} {s['hostname']:<20} "
             f"{s['sleep_seconds']:<8} {s['jitter_percent']:<7}% "
-            f"{s['last_seen']}"
+            f"{ago:<12} {status:<8}"
         )
 
 
@@ -402,7 +428,7 @@ def cmd_config_set_sleep(client: RmmApiClient, state: dict, args):
     code, data = client.patch_config(sid, sleep_seconds=args.seconds)
     if code != 200:
         die(f"config failed ({code}): {data}")
-    print(f"Sleep set to {args.seconds}s (effective on next beacon)")
+    print(f"Sleep set to {args.seconds}s on server (watch interactive output for [config_ack] from agent)")
 
 
 def cmd_config_set_jitter(client: RmmApiClient, state: dict, args):
@@ -410,7 +436,7 @@ def cmd_config_set_jitter(client: RmmApiClient, state: dict, args):
     code, data = client.patch_config(sid, jitter_percent=args.percent)
     if code != 200:
         die(f"config failed ({code}): {data}")
-    print(f"Jitter set to {args.percent}%")
+    print(f"Jitter set to {args.percent}% on server (watch interactive output for [config_ack] from agent)")
 
 
 def cmd_download(client: RmmApiClient, state: dict, args):
@@ -450,6 +476,34 @@ def _resolve_session_id(client: RmmApiClient, state: dict, prefix: str):
     return None
 
 
+def _format_ago(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def _session_last_seen_display(session: dict) -> tuple[str, str]:
+    """Return (ago label, beacon_status) from API session dict."""
+    ago_s = session.get("last_seen_ago_seconds")
+    status = session.get("beacon_status", "")
+    if ago_s is None and session.get("last_seen"):
+        try:
+            from datetime import datetime
+
+            seen = datetime.fromisoformat(session["last_seen"].replace("Z", "+00:00"))
+            if seen.tzinfo:
+                seen = seen.replace(tzinfo=None)
+            ago_s = int((datetime.now() - seen).total_seconds())
+        except Exception:
+            ago_s = None
+    ago_label = _format_ago(int(ago_s)) if ago_s is not None else "?"
+    return ago_label, status or "?"
+
+
 def _prompt(state: dict) -> str:
     sid = current_session(state)
     tag = f"[{sid[:8]}] " if sid else ""
@@ -464,8 +518,9 @@ Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
 Files:    download <remote> | upload <local> <remote> | screenshot
 Other:    events [since] | health | help | quit
 
-Tip: output from the agent streams above while a session is selected.
+Tip: agent output and config_ack events stream for all connected sessions (prefix [session8]).
 Tip: TAB completes commands and session id prefixes (after list).
+Status: online = recent poll; stale = late; offline = likely dead (re-run list to refresh).
 """)
 
 
@@ -560,19 +615,24 @@ class RmmCliPTKCompleter(_PTCompleterBase):
 
 
 def _event_poller(client: RmmApiClient, state: dict, json_mode: bool):
+    cursor = _event_cursor(state)
     while state.get("interactive_running"):
-        sid = current_session(state)
-        if sid:
-            since = state.get("last_event_id", 0)
-            code, data = client.get_events(sid, since=since, limit=100)
-            if code == 200:
-                for ev in data.get("events", []):
+        code, data = client.list_sessions()
+        if code == 401:
+            state["interactive_running"] = False
+            break
+        if code == 200:
+            for s in data.get("sessions", []):
+                sid = s["id"]
+                since = cursor.get(sid, 0)
+                ec, edata = client.get_events(sid, since=since, limit=100)
+                if ec != 200:
+                    continue
+                prefix = sid[:8]
+                for ev in edata.get("events", []):
                     if ev["id"] > since:
-                        print_event(ev, json_mode)
-                        state["last_event_id"] = ev["id"]
-            elif code == 401:
-                state["interactive_running"] = False
-                break
+                        print_event(ev, json_mode, session_prefix=prefix)
+                        cursor[sid] = max(cursor.get(sid, 0), ev["id"])
         time.sleep(2)
 
 
@@ -638,11 +698,16 @@ def run_interactive(
             pass
 
     state["interactive_running"] = True
-    state.setdefault("last_event_id", 0)
+    _event_cursor(state)
     poller = threading.Thread(
         target=_event_poller, args=(client, state, json_mode), daemon=True
     )
     poller.start()
+
+    code, sdata = client.list_sessions()
+    if code == 200:
+        for s in sdata.get("sessions", []):
+            _sync_event_cursor(client, state, s["id"])
 
     n = data.get("sessions", 0)
     say(f"Connected to {client.base_url} ({n} session(s)).")
@@ -699,12 +764,14 @@ def run_interactive(
                     say("No active sessions.")
                     say("  Start the Windows client: $env:RMM_BASE_URL / $env:RMM_BEACON_SECRET then client_rmm.ps1")
                     continue
-                print(f"{'ID':<10} {'User':<15} {'Host':<20} {'Sleep':<8} {'Jitter':<8}")
-                print("-" * 65)
+                print(f"{'ID':<10} {'User':<15} {'Host':<20} {'Sleep':<8} {'Jitter':<8} {'Last seen':<12} {'Status':<8}")
+                print("-" * 95)
                 for s in sessions:
+                    ago, status = _session_last_seen_display(s)
                     print(
                         f"{s['id'][:8]:<10} {s['username']:<15} {s['hostname']:<20} "
-                        f"{s['sleep_seconds']:<8} {s['jitter_percent']:<7}%"
+                        f"{s['sleep_seconds']:<8} {s['jitter_percent']:<7}% "
+                        f"{ago:<12} {status:<8}"
                     )
                 _refresh_completion_sessions(client, state)
                 continue
@@ -717,7 +784,7 @@ def run_interactive(
                     warn(f"Session not found: {rest[0]}")
                     continue
                 set_current_session(state, full)
-                state["last_event_id"] = 0
+                _sync_event_cursor(client, state, full)
                 _refresh_completion_sessions(client, state)
                 code, sdata = client.get_session(full)
                 if code == 200:
@@ -774,7 +841,10 @@ def run_interactive(
                     warn("No session selected")
                     continue
                 code, _ = client.patch_config(sid, sleep_seconds=int(rest[0]))
-                print(f"Sleep -> {rest[0]}s" if code == 200 else warn(f"failed ({code})"))
+                if code == 200:
+                    say(f"Sleep -> {rest[0]}s on server (agent applies on next beacon; watch for [config_ack])")
+                else:
+                    warn(f"failed ({code})")
                 continue
             if cmd == "set_jitter":
                 if not rest:
@@ -785,7 +855,10 @@ def run_interactive(
                     warn("No session selected")
                     continue
                 code, _ = client.patch_config(sid, jitter_percent=int(rest[0]))
-                print(f"Jitter -> {rest[0]}%" if code == 200 else warn(f"failed ({code})"))
+                if code == 200:
+                    say(f"Jitter -> {rest[0]}% on server (agent applies on next beacon; watch for [config_ack])")
+                else:
+                    warn(f"failed ({code})")
                 continue
             if cmd == "events":
                 sid = session_or_none(state)
@@ -797,9 +870,10 @@ def run_interactive(
                 if code != 200:
                     warn(f"events failed ({code})")
                     continue
+                cursor = _event_cursor(state)
                 for ev in edata.get("events", []):
-                    print_event(ev, json_mode)
-                    state["last_event_id"] = max(state.get("last_event_id", 0), ev["id"])
+                    print_event(ev, json_mode, session_prefix=sid[:8])
+                    cursor[sid] = max(cursor.get(sid, 0), ev["id"])
                 continue
             if cmd == "download":
                 if not rest:
@@ -864,9 +938,9 @@ def run_interactive(
                 elif code != 200:
                     warn(f"exec failed ({code})")
                 elif edata.get("event"):
-                    print_event(edata["event"], json_mode)
-                    state["last_event_id"] = max(
-                        state.get("last_event_id", 0), edata["event"].get("id", 0)
+                    print_event(edata["event"], json_mode, session_prefix=sid[:8])
+                    _event_cursor(state)[sid] = max(
+                        _event_cursor(state).get(sid, 0), edata["event"].get("id", 0)
                     )
                 continue
             if cmd == "persist":
