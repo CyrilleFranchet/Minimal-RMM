@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import glob
 import json
 import os
 import socket
@@ -37,6 +38,36 @@ try:
     import readline
 except ImportError:
     readline = None
+
+try:
+    from prompt_toolkit.completion import Completer as _PTCompleterBase
+except ImportError:
+    _PTCompleterBase = object
+
+RMM_CLI_COMMANDS = [
+    "list",
+    "use",
+    "info",
+    "background",
+    "kill",
+    "set_sleep",
+    "set_jitter",
+    "show_config",
+    "download",
+    "upload",
+    "screenshot",
+    "events",
+    "exec",
+    "persist",
+    "stop",
+    "run",
+    "health",
+    "help",
+    "?",
+    "clear",
+    "quit",
+    "exit",
+]
 
 def _default_server_url() -> str:
     """Operator CLI URL: RMM_SERVER_URL, else same as beacon client (RMM_BASE_URL)."""
@@ -434,7 +465,98 @@ Files:    download <remote> | upload <local> <remote> | screenshot
 Other:    events [since] | health | help | quit
 
 Tip: output from the agent streams above while a session is selected.
+Tip: TAB completes commands and session id prefixes (after list).
 """)
+
+
+def _refresh_completion_sessions(client: "RmmApiClient", state: dict) -> None:
+    code, data = client.list_sessions()
+    if code == 200:
+        state["_completion_sessions"] = [s["id"][:8] for s in data.get("sessions", [])]
+    else:
+        state.setdefault("_completion_sessions", [])
+
+
+class RmmCliCompleter:
+    """readline tab completion for the interactive operator CLI."""
+
+    def __init__(self, state: dict):
+        self.state = state
+
+    def _session_prefixes(self):
+        return self.state.get("_completion_sessions") or []
+
+    def complete(self, text, state_index):
+        if readline is None:
+            return None
+        line = readline.get_line_buffer()
+        parts = line.split()
+
+        if not parts or (len(parts) == 1 and not line.endswith(" ")):
+            matches = [c for c in RMM_CLI_COMMANDS if c.startswith(text)]
+            if state_index < len(matches):
+                return matches[state_index] + " "
+            return None
+
+        cmd = parts[0].lower()
+
+        if cmd in ("use", "kill") and (
+            len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))
+        ):
+            matches = [p for p in self._session_prefixes() if p.startswith(text)]
+            if state_index < len(matches):
+                return matches[state_index] + (" " if cmd == "use" else "")
+            return None
+
+        if cmd == "upload" and len(parts) == 2 and not line.endswith(" "):
+            matches = glob.glob(text + "*")
+            if state_index < len(matches):
+                return matches[state_index]
+            return None
+
+        return None
+
+
+class RmmCliPTKCompleter(_PTCompleterBase):
+    """prompt_toolkit tab completion (preferred when installed)."""
+
+    def __init__(self, state: dict):
+        super().__init__()
+        self.state = state
+        self._words = RmmCliCompleter(state)
+
+    def get_completions(self, document, complete_event):
+        from prompt_toolkit.completion import Completion
+
+        line = document.text_before_cursor
+        parts = line.split()
+
+        if not parts or (len(parts) == 1 and not line.endswith(" ")):
+            prefix = parts[0] if parts else ""
+            for cmd in RMM_CLI_COMMANDS:
+                if cmd.startswith(prefix):
+                    yield Completion(cmd + " ", start_position=-len(prefix))
+            return
+
+        cmd = parts[0].lower()
+
+        if cmd in ("use", "kill"):
+            if len(parts) == 1 and line.endswith(" "):
+                for p in self._words._session_prefixes():
+                    yield Completion(p + " ", start_position=0)
+                return
+            if len(parts) == 2 and not line.endswith(" "):
+                prefix = parts[1]
+                for p in self._words._session_prefixes():
+                    if p.startswith(prefix):
+                        yield Completion(p + (" " if cmd == "use" else ""), start_position=-len(prefix))
+                return
+
+        if cmd == "upload" and len(parts) == 2 and not line.endswith(" "):
+            prefix = parts[1]
+            for m in glob.glob(prefix + "*"):
+                yield Completion(m, start_position=-len(prefix))
+            return
 
 
 def _event_poller(client: RmmApiClient, state: dict, json_mode: bool):
@@ -481,12 +603,39 @@ def run_interactive(
 ):
     data = start_data or {}
 
-    if readline and os.path.exists(HISTORY_FILE):
+    _refresh_completion_sessions(client, state)
+
+    use_ptk = False
+    ptk_session = None
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.history import FileHistory
+
+        ptk_session = PromptSession(
+            history=FileHistory(HISTORY_FILE),
+            completer=RmmCliPTKCompleter(state),
+            complete_style="COLUMN",
+            enable_history_search=True,
+        )
+        use_ptk = True
+    except ImportError:
+        pass
+
+    if readline and not use_ptk:
+        if os.path.exists(HISTORY_FILE):
+            try:
+                readline.read_history_file(HISTORY_FILE)
+            except OSError:
+                pass
+        readline.set_history_length(2000)
+        readline.set_completer(RmmCliCompleter(state).complete)
+        readline.parse_and_bind("tab: complete")
+        readline.set_completer_delims(" \t\n;")
+    elif readline and use_ptk and os.path.exists(HISTORY_FILE):
         try:
             readline.read_history_file(HISTORY_FILE)
         except OSError:
             pass
-        readline.set_history_length(2000)
 
     state["interactive_running"] = True
     state.setdefault("last_event_id", 0)
@@ -501,13 +650,19 @@ def run_interactive(
         say("  No agents yet — wait for the PowerShell client to register, then run: list")
     else:
         say("  Run: list   then: use <first-8-chars-of-id>   then: exec whoami  (or type a command to queue)")
-    say("Type 'help' or 'quit'. Ctrl+C clears the line.\n")
+    if use_ptk:
+        say("Interactive mode: TAB completion (prompt_toolkit). Ctrl+C clears the line.\n")
+    else:
+        say("Interactive mode: TAB completion" + (" (readline)" if readline else " — pip install prompt_toolkit for richer completion") + ". Ctrl+C clears the line.\n")
     _show_help()
 
     try:
         while True:
             try:
-                line = input(_prompt(state))
+                if ptk_session is not None:
+                    line = ptk_session.prompt(_prompt(state))
+                else:
+                    line = input(_prompt(state))
             except EOFError:
                 say()
                 break
@@ -551,6 +706,7 @@ def run_interactive(
                         f"{s['id'][:8]:<10} {s['username']:<15} {s['hostname']:<20} "
                         f"{s['sleep_seconds']:<8} {s['jitter_percent']:<7}%"
                     )
+                _refresh_completion_sessions(client, state)
                 continue
             if cmd == "use":
                 if not rest:
@@ -562,6 +718,7 @@ def run_interactive(
                     continue
                 set_current_session(state, full)
                 state["last_event_id"] = 0
+                _refresh_completion_sessions(client, state)
                 code, sdata = client.get_session(full)
                 if code == 200:
                     s = sdata["session"]
@@ -606,6 +763,7 @@ def run_interactive(
                     state.pop("current_session", None)
                     save_state(state)
                 print(f"Killed {kdata.get('session_id', sid)[:8]}")
+                _refresh_completion_sessions(client, state)
                 continue
             if cmd == "set_sleep":
                 if not rest:
@@ -745,7 +903,7 @@ def run_interactive(
 
     finally:
         state["interactive_running"] = False
-        if readline:
+        if readline and not use_ptk:
             try:
                 readline.write_history_file(HISTORY_FILE)
             except OSError:
