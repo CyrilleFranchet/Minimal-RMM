@@ -86,7 +86,10 @@ HISTORY_FILE = os.path.expanduser("~/.rmm_cli_history")
 # Interactive mode: prompt_toolkit + patch_stdout (input line fixed at bottom).
 _cli_use_ptk = False
 _cli_output_queue: queue.Queue = queue.Queue()
+_cli_output_lock = threading.Lock()
 _main_thread_id: int | None = None
+OUTPUT_DRAIN_INTERVAL = 0.15
+EVENT_POLL_INTERVAL = 1.0
 
 
 class RmmApiClient:
@@ -217,20 +220,36 @@ def _ptk_emit(msg: str, *, err: bool = False) -> None:
     from prompt_toolkit import print_formatted_text
     from prompt_toolkit.formatted_text import ANSI
 
-    if not msg:
-        print_formatted_text("")
-        return
-    text = f"\x1b[91m{msg}\x1b[0m" if err else msg
-    print_formatted_text(ANSI(text))
+    with _cli_output_lock:
+        if not msg:
+            print_formatted_text("")
+            return
+        text = f"\x1b[91m{msg}\x1b[0m" if err else msg
+        print_formatted_text(ANSI(text))
 
 
 def _drain_cli_output() -> None:
-    while True:
-        try:
-            msg, err = _cli_output_queue.get_nowait()
-        except queue.Empty:
-            break
-        _ptk_emit(msg, err=err)
+    from prompt_toolkit import print_formatted_text
+    from prompt_toolkit.formatted_text import ANSI
+
+    with _cli_output_lock:
+        while True:
+            try:
+                msg, err = _cli_output_queue.get_nowait()
+            except queue.Empty:
+                break
+            if not msg:
+                print_formatted_text("")
+                continue
+            text = f"\x1b[91m{msg}\x1b[0m" if err else msg
+            print_formatted_text(ANSI(text))
+
+
+def _output_drainer_loop(state: dict) -> None:
+    """Flush queued agent/operator lines while the prompt is active (no Enter required)."""
+    while state.get("interactive_running"):
+        _drain_cli_output()
+        time.sleep(OUTPUT_DRAIN_INTERVAL)
 
 
 def say(msg: str = "", *, err: bool = False):
@@ -295,36 +314,71 @@ def ensure_client(url: str, token: str) -> tuple:
     return client, data
 
 
-def print_event(ev: dict, json_mode: bool = False, session_prefix: str | None = None):
+def _session_matches_focus(state: dict, session_id: str) -> bool:
+    """When a session is selected, show only its transcript (ordered queue/results)."""
+    cur = current_session(state)
+    if not cur:
+        return True
+    if session_id == cur:
+        return True
+    return session_id.startswith(cur) or cur.startswith(session_id[:8])
+
+
+def _operator_label(body: str) -> str:
+    b = body.strip()
+    if ":" in b:
+        action, cmd = b.split(":", 1)
+        action = action.strip().capitalize()
+        cmd = cmd.strip()
+        return f"{action}: {cmd}" if cmd else action
+    return b
+
+
+def print_event(
+    ev: dict,
+    json_mode: bool = False,
+    session_prefix: str | None = None,
+    session_id: str | None = None,
+    state: dict | None = None,
+):
     if json_mode:
         print_json(ev)
         return
+    if state is not None and session_id and not _session_matches_focus(state, session_id):
+        return
+
     tag = f"[{session_prefix}] " if session_prefix else ""
     ev_type = ev.get("type", "output")
     body = (ev.get("body") or "").strip()
+    cmd_echo = (ev.get("command") or "").strip()
 
     if ev_type == "config_ack":
-        say(f"\n[+] {tag}Agent accepted configuration change")
+        say("")
+        say(f"[+] {tag}Config applied on agent")
         if body:
             say(f"    {body}")
-        say("-" * 60)
         return
 
     if ev_type == "operator":
-        say(f"\n[>] {tag}{body}")
-        say("-" * 60)
+        say("")
+        say(f"[>] {tag}{_operator_label(body)}")
         return
 
-    cmd = ev.get("command") or ""
-    suffix = f" » {cmd}" if cmd else ""
-    say(f"\n[{ev['id']}] {tag}{ev_type}{suffix}")
-    if ev.get("artifact"):
-        say(f"  artifact: {ev['artifact']}")
-    if ev.get("artifact_url"):
-        say(f"  url: {ev['artifact_url']}")
+    if ev_type == "output":
+        if cmd_echo:
+            say(f"    └─ {tag}{cmd_echo}")
+        if body:
+            for line in body.splitlines():
+                say(f"       {tag}{line}")
+        else:
+            say(f"       {tag}(no output)")
+        return
+
+    say("")
+    say(f"[{ev['id']}] {tag}{ev_type}" + (f" » {cmd_echo}" if cmd_echo else ""))
     if body:
-        say(body)
-    say("-" * 60)
+        for line in body.splitlines():
+            say(f"    {tag}{line}")
 
 
 def _event_cursor(state: dict) -> dict[str, int]:
@@ -565,7 +619,8 @@ Status: online = recent poll; stale = late; offline = likely dead (re-run list t
 def _refresh_completion_sessions(client: "RmmApiClient", state: dict) -> None:
     code, data = client.list_sessions()
     if code == 200:
-        state["_completion_sessions"] = [s["id"][:8] for s in data.get("sessions", [])]
+        sessions = data.get("sessions", [])
+        state["_completion_sessions"] = [s["id"][:8] for s in sessions]
     else:
         state.setdefault("_completion_sessions", [])
 
@@ -667,11 +722,20 @@ def _event_poller(client: RmmApiClient, state: dict, json_mode: bool):
                 if ec != 200:
                     continue
                 prefix = sid[:8]
-                for ev in edata.get("events", []):
-                    if ev["id"] > since:
-                        print_event(ev, json_mode, session_prefix=prefix)
-                        cursor[sid] = max(cursor.get(sid, 0), ev["id"])
-        time.sleep(2)
+                events = sorted(
+                    (e for e in edata.get("events", []) if e["id"] > since),
+                    key=lambda e: e["id"],
+                )
+                for ev in events:
+                    print_event(
+                        ev,
+                        json_mode,
+                        session_prefix=prefix,
+                        session_id=sid,
+                        state=state,
+                    )
+                    cursor[sid] = max(cursor.get(sid, 0), ev["id"])
+        time.sleep(EVENT_POLL_INTERVAL)
 
 
 def _active_session(client: RmmApiClient, state: dict) -> str | None:
@@ -730,7 +794,10 @@ def run_interactive(
         while True:
             _drain_cli_output()
             try:
-                line = ptk_session.prompt(_prompt(state))
+                line = ptk_session.prompt(
+                    _prompt(state),
+                    refresh_interval=OUTPUT_DRAIN_INTERVAL,
+                )
             except EOFError:
                 say()
                 break
@@ -877,8 +944,14 @@ def run_interactive(
                     warn(f"events failed ({code})")
                     continue
                 cursor = _event_cursor(state)
-                for ev in edata.get("events", []):
-                    print_event(ev, json_mode, session_prefix=sid[:8])
+                for ev in sorted(edata.get("events", []), key=lambda e: e["id"]):
+                    print_event(
+                        ev,
+                        json_mode,
+                        session_prefix=sid[:8],
+                        session_id=sid,
+                        state=state,
+                    )
                     cursor[sid] = max(cursor.get(sid, 0), ev["id"])
                 continue
             if cmd == "download":
@@ -956,7 +1029,14 @@ def run_interactive(
                 elif code != 200:
                     warn(f"exec failed ({code})")
                 elif edata.get("event"):
-                    print_event(edata["event"], json_mode, session_prefix=sid[:8])
+                    print_event(
+                        edata["event"],
+                        json_mode,
+                        session_prefix=sid[:8],
+                        session_id=sid,
+                        state=state,
+                    )
+                    _drain_cli_output()
                     _event_cursor(state)[sid] = max(
                         _event_cursor(state).get(sid, 0), edata["event"].get("id", 0)
                     )
@@ -994,16 +1074,16 @@ def run_interactive(
                 continue
             command = line.strip()
             code, _ = client.queue_command(sid, command)
-            if code == 200:
-                say("Command queued (output appears after next agent beacon).")
-            else:
+            if code != 200:
                 warn(f"queue failed ({code})")
 
     with patch_stdout():
-        poller = threading.Thread(
+        threading.Thread(
+            target=_output_drainer_loop, args=(state,), daemon=True
+        ).start()
+        threading.Thread(
             target=_event_poller, args=(client, state, json_mode), daemon=True
-        )
-        poller.start()
+        ).start()
 
         code, sdata = client.list_sessions()
         if code == 200:
@@ -1016,7 +1096,10 @@ def run_interactive(
             say("  No agents yet — wait for the PowerShell client to register, then run: list")
         else:
             say("  Run: list   then: use <first-8-chars-of-id>   then: exec whoami")
-        say("Input line stays at the bottom; agent output scrolls above.\n")
+        say("Input line stays at the bottom; results appear automatically (no Enter needed).\n")
+        cur = current_session(state)
+        if cur:
+            say(f"Transcript filtered to session [{cur[:8]}] — use background to see all.\n")
         _show_help()
         try:
             _interactive_loop()

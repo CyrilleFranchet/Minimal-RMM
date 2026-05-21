@@ -18,7 +18,7 @@
     </div>
   </div>
 
-  <div id="app" class="hidden">
+  <div id="app" class="hidden app-root">
     <header class="app-header">
       <span id="ws-status" class="status-dot" title="WebSocket"></span>
       <h1>Minimal RMM</h1>
@@ -35,7 +35,7 @@
 
       <main class="main-panel">
         <div id="empty-state" class="empty-state">
-          Select a session to run commands and view output.
+          Select a session to open the remote shell.
         </div>
 
         <div id="console-panel" class="hidden console-panel">
@@ -43,37 +43,49 @@
             <h2 id="console-title">—</h2>
             <div id="console-detail" class="detail"></div>
           </div>
-          <div id="output-log" class="output-log"></div>
-          <div class="command-bar">
-            <h3 class="section-label">Files &amp; recon</h3>
-            <div class="file-row">
-              <input type="text" id="download-remote" placeholder="Remote path to download (e.g. C:\Users\Public\file.txt)">
-              <button type="button" id="btn-download" class="secondary">Download from agent</button>
-            </div>
-            <div class="file-row">
-              <input type="file" id="upload-file">
-              <input type="text" id="upload-remote" placeholder="Remote destination path">
-              <button type="button" id="btn-upload" class="secondary">Upload to agent</button>
-            </div>
-            <div class="file-row">
-              <button type="button" id="btn-screenshot">Take screenshot</button>
-            </div>
 
-            <h3 class="section-label">Command</h3>
-            <textarea id="command-input" class="cmd-input" rows="2" placeholder="whoami, dir, PS: Get-Process, … (Enter = run &amp; wait)"></textarea>
-            <div class="toolbar">
-              <button type="button" id="btn-run" class="secondary" title="Queue for next beacon only">Queue</button>
-              <button type="button" id="btn-exec" title="POST /exec and wait for output (up to 120s)">Run &amp; wait</button>
-              <button type="button" id="btn-kill" class="danger">Kill session</button>
-            </div>
-            <div class="config-row">
-              <label>Sleep</label>
-              <input type="number" id="sleep-input" min="1" max="3600" value="60">
-              <label>Jitter %</label>
-              <input type="number" id="jitter-input" min="0" max="100" value="30">
-              <button type="button" id="btn-config" class="secondary">Apply beacon config</button>
-            </div>
+          <div class="shell-wrap">
+            <div id="shell-output" class="shell-output" aria-live="polite"></div>
+            <form id="shell-form" class="shell-input-line" autocomplete="off">
+              <span id="shell-prompt" class="shell-prompt">rmm&gt;</span>
+              <input
+                type="text"
+                id="shell-input"
+                class="shell-input"
+                placeholder="Enter to run &amp; wait · Ctrl+Enter to queue"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
+              >
+            </form>
           </div>
+
+          <details class="tools-panel">
+            <summary>Files, screenshot &amp; beacon config</summary>
+            <div class="tools-inner">
+              <div class="file-row">
+                <input type="text" id="download-remote" placeholder="Remote path to download">
+                <button type="button" id="btn-download" class="secondary">Download</button>
+              </div>
+              <div class="file-row">
+                <input type="file" id="upload-file">
+                <input type="text" id="upload-remote" placeholder="Remote destination path">
+                <button type="button" id="btn-upload" class="secondary">Upload</button>
+              </div>
+              <div class="file-row">
+                <button type="button" id="btn-screenshot" class="secondary">Screenshot</button>
+                <button type="button" id="btn-kill" class="danger">Kill session</button>
+              </div>
+              <div class="config-row">
+                <label>Sleep</label>
+                <input type="number" id="sleep-input" min="1" max="3600" value="60">
+                <label>Jitter %</label>
+                <input type="number" id="jitter-input" min="0" max="100" value="30">
+                <button type="button" id="btn-config" class="secondary">Apply config</button>
+              </div>
+            </div>
+          </details>
         </div>
       </main>
     </div>

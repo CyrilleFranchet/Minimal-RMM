@@ -10,31 +10,38 @@
   --success: #4ade80;
   --mono: "JetBrains Mono", "SF Mono", "Consolas", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --header-h: 52px;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
   font-family: var(--sans);
   background: var(--bg);
   color: var(--text);
-  min-height: 100vh;
 }
 
 .hidden {
   display: none !important;
 }
 
-/* Login */
+/* Login (scrollable only on login screen) */
 .login-wrap {
-  min-height: 100vh;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
+  overflow: auto;
 }
 
 .login-card {
@@ -68,7 +75,6 @@ label {
 input[type="text"],
 input[type="password"],
 input[type="number"],
-textarea,
 select {
   width: 100%;
   padding: 0.6rem 0.75rem;
@@ -79,13 +85,6 @@ select {
   font-family: inherit;
   font-size: 0.95rem;
   margin-bottom: 1rem;
-}
-
-textarea {
-  font-family: var(--mono);
-  font-size: 0.85rem;
-  resize: vertical;
-  min-height: 4rem;
 }
 
 button,
@@ -140,14 +139,24 @@ button:disabled {
   margin-top: 0.5rem;
 }
 
-/* App layout */
+/* App — fixed viewport, no page scroll */
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
 .app-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1.25rem;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  height: var(--header-h);
 }
 
 .app-header h1 {
@@ -172,20 +181,22 @@ button:disabled {
 }
 
 .app-body {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 280px 1fr;
-  min-height: calc(100vh - 52px);
+  overflow: hidden;
 }
 
 @media (max-width: 768px) {
   .app-body {
     grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
   }
   .sidebar {
     border-right: none !important;
     border-bottom: 1px solid var(--border);
-    max-height: 220px;
-    overflow: auto;
+    max-height: 180px;
   }
 }
 
@@ -193,7 +204,8 @@ button:disabled {
   background: var(--surface);
   border-right: 1px solid var(--border);
   padding: 1rem;
-  overflow: auto;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .sidebar h2 {
@@ -272,6 +284,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 .console-panel {
@@ -279,6 +292,7 @@ button:disabled {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .empty-state {
@@ -291,7 +305,8 @@ button:disabled {
 }
 
 .console-header {
-  padding: 1rem 1.25rem;
+  flex-shrink: 0;
+  padding: 0.75rem 1.25rem;
   border-bottom: 1px solid var(--border);
 }
 
@@ -307,70 +322,133 @@ button:disabled {
   font-family: var(--mono);
 }
 
-.output-log {
+/* Shell: only this region scrolls */
+.shell-wrap {
   flex: 1;
-  overflow: auto;
-  padding: 1rem 1.25rem;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.shell-output {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.75rem 1.25rem 0.5rem;
   font-family: var(--mono);
-  font-size: 0.8rem;
-  line-height: 1.5;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.shell-line {
+  margin: 0 0 0.15rem;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.output-line-local .head {
+.shell-line-echo {
+  color: var(--text);
+}
+
+.shell-line-echo .prompt-char {
+  color: var(--accent);
+  user-select: none;
+}
+
+.shell-line-output {
+  color: var(--text);
+  padding-left: 1.25rem;
+  margin-bottom: 0.65rem;
+}
+
+.shell-line-meta {
   color: var(--muted);
   font-style: italic;
+  padding-left: 1.25rem;
+  margin-bottom: 0.5rem;
 }
 
-.output-line .head.ev-operator {
-  color: var(--accent);
+.shell-line-error {
+  color: var(--danger);
+  padding-left: 1.25rem;
+  margin-bottom: 0.5rem;
 }
 
-.output-line .head.ev-output {
-  color: var(--success);
-}
-
-.output-line {
-  margin-bottom: 1rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.output-line .head {
+.shell-line-operator {
   color: var(--muted);
   font-size: 0.75rem;
   margin-bottom: 0.35rem;
 }
 
-.output-line .body {
-  color: var(--text);
-}
-
-.command-bar {
-  padding: 1rem 1.25rem;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-}
-
-.command-bar .row {
+.shell-input-line {
+  flex-shrink: 0;
   display: flex;
+  align-items: center;
   gap: 0.5rem;
-  flex-wrap: wrap;
-  align-items: flex-end;
+  padding: 0.5rem 1.25rem 0.75rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
 }
 
-.command-bar .cmd-input {
+.shell-prompt {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--accent);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.shell-input {
   flex: 1;
-  min-width: 200px;
-  margin-bottom: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0.45rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.shell-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tools-panel {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.85rem;
+}
+
+.tools-panel summary {
+  padding: 0.5rem 1.25rem;
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+}
+
+.tools-panel[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.tools-inner {
+  padding: 0.75rem 1.25rem 1rem;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 .config-row {
   display: flex;
   gap: 0.5rem;
-  margin-top: 1rem;
+  margin-top: 0.75rem;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .config-row input[type="number"] {
@@ -380,26 +458,6 @@ button:disabled {
 
 .config-row label {
   margin-bottom: 0;
-  align-self: center;
-}
-
-.toolbar {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-}
-
-.section-label {
-  margin: 1rem 0 0.5rem;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.section-label:first-child {
-  margin-top: 0;
 }
 
 .file-row {
@@ -412,7 +470,7 @@ button:disabled {
 
 .file-row input[type="text"] {
   flex: 1;
-  min-width: 160px;
+  min-width: 140px;
   margin-bottom: 0;
 }
 
@@ -423,10 +481,10 @@ button:disabled {
 
 .screenshot-preview {
   max-width: 100%;
-  max-height: 360px;
-  margin-top: 0.5rem;
+  max-height: 280px;
+  margin-top: 0.35rem;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 .artifact-link {

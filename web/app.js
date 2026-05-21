@@ -1,5 +1,5 @@
 /**
- * Minimal RMM web operator UI — REST API + WebSocket event stream.
+ * Minimal RMM web operator UI — shell-style console, REST + WebSocket.
  */
 const STORAGE_KEY = "rmm_api_token";
 const EVENT_CURSORS_KEY = "rmm_event_cursors";
@@ -13,6 +13,8 @@ const state = {
   ws: null,
   wsConnected: false,
   pollTimer: null,
+  /** Commands echoed locally; skip duplicate operator lines from server. */
+  echoedCommands: new Set(),
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -190,6 +192,87 @@ function wsSubscribe(sessionId) {
   }
 }
 
+function updateShellPrompt() {
+  const el = $("#shell-prompt");
+  if (!state.selectedId) {
+    el.textContent = "rmm>";
+    return;
+  }
+  const s = state.sessions.find((x) => x.id === state.selectedId);
+  const short = state.selectedId.slice(0, 8);
+  el.textContent = s ? `rmm:${short}>` : `rmm:${short}>`;
+}
+
+function shellOutputEl() {
+  return $("#shell-output");
+}
+
+function scrollShellToBottom() {
+  const log = shellOutputEl();
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendShellLine(kind, html) {
+  const log = shellOutputEl();
+  const line = document.createElement("div");
+  line.className = `shell-line shell-line-${kind}`;
+  line.innerHTML = html;
+  log.appendChild(line);
+  scrollShellToBottom();
+  return line;
+}
+
+function appendShellEcho(cmd) {
+  state.echoedCommands.add(cmd);
+  setTimeout(() => state.echoedCommands.delete(cmd), 120000);
+  appendShellLine(
+    "echo",
+    `<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(cmd)}`
+  );
+}
+
+function appendShellOutput(text) {
+  if (!text) {
+    appendShellLine("meta", "(no output)");
+    return;
+  }
+  for (const line of String(text).split("\n")) {
+    appendShellLine("output", escapeHtml(line));
+  }
+}
+
+function appendShellMeta(text) {
+  appendShellLine("meta", escapeHtml(text));
+}
+
+function appendShellError(text) {
+  appendShellLine("error", escapeHtml(text));
+}
+
+function operatorCommandFromBody(body) {
+  const b = String(body || "").trim();
+  const idx = b.indexOf(":");
+  if (idx === -1) return "";
+  return b.slice(idx + 1).trim();
+}
+
+function renderEventBodyHtml(ev) {
+  const body = String(ev.body || "");
+  if (ev.type === "screenshot" && ev.artifact_url) {
+    const src = artifactSrc(ev.artifact_url);
+    return `<img class="screenshot-preview" src="${escapeHtml(src)}" alt="screenshot">`;
+  }
+  if (ev.type === "file_upload" && ev.artifact_url) {
+    const src = artifactSrc(ev.artifact_url);
+    return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" download>Download file</a>`;
+  }
+  if (ev.artifact_url) {
+    const src = artifactSrc(ev.artifact_url);
+    return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" target="_blank" rel="noopener">Open artifact</a>`;
+  }
+  return escapeHtml(body);
+}
+
 // --- Views ---
 
 function showLogin(err = "") {
@@ -230,6 +313,7 @@ function disconnect() {
   sessionStorage.removeItem(STORAGE_KEY);
   state.token = "";
   state.selectedId = null;
+  state.echoedCommands.clear();
   showLogin();
 }
 
@@ -242,6 +326,7 @@ async function refreshSessions() {
   if (status !== 200) return;
   state.sessions = data.sessions || [];
   renderSessionList();
+  updateShellPrompt();
 }
 
 function renderSessionList() {
@@ -269,6 +354,7 @@ function renderSessionList() {
 async function selectSession(id) {
   state.selectedId = id;
   state.lastEventId = 0;
+  state.echoedCommands.clear();
   renderSessionList();
   const s = state.sessions.find((x) => x.id === id);
   if (!s) return;
@@ -280,7 +366,14 @@ async function selectSession(id) {
   $("#console-detail").textContent = `${s.id} · last seen ${formatTime(s.last_seen)}`;
   $("#sleep-input").value = s.sleep_seconds;
   $("#jitter-input").value = s.jitter_percent;
-  $("#output-log").innerHTML = "";
+  shellOutputEl().innerHTML = "";
+  updateShellPrompt();
+  appendShellMeta(`Session ${id.slice(0, 8)} — Enter run & wait, Ctrl+Enter queue`);
+
+  const input = $("#shell-input");
+  input.value = "";
+  input.disabled = false;
+  input.focus();
 
   connectWebSocket();
   wsSubscribe(id);
@@ -290,9 +383,9 @@ async function selectSession(id) {
     `/sessions/${encodeURIComponent(id)}/events?since=0&limit=500`
   );
   if (status === 200) {
-    const events = data.events || [];
+    const events = (data.events || []).sort((a, b) => (a.id || 0) - (b.id || 0));
     for (const ev of events) {
-      appendEvent(ev);
+      appendEvent(ev, { history: true });
     }
     if (events.length) {
       state.lastEventId = events.reduce((m, e) => Math.max(m, e.id || 0), 0);
@@ -305,36 +398,10 @@ function showEmptyConsole() {
   state.selectedId = null;
   show($("#empty-state"));
   hide($("#console-panel"));
+  $("#shell-input").value = "";
   renderSessionList();
+  updateShellPrompt();
   connectWebSocket();
-}
-
-function renderEventBody(ev) {
-  const body = String(ev.body || "");
-  if (ev.type === "screenshot" && ev.artifact_url) {
-    const src = artifactSrc(ev.artifact_url);
-    return `<img class="screenshot-preview" src="${escapeHtml(src)}" alt="screenshot">`;
-  }
-  if (ev.type === "file_upload" && ev.artifact_url) {
-    const src = artifactSrc(ev.artifact_url);
-    return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" download>Download file</a>`;
-  }
-  if (ev.artifact_url) {
-    const src = artifactSrc(ev.artifact_url);
-    return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" target="_blank" rel="noopener">Open artifact</a>`;
-  }
-  return escapeHtml(body);
-}
-
-function appendLocalEvent(partial) {
-  appendEvent(
-    {
-      id: `local-${++state.localEventSeq}`,
-      timestamp: new Date().toISOString(),
-      ...partial,
-    },
-    { local: true }
-  );
 }
 
 function loadEventCursors() {
@@ -352,7 +419,7 @@ function saveEventCursor(sessionId, eventId) {
   sessionStorage.setItem(EVENT_CURSORS_KEY, JSON.stringify(cursors));
 }
 
-function appendEvent(ev, { local = false } = {}) {
+function appendEvent(ev, { local = false, history = false } = {}) {
   if (!local) {
     if (typeof ev.id === "number" && ev.id <= state.lastEventId) return;
     if (typeof ev.id === "number") {
@@ -362,28 +429,83 @@ function appendEvent(ev, { local = false } = {}) {
       }
     }
   }
-  const log = $("#output-log");
-  const block = document.createElement("div");
-  block.className = "output-line" + (local ? " output-line-local" : "");
-  const cmd = ev.command ? ` » ${ev.command}` : "";
-  const idLabel = local ? "·" : `[${ev.id}]`;
-  const typeClass = ev.type === "operator" ? "ev-operator" : ev.type === "output" ? "ev-output" : "";
-  block.innerHTML = `
-    <div class="head ${typeClass}">${idLabel} ${escapeHtml(ev.type)}${escapeHtml(cmd)} · ${formatTime(ev.timestamp)}</div>
-    <div class="body">${renderEventBody(ev)}</div>
-  `;
-  log.appendChild(block);
-  log.scrollTop = log.scrollHeight;
+
+  const evType = ev.type || "output";
+  const body = String(ev.body || "").trim();
+  const cmdEcho = (ev.command || "").trim();
+
+  if (evType === "operator") {
+    const opCmd = operatorCommandFromBody(body);
+    if (history && opCmd) {
+      appendShellLine(
+        "echo",
+        `<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(opCmd)}`
+      );
+      if (body.startsWith("queued:")) {
+        appendShellMeta("(queued)");
+      }
+      return;
+    }
+    if (!history && opCmd && state.echoedCommands.has(opCmd)) {
+      if (body.startsWith("queued:")) {
+        appendShellMeta("(queued — waiting for next beacon)");
+      }
+      return;
+    }
+    const label = body || "operator action";
+    appendShellLine("operator", escapeHtml(label));
+    return;
+  }
+
+  if (evType === "output") {
+    const text = body || "";
+    if (cmdEcho && !history) {
+      /* result already follows echoed prompt */
+    }
+    appendShellOutput(text);
+    return;
+  }
+
+  if (evType === "config_ack") {
+    appendShellMeta(body ? `Config applied: ${body}` : "Config applied on agent");
+    return;
+  }
+
+  if (evType === "error" || evType === "queued") {
+    appendShellMeta(body || evType);
+    return;
+  }
+
+  if (evType === "screenshot" || evType === "file_upload" || ev.artifact_url) {
+    const block = document.createElement("div");
+    block.className = "shell-line shell-line-output";
+    block.innerHTML = renderEventBodyHtml(ev);
+    shellOutputEl().appendChild(block);
+    scrollShellToBottom();
+    return;
+  }
+
+  appendShellLine("operator", `[${ev.id}] ${escapeHtml(evType)}${cmdEcho ? ` » ${escapeHtml(cmdEcho)}` : ""}`);
+  if (body) {
+    appendShellOutput(body);
+  }
+}
+
+function clearShellInput() {
+  const input = $("#shell-input");
+  input.value = "";
+  input.blur();
+  input.focus();
 }
 
 async function runCommand(wait) {
-  const cmd = $("#command-input").value.trim();
+  const input = $("#shell-input");
+  const cmd = input.value.trim();
   if (!cmd || !state.selectedId) return;
 
-  const btnRun = $("#btn-run");
-  const btnExec = $("#btn-exec");
-  btnRun.disabled = true;
-  btnExec.disabled = true;
+  clearShellInput();
+  appendShellEcho(cmd);
+  input.disabled = true;
 
   try {
     if (wait) {
@@ -396,19 +518,13 @@ async function runCommand(wait) {
         }
       );
       if (status === 408) {
-        appendLocalEvent({
-          type: "error",
-          body: "Command timed out (beacon interval may be long — try Queue + wait for poll)",
-          command: cmd,
-        });
+        appendShellError(
+          "Timed out — beacon interval may be long; try Ctrl+Enter to queue instead"
+        );
       } else if (status === 200 && data.event) {
         appendEvent(data.event);
       } else {
-        appendLocalEvent({
-          type: "error",
-          body: data.error || `HTTP ${status}`,
-          command: cmd,
-        });
+        appendShellError(data.error || `HTTP ${status}`);
       }
     } else {
       const { status, data } = await api(
@@ -420,30 +536,24 @@ async function runCommand(wait) {
         }
       );
       if (status === 200) {
-        appendLocalEvent({
-          type: "queued",
-          body: "Command queued — result appears after the next agent beacon (polling + WebSocket)",
-          command: cmd,
-        });
+        appendShellMeta("(queued — waiting for next beacon)");
         pollSessionEvents().catch(() => {});
       } else {
-        appendLocalEvent({
-          type: "error",
-          body: data.error || `HTTP ${status}`,
-          command: cmd,
-        });
+        appendShellError(data.error || `HTTP ${status}`);
       }
     }
   } finally {
-    btnRun.disabled = false;
-    btnExec.disabled = false;
-    $("#command-input").value = "";
+    input.disabled = false;
+    clearShellInput();
+    input.focus();
   }
 }
 
 async function queueDownload() {
   const remote = $("#download-remote").value.trim();
   if (!remote || !state.selectedId) return;
+  appendShellEcho(`download ${remote}`);
+  $("#download-remote").value = "";
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(state.selectedId)}/download`,
     {
@@ -452,24 +562,25 @@ async function queueDownload() {
       body: JSON.stringify({ remote_path: remote }),
     }
   );
-  appendLocalEvent({
-    type: status === 200 ? "queued" : "error",
-    body: status === 200 ? `Download queued: ${remote}` : (data.error || `HTTP ${status}`),
-    command: `__DOWNLOAD__ ${remote}`,
-  });
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+  } else {
+    appendShellMeta("(download queued)");
+  }
 }
 
 async function queueScreenshot() {
   if (!state.selectedId) return;
+  appendShellEcho("screenshot");
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(state.selectedId)}/screenshot`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
   );
-  appendLocalEvent({
-    type: status === 200 ? "queued" : "error",
-    body: status === 200 ? "Screenshot queued" : (data.error || `HTTP ${status}`),
-    command: "__SCREENSHOT__",
-  });
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+  } else {
+    appendShellMeta("(screenshot queued)");
+  }
 }
 
 async function queueUpload() {
@@ -478,6 +589,7 @@ async function queueUpload() {
   if (!state.selectedId || !fileInput.files?.length || !remote) return;
 
   const file = fileInput.files[0];
+  appendShellEcho(`upload ${file.name} → ${remote}`);
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
   let binary = "";
@@ -494,15 +606,13 @@ async function queueUpload() {
       body: JSON.stringify({ remote_path: remote, content_b64 }),
     }
   );
-  appendLocalEvent({
-    type: status === 200 ? "queued" : "error",
-    body:
-      status === 200
-        ? `Upload queued: ${file.name} → ${remote}`
-        : data.error || `HTTP ${status}`,
-    command: `__UPLOAD__ ${remote}`,
-  });
   fileInput.value = "";
+  $("#upload-remote").value = "";
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+  } else {
+    appendShellMeta("(upload queued)");
+  }
 }
 
 async function killSession() {
@@ -526,6 +636,7 @@ async function applyConfig() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sleep_seconds: sleep, jitter_percent: jitter }),
   });
+  appendShellMeta(`Beacon config → sleep ${sleep}s, jitter ${jitter}%`);
   await refreshSessions();
 }
 
@@ -536,18 +647,21 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
   $("#refresh-btn").addEventListener("click", refreshSessions);
-  $("#btn-run").addEventListener("click", () => runCommand(false));
-  $("#btn-exec").addEventListener("click", () => runCommand(true));
   $("#btn-kill").addEventListener("click", killSession);
   $("#btn-config").addEventListener("click", applyConfig);
   $("#btn-download").addEventListener("click", queueDownload);
   $("#btn-screenshot").addEventListener("click", queueScreenshot);
   $("#btn-upload").addEventListener("click", queueUpload);
-  $("#command-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+
+  $("#shell-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    runCommand(true);
+  });
+
+  $("#shell-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.ctrlKey) {
       e.preventDefault();
-      // Enter = run and wait; Shift+Enter = newline; Queue button = queue only
-      runCommand(true);
+      runCommand(false);
     }
   });
 
