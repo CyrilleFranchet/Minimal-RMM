@@ -23,11 +23,12 @@
       <span id="ws-status" class="status-dot" title="WebSocket"></span>
       <h1>Minimal RMM</h1>
       <span class="spacer"></span>
+      <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
       <button type="button" class="secondary" id="refresh-btn">Refresh</button>
       <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
     </header>
 
-    <div class="app-body">
+    <div id="app-body" class="app-body">
       <aside class="sidebar">
         <h2>Sessions</h2>
         <ul id="session-list" class="session-list"></ul>
@@ -88,9 +89,35 @@
           </details>
         </div>
       </main>
+
+      <aside id="ai-panel" class="ai-panel hidden" aria-label="AI assistant">
+        <div class="ai-panel-header">
+          <h2>AI Assistant</h2>
+          <button type="button" class="secondary ai-panel-close" id="ai-panel-close" title="Hide panel">×</button>
+        </div>
+        <details class="ai-settings" open>
+          <summary>OpenAI settings</summary>
+          <label for="openai-key-input">API key</label>
+          <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off">
+          <label for="openai-model-select">Model</label>
+          <select id="openai-model-select">
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-4o">gpt-4o</option>
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+            <option value="gpt-4.1">gpt-4.1</option>
+          </select>
+          <p class="ai-hint">Stored in this browser tab only. Uses the same RMM tools as the MCP server.</p>
+        </details>
+        <div id="ai-chat-log" class="ai-chat-log"></div>
+        <form id="ai-chat-form" class="ai-chat-form" autocomplete="off">
+          <textarea id="ai-chat-input" rows="2" placeholder="Ask to list sessions, run whoami, change sleep…"></textarea>
+          <button type="submit" id="ai-send-btn">Send</button>
+        </form>
+      </aside>
     </div>
   </div>
 
   <script src="app.js"></script>
+  <script src="ai.js"></script>
 </body>
 </html>

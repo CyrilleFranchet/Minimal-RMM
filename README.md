@@ -76,7 +76,22 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 With the server running, open **http://127.0.0.1:8080/ui/** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates, and supports **download**, **upload**, and **screenshot** actions. The token is kept in `sessionStorage` for the browser tab only.
 
-Same-origin hosting avoids CORS; do not expose `/ui/` on the public internet without TLS and a strong API token.
+**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Set your **OpenAI API key** in the panel (stored in `sessionStorage` for this tab). The server runs an agent loop with the same RMM tools as the MCP server (`POST /api/v1/ai/chat`). The selected session in the sidebar is passed as context.
+
+Same-origin hosting avoids CORS; do not expose `/ui/` on the public internet without TLS and a strong API token. Sending an OpenAI key to your RMM server is only appropriate on a trusted/self-hosted instance.
+
+### MCP server (Cursor / Claude Desktop)
+
+Expose RMM operator actions as MCP tools for external AI clients:
+
+```bash
+pip install -r requirements-mcp.txt
+export RMM_SERVER_URL=http://127.0.0.1:8080
+export RMM_API_TOKEN=your-operator-token
+python mcp_rmm_server.py
+```
+
+Copy `mcp.example.json` into your Cursor MCP config (`~/.cursor/mcp.json`) and fix the script path. Tools: `list_sessions`, `get_session`, `exec_command`, `queue_command`, `patch_config`, `get_events`, `kill_session`, `queue_download`, `queue_screenshot`.
 
 ### Embedded console (optional)
 
@@ -125,6 +140,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
 | `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
+| `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[{"role":"user","content":"…"}],"model":"gpt-4o-mini","selected_session_id":null}` | OpenAI agent loop with RMM tools (web UI) |
 | `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (fallback) |
 | `GET` | `/artifacts/{downloads\|screenshots}/{filename}` | `?token=` | Download saved artifact (auth required) |
 | `WS` | `/ws?token=…&session=…` | — | Live events + session list (WebSocket) |

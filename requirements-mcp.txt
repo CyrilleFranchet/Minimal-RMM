@@ -1,0 +1,2 @@
+# Optional: MCP server for Cursor / Claude Desktop (python mcp_rmm_server.py)
+mcp>=1.6.0
