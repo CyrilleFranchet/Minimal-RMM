@@ -70,12 +70,15 @@ def _run_ai_chat_mcp(
     model: str,
     selected_session_id: str | None,
     max_rounds: int,
+    exegol_mcp_enabled: bool | None = None,
+    exegol_mcp_url: str | None = None,
+    exegol_mcp_token: str | None = None,
 ) -> dict:
-    from rmm_mcp_client import McpRmmSession, run_with_mcp_session
+    from rmm_mcp_client import run_with_mcp_session
 
     context = _selected_session_context(selected_session_id)
 
-    async def _chat(mcp: McpRmmSession) -> dict:
+    async def _chat(mcp) -> dict:
         system = (mcp.server_instructions or SYSTEM_PROMPT) + context
         convo = _build_convo(messages, system)
         tools = mcp.openai_tools
@@ -136,11 +139,20 @@ def _run_ai_chat_mcp(
         }
 
     try:
-        return run_with_mcp_session(rmm_base_url, rmm_token, _chat)
+        return run_with_mcp_session(
+            rmm_base_url,
+            rmm_token,
+            _chat,
+            exegol_enabled=exegol_mcp_enabled,
+            exegol_mcp_url=exegol_mcp_url,
+            exegol_mcp_token=exegol_mcp_token,
+        )
     except Exception as e:
         raise RuntimeError(
             f"MCP server failed: {e}. "
-            "Install MCP support: pip install -r requirements-mcp.txt (Python 3.10+)."
+            "Install MCP support: pip install -r requirements-mcp.txt (Python 3.10+). "
+            "For Exegol: run `exegol-mcp` locally and set URL/token in the AI panel or "
+            "RMM_EXEGOL_MCP_URL / RMM_EXEGOL_MCP_TOKEN."
         ) from e
 
 
@@ -219,6 +231,9 @@ def run_ai_chat(
     model: str = "gpt-4o-mini",
     selected_session_id: str | None = None,
     max_rounds: int = MAX_TOOL_ROUNDS,
+    exegol_mcp_enabled: bool | None = None,
+    exegol_mcp_url: str | None = None,
+    exegol_mcp_token: str | None = None,
 ) -> dict:
     """
     Run agent loop; returns {message, tool_calls_made, via, ...} for the client.
@@ -246,6 +261,9 @@ def run_ai_chat(
             model=model,
             selected_session_id=selected_session_id,
             max_rounds=max_rounds,
+            exegol_mcp_enabled=exegol_mcp_enabled,
+            exegol_mcp_url=exegol_mcp_url,
+            exegol_mcp_token=exegol_mcp_token,
         )
 
     return _run_ai_chat_direct(

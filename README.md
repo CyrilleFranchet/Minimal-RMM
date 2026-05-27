@@ -76,7 +76,7 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 With the server running, open **http://127.0.0.1:8080/ui/** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates, and supports **download**, **upload**, and **screenshot** actions. The token is kept in `sessionStorage` for the browser tab only.
 
-**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Set your **OpenAI API key** in the panel (stored in `sessionStorage` for this tab). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. The selected session in the sidebar is passed as context.
+**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Set your **OpenAI API key** in the panel (stored in `sessionStorage` for this tab). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`. The selected session in the sidebar is passed as context.
 
 Same-origin hosting avoids CORS; do not expose `/ui/` on the public internet without TLS and a strong API token. Sending an OpenAI key to your RMM server is only appropriate on a trusted/self-hosted instance.
 
@@ -140,7 +140,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
 | `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
-| `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[{"role":"user","content":"…"}],"model":"gpt-4o-mini","selected_session_id":null}` | OpenAI agent loop via MCP server (web UI) |
+| `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[…],"model":"gpt-4o-mini","selected_session_id":null,"exegol_mcp_enabled":false,"exegol_mcp_url":null,"exegol_mcp_token":null}` | OpenAI agent loop via MCP (RMM + optional Exegol) |
 | `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (fallback) |
 | `GET` | `/artifacts/{downloads\|screenshots}/{filename}` | `?token=` | Download saved artifact (auth required) |
 | `WS` | `/ws?token=…&session=…` | — | Live events + session list (WebSocket) |

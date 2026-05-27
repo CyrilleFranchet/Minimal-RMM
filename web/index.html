@@ -106,7 +106,19 @@
             <option value="gpt-4.1-mini">gpt-4.1-mini</option>
             <option value="gpt-4.1">gpt-4.1</option>
           </select>
-          <p class="ai-hint">Stored in this browser tab only. Server runs tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
+          <p class="ai-hint">Stored in this browser tab only. Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
+        </details>
+        <details class="ai-settings">
+          <summary>Exegol MCP (optional)</summary>
+          <label class="ai-checkbox">
+            <input type="checkbox" id="exegol-mcp-enabled">
+            Connect to Exegol MCP
+          </label>
+          <label for="exegol-mcp-url-input">Server URL</label>
+          <input type="url" id="exegol-mcp-url-input" placeholder="http://127.0.0.1:8000/mcp" autocomplete="off">
+          <label for="exegol-mcp-token-input">Bearer token</label>
+          <input type="password" id="exegol-mcp-token-input" placeholder="from exegol-mcp startup log" autocomplete="off">
+          <p class="ai-hint">Run <code>pipx install exegol-mcp</code> then <code>exegol-mcp</code> on the RMM server host. Token is printed at startup. Or set <code>RMM_EXEGOL_MCP_URL</code> / <code>RMM_EXEGOL_MCP_TOKEN</code> on the server.</p>
         </details>
         <div id="ai-chat-log" class="ai-chat-log"></div>
         <form id="ai-chat-form" class="ai-chat-form" autocomplete="off">

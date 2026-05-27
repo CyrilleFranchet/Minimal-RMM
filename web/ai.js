@@ -5,6 +5,10 @@
   const OPENAI_KEY_STORAGE = "rmm_openai_api_key";
   const OPENAI_MODEL_STORAGE = "rmm_openai_model";
   const AI_PANEL_OPEN_STORAGE = "rmm_ai_panel_open";
+  const EXEGOL_ENABLED_STORAGE = "rmm_exegol_mcp_enabled";
+  const EXEGOL_URL_STORAGE = "rmm_exegol_mcp_url";
+  const EXEGOL_TOKEN_STORAGE = "rmm_exegol_mcp_token";
+  const DEFAULT_EXEGOL_MCP_URL = "http://127.0.0.1:8000/mcp";
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -24,6 +28,20 @@
   function getModel() {
     const sel = $("#openai-model-select");
     return sel ? sel.value : sessionStorage.getItem(OPENAI_MODEL_STORAGE) || "gpt-4o-mini";
+  }
+
+  function getExegolMcpSettings() {
+    const enabled = $("#exegol-mcp-enabled")?.checked ?? false;
+    const url = ($("#exegol-mcp-url-input")?.value || "").trim() || DEFAULT_EXEGOL_MCP_URL;
+    const token = ($("#exegol-mcp-token-input")?.value || "").trim();
+    return { enabled, url, token };
+  }
+
+  function persistExegolMcpSettings() {
+    const { enabled, url, token } = getExegolMcpSettings();
+    sessionStorage.setItem(EXEGOL_ENABLED_STORAGE, enabled ? "1" : "0");
+    sessionStorage.setItem(EXEGOL_URL_STORAGE, url);
+    sessionStorage.setItem(EXEGOL_TOKEN_STORAGE, token);
   }
 
   function setAiPanelOpen(open) {
@@ -77,6 +95,8 @@
 
     sessionStorage.setItem(OPENAI_KEY_STORAGE, openaiKey);
     sessionStorage.setItem(OPENAI_MODEL_STORAGE, getModel());
+    persistExegolMcpSettings();
+    const exegol = getExegolMcpSettings();
 
     chatHistory.push({ role: "user", content: text.trim() });
     appendChatMessage("user", text.trim());
@@ -96,6 +116,9 @@
           model: getModel(),
           messages: chatHistory,
           selected_session_id: st.selectedId || null,
+          exegol_mcp_enabled: exegol.enabled,
+          exegol_mcp_url: exegol.enabled ? exegol.url : null,
+          exegol_mcp_token: exegol.enabled ? exegol.token || null : null,
         }),
       });
 
@@ -140,6 +163,23 @@
       });
     }
 
+    const exegolEnabled = $("#exegol-mcp-enabled");
+    const exegolUrl = $("#exegol-mcp-url-input");
+    const exegolToken = $("#exegol-mcp-token-input");
+    if (exegolEnabled) {
+      exegolEnabled.checked = sessionStorage.getItem(EXEGOL_ENABLED_STORAGE) === "1";
+      exegolEnabled.addEventListener("change", persistExegolMcpSettings);
+    }
+    if (exegolUrl) {
+      exegolUrl.value =
+        sessionStorage.getItem(EXEGOL_URL_STORAGE) || DEFAULT_EXEGOL_MCP_URL;
+      exegolUrl.addEventListener("change", persistExegolMcpSettings);
+    }
+    if (exegolToken) {
+      exegolToken.value = sessionStorage.getItem(EXEGOL_TOKEN_STORAGE) || "";
+      exegolToken.addEventListener("change", persistExegolMcpSettings);
+    }
+
     if (sessionStorage.getItem(AI_PANEL_OPEN_STORAGE) === "1") {
       setAiPanelOpen(true);
     }
@@ -156,9 +196,12 @@
       if (input) sendAiMessage(input.value);
     });
 
+    const exegolOn = sessionStorage.getItem(EXEGOL_ENABLED_STORAGE) === "1";
     appendChatMessage(
       "assistant",
-      "I control RMM agents through the MCP server (list sessions, run commands, change beacon sleep, etc.). Select a session in the sidebar for context."
+      exegolOn
+        ? "RMM tools (sessions, commands, config) plus Exegol MCP (containers, in-container pentest tools). Select an RMM session in the sidebar for beacon context."
+        : "RMM tools via MCP (list sessions, run commands, change beacon sleep, etc.). Enable Exegol MCP in settings to add container orchestration and offensive tools."
     );
     chatHistory = [];
   }

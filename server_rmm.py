@@ -1134,6 +1134,9 @@ class RMMHandler(BaseHTTPRequestHandler):
                     messages=messages,
                     model=model,
                     selected_session_id=selected,
+                    exegol_mcp_enabled=body.get("exegol_mcp_enabled"),
+                    exegol_mcp_url=body.get("exegol_mcp_url"),
+                    exegol_mcp_token=body.get("exegol_mcp_token"),
                 )
                 status = 200 if result.get("ok") else 500
                 self._json(status, result)
