@@ -140,6 +140,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
 | `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
+| `POST` | `/sessions/{id}/socks` | `{"port":1080}` or `{"stop":true}` | Start/stop SOCKS5 on `127.0.0.1` via agent |
 | `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[…],"model":"gpt-4o-mini","selected_session_id":null,"exegol_mcp_enabled":false,"exegol_mcp_url":null,"exegol_mcp_token":null}` | OpenAI agent loop via MCP (RMM + optional Exegol) |
 | `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (fallback) |
 | `GET` | `/artifacts/{downloads\|screenshots}/{filename}` | `?token=` | Download saved artifact (auth required) |
@@ -195,6 +196,7 @@ See sections below for command tokens and result types.
 | `__DOWNLOAD__ <path>` | Client uploads file (`type=file_upload`) |
 | `__UPLOAD__ <path>` + newline + JSON | Client writes remote file |
 | `__SCREENSHOT__` | Screenshot PNG |
+| `__SOCKS_START__` / `__SOCKS_STOP__` | Enable/disable SOCKS relay worker on the agent |
 | `__KEYLOG__ start\|stop\|dump` | Keylogger |
 | `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | Client persistence hooks |
 
@@ -216,6 +218,19 @@ Queue the same tokens via `rmm_cli.py run` / `exec` or `POST …/commands`.
 
 Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
+### SOCKS relay (`/socks`)
+
+When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and queues `__SOCKS_START__` on the session. The agent polls **`GET /socks?id=<session_id>`** for connect/send/close tasks and posts responses on **`POST /socks`**. Traffic from your tools (browser, `curl --proxy`, etc.) exits the **remote Windows host**.
+
+Beacon interval is shortened automatically on the agent while the relay is active. Use **`socks stop`** (or kill the session) to tear down.
+
+| Beacon | Purpose |
+|--------|---------|
+| `GET /socks?id=…` | Agent fetches pending relay tasks (`{"tasks":[…]}`) |
+| `POST /socks?id=…` | Agent posts `{"responses":[…]}` (connect ok, data, closed, error) |
+
+Operator API: `POST /api/v1/sessions/{id}/socks` with `{"port":1080}` or `{"stop":true}`.
+
 ---
 
 ## CLI reference (`rmm_cli.py`)
@@ -236,6 +251,7 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `config set-jitter <n>` | 0–100 |
 | `download <remote_path>` | Queue `__DOWNLOAD__` |
 | `upload <local> <remote>` | Queue `__UPLOAD__` |
+| `socks [port]` / `socks stop` | SOCKS5 on 127.0.0.1 via remote agent (default port 1080) |
 | `events` | Poll result events (`--since`, `--limit`) |
 
 Global flags: `--url`, `--token` (or `RMM_SERVER_URL`, `RMM_API_TOKEN`).

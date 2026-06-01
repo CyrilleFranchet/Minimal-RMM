@@ -57,6 +57,7 @@ RMM_CLI_COMMANDS = [
     "download",
     "upload",
     "screenshot",
+    "socks",
     "events",
     "exec",
     "persist",
@@ -192,6 +193,20 @@ class RmmApiClient:
             "POST",
             f"/api/v1/sessions/{session_id}/screenshot",
             {},
+        )
+
+    def start_socks(self, session_id: str, port: int = 1080, bind_host: str = "127.0.0.1"):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/socks",
+            {"port": port, "bind_host": bind_host},
+        )
+
+    def stop_socks(self, session_id: str):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/socks",
+            {"stop": True},
         )
 
 
@@ -606,6 +621,7 @@ Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <s> | set_jitter <%> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
 Files:    download <remote> | upload <local> <remote> | screenshot
+Tunnel:   socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
 Other:    events [since] | health | help | quit
 
 Tip: agent output and config_ack events stream for all connected sessions (prefix [session8]).
@@ -997,6 +1013,34 @@ def run_interactive(
                     say("Screenshot queued")
                 else:
                     warn(f"failed ({code})")
+                continue
+            if cmd == "socks":
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                if rest and rest[0].lower() == "stop":
+                    code, _ = client.stop_socks(sid)
+                    if code == 200:
+                        say("SOCKS relay stopped")
+                    else:
+                        warn(f"failed ({code})")
+                    continue
+                port = 1080
+                if rest:
+                    try:
+                        port = int(rest[0])
+                        if port < 1 or port > 65535:
+                            raise ValueError
+                    except ValueError:
+                        warn("Invalid port (1-65535)")
+                        continue
+                code, data = client.start_socks(sid, port=port)
+                if code == 200:
+                    url = data.get("socks_url", f"socks5://127.0.0.1:{port}")
+                    say(f"SOCKS5 listening — use {url} (traffic exits remote host)")
+                else:
+                    warn(f"failed ({code}): {data}")
                 continue
             if cmd == "run":
                 if not rest:
