@@ -539,17 +539,26 @@ class RMMServer:
         except OSError as e:
             self.log(f"SOCKS failed to bind {bind_host}:{port}: {e}", "ERROR")
             return False
-        self.set_command(session_id, "__SOCKS_START__", "oneshot")
         self.record_operator_action(session, f"socks {port}", "socks")
+        self._record_event(
+            session,
+            "output",
+            f"SOCKS5 listening on {bind_host}:{port} (socks5://{bind_host}:{port})",
+            command=f"socks {port}",
+        )
         return True
 
     def stop_socks(self, session_id: str) -> bool:
         stopped = self.socks.stop(session_id)
         session = self.get_session(session_id)
         if session:
-            self.set_command(session_id, "__SOCKS_STOP__", "oneshot")
             self.record_operator_action(session, "socks stop", "socks")
+            if stopped:
+                self._record_event(session, "output", "SOCKS relay stopped", command="socks stop")
         return stopped
+
+    def socks_active(self, session_id: str) -> bool:
+        return self.socks.get(session_id) is not None
 
     def exec_and_wait(self, session_id_or_prefix, command, timeout=120):
         session = self.resolve_session(session_id_or_prefix)
@@ -1153,7 +1162,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "session_id": session.id,
                     "socks_url": f"socks5://{bind_host}:{port}",
-                    "queued": "__SOCKS_START__",
+                    "socks_active": True,
                 },
             )
             return True
@@ -1321,7 +1330,11 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._respond(400, err)
             else:
                 cmd, resp_type = self.server_instance.get_command(session_id)
-                response = json.dumps({"command": cmd, "type": resp_type})
+                response = json.dumps({
+                    "command": cmd,
+                    "type": resp_type,
+                    "socks_active": self.server_instance.socks_active(session_id),
+                })
                 self._respond(200, response, "application/json")
         
         elif path == "/ping":

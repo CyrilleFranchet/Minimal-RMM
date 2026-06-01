@@ -196,7 +196,8 @@ See sections below for command tokens and result types.
 | `__DOWNLOAD__ <path>` | Client uploads file (`type=file_upload`) |
 | `__UPLOAD__ <path>` + newline + JSON | Client writes remote file |
 | `__SCREENSHOT__` | Screenshot PNG |
-| `__SOCKS_START__` / `__SOCKS_STOP__` | Enable/disable SOCKS relay worker on the agent |
+| `socks_active` in `/cmd` JSON | When true, agent runs the `/socks` relay (no shell command) |
+| `__SOCKS_START__` / `__SOCKS_STOP__` | Legacy tokens (handled internally, not passed to cmd.exe) |
 | `__KEYLOG__ start\|stop\|dump` | Keylogger |
 | `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | Client persistence hooks |
 
@@ -220,7 +221,7 @@ Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 ### SOCKS relay (`/socks`)
 
-When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and queues `__SOCKS_START__` on the session. The agent polls **`GET /socks?id=<session_id>`** for connect/send/close tasks and posts responses on **`POST /socks`**. Traffic from your tools (browser, `curl --proxy`, etc.) exits the **remote Windows host**.
+When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and sets **`socks_active": true`** on each **`GET /cmd`** response for that session. The agent polls **`GET /socks?id=<session_id>`** for connect/send/close tasks and posts responses on **`POST /socks`**. Traffic from your tools (browser, `curl --proxy`, etc.) exits the **remote Windows host**.
 
 Beacon interval is shortened automatically on the agent while the relay is active. Use **`socks stop`** (or kill the session) to tear down.
 

