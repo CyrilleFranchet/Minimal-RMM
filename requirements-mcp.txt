@@ -1,0 +1,3 @@
+# MCP server (Cursor / Claude Desktop) and web AI assistant (POST /api/v1/ai/chat)
+# Requires Python 3.10+
+mcp>=1.6.0

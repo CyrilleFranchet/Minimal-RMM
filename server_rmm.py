@@ -1106,8 +1106,66 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "session_id": session.id, "queued": "__SCREENSHOT__"})
             return True
 
+        if parts == ["ai", "chat"]:
+            openai_key = (body.get("openai_api_key") or os.environ.get("OPENAI_API_KEY", "")).strip()
+            if not openai_key:
+                self._json(400, {"error": "missing_openai_api_key"})
+                return True
+            messages = body.get("messages") or []
+            if not messages:
+                self._json(400, {"error": "missing_messages"})
+                return True
+            model = str(body.get("model") or "gpt-4o-mini")
+            selected = body.get("selected_session_id")
+            rmm_token = (self._api_token_from_request() or API_TOKEN or "").strip()
+            if not rmm_token:
+                self._json(401, {
+                    "error": "unauthorized",
+                    "detail": "Valid RMM_API_TOKEN required for AI tool calls",
+                })
+                return True
+            try:
+                from rmm_ai import run_ai_chat
+
+                result = run_ai_chat(
+                    rmm_base_url=self._operator_api_base_url(),
+                    rmm_token=rmm_token,
+                    openai_api_key=openai_key,
+                    messages=messages,
+                    model=model,
+                    selected_session_id=selected,
+                    exegol_mcp_enabled=body.get("exegol_mcp_enabled"),
+                    exegol_mcp_url=body.get("exegol_mcp_url"),
+                    exegol_mcp_token=body.get("exegol_mcp_token"),
+                )
+                status = 200 if result.get("ok") else 500
+                self._json(status, result)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+            except RuntimeError as e:
+                self._json(502, {"error": "openai_error", "detail": str(e)})
+            except Exception as e:
+                self._json(500, {"error": "ai_chat_failed", "detail": str(e)})
+            return True
+
         self._json(404, {"error": "not_found"})
         return True
+
+    def _request_base_url(self) -> str:
+        host = self.headers.get("Host", f"127.0.0.1:{PORT}")
+        proto = self.headers.get("X-Forwarded-Proto", "").strip().lower()
+        if proto not in ("http", "https"):
+            proto = "http"
+        return f"{proto}://{host}"
+
+    def _operator_api_base_url(self) -> str:
+        """Loopback URL for in-process clients (AI/MCP) calling the operator API."""
+        host = LISTEN_HOST
+        if host in ("0.0.0.0", "::", ""):
+            host = "127.0.0.1"
+        elif host == "::1":
+            host = "127.0.0.1"
+        return f"http://{host}:{PORT}"
 
     def _handle_api_patch(self, path, body):
         if not self._api_authorized():
@@ -1658,6 +1716,8 @@ def main():
     print(f"{Colors.CYAN}[*] Operator API: http://127.0.0.1:{PORT}{API_PREFIX}/{Colors.END}")
     print(f"{Colors.CYAN}[*] Web UI: http://127.0.0.1:{PORT}/ui/{Colors.END}")
     print(f"{Colors.CYAN}[*] CLI: python rmm_cli.py --url http://127.0.0.1:{PORT}{Colors.END}")
+    print(f"{Colors.CYAN}[*] MCP: python mcp_rmm_server.py (see README){Colors.END}")
+    print(f"{Colors.CYAN}[*] Web AI: /ui/ → AI Assistant panel (OpenAI key + RMM tools){Colors.END}")
     print(f"{Colors.CYAN}[*] Tunnel: cloudflared tunnel --url http://localhost:{PORT}{Colors.END}")
     print(f"{Colors.YELLOW}[*] Logs: {LOG_DIR}{Colors.END}")
     if API_TOKEN:
