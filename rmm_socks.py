@@ -43,6 +43,7 @@ class SessionSocksBridge:
         self.connect_events: dict[str, threading.Event] = {}
         self.connect_errors: dict[str, str] = {}
         self.tunnels: dict[str, dict[str, Any]] = {}
+        self._pending_sends: dict[str, deque[dict[str, Any]]] = {}
         self._listener_sock: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._running = False
@@ -80,6 +81,7 @@ class SessionSocksBridge:
                 ev.set()
             self.connect_events.clear()
             self.connect_errors.clear()
+            self._pending_sends.clear()
         for t in tunnels:
             self._close_tunnel(t, notify_client=False)
         ls = self._listener_sock
@@ -115,13 +117,42 @@ class SessionSocksBridge:
 
     def _enqueue_task(self, task: dict[str, Any]) -> None:
         with self.lock:
+            if task.get("op") == "send":
+                cid = task.get("id")
+                tunnel = self.tunnels.get(cid) if cid else None
+                if cid and (not tunnel or not tunnel.get("client")):
+                    if cid not in self._pending_sends:
+                        self._pending_sends[cid] = deque()
+                    self._pending_sends[cid].append(task)
+                    return
             self.task_queue.append(task)
 
-    def drain_tasks(self) -> list[dict[str, Any]]:
+    def _drop_tasks(self, conn_id: str, op: str) -> None:
         with self.lock:
-            tasks = list(self.task_queue)
-            self.task_queue.clear()
-            return tasks
+            self.task_queue = deque(
+                t for t in self.task_queue
+                if not (t.get("id") == conn_id and t.get("op") == op)
+            )
+
+    def _flush_pending_sends(self, conn_id: str) -> None:
+        with self.lock:
+            pending = self._pending_sends.pop(conn_id, None)
+        if pending:
+            for task in pending:
+                self._enqueue_task(task)
+
+    def fetch_tasks(self) -> list[dict[str, Any]]:
+        """Return pending tasks. Send tasks are delivered once; connect until POST ack."""
+        with self.lock:
+            outbound: list[dict[str, Any]] = []
+            keep: deque[dict[str, Any]] = deque()
+            for task in self.task_queue:
+                if task.get("op") == "send":
+                    outbound.append(task)
+                else:
+                    keep.append(task)
+            self.task_queue = keep
+            return outbound + list(keep)
 
     def submit_responses(self, responses: list[dict[str, Any]]) -> None:
         for resp in responses:
@@ -132,19 +163,24 @@ class SessionSocksBridge:
             if not cid:
                 continue
             if op == "ok":
+                self._drop_tasks(cid, "connect")
                 with self.lock:
                     if cid not in self.tunnels:
                         self.tunnels[cid] = {"id": cid}
                     ev = self.connect_events.get(cid)
                 if ev:
                     ev.set()
+                self._flush_pending_sends(cid)
+                self.log(f"SOCKS remote connect ok {cid[:8]}", "INFO")
             elif op == "error":
+                self._drop_tasks(cid, "connect")
                 msg = str(resp.get("msg") or "connect failed")
                 with self.lock:
                     self.connect_errors[cid] = msg
                     ev = self.connect_events.get(cid)
                 if ev:
                     ev.set()
+                self.log(f"SOCKS remote connect failed {cid[:8]}: {msg}", "WARNING")
             elif op == "data":
                 data_b64 = resp.get("data_b64")
                 if not data_b64:
@@ -164,7 +200,10 @@ class SessionSocksBridge:
                     except OSError:
                         self._close_tunnel(tunnel)
             elif op in ("closed", "close"):
+                self._drop_tasks(cid, "connect")
+                self._drop_tasks(cid, "send")
                 with self.lock:
+                    self._pending_sends.pop(cid, None)
                     tunnel = self.tunnels.pop(cid, None)
                 if tunnel:
                     self._close_tunnel(tunnel, notify_client=False)
@@ -207,6 +246,7 @@ class SessionSocksBridge:
             if not target_host:
                 return
             conn_id = uuid.uuid4().hex
+            self.log(f"SOCKS connect request -> {target_host}:{target_port} ({conn_id[:8]})", "INFO")
             self._enqueue_task(
                 {"op": "connect", "id": conn_id, "host": target_host, "port": target_port}
             )
@@ -289,6 +329,11 @@ class SessionSocksBridge:
             if len(host_b) < host_len:
                 return None, None
             host = host_b.decode("utf-8", errors="replace")
+        elif atyp == 0x04:
+            raw = client_sock.recv(16)
+            if len(raw) < 16:
+                return None, None
+            host = socket.inet_ntop(socket.AF_INET6, raw)
         else:
             return None, None
         port_b = client_sock.recv(2)
@@ -353,7 +398,7 @@ class SocksManager:
         bridge = self.get(session_id)
         if not bridge:
             return []
-        return bridge.drain_tasks()
+        return bridge.fetch_tasks()
 
     def post_responses(self, session_id: str, body: str) -> bool:
         bridge = self.get(session_id)

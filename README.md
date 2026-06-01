@@ -223,7 +223,9 @@ Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and sets **`socks_active": true`** on each **`GET /cmd`** response for that session. The agent polls **`GET /socks?id=<session_id>`** for connect/send/close tasks and posts responses on **`POST /socks`**. Traffic from your tools (browser, `curl --proxy`, etc.) exits the **remote Windows host**.
 
-Beacon interval is shortened automatically on the agent while the relay is active. Use **`socks stop`** (or kill the session) to tear down.
+Beacon interval is shortened automatically on the agent while the relay is active (~1s polls + rapid `/socks` bursts). Use **`socks stop`** (or kill the session) to tear down.
+
+**Troubleshooting:** On the agent console you should see `SOCKS relay active` then `SOCKS outbound TCP host:port` when a tool uses the proxy. On the server log: `SOCKS connect request` and `SOCKS remote connect ok`. If you see `SOCKS GET … failed`, update the server and client and confirm `RMM_BEACON_SECRET` matches. Watch connections on the **Windows agent** (not the operator machine running the SOCKS listener).
 
 | Beacon | Purpose |
 |--------|---------|
