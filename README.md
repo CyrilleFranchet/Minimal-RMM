@@ -250,11 +250,14 @@ Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Pref
 
 ## Client (`client_rmm.ps1`)
 
-- **URL:** `RMM_BASE_URL` or edit `$u` in the script.
-- **Beacon secret:** `RMM_BEACON_SECRET` (must match the server).
-- **Session id:** new GUID each run unless changed in script.
+All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`.
+
+- **URL:** edit `$u` or set `RMM_BASE_URL`.
+- **Beacon secret:** edit `$beaconSecret` or set `RMM_BEACON_SECRET` (must match the server).
+- **HTTP proxy:** edit `$httpProxy` (e.g. `http://proxy.corp:8080`) or set `RMM_HTTP_PROXY` when the host cannot reach the tunnel directly. Use `$httpProxyUseDefaultCredentials` / `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS=1` for Windows-integrated proxy auth.
+- **Session id:** new GUID each run unless you set `$sessionId` in the script.
 - **Registration:** retries **indefinitely** until the server is back. Re-registers every beacon and after errors so a restarted server is picked up automatically. Only stops on explicit server kill (`TERMINATED` / `__EXIT__`), not on network or auth errors.
-- **Debug:** `RMM_VERBOSE=1` logs each HTTP call (logical URL, wire IPv4, `Host` header, status, error bodies).
+- **Debug:** set `$verboseHttp = $true` or `RMM_VERBOSE=1` to log each HTTP call (logical URL, wire IPv4, `Host` header, status, error bodies).
 
 **HTTP 524 (Cloudflare):** the tunnel reached Cloudflare but the origin did not answer in time. On the host running `cloudflared`, ensure `python server_rmm.py --bind 0.0.0.0` is up and the tunnel targets `http://127.0.0.1:8080` (or your port). This is not a wrong beacon token (that is usually `401`/`403`).
 
