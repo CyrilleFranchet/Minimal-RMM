@@ -640,7 +640,13 @@ async function applyConfig() {
   await refreshSessions();
 }
 
+window.rmmApi = api;
+window.rmmState = state;
+
 document.addEventListener("DOMContentLoaded", () => {
+  if (typeof window.initAiPanel === "function") {
+    window.initAiPanel();
+  }
   $("#connect-btn").addEventListener("click", connect);
   $("#token-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") connect();

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "minimal-rmm": {
+      "command": "python3",
+      "args": ["/absolute/path/to/Minimal-RMM/mcp_rmm_server.py"],
+      "env": {
+        "RMM_SERVER_URL": "http://127.0.0.1:8080",
+        "RMM_API_TOKEN": "your-operator-token"
+      }
+    },
+    "exegol-mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer YOURTOKEN"
+      }
+    }
+  }
+}
