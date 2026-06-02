@@ -757,9 +757,8 @@ function Invoke-RmmSocksCycle {
     return $true
 }
 
-function New-RmmSocksRunspace {
-    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    $fnNames = @(
+function Get-RmmSocksWorkerFunctionNames {
+    @(
         'Write-RmmLog',
         'Get-RmmHttpStatusHint',
         'Get-RmmHttpErrorBody',
@@ -772,13 +771,71 @@ function New-RmmSocksRunspace {
         'Read-RmmSocksTcpChunk',
         'Invoke-RmmSocksCycle'
     )
+}
+
+function Add-RmmFunctionToInitialSessionState {
+    param(
+        [System.Management.Automation.Runspaces.InitialSessionState]$InitialSessionState,
+        [string]$Name,
+        [System.Management.Automation.ScriptBlock]$ScriptBlock
+    )
+    $entry = New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($Name, $ScriptBlock)
+    if ($null -ne $InitialSessionState.Commands) {
+        $InitialSessionState.Commands.Add($entry) | Out-Null
+        return
+    }
+    if ($null -ne $InitialSessionState.Functions) {
+        $InitialSessionState.Functions.Add($entry) | Out-Null
+        return
+    }
+    throw 'InitialSessionState has no Commands or Functions collection (unsupported host)'
+}
+
+function Import-RmmFunctionsIntoPowerShell {
+    param(
+        [System.Management.Automation.PowerShell]$PowerShellInstance,
+        [string[]]$FunctionNames
+    )
+    foreach ($name in $FunctionNames) {
+        $cmd = Get-Command -Name $name -CommandType Function -ErrorAction Stop
+        $null = $PowerShellInstance.AddScript({
+            param($FunctionName, $FunctionBody)
+            Set-Item -Path "function:global:$FunctionName" -Value $FunctionBody
+        }, $false).AddArgument($name).AddArgument($cmd.ScriptBlock).Invoke()
+        $PowerShellInstance.Commands.Clear()
+    }
+}
+
+function New-RmmSocksRunspace {
+    $fnNames = Get-RmmSocksWorkerFunctionNames
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    try {
+        $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    } catch {
+        # Windows PowerShell 5.1 — CreateDefault only
+    }
     foreach ($name in $fnNames) {
         $cmd = Get-Command -Name $name -CommandType Function -ErrorAction Stop
-        $entry = [System.Management.Automation.Runspaces.SessionStateFunctionEntry]::new(
-            $name, $cmd.ScriptBlock)
-        [void]$iss.Functions.Add($entry)
+        Add-RmmFunctionToInitialSessionState -InitialSessionState $iss -Name $name -ScriptBlock $cmd.ScriptBlock
     }
-    return [runspacefactory]::CreateRunspace($iss)
+    $rs = [runspacefactory]::CreateRunspace($iss)
+    $rs.Open()
+    $probe = [PowerShell]::Create()
+    $probe.Runspace = $rs
+    try {
+        $null = $probe.AddScript('Get-Command Invoke-RmmRestMethod -ErrorAction Stop').Invoke()
+    } catch {
+        $probe.Dispose()
+        $rs.Close()
+        $iss2 = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+        $rs = [runspacefactory]::CreateRunspace($iss2)
+        $rs.Open()
+        $probe = [PowerShell]::Create()
+        $probe.Runspace = $rs
+        Import-RmmFunctionsIntoPowerShell -PowerShellInstance $probe -FunctionNames $fnNames
+    }
+    $probe.Dispose()
+    return $rs
 }
 
 function Set-RmmSocksRunspaceVariables {
@@ -794,8 +851,12 @@ function Set-RmmSocksRunspaceVariables {
 function Start-RmmSocksChannelWorker {
     if ($script:RmmSocksWorker.Running) { return }
 
-    $socksRs = New-RmmSocksRunspace
-    $socksRs.Open()
+    try {
+        $socksRs = New-RmmSocksRunspace
+    } catch {
+        Write-Host "[-] SOCKS channel worker failed to start: $($_.Exception.Message)" -ForegroundColor Red
+        return
+    }
 
     $socksCookie = New-Object System.Net.CookieContainer
     Set-RmmSocksRunspaceVariables -Runspace $socksRs -Vars @{
