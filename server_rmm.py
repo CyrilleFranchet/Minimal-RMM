@@ -592,7 +592,16 @@ class RMMServer:
             events = events[-limit:]
         return events
     
-    def register_session(self, session_id, hostname, username, ip=None):
+    def register_session(
+        self,
+        session_id,
+        hostname,
+        username,
+        ip=None,
+        sleep_seconds=None,
+        jitter_percent=None,
+        sync_client_config=False,
+    ):
         to_save = None
         is_new = False
         with self.session_lock:
@@ -600,6 +609,10 @@ class RMMServer:
                 return None
             if session_id not in self.sessions:
                 session = Session(session_id, hostname, username, ip)
+                if sleep_seconds is not None:
+                    session.sleep_seconds = max(1, min(3600, int(sleep_seconds)))
+                if jitter_percent is not None:
+                    session.jitter_percent = max(0, min(100, int(jitter_percent)))
                 self.sessions[session_id] = session
                 to_save = session
                 is_new = True
@@ -610,6 +623,11 @@ class RMMServer:
                 s.username = username
                 if ip is not None:
                     s.ip = ip
+                if sync_client_config:
+                    if sleep_seconds is not None:
+                        s.sleep_seconds = max(1, min(3600, int(sleep_seconds)))
+                    if jitter_percent is not None:
+                        s.jitter_percent = max(0, min(100, int(jitter_percent)))
                 to_save = s
         if to_save is not None:
             self.save_session(to_save)
@@ -1318,7 +1336,28 @@ class RMMHandler(BaseHTTPRequestHandler):
             hostname = qs.get("h", ["unknown"])[0]
             username = qs.get("u", ["unknown"])[0]
             ip = self.client_address[0]
-            reg = self.server_instance.register_session(session_id, hostname, username, ip)
+            sleep_seconds = None
+            jitter_percent = None
+            sync_client = str(qs.get("sync", ["0"])[0]).lower() in ("1", "true", "yes")
+            try:
+                if qs.get("s", [None])[0] is not None:
+                    sleep_seconds = int(qs["s"][0])
+            except (TypeError, ValueError):
+                pass
+            try:
+                if qs.get("j", [None])[0] is not None:
+                    jitter_percent = int(qs["j"][0])
+            except (TypeError, ValueError):
+                pass
+            reg = self.server_instance.register_session(
+                session_id,
+                hostname,
+                username,
+                ip,
+                sleep_seconds=sleep_seconds,
+                jitter_percent=jitter_percent,
+                sync_client_config=sync_client,
+            )
             if reg is None:
                 self._respond(403, "TERMINATED")
             else:
