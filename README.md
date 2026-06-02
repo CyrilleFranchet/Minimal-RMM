@@ -219,11 +219,11 @@ Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 ### SOCKS relay (`/socks`)
 
-When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and sets **`socks_active": true`** on **`GET /cmd`** (control only). The agent then starts a **dedicated background worker** (separate runspace from the main beacon). The worker prefers **`WebSocket /socks-ws`** (server pushes tasks; much lower latency than polling). If WebSocket is unavailable (or **`$httpProxy`** is set), it falls back to **`GET/POST /socks`**. **`socks stop`** clears the relay and stops the worker. SOCKS log lines appear in the PowerShell client console. The main **`/cmd` / `/register` / `/result`** beacon is unchanged.
+When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and sets **`socks_active": true`** on **`GET /cmd`** (control only). The agent then starts a **dedicated background worker** (separate runspace from the main beacon). The worker prefers **WebSocket** on **`GET /socks`** (`Upgrade: websocket`, same IPv4 + `Host` routing as the beacon). If WebSocket fails (or **`$httpProxy`** is set), it falls back to **`GET/POST /socks`** polling. **`socks stop`** clears the relay and stops the worker. SOCKS log lines appear in the PowerShell client console. The main **`/cmd` / `/register` / `/result`** beacon is unchanged.
 
 Use **`socks stop`** (or kill the session) to tear down.
 
-**Troubleshooting:** On the agent console you should see `SOCKS channel worker started` then `SOCKS dedicated channel active` and `SOCKS outbound TCP host:port` when a tool uses the proxy. On the server log: `SOCKS connect request` and `SOCKS remote connect ok`. Watch connections on the **Windows agent** (not the operator machine running the SOCKS listener).
+**Troubleshooting:** On the agent you should see `[+] SOCKS WebSocket channel active` or `[+] SOCKS channel active (/socks HTTP poll)`, then `SOCKS outbound TCP host:port` when a tool uses the proxy. On the server: `SOCKS connect request` and `SOCKS remote connect ok`. Point tools at **`socks5://127.0.0.1:1080` on the machine running the server** (not the agent). Set `$verboseHttp = $true` for WS wire URL / Host debug lines.
 
 | Beacon | Purpose |
 |--------|---------|

@@ -204,7 +204,8 @@ class SessionSocksBridge:
     def fetch_tasks(self) -> list[dict[str, Any]]:
         """Return pending tasks. Send tasks are delivered once; connect until POST ack."""
         with self._agent_ws_lock:
-            if self._agent_ws and not self._agent_ws.closed:
+            ws = self._agent_ws
+            if ws is not None and not ws.closed:
                 return []
         with self.lock:
             outbound: list[dict[str, Any]] = []
