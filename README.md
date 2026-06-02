@@ -196,8 +196,6 @@ See sections below for command tokens and result types.
 | `__DOWNLOAD__ <path>` | Client uploads file (`type=file_upload`) |
 | `__UPLOAD__ <path>` + newline + JSON | Client writes remote file |
 | `__SCREENSHOT__` | Screenshot PNG |
-| `socks_active` in `/cmd` JSON | When true, agent runs the `/socks` relay (no shell command) |
-| `__SOCKS_START__` / `__SOCKS_STOP__` | Legacy tokens (handled internally, not passed to cmd.exe) |
 | `__KEYLOG__ start\|stop\|dump` | Keylogger |
 | `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | Client persistence hooks |
 
@@ -221,15 +219,15 @@ Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 ### SOCKS relay (`/socks`)
 
-When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and sets **`socks_active": true`** on each **`GET /cmd`** response for that session. The agent polls **`GET /socks?id=<session_id>`** for connect/send/close tasks and posts responses on **`POST /socks`**. Traffic from your tools (browser, `curl --proxy`, etc.) exits the **remote Windows host**.
+When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1`. The agent runs a **dedicated background worker** that only uses **`GET/POST /socks`** (its own HTTP session and runspace, separate from the main `/cmd` beacon). Relay traffic never touches `/cmd` or `/result`. The main beacon sleep interval is unchanged.
 
-Beacon interval is shortened automatically on the agent while the relay is active (~1s polls + rapid `/socks` bursts). Use **`socks stop`** (or kill the session) to tear down.
+Use **`socks stop`** (or kill the session) to tear down.
 
-**Troubleshooting:** On the agent console you should see `SOCKS relay active` then `SOCKS outbound TCP host:port` when a tool uses the proxy. On the server log: `SOCKS connect request` and `SOCKS remote connect ok`. If you see `SOCKS GET … failed`, update the server and client and confirm `RMM_BEACON_SECRET` matches. Watch connections on the **Windows agent** (not the operator machine running the SOCKS listener).
+**Troubleshooting:** On the agent console you should see `SOCKS channel worker started` then `SOCKS dedicated channel active` and `SOCKS outbound TCP host:port` when a tool uses the proxy. On the server log: `SOCKS connect request` and `SOCKS remote connect ok`. Watch connections on the **Windows agent** (not the operator machine running the SOCKS listener).
 
 | Beacon | Purpose |
 |--------|---------|
-| `GET /socks?id=…` | Agent fetches pending relay tasks (`{"tasks":[…]}`) |
+| `GET /socks?id=…` | `{"active":true\|false,"tasks":[…]}` on the dedicated channel |
 | `POST /socks?id=…` | Agent posts `{"responses":[…]}` (connect ok, data, closed, error) |
 
 Operator API: `POST /api/v1/sessions/{id}/socks` with `{"port":1080}` or `{"stop":true}`.

@@ -1330,11 +1330,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._respond(400, err)
             else:
                 cmd, resp_type = self.server_instance.get_command(session_id)
-                response = json.dumps({
-                    "command": cmd,
-                    "type": resp_type,
-                    "socks_active": self.server_instance.socks_active(session_id),
-                })
+                response = json.dumps({"command": cmd, "type": resp_type})
                 self._respond(200, response, "application/json")
         
         elif path == "/ping":
@@ -1352,7 +1348,12 @@ class RMMHandler(BaseHTTPRequestHandler):
             else:
                 self.server_instance.touch_session(session_id)
                 tasks = self.server_instance.socks.poll_tasks(session_id)
-                self._respond(200, json.dumps({"tasks": tasks}), "application/json")
+                active = self.server_instance.socks_active(session_id)
+                self._respond(
+                    200,
+                    json.dumps({"active": active, "tasks": tasks}),
+                    "application/json",
+                )
         
         else:
             self._respond(404, "Not Found")
