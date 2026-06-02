@@ -227,8 +227,8 @@ Use **`socks stop`** (or kill the session) to tear down.
 
 | Beacon | Purpose |
 |--------|---------|
-| `GET /socks-ws?id=…` | **WebSocket** agent channel (upgrade); server sends `{"op":"tasks",…}`, agent sends `{"op":"responses",…}` |
-| `GET /socks?id=…` | HTTP poll fallback: `{"active":true\|false,"tasks":[…]}` |
+| `GET /socks?id=…` | JSON poll **or** **WebSocket upgrade** on the same path (`Upgrade: websocket`); WS: server sends `{"op":"tasks",…}`, agent sends `{"op":"responses",…}` |
+| `GET /socks-ws?id=…` | Alias for WebSocket upgrade only (optional) |
 | `POST /socks?id=…` | HTTP fallback: agent posts `{"responses":[…]}` |
 
 Operator API: `POST /api/v1/sessions/{id}/socks` with `{"port":1080}` or `{"stop":true}`.

