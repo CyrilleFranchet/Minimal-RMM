@@ -1,7 +1,7 @@
 """
 SOCKS5 listener on the operator host; TCP is relayed through the beacon via /socks.
 
-Client workflow: __SOCKS_START__ → background job polls GET /socks and POSTs responses.
+Client workflow: dedicated runspace polls GET/POST /socks only (main beacon unchanged).
 """
 
 from __future__ import annotations
