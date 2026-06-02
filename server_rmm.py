@@ -1330,7 +1330,11 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._respond(400, err)
             else:
                 cmd, resp_type = self.server_instance.get_command(session_id)
-                response = json.dumps({"command": cmd, "type": resp_type})
+                response = json.dumps({
+                    "command": cmd,
+                    "type": resp_type,
+                    "socks_active": self.server_instance.socks_active(session_id),
+                })
                 self._respond(200, response, "application/json")
         
         elif path == "/ping":
