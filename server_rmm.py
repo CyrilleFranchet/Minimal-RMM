@@ -961,6 +961,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 if msg.get("op") == "_timeout":
                     continue
                 if msg.get("op") == "ping":
+                    self.server_instance.touch_session(session_id)
                     ws.send_json({"op": "pong"})
                     continue
                 if msg.get("op") == "pull":

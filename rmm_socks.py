@@ -22,6 +22,8 @@ DEFAULT_BIND_HOST = "127.0.0.1"
 SOCKS_CHUNK = 16384
 CONNECT_TIMEOUT = 45.0
 RELAY_IDLE_TIMEOUT = 300.0
+# Cap sends per pull so WS JSON stays under common proxy frame limits (~1 MiB).
+MAX_SENDS_PER_PULL = 32
 
 
 def _b64(data: bytes) -> str:
@@ -194,9 +196,14 @@ class SessionSocksBridge:
         with self.lock:
             outbound: list[dict[str, Any]] = []
             keep: deque[dict[str, Any]] = deque()
+            send_count = 0
             for task in self.task_queue:
                 if task.get("op") == "send":
-                    outbound.append(task)
+                    if send_count < MAX_SENDS_PER_PULL:
+                        outbound.append(task)
+                        send_count += 1
+                    else:
+                        keep.append(task)
                 else:
                     keep.append(task)
             self.task_queue = keep
