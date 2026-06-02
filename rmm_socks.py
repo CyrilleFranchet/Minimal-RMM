@@ -90,12 +90,8 @@ class SessionSocksBridge:
                 old.close()
             except Exception:
                 pass
-        with self.lock:
-            snapshot = list(self.task_queue)
         try:
             ws.send_json({"op": "active", "active": True})
-            if snapshot:
-                ws.send_json({"op": "tasks", "tasks": snapshot})
         except Exception:
             self.detach_agent_ws(ws)
 
@@ -185,7 +181,23 @@ class SessionSocksBridge:
                     self._pending_sends[cid].append(task)
                     return
             self.task_queue.append(task)
-        self._push_tasks_ws([task])
+
+    def _drain_task_queue(self) -> list[dict[str, Any]]:
+        """Dequeue deliverable tasks (send once; connect until ack)."""
+        with self.lock:
+            outbound: list[dict[str, Any]] = []
+            keep: deque[dict[str, Any]] = deque()
+            for task in self.task_queue:
+                if task.get("op") == "send":
+                    outbound.append(task)
+                else:
+                    keep.append(task)
+            self.task_queue = keep
+            return outbound + list(keep)
+
+    def fetch_tasks_for_pull(self) -> list[dict[str, Any]]:
+        """Tasks for agent pull (WebSocket handler thread only)."""
+        return self._drain_task_queue()
 
     def _drop_tasks(self, conn_id: str, op: str) -> None:
         with self.lock:
@@ -202,21 +214,12 @@ class SessionSocksBridge:
                 self._enqueue_task(task)
 
     def fetch_tasks(self) -> list[dict[str, Any]]:
-        """Return pending tasks. Send tasks are delivered once; connect until POST ack."""
+        """HTTP poll only; WebSocket agents use pull on the WS thread."""
         with self._agent_ws_lock:
             ws = self._agent_ws
             if ws is not None and not ws.closed:
                 return []
-        with self.lock:
-            outbound: list[dict[str, Any]] = []
-            keep: deque[dict[str, Any]] = deque()
-            for task in self.task_queue:
-                if task.get("op") == "send":
-                    outbound.append(task)
-                else:
-                    keep.append(task)
-            self.task_queue = keep
-            return outbound + list(keep)
+        return self._drain_task_queue()
 
     def submit_responses(self, responses: list[dict[str, Any]]) -> None:
         for resp in responses:
@@ -498,3 +501,9 @@ class SocksManager:
             return False
         bridge.submit_responses(responses)
         return True
+
+    def pull_tasks_for_ws(self, session_id: str) -> list[dict[str, Any]]:
+        bridge = self.get(session_id)
+        if not bridge:
+            return []
+        return bridge.fetch_tasks_for_pull()

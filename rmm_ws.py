@@ -89,6 +89,7 @@ class WebSocketConnection:
         self.sock = sock
         self.sock.settimeout(300.0)
         self._closed = False
+        self._io_lock = threading.Lock()
 
     @classmethod
     def from_http_request(
@@ -118,7 +119,8 @@ class WebSocketConnection:
         if self._closed:
             return
         try:
-            _send_frame(self.sock, 0x1, json.dumps(data).encode("utf-8"))
+            with self._io_lock:
+                _send_frame(self.sock, 0x1, json.dumps(data).encode("utf-8"))
         except OSError:
             self._closed = True
 
@@ -126,16 +128,17 @@ class WebSocketConnection:
         if self._closed:
             return None
         try:
-            while True:
-                opcode, payload = _read_frame(self.sock)
-                if opcode == 0x8:
-                    self._closed = True
-                    return None
-                if opcode == 0x9:
-                    _send_frame(self.sock, 0xA, payload)
-                    continue
-                if opcode == 0x1:
-                    return json.loads(payload.decode("utf-8"))
+            with self._io_lock:
+                while True:
+                    opcode, payload = _read_frame(self.sock)
+                    if opcode == 0x8:
+                        self._closed = True
+                        return None
+                    if opcode == 0x9:
+                        _send_frame(self.sock, 0xA, payload)
+                        continue
+                    if opcode == 0x1:
+                        return json.loads(payload.decode("utf-8"))
         except socket.timeout:
             return {"op": "_timeout"}
         except (OSError, json.JSONDecodeError, ConnectionError):

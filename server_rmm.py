@@ -963,6 +963,10 @@ class RMMHandler(BaseHTTPRequestHandler):
                 if msg.get("op") == "ping":
                     ws.send_json({"op": "pong"})
                     continue
+                if msg.get("op") == "pull":
+                    tasks = self.server_instance.socks.pull_tasks_for_ws(session_id)
+                    ws.send_json({"op": "tasks", "tasks": tasks})
+                    continue
                 if msg.get("op") == "responses":
                     responses = msg.get("responses")
                     if isinstance(responses, list):
