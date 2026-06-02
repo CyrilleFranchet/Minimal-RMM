@@ -219,7 +219,7 @@ Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 ### SOCKS relay (`/socks`)
 
-When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and sets **`socks_active": true`** on **`GET /cmd`** (control only). The agent then starts a **dedicated background worker** that only uses **`GET/POST /socks`** (separate HTTP session and runspace). **`socks stop`** clears the relay and stops the worker. SOCKS log lines appear in the PowerShell client console. The main beacon sleep interval is unchanged.
+When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and sets **`socks_active": true`** on **`GET /cmd`** (control only). The agent then starts a **dedicated background worker** (separate runspace from the main beacon). The worker prefers **`WebSocket /socks-ws`** (server pushes tasks; much lower latency than polling). If WebSocket is unavailable (or **`$httpProxy`** is set), it falls back to **`GET/POST /socks`**. **`socks stop`** clears the relay and stops the worker. SOCKS log lines appear in the PowerShell client console. The main **`/cmd` / `/register` / `/result`** beacon is unchanged.
 
 Use **`socks stop`** (or kill the session) to tear down.
 
@@ -227,8 +227,9 @@ Use **`socks stop`** (or kill the session) to tear down.
 
 | Beacon | Purpose |
 |--------|---------|
-| `GET /socks?id=…` | `{"active":true\|false,"tasks":[…]}` on the dedicated channel |
-| `POST /socks?id=…` | Agent posts `{"responses":[…]}` (connect ok, data, closed, error) |
+| `GET /socks-ws?id=…` | **WebSocket** agent channel (upgrade); server sends `{"op":"tasks",…}`, agent sends `{"op":"responses",…}` |
+| `GET /socks?id=…` | HTTP poll fallback: `{"active":true\|false,"tasks":[…]}` |
+| `POST /socks?id=…` | HTTP fallback: agent posts `{"responses":[…]}` |
 
 Operator API: `POST /api/v1/sessions/{id}/socks` with `{"port":1080}` or `{"stop":true}`.
 
