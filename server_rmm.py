@@ -62,7 +62,20 @@ BEACON_SECRET = os.environ.get("RMM_BEACON_SECRET", "").strip()
 INSECURE = False
 LISTEN_HOST = "127.0.0.1"
 MAX_RESULT_EVENTS = 500
-MAX_BODY_BYTES = 10 * 1024 * 1024
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+# Per HTTP POST (each download chunk). Override with RMM_MAX_BODY_BYTES.
+MAX_BODY_BYTES = _env_int("RMM_MAX_BODY_BYTES", 32 * 1024 * 1024)
 
 
 def secure_compare(provided: str, expected: str) -> bool:
@@ -730,6 +743,31 @@ class RMMServer:
             return (out, cmd_echo)
         return (body, None)
 
+    def _save_file_upload(self, session, data: dict, timestamp: str) -> str | None:
+        """Write agent file_upload payload. Returns final path when complete, else None (chunk)."""
+        raw_name = data.get("filename", f"unknown_{timestamp}")
+        filename = safe_storage_filename(raw_name, f"unknown_{timestamp}")
+        downloads_dir = os.path.join(LOG_DIR, "downloads")
+        prefix = safe_session_storage_prefix(session.id)
+        final_path = safe_join_under(downloads_dir, f"{prefix}_{filename}")
+        content = base64.b64decode(data.get("content", "") or "")
+
+        if "offset" not in data:
+            with open(final_path, "wb") as f:
+                f.write(content)
+            return final_path
+
+        upload_id = re.sub(r"[^\w-]", "", str(data.get("upload_id") or "default"))[:64] or "default"
+        staging_path = safe_join_under(downloads_dir, f"{prefix}_{upload_id}.part")
+        offset = int(data.get("offset", 0))
+        mode = "wb" if offset == 0 else "ab"
+        with open(staging_path, mode) as f:
+            f.write(content)
+        if not data.get("eof"):
+            return None
+        os.replace(staging_path, final_path)
+        return final_path
+
     def handle_result(self, session_id, result, cmd_type="output"):
         session = self.get_session(session_id)
         if not session:
@@ -745,15 +783,9 @@ class RMMServer:
         if cmd_type == "file_upload":
             try:
                 data = json.loads(result)
-                raw_name = data.get("filename", f"unknown_{timestamp}")
-                filename = safe_storage_filename(raw_name, f"unknown_{timestamp}")
-                content = base64.b64decode(data.get("content", ""))
-                filepath = safe_join_under(
-                    os.path.join(LOG_DIR, "downloads"),
-                    f"{safe_session_storage_prefix(session.id)}_{filename}",
-                )
-                with open(filepath, 'wb') as f:
-                    f.write(content)
+                filepath = self._save_file_upload(session, data, timestamp)
+                if not filepath:
+                    return
                 artifact = filepath
                 event_body = f"saved to {filepath}"
                 tty_lines.append(("log", f"File downloaded: {filepath}", "SUCCESS"))
