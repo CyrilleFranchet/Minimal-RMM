@@ -21,6 +21,24 @@ def _ws_accept_key(sec_key: str) -> str:
     return base64.b64encode(digest).decode()
 
 
+def _get_header(headers, name: str) -> str:
+    """Case-insensitive header lookup (dict or http.client HTTPMessage)."""
+    if headers is None:
+        return ""
+    try:
+        val = headers.get(name)
+        if val:
+            return val.split(",")[0].strip()
+    except (TypeError, AttributeError):
+        pass
+    if isinstance(headers, dict):
+        name_l = name.lower()
+        for key, val in headers.items():
+            if str(key).lower() == name_l and val:
+                return str(val).split(",")[0].strip()
+    return ""
+
+
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
     buf = b""
     while len(buf) < n:
@@ -76,13 +94,13 @@ class WebSocketConnection:
     def from_http_request(
         cls,
         sock: socket.socket,
-        headers: dict,
-        path: str,
+        headers,
+        path: str = "",
     ) -> Optional["WebSocketConnection"]:
-        key = headers.get("Sec-WebSocket-Key", "")
+        key = _get_header(headers, "Sec-WebSocket-Key")
         if not key:
             return None
-        version = headers.get("Sec-WebSocket-Version", "")
+        version = _get_header(headers, "Sec-WebSocket-Version")
         if version != "13":
             return None
         accept = _ws_accept_key(key)
