@@ -20,6 +20,15 @@
 #   $jitterPercent      Random +/- percent applied to sleep and backoff.
 #   $maxRetries         Short backoff cycles before a longer pause on errors.
 #
+# Server sync (internal — do not edit unless you know why)
+#   $script:RmmRegisterConfigSynced
+#                       Starts $false. Set to $true after the first successful
+#                       /register in this process. Until then, register sends
+#                       s=, j=, and sync=1 so the server adopts this script's
+#                       $baseSleepSeconds and $jitterPercent (new sessions, or
+#                       existing sessions on that one-time sync). Later beacons
+#                       use operator set_sleep / set_jitter via __CONFIG__ only.
+#
 # HTTP transport
 #   $persistentHttp     $true = reuse TCP + cookies across requests.
 #   $httpProxy           Outbound proxy URI, e.g. http://proxy.corp:8080 (empty = direct).
