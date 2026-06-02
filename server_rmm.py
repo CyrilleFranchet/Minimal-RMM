@@ -964,6 +964,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     ws.send_json({"op": "pong"})
                     continue
                 if msg.get("op") == "pull":
+                    self.server_instance.touch_session(session_id)
                     tasks = self.server_instance.socks.pull_tasks_for_ws(session_id)
                     ws.send_json({"op": "tasks", "tasks": tasks})
                     continue

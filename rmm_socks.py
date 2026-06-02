@@ -181,6 +181,13 @@ class SessionSocksBridge:
                     self._pending_sends[cid].append(task)
                     return
             self.task_queue.append(task)
+        self._wake_agent_ws(task)
+
+    def _wake_agent_ws(self, task: dict[str, Any]) -> None:
+        """Push urgent tasks immediately (connect/close); sends use pull to avoid duplicates."""
+        op = task.get("op")
+        if op in ("connect", "close"):
+            self._push_tasks_ws([dict(task)])
 
     def _drain_task_queue(self) -> list[dict[str, Any]]:
         """Dequeue deliverable tasks (send once; connect until ack)."""
@@ -193,7 +200,8 @@ class SessionSocksBridge:
                 else:
                     keep.append(task)
             self.task_queue = keep
-            return outbound + list(keep)
+            # connect/close before send so the agent opens TCP before writing payload
+            return list(keep) + outbound
 
     def fetch_tasks_for_pull(self) -> list[dict[str, Any]]:
         """Tasks for agent pull (WebSocket handler thread only)."""
