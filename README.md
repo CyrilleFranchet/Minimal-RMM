@@ -225,6 +225,8 @@ Use **`socks stop`** (or kill the session) to tear down.
 
 **Troubleshooting:** On the agent you should see `[+] SOCKS WebSocket channel active` or `[+] SOCKS channel active (/socks HTTP poll)`, then `SOCKS outbound TCP host:port` when a tool uses the proxy. On the server: `SOCKS connect request` and `SOCKS remote connect ok`. Point tools at **`socks5://127.0.0.1:1080` on the machine running the server** (not the agent). Set `$verboseHttp = $true` for WS wire URL / Host debug lines.
 
+**SMB / “NETBIOS connection timed out”:** The relay only tunnels **TCP** (e.g. port **445**). It does not carry NetBIOS name (137/138) or session (139) traffic. Prefer **`10.x.x.x:445`** or `\\10.x.x.x\share` through SOCKS, not a hostname that your PC resolves locally. Wireshark on the target path may show `STATUS_LOGON_FAILURE` (bad credentials on the remote host) while the Windows client still reports a generic NetBIOS timeout. Check server logs for `SOCKS remote connect ok` and agent logs for outbound TCP to the target IP.
+
 | Beacon | Purpose |
 |--------|---------|
 | `GET /socks?id=…` | JSON poll **or** **WebSocket upgrade** on the same path (`Upgrade: websocket`); WS: server sends `{"op":"tasks",…}`, agent sends `{"op":"responses",…}` |

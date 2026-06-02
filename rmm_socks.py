@@ -246,7 +246,7 @@ class SessionSocksBridge:
                 self._drop_tasks(cid, "connect")
                 with self.lock:
                     if cid not in self.tunnels:
-                        self.tunnels[cid] = {"id": cid}
+                        self.tunnels[cid] = {"id": cid, "client_lock": threading.Lock()}
                     ev = self.connect_events.get(cid)
                 if ev:
                     ev.set()
@@ -275,8 +275,13 @@ class SessionSocksBridge:
                     sock = tunnel.get("client")
                     if not sock:
                         continue
+                    client_lock = tunnel.get("client_lock")
                     try:
-                        sock.sendall(payload)
+                        if client_lock:
+                            with client_lock:
+                                sock.sendall(payload)
+                        else:
+                            sock.sendall(payload)
                     except OSError:
                         self._close_tunnel(tunnel)
             elif op in ("closed", "close"):
@@ -290,7 +295,11 @@ class SessionSocksBridge:
 
     def _close_tunnel(self, tunnel: dict[str, Any], *, notify_client: bool = True) -> None:
         sock = tunnel.get("client")
-        if sock:
+        client_lock = tunnel.get("client_lock")
+
+        def _shutdown_client() -> None:
+            if not sock:
+                return
             try:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
@@ -299,6 +308,13 @@ class SessionSocksBridge:
                 sock.close()
             except OSError:
                 pass
+
+        if sock:
+            if client_lock:
+                with client_lock:
+                    _shutdown_client()
+            else:
+                _shutdown_client()
         if notify_client:
             cid = tunnel.get("id")
             if cid:
@@ -341,6 +357,7 @@ class SessionSocksBridge:
             if not self._socks5_reply(client_sock, rep=0x00):
                 self._close_tunnel(tunnel)
                 return
+            tunnel.setdefault("client_lock", threading.Lock())
             tunnel["client"] = client_sock
             self._relay_local_to_remote(tunnel)
         except Exception as exc:
@@ -354,6 +371,7 @@ class SessionSocksBridge:
     def _relay_local_to_remote(self, tunnel: dict[str, Any]) -> None:
         client_sock = tunnel["client"]
         conn_id = tunnel["id"]
+        client_lock = tunnel.get("client_lock")
         client_sock.settimeout(1.0)
         try:
             while True:
@@ -361,7 +379,11 @@ class SessionSocksBridge:
                     if not self._running or conn_id not in self.tunnels:
                         break
                 try:
-                    data = client_sock.recv(SOCKS_CHUNK)
+                    if client_lock:
+                        with client_lock:
+                            data = client_sock.recv(SOCKS_CHUNK)
+                    else:
+                        data = client_sock.recv(SOCKS_CHUNK)
                 except socket.timeout:
                     continue
                 if not data:

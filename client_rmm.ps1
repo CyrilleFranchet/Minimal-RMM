@@ -793,6 +793,9 @@ function Invoke-RmmSocksCycle {
                 continue
             }
             try {
+                if ($destHost -match '[^0-9a-fA-F.:]') {
+                    Write-RmmLog "SOCKS DNS for '$destHost' runs on the agent host, not your operator PC" -Level DEBUG
+                }
                 $tcp = New-Object System.Net.Sockets.TcpClient
                 $tcp.ReceiveTimeout = 0
                 $tcp.SendTimeout = 60000
@@ -838,10 +841,15 @@ function Invoke-RmmSocksCycle {
         if (-not $tcp) { continue }
         try {
             $closed = $false
-            while ($true) {
-                $chunk = Read-RmmSocksTcpChunk -Tcp $tcp -ReadTimeoutMs 150
+            $idleReads = 0
+            while ($idleReads -lt 4) {
+                $chunk = Read-RmmSocksTcpChunk -Tcp $tcp -ReadTimeoutMs 50
                 if ($null -eq $chunk) { break }
-                if ($chunk.timeout) { break }
+                if ($chunk.timeout) {
+                    $idleReads++
+                    continue
+                }
+                $idleReads = 0
                 if ($chunk.eof) {
                     $closed = $true
                     break
@@ -1023,8 +1031,10 @@ function Invoke-RmmSocksDrainTcpToWs {
         [hashtable]$Headers,
         $EmptyPoll
     )
-    $drain = Invoke-RmmSocksCycle -Headers $Headers -Poll $EmptyPoll -EmitResponsesOnly
-    if ($drain.responses -and $drain.responses.Count -gt 0) {
+    $passes = if ($script:RmmSocksConnections.Count -gt 0) { 16 } else { 1 }
+    for ($p = 0; $p -lt $passes; $p++) {
+        $drain = Invoke-RmmSocksCycle -Headers $Headers -Poll $EmptyPoll -EmitResponsesOnly
+        if (-not $drain.responses -or $drain.responses.Count -eq 0) { break }
         Send-RmmSocksResponsesWs -WebSocket $WebSocket -Responses $drain.responses
     }
 }
@@ -1118,16 +1128,29 @@ function Invoke-RmmSocksWsRelay {
         }
         while (-not $RmmSocksChannelStop) {
             Invoke-RmmSocksDrainTcpToWs -WebSocket $ws -Headers $headers -EmptyPoll $emptyPoll
-            Send-RmmSocksWsJson -WebSocket $ws -Message @{ op = 'pull' }
-            $reply = Receive-RmmSocksWsJson -WebSocket $ws
-            if ($null -eq $reply -or $reply.op -eq 'close') {
-                throw [System.IO.IOException]::new('SOCKS WebSocket closed by server')
+            $spin = 0
+            $hadTasks = $true
+            while ($hadTasks -and $spin -lt 64) {
+                $spin++
+                $hadTasks = $false
+                Send-RmmSocksWsJson -WebSocket $ws -Message @{ op = 'pull' }
+                $reply = Receive-RmmSocksWsJson -WebSocket $ws
+                if ($null -eq $reply -or $reply.op -eq 'close') {
+                    throw [System.IO.IOException]::new('SOCKS WebSocket closed by server')
+                }
+                if ($reply.op -eq 'active' -and -not [bool]$reply.active) {
+                    Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
+                    return
+                }
+                if ($reply.op -eq 'tasks') {
+                    $taskList = Get-RmmSocksTasksFromPoll -Poll @{ active = $true; tasks = @($reply.tasks) }
+                    if ($taskList.Count -gt 0) {
+                        $hadTasks = $true
+                        Invoke-RmmSocksProcessWsTasks -WebSocket $ws -Headers $headers -Tasks $taskList
+                    }
+                }
+                Invoke-RmmSocksDrainTcpToWs -WebSocket $ws -Headers $headers -EmptyPoll $emptyPoll
             }
-            if ((Invoke-RmmSocksHandleWsMessages -WebSocket $ws -Headers $headers -Messages @($reply)) -eq 'stop') {
-                Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
-                break
-            }
-            Invoke-RmmSocksDrainTcpToWs -WebSocket $ws -Headers $headers -EmptyPoll $emptyPoll
         }
     } finally {
         Close-RmmSocksWebSocket -WebSocket $ws
