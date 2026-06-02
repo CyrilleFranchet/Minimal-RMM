@@ -183,13 +183,11 @@ class SessionSocksBridge:
                     self._pending_sends[cid].append(task)
                     return
             self.task_queue.append(task)
-        self._wake_agent_ws(task)
+        # Tasks are pull-only on the agent WS thread (no push) to keep one reply per pull.
 
     def _wake_agent_ws(self, task: dict[str, Any]) -> None:
-        """Push urgent tasks immediately (connect/close); sends use pull to avoid duplicates."""
-        op = task.get("op")
-        if op in ("connect", "close"):
-            self._push_tasks_ws([dict(task)])
+        """Reserved; agent uses pull so frames are not stranded ahead of pull replies."""
+        del task
 
     def _drain_task_queue(self) -> list[dict[str, Any]]:
         """Dequeue deliverable tasks (send once; connect until ack)."""
