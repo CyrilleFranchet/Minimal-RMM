@@ -219,7 +219,7 @@ Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 ### SOCKS relay (`/socks`)
 
-When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1`. The agent runs a **dedicated background worker** that only uses **`GET/POST /socks`** (its own HTTP session and runspace, separate from the main `/cmd` beacon). Relay traffic never touches `/cmd` or `/result`. The main beacon sleep interval is unchanged.
+When an operator runs **`socks [port]`** (default **1080**), the server binds a **SOCKS5** listener on `127.0.0.1` and sets **`socks_active": true`** on **`GET /cmd`** (control only). The agent then starts a **dedicated background worker** that only uses **`GET/POST /socks`** (separate HTTP session and runspace). **`socks stop`** clears the relay and stops the worker. SOCKS log lines appear in the PowerShell client console. The main beacon sleep interval is unchanged.
 
 Use **`socks stop`** (or kill the session) to tear down.
 
