@@ -2,7 +2,7 @@
 SOCKS5 listener on the operator host; TCP is relayed through the beacon.
 
 Agent transport (main /cmd beacon unchanged):
-  - WebSocket GET /socks-ws (push tasks, low latency) when supported
+  - WebSocket GET /socks?... with Upgrade (push tasks, low latency) when supported
   - HTTP GET/POST /socks (poll fallback)
 """
 
