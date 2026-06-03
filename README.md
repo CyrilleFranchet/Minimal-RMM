@@ -92,7 +92,28 @@ export RMM_API_TOKEN=your-operator-token
 python mcp_rmm_server.py
 ```
 
-Copy `mcp.example.json` into your Cursor MCP config (`~/.cursor/mcp.json`) and fix the script path. Tools: `list_sessions`, `get_session`, `exec_command`, `queue_command`, `patch_config`, `get_events`, `kill_session`, `queue_download`, `queue_screenshot`.
+Copy `mcp.example.json` into your Cursor MCP config (`~/.cursor/mcp.json`) and fix the script path.
+
+MCP tools mirror `rmm_cli.py` operator actions:
+
+| CLI (interactive / subcommand) | MCP tool |
+|-------------------------------|----------|
+| `health` | `health` |
+| `list` / `sessions list` | `list_sessions` |
+| `info` / `session info` | `get_session` |
+| `kill` | `kill_session` |
+| `exec` | `exec_command` |
+| `run` / bare command | `queue_command` |
+| `persist` | `queue_persistent` |
+| `stop` | `stop_persistent` |
+| `set_sleep` / `set_jitter` / `config set-*` | `patch_config` |
+| `events` | `get_events` |
+| `download` | `queue_download` |
+| `upload` | `queue_upload` |
+| `screenshot` | `queue_screenshot` |
+| `socks` / `socks stop` | `start_socks` / `stop_socks` |
+
+Interactive-only: `use`, `background`, `clear`, `help`, `quit` (session selection is via `session_ref` on each tool).
 
 ### Embedded console (optional)
 
