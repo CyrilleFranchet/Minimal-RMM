@@ -241,6 +241,14 @@ def tool_stop_socks(client: RmmApiClient, session_ref: str) -> str:
     return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
 
 
+def tool_list_socks(client: RmmApiClient) -> str:
+    code, data = client.list_socks()
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    relays = data.get("relays", [])
+    return _json_result({"ok": True, "count": len(relays), "relays": relays})
+
+
 def tool_queue_persistent(client: RmmApiClient, session_ref: str, command: str) -> str:
     return tool_queue_command(client, session_ref, command, cmd_type="persistent")
 
@@ -281,6 +289,7 @@ TOOL_HANDLERS = {
         str(a.get("bind_host", "127.0.0.1")),
     ),
     "stop_socks": lambda c, a: tool_stop_socks(c, a["session_ref"]),
+    "list_socks": lambda c, a: tool_list_socks(c),
     "queue_persistent": lambda c, a: tool_queue_persistent(
         c, a["session_ref"], a["command"]
     ),
@@ -455,6 +464,14 @@ OPENAI_TOOLS: list[dict] = [
                 },
                 "required": ["session_ref", "local_path", "remote_path"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_socks",
+            "description": "List all active SOCKS5 relays on the RMM server and which agent each uses.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {

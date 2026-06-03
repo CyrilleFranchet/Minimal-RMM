@@ -209,6 +209,9 @@ class RmmApiClient:
             {"stop": True},
         )
 
+    def list_socks(self):
+        return self.request("GET", "/api/v1/socks")
+
 
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
@@ -562,6 +565,36 @@ def cmd_upload(client: RmmApiClient, state: dict, args):
     print(f"Upload queued: {args.local} -> {args.remote}")
 
 
+def print_socks_relays(relays: list, *, json_mode: bool = False) -> None:
+    if json_mode:
+        print(json.dumps({"count": len(relays), "relays": relays}, indent=2))
+        return
+    if not relays:
+        say("No active SOCKS relays")
+        return
+    for r in relays:
+        host = r.get("hostname")
+        user = r.get("username")
+        agent = f"{user}@{host}" if host else r.get("session_id", "?")[:8]
+        sid = r.get("session_id", "")[:8]
+        url = r.get("socks_url", "")
+        ch = r.get("agent_channel", "?")
+        ws = "yes" if r.get("agent_websocket") else "no"
+        tunnels = r.get("active_tunnels", 0)
+        beacon = r.get("beacon_status", "?")
+        say(
+            f"{url}  →  {agent}  [session {sid}]  "
+            f"channel={ch}  ws={ws}  tunnels={tunnels}  beacon={beacon}"
+        )
+
+
+def cmd_socks_list(client: RmmApiClient, state: dict, args):
+    code, data = client.list_socks()
+    if code != 200:
+        die(f"socks list failed ({code}): {data}")
+    print_socks_relays(data.get("relays", []), json_mode=getattr(args, "json", False))
+
+
 def _resolve_session_id(client: RmmApiClient, state: dict, prefix: str):
     """Return full session id from prefix via API list."""
     code, data = client.list_sessions()
@@ -621,7 +654,7 @@ Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
 Files:    download <remote> | upload <local> <remote> | screenshot
-Tunnel:   socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
+Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
 Other:    events [since] | health | help | quit
 
 Tip: agent output and config_ack events stream for all connected sessions (prefix [session8]).
@@ -1031,6 +1064,13 @@ def run_interactive(
                     warn(f"failed ({code})")
                 continue
             if cmd == "socks":
+                if rest and rest[0].lower() == "list":
+                    code, data = client.list_socks()
+                    if code != 200:
+                        warn(f"socks list failed ({code}): {data}")
+                    else:
+                        print_socks_relays(data.get("relays", []), json_mode=json_mode)
+                    continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
@@ -1272,6 +1312,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp_ev.add_argument("--since", type=int, default=0)
     sp_ev.add_argument("--limit", type=int, default=50)
     sp_ev.set_defaults(func=cmd_events)
+
+    sp_socks = sub.add_parser("socks", help="SOCKS relay management")
+    sp_socks_sub = sp_socks.add_subparsers(dest="socks_cmd", required=True)
+    sp_socks_list = sp_socks_sub.add_parser(
+        "list", parents=[shared], help="List all SOCKS listeners and connected agents"
+    )
+    sp_socks_list.set_defaults(func=cmd_socks_list)
 
     return p
 
