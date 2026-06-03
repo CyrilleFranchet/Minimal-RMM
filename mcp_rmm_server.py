@@ -36,12 +36,18 @@ from rmm_tools import (
     tool_exec_command,
     tool_get_events,
     tool_get_session,
+    tool_health,
     tool_kill_session,
     tool_list_sessions,
     tool_patch_config,
     tool_queue_command,
     tool_queue_download,
+    tool_queue_persistent,
     tool_queue_screenshot,
+    tool_queue_upload,
+    tool_start_socks,
+    tool_stop_persistent,
+    tool_stop_socks,
 )
 
 mcp = FastMCP(
@@ -63,6 +69,12 @@ def _client():
             os.environ.get("RMM_API_TOKEN"),
         )
     return _client
+
+
+@mcp.tool()
+def health() -> str:
+    """Check RMM server API health."""
+    return tool_health(_client())
 
 
 @mcp.tool()
@@ -121,6 +133,36 @@ def queue_download(session_ref: str, remote_path: str) -> str:
 def queue_screenshot(session_ref: str) -> str:
     """Queue screenshot on agent."""
     return tool_queue_screenshot(_client(), session_ref)
+
+
+@mcp.tool()
+def queue_upload(session_ref: str, local_path: str, remote_path: str) -> str:
+    """Upload a local file (on this machine) to a remote path on the agent."""
+    return tool_queue_upload(_client(), session_ref, local_path, remote_path)
+
+
+@mcp.tool()
+def start_socks(session_ref: str, port: int = 1080, bind_host: str = "127.0.0.1") -> str:
+    """Start SOCKS5 on the RMM server; use socks5://bind_host:port from that host."""
+    return tool_start_socks(_client(), session_ref, port=port, bind_host=bind_host)
+
+
+@mcp.tool()
+def stop_socks(session_ref: str) -> str:
+    """Stop SOCKS5 relay for the session."""
+    return tool_stop_socks(_client(), session_ref)
+
+
+@mcp.tool()
+def queue_persistent(session_ref: str, command: str) -> str:
+    """Set a persistent command on the agent until stop_persistent."""
+    return tool_queue_persistent(_client(), session_ref, command)
+
+
+@mcp.tool()
+def stop_persistent(session_ref: str) -> str:
+    """Stop the agent persistent command."""
+    return tool_stop_persistent(_client(), session_ref)
 
 
 if __name__ == "__main__":
