@@ -496,6 +496,29 @@ class SocksManager:
         for sid in ids:
             self.stop(sid)
 
+    def list_relays(self) -> list[dict[str, Any]]:
+        """Active SOCKS listeners and agent channel state (global operator view)."""
+        with self.lock:
+            bridges = list(self.bridges.values())
+        relays: list[dict[str, Any]] = []
+        for bridge in bridges:
+            with bridge.lock:
+                tunnels = len(bridge.tunnels)
+                running = bridge._running
+            ws = bridge.agent_ws_connected()
+            relays.append({
+                "session_id": bridge.session_id,
+                "bind_host": bridge.bind_host,
+                "port": bridge.port,
+                "socks_url": f"socks5://{bridge.bind_host}:{bridge.port}",
+                "listener_running": running,
+                "agent_websocket": ws,
+                "agent_channel": "websocket" if ws else "http_or_pending",
+                "active_tunnels": tunnels,
+            })
+        relays.sort(key=lambda r: (r["port"], r["session_id"]))
+        return relays
+
     def poll_tasks(self, session_id: str) -> list[dict[str, Any]]:
         bridge = self.get(session_id)
         if not bridge:

@@ -38,6 +38,7 @@ from rmm_tools import (
     tool_get_session,
     tool_health,
     tool_kill_session,
+    tool_list_socks,
     tool_list_sessions,
     tool_patch_config,
     tool_queue_command,
@@ -139,6 +140,12 @@ def queue_screenshot(session_ref: str) -> str:
 def queue_upload(session_ref: str, local_path: str, remote_path: str) -> str:
     """Upload a local file (on this machine) to a remote path on the agent."""
     return tool_queue_upload(_client(), session_ref, local_path, remote_path)
+
+
+@mcp.tool()
+def list_socks() -> str:
+    """List all active SOCKS5 listeners on the RMM server and their connected agents."""
+    return tool_list_socks(_client())
 
 
 @mcp.tool()

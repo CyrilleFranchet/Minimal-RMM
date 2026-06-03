@@ -573,6 +573,23 @@ class RMMServer:
     def socks_active(self, session_id: str) -> bool:
         return self.socks.get(session_id) is not None
 
+    def list_socks_status(self) -> list[dict]:
+        """All active SOCKS relays with session hostname/username when known."""
+        rows = []
+        for relay in self.socks.list_relays():
+            row = dict(relay)
+            session = self.get_session(relay["session_id"])
+            if session:
+                row["hostname"] = session.hostname
+                row["username"] = session.username
+                row["beacon_status"] = session.beacon_status()
+            else:
+                row["hostname"] = None
+                row["username"] = None
+                row["beacon_status"] = None
+            rows.append(row)
+        return rows
+
     def exec_and_wait(self, session_id_or_prefix, command, timeout=120):
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -1124,6 +1141,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"sessions": srv.sessions_to_json()})
             return True
 
+        if parts == ["socks"]:
+            relays = srv.list_socks_status()
+            self._json(200, {"count": len(relays), "relays": relays})
+            return True
+
         if len(parts) == 2 and parts[0] == "sessions":
             session = srv.resolve_session(parts[1])
             if not session:
@@ -1617,6 +1639,7 @@ class CommandInterface:
   {Colors.GREEN}upload <local> <remote>{Colors.END}  - Upload file to target
 
 {Colors.CYAN}Tunneling:{Colors.END}
+  {Colors.GREEN}socks list{Colors.END}            - List all SOCKS relays and connected agents
   {Colors.GREEN}socks [port]{Colors.END}           - SOCKS5 on 127.0.0.1 (default port {DEFAULT_SOCKS_PORT})
   {Colors.GREEN}socks stop{Colors.END}             - Stop SOCKS relay for this session
 
@@ -1850,6 +1873,26 @@ class CommandInterface:
                 self.server.tty_print(f"{Colors.DIM}Removing persistence...{Colors.END}")
 
             elif cmd == "socks":
+                if args and args[0].lower() == "list":
+                    relays = self.server.list_socks_status()
+                    if not relays:
+                        self.server.tty_print(f"{Colors.DIM}No active SOCKS relays{Colors.END}")
+                    else:
+                        for r in relays:
+                            agent = (
+                                f"{r.get('username')}@{r.get('hostname')}"
+                                if r.get("hostname")
+                                else r["session_id"][:8]
+                            )
+                            ch = r.get("agent_channel", "?")
+                            url = r.get("socks_url", "")
+                            tunnels = r.get("active_tunnels", 0)
+                            self.server.tty_print(
+                                f"{Colors.GREEN}{url}{Colors.END} → {agent} "
+                                f"({ch}, tunnels={tunnels}, beacon={r.get('beacon_status')})",
+                                ansi=False,
+                            )
+                    return True
                 if args and args[0].lower() == "stop":
                     self.server.stop_socks(self.server.current_session)
                     self.server.tty_print(f"{Colors.DIM}SOCKS relay stopped{Colors.END}")
