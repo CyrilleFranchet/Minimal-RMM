@@ -193,6 +193,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 - [ ] **Web UI — traffic & beacon charts** — see [tech plan §1](tech-plan.md#1-beacon--traffic-visualization-web-ui): `GET …/metrics`, poll/byte counters, Chart.js panel
 - [ ] **file.io upload** — see [tech plan §2](tech-plan.md#2-upload-to-fileio-url-returned-by-rmm): `__FILEIO__`, REST/CLI/MCP/web parity, link in events
+- [ ] **Web UI — command completion** — see [tech plan §4](tech-plan.md#4-web-ui--command-completion): tab hints, Up/Down history in shell input
+- [ ] **Web UI — interactive shell (cmd / PowerShell)** — see [tech plan §5](tech-plan.md#5-web-ui--interactive-shell-mode-cmd--powershell): shell mode selector, cwd prompt, `PS:` / `pwsh:` dispatch
 - [ ] **Web UI:** SOCKS controls + global relay list (`GET /api/v1/socks`)
 - [ ] **Chunked upload** (symmetry with download; large `content_b64` still single POST today)
 - [ ] **CLI subcommands:** `screenshot`, `socks start|stop` (only interactive today)
@@ -240,7 +242,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Proxy idle WS | Cloudflare/tunnels may drop long-idle WebSockets; `KeepAliveInterval=20s` on agent. |
 | No automated tests | Regressions caught manually only. |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
-| Web ↔ CLI parity | No SOCKS or keylog in web UI; no traffic/beacon charts or file.io upload yet. |
+| Web ↔ CLI parity | No SOCKS or keylog in web UI; no shell completion, interactive cmd/PS mode, traffic/beacon charts, or file.io upload yet. |
 
 ---
 
