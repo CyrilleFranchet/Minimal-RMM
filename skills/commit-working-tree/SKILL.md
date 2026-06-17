@@ -33,7 +33,9 @@ Determine required checks from the paths in the commit group you are about to co
 - Run **`make lint-md`** if any `*.md` file in the commit group changed.
 - Run **`make lint-yaml`** if any `*.yml` or `*.yaml` file in the commit group changed.
 - You may run **`make lint`** once to run both markdown and YAML checks when either kind of file changed.
-- Run **`make test`** if any `*.py` file under `backend/` in the commit group changed (runs `pytest` on `backend/tests` and regenerates the Postman collection).
+- Run **`make test`** if any `*.py` file in the commit group changed (syntax check via `py_compile`).
+
+Install lint tools once with **`make install-lint`** if `pymarkdown` or `yamllint` is missing.
 
 Run the union of all checks that apply to the staged paths. Do not commit if a required check fails unless the user explicitly asks to commit despite failures.
 
