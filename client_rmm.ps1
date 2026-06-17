@@ -1640,7 +1640,7 @@ function Register-RmmSession {
         [switch]$Quiet,
         [switch]$Reconnect
     )
-    $registerQs = "id=$sessionId&h=$computerName&u=$userName"
+    $registerQs = "id=$([uri]::EscapeDataString($sessionId))&h=$([uri]::EscapeDataString($computerName))&u=$([uri]::EscapeDataString($userName))"
     if (-not $script:RmmRegisterConfigSynced) {
         $registerQs += "&s=$($script:baseSleepSeconds)&j=$($script:jitterPercent)&sync=1"
     }

@@ -950,9 +950,9 @@ class RMMServer:
             self.save_session(to_save)
         if is_new:
             self.log(f"New session: {to_save}", "SUCCESS")
+        if to_save is not None:
             self.event_hub.broadcast_sessions(self.sessions_to_json())
-            return True
-        return False
+        return is_new
     
     def update_session_config(self, session_id, sleep_seconds=None, jitter_percent=None):
         session = self.get_session(session_id)
