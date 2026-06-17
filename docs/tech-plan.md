@@ -327,6 +327,166 @@ Not required for first ship if web UI is the primary ask; REST list endpoint is 
 
 ---
 
+## 4. Web UI — command completion
+
+**Status:** planned  
+**Surfaces:** Web UI (primary)  
+**Goal:** Make the web shell input feel closer to `rmm_cli.py` / a local terminal: tab completion and command history without leaving the browser.
+
+### Command completion — problem
+
+The web console (`web/app.js`) has a single-line shell input. Operators can **Enter** (exec + wait) or **Ctrl+Enter** (queue), but there is no:
+
+- **Tab completion** for prior commands, common prefixes, or shell mode hints
+- **Up/Down history** through commands already run in this session (browser tab)
+- **Inline suggestions** while typing (optional v2)
+
+`rmm_cli.py` already ships readline / prompt_toolkit completion for operator meta-commands (`list`, `use`, `download`, session id prefixes, local upload paths). The web UI only sends **remote** commands today, so completion should focus on remote shell ergonomics and session-local history—not duplicating the full CLI REPL.
+
+### Command completion — UX (target)
+
+Enhance `#shell-input` in the console panel:
+
+1. **History (Up/Down)** — navigate commands echoed in the current session transcript (and optionally a small `sessionStorage` ring buffer per session id). Down restores draft line.
+2. **Tab completion** — cycle or expand matches from:
+   - Session command history (longest common prefix)
+   - Static hints: `cmd:`, `PS:`, `powershell:`, `pwsh:` (agent dispatch prefixes)
+   - Optional v2: paths/files on the agent via one-shot `dir`/`Get-ChildItem` completion (slow; only on explicit Tab+Shift or second Tab)
+3. **Visual affordance** — ghost text or a small dropdown under the input for the top match (no build step; vanilla JS).
+
+```text
+┌─ Shell ────────────────────────────────────────────────┐
+│  C:\Users\x> dir Doc█                                    │
+│              dir Documents/   ← ghost / dropdown hint    │
+│  [cmd ▾]  Enter = wait · Ctrl+Enter = queue · Tab hint │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Command completion — web client (`web/app.js`, `web/style.css`)
+
+- Maintain `state.shellHistory[]` per `selectedId` (seed from operator echo lines when loading events).
+- `keydown`: `ArrowUp` / `ArrowDown` walk history; `Tab` / `Shift+Tab` complete from history + static prefixes.
+- Do not steal Tab from normal focus navigation when input is empty unless focused in shell.
+- Optional: persist last N commands in `sessionStorage` keyed by session id.
+
+### Command completion — server / API
+
+**v1 needs no new endpoints** — history comes from existing `/events` and local echo state.
+
+Optional later:
+
+- Parse `RMM_CWD_SIG:` from result events into `session.work_dir` on the server so the web prompt can show `C:\…>` accurately (today `work_dir` is rarely populated).
+
+### Command completion — out of scope (v1)
+- Agent-side filesystem completion without an explicit slow round-trip
+- MCP / CLI changes
+
+### Command completion — implementation order
+
+1. Up/Down history from session echoes + event load
+2. Tab completion from history + `cmd:` / `PS:` / `powershell:` / `pwsh:` hints
+3. Optional ghost-text dropdown
+4. Server: update `work_dir` from `RMM_CWD_SIG` in results (supports §5 shell prompt)
+5. Document in `README.md` and parity row in `docs/progress.md`
+
+### Command completion — acceptance criteria
+
+- Up/Down recalls prior commands for the selected session in order
+- Tab completes the longest shared prefix from history or inserts a known dispatch prefix
+- Completion works after page refresh when events are reloaded
+- No regression to Enter / Ctrl+Enter behavior
+
+---
+
+## 5. Web UI — interactive shell mode (cmd / PowerShell)
+
+**Status:** planned  
+**Surfaces:** Web UI (primary); optional API field on exec/commands later  
+**Goal:** Let operators work in a **session-oriented shell** (`cmd.exe`, Windows PowerShell, or `pwsh`) with a realistic prompt and cwd, instead of treating every line as a one-off remote command.
+
+### Interactive shell — problem
+
+The agent already supports multiple dispatch modes (`cmd.exe` default, `PS:`, `powershell:`, `pwsh:`, `cmd:`) and emits `RMM_CWD_SIG:` so cwd can follow across commands. The web UI does not expose this:
+
+- Prompt is always `rmm:deadbeef>` (operator session id), not `C:\Users\x>` or `PS C:\…>`
+- No **shell type** selector (cmd vs PowerShell vs pwsh)
+- Each command is typed blind; cwd is not shown or updated in the UI
+- Operators expect an **interactive shell**; the beacon model is **poll-based** (latency ≥ sleep + jitter), not a live PTY
+
+This feature is **UX-interactive**: one command per beacon round-trip, not character-at-a-time streaming like SSH.
+
+### Interactive shell — UX (target)
+
+Add a **Shell mode** control above or beside `#shell-input`:
+
+| Mode | Agent dispatch | Prompt example |
+|------|----------------|----------------|
+| **CMD** (default) | bare line → `cmd.exe` | `C:\Users\x>` |
+| **PowerShell** | prefix `PS: …` | `PS C:\Users\x>` |
+| **Pwsh** | prefix `pwsh: …` | `PS C:\Users\x>` |
+
+Behavior:
+
+1. **Mode selector** — dropdown or segmented control; persisted in `sessionStorage` per session (or global for the tab).
+2. **Prompt line** — replace `#shell-prompt` with cwd-aware prompt when `work_dir` is known; fall back to `C:\>` / `PS>` until first result.
+3. **Send path** — in PS modes, wrap user input: `PS: <line>` (or `pwsh:`) before `exec` / queue; CMD mode sends the line unchanged.
+4. **Cwd tracking** — parse `RMM_CWD_SIG:` from result output (client-side v1) and/or server updates `session.work_dir` on `/result` (preferred v2); refresh prompt after each completed command.
+5. **Shell mode banner** — subtle note: *“Beacon shell — one round-trip per command (~sleep interval).”* so expectations match the protocol.
+6. **Optional: dedicated panel** — toggle “Interactive shell” layout: larger input, slimmer tools panel, prompt fixed like a terminal (same backend behavior).
+
+```text
+┌─ Interactive shell ──────────────────────────────────────┐
+│  Mode: [ CMD ▾ ]   cwd: C:\Users\x\Desktop               │
+│  C:\Users\x\Desktop> whoami                              │
+│  desktop-win\labuser                                     │
+│  C:\Users\x\Desktop> _                                   │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Beacon constraints (important)
+
+- **Not** a reverse TCP shell or WebSocket PTY — see `docs/progress.md` control-plane decision.
+- Long-running or full-screen tools (`vim`, `python` REPL, `cmd` nested interactives) will **not** work reliably; document as unsupported.
+- For “closer to live,” operators can lower sleep via existing config PATCH (trade-off: more beacon noise).
+
+### Server (`server_rmm.py`) — optional v2
+
+- On `handle_result` for `output`, scan body for `RMM_CWD_SIG:(path)` and set `session.work_dir`.
+- Expose `work_dir` in session detail (already in `to_dict()`); web reads it on refresh or WS session update.
+
+No new internal agent commands required for v1 — reuse `Invoke-RmmUserCommand` dispatch rules in `client_rmm.ps1`.
+
+### Interactive shell — web client
+
+- `state.shellMode`: `cmd` | `powershell` | `pwsh`
+- `applyShellMode(line)` wraps line before API call
+- `updateShellPrompt()` uses mode + `work_dir` from session object or parsed events
+- Integrate with §4 history/completion (mode-specific prefixes)
+
+### Interactive shell — out of scope (v1)
+
+- True PTY / streaming stdin (would need SOCKS tunnel or new agent channel)
+- Persistent `persist` wrapper that keeps one `cmd.exe` process open across beacons (possible v3; complex on agent)
+- cmd.exe vs PowerShell auto-detection from user input without explicit mode
+
+### Interactive shell — implementation order
+
+1. Shell mode selector + wrap lines for `PS:` / `pwsh:` / CMD
+2. Client-side `RMM_CWD_SIG` parsing → update displayed cwd/prompt
+3. Server `work_dir` sync from results + session refresh
+4. §4 completion/history in shell mode
+5. README + `docs/progress.md` parity table
+
+### Interactive shell — acceptance criteria
+
+- Selecting PowerShell mode sends `PS: …` to the agent; output appears in the transcript
+- After `cd`, prompt updates to the new path when the agent emits `RMM_CWD_SIG`
+- CMD mode behavior matches today’s bare-line dispatch
+- UI states beacon latency limitation clearly
+- Enter still exec-waits; Ctrl+Enter still queues
+
+---
+
 ## Backlog (referenced elsewhere)
 
 Items tracked in `docs/progress.md` **Up Next** but not spec’d here yet:
