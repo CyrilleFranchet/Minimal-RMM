@@ -24,7 +24,6 @@
       <h1>Minimal RMM</h1>
       <span class="spacer"></span>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
-      <button type="button" class="secondary" id="refresh-btn">Refresh</button>
       <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
     </header>
 
@@ -32,6 +31,9 @@
       <aside class="sidebar">
         <h2>Sessions</h2>
         <ul id="session-list" class="session-list"></ul>
+        <h2 class="sidebar-sub">Session history</h2>
+        <p id="history-empty" class="sidebar-hint hidden">No archived sessions yet.</p>
+        <ul id="history-list" class="session-list history-list"></ul>
       </aside>
 
       <main class="main-panel">
@@ -43,6 +45,7 @@
           <div class="console-header">
             <h2 id="console-title">—</h2>
             <div id="console-detail" class="detail"></div>
+            <p id="console-readonly-banner" class="console-readonly hidden">Archived session — read-only transcript</p>
           </div>
 
           <div class="shell-wrap">

