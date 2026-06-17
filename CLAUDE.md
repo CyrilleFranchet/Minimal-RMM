@@ -4,7 +4,7 @@
 
 ## Architecture
 
-```
+```text
 Operator (CLI / Web / MCP / curl)
         │
         ▼
