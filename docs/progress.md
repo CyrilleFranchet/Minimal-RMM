@@ -41,7 +41,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ## Architecture (as implemented)
 
-```
+```text
                     ┌─────────────────────────────────────────┐
                     │           server_rmm.py                 │
                     │  RMMServer + RMMHandler (threaded)      │
