@@ -228,10 +228,12 @@ function stopStatusTick() {
 
 function startSessionPolling() {
   stopSessionPolling();
-  state.sessionPollTimer = setInterval(() => {
+  const tick = () => {
     refreshSessions().catch(() => {});
     fetchSessionHistory().catch(() => {});
-  }, 12000);
+  };
+  tick();
+  state.sessionPollTimer = setInterval(tick, 5000);
 }
 
 function startStatusTick() {
@@ -240,7 +242,7 @@ function startStatusTick() {
     if (state.sessions.length) {
       renderSessionList();
     }
-  }, 30000);
+  }, 15000);
 }
 
 async function fetchSessionHistory() {
@@ -374,6 +376,8 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     setWsStatus(true);
+    refreshSessions().catch(() => {});
+    fetchSessionHistory().catch(() => {});
     if (state.selectedId) {
       wsSubscribe(state.selectedId);
     }
@@ -951,6 +955,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter" && e.ctrlKey) {
       e.preventDefault();
       runCommand(false);
+    }
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && state.token && !$("#app").classList.contains("hidden")) {
+      refreshSessions().catch(() => {});
+      fetchSessionHistory().catch(() => {});
     }
   });
 

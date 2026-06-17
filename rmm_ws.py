@@ -210,4 +210,14 @@ class OperatorEventHub:
         )
 
     def broadcast_sessions(self, sessions: list) -> None:
-        self.broadcast({"op": "sessions", "sessions": sessions})
+        """Push session list to every operator WebSocket (ignores per-session event filters)."""
+        message = {"op": "sessions", "sessions": sessions}
+        dead = []
+        for ws, _filt in self._snapshot():
+            try:
+                ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.remove(ws)
+            ws.close()
