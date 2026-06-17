@@ -235,6 +235,46 @@ button:disabled {
   color: var(--muted);
 }
 
+.sidebar h2.sidebar-sub {
+  margin-top: 1.25rem;
+}
+
+.sidebar-hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.session-item.history-item .id {
+  color: var(--muted);
+}
+
+.session-item.history-item.active {
+  border-color: var(--border);
+}
+
+.session-item .ended-tag {
+  font-size: 0.65rem;
+  color: var(--muted);
+  margin-left: 0.35rem;
+}
+
+.console-readonly {
+  margin: 0.35rem 0 0;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.console-panel.readonly-mode .shell-input-line,
+.console-panel.readonly-mode .tools-panel,
+.console-panel.readonly-mode .downloads-panel {
+  display: none !important;
+}
+
 .session-list {
   list-style: none;
   margin: 0;

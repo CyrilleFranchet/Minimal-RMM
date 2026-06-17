@@ -7,12 +7,17 @@ const EVENT_CURSORS_KEY = "rmm_event_cursors";
 const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
   sessions: [],
+  historySessions: [],
   selectedId: null,
+  selectedHistoryId: null,
+  viewMode: "live",
   lastEventId: 0,
   localEventSeq: 0,
   ws: null,
   wsConnected: false,
   pollTimer: null,
+  sessionPollTimer: null,
+  statusTickTimer: null,
   sessionDownloads: [],
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
@@ -169,6 +174,149 @@ async function previewDownload(url, kind, name) {
   panel.innerHTML = `<div>${escapeHtml(name)}</div><pre>${escapeHtml(text)}</pre>`;
 }
 
+function computeBeaconStatus(session) {
+  if (!session?.last_seen) return session?.beacon_status || "?";
+  const elapsed = (Date.now() - new Date(session.last_seen).getTime()) / 1000;
+  const sleep = Number(session.sleep_seconds) || 60;
+  const jitter = Number(session.jitter_percent) || 30;
+  const expectedMax = sleep + sleep * (jitter / 100) + 15;
+  if (elapsed <= expectedMax * 1.5) return "online";
+  if (elapsed <= expectedMax * 4) return "stale";
+  return "offline";
+}
+
+function sessionAgoSeconds(session) {
+  if (!session?.last_seen) return null;
+  return Math.max(0, Math.floor((Date.now() - new Date(session.last_seen).getTime()) / 1000));
+}
+
+function applySessionsUpdate(sessions) {
+  state.sessions = sessions || [];
+  if (state.viewMode === "live" && state.selectedId) {
+    if (!state.sessions.some((s) => s.id === state.selectedId)) {
+      showEmptyConsole();
+    }
+  }
+  renderSessionList();
+  updateShellPrompt();
+}
+
+function setConsoleReadOnly(readonly) {
+  const panel = $("#console-panel");
+  const banner = $("#console-readonly-banner");
+  const input = $("#shell-input");
+  panel.classList.toggle("readonly-mode", readonly);
+  banner.classList.toggle("hidden", !readonly);
+  if (input) {
+    input.disabled = readonly;
+  }
+}
+
+function stopSessionPolling() {
+  if (state.sessionPollTimer) {
+    clearInterval(state.sessionPollTimer);
+    state.sessionPollTimer = null;
+  }
+}
+
+function stopStatusTick() {
+  if (state.statusTickTimer) {
+    clearInterval(state.statusTickTimer);
+    state.statusTickTimer = null;
+  }
+}
+
+function startSessionPolling() {
+  stopSessionPolling();
+  state.sessionPollTimer = setInterval(() => {
+    refreshSessions().catch(() => {});
+    fetchSessionHistory().catch(() => {});
+  }, 12000);
+}
+
+function startStatusTick() {
+  stopStatusTick();
+  state.statusTickTimer = setInterval(() => {
+    if (state.sessions.length) {
+      renderSessionList();
+    }
+  }, 30000);
+}
+
+async function fetchSessionHistory() {
+  if (!state.token) return;
+  const { status, data } = await api("/history");
+  if (status === 401) {
+    disconnect();
+    return;
+  }
+  if (status !== 200) return;
+  state.historySessions = data.sessions || [];
+  renderHistoryList();
+}
+
+function renderHistoryList() {
+  const ul = $("#history-list");
+  const empty = $("#history-empty");
+  if (!ul) return;
+  ul.innerHTML = "";
+  const rows = state.historySessions.filter((s) => !s.active);
+  if (empty) {
+    empty.classList.toggle("hidden", rows.length > 0);
+  }
+  for (const s of rows) {
+    const li = document.createElement("li");
+    li.className =
+      "session-item history-item" +
+      (s.session_id === state.selectedHistoryId && state.viewMode === "history" ? " active" : "");
+    const ended = s.ended_at ? formatTime(s.ended_at) : formatTime(s.updated_at || s.last_seen);
+    const reason = s.end_reason ? ` · ${s.end_reason}` : "";
+    li.innerHTML = `
+      <div class="id">${escapeHtml((s.session_id || "").slice(0, 8))}<span class="ended-tag">archived</span></div>
+      <div class="meta">${escapeHtml(s.username || "?")}@${escapeHtml(s.hostname || "?")}</div>
+      <div class="sub">${escapeHtml(String(s.event_count || 0))} events · ended ${escapeHtml(ended)}${escapeHtml(reason)}</div>
+    `;
+    li.addEventListener("click", () => selectHistorySession(s.session_id));
+    ul.appendChild(li);
+  }
+}
+
+async function selectHistorySession(id) {
+  state.viewMode = "history";
+  state.selectedHistoryId = id;
+  state.selectedId = null;
+  state.lastEventId = 0;
+  state.echoedCommands.clear();
+  stopEventPolling();
+  renderSessionList();
+  renderHistoryList();
+
+  const { status, data } = await api(`/history/${encodeURIComponent(id)}`);
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+    return;
+  }
+  const s = data.session || {};
+  hide($("#empty-state"));
+  show($("#console-panel"));
+  setConsoleReadOnly(true);
+
+  $("#console-title").textContent = `${s.username || "?"}@${s.hostname || "?"}`;
+  const ended = s.ended_at ? formatTime(s.ended_at) : "unknown";
+  $("#console-detail").textContent = `${id} · archived · ended ${ended}${s.end_reason ? ` (${s.end_reason})` : ""}`;
+  shellOutputEl().innerHTML = "";
+  updateShellPrompt();
+  appendShellMeta(`Archived transcript — ${s.event_count || 0} events`);
+
+  const evRes = await api(`/history/${encodeURIComponent(id)}/events?since=0&limit=500`);
+  if (evRes.status === 200) {
+    const events = (evRes.data.events || []).sort((a, b) => (a.id || 0) - (b.id || 0));
+    for (const ev of events) {
+      appendEvent(ev, { history: true });
+    }
+  }
+}
+
 function formatTime(iso) {
   try {
     return new Date(iso).toLocaleString();
@@ -248,11 +396,11 @@ function connectWebSocket() {
       return;
     }
     if (msg.op === "sessions") {
-      state.sessions = msg.sessions || [];
-      renderSessionList();
+      applySessionsUpdate(msg.sessions || []);
       return;
     }
     if (msg.op === "event") {
+      if (state.viewMode !== "live") return;
       if (!state.selectedId || msg.session_id === state.selectedId) {
         appendEvent(msg.event);
       }
@@ -310,6 +458,10 @@ function wsSubscribe(sessionId) {
 
 function updateShellPrompt() {
   const el = $("#shell-prompt");
+  if (state.viewMode === "history" && state.selectedHistoryId) {
+    el.textContent = "archive>";
+    return;
+  }
   if (!state.selectedId) {
     el.textContent = "rmm>";
     return;
@@ -421,12 +573,17 @@ async function connect() {
   showApp();
   connectWebSocket();
   startEventPolling();
+  startSessionPolling();
+  startStatusTick();
   await refreshSessions();
+  await fetchSessionHistory();
 }
 
 function disconnect() {
   disconnectWebSocket();
   stopEventPolling();
+  stopSessionPolling();
+  stopStatusTick();
   sessionStorage.removeItem(STORAGE_KEY);
   state.token = "";
   state.selectedId = null;
@@ -441,9 +598,7 @@ async function refreshSessions() {
     return;
   }
   if (status !== 200) return;
-  state.sessions = data.sessions || [];
-  renderSessionList();
-  updateShellPrompt();
+  applySessionsUpdate(data.sessions || []);
 }
 
 function renderSessionList() {
@@ -452,12 +607,11 @@ function renderSessionList() {
   for (const s of state.sessions) {
     const li = document.createElement("li");
     li.className =
-      "session-item" + (s.id === state.selectedId ? " active" : "");
-    const ago =
-      s.last_seen_ago_seconds != null
-        ? formatAgo(s.last_seen_ago_seconds)
-        : formatTime(s.last_seen);
-    const st = s.beacon_status || "?";
+      "session-item" +
+      (s.id === state.selectedId && state.viewMode === "live" ? " active" : "");
+    const agoSec = sessionAgoSeconds(s);
+    const ago = agoSec != null ? formatAgo(agoSec) : formatTime(s.last_seen);
+    const st = computeBeaconStatus(s);
     li.innerHTML = `
       <div class="id">${escapeHtml(s.id.slice(0, 8))} <span class="beacon-status ${statusClass(st)}">${escapeHtml(st)}</span></div>
       <div class="meta">${escapeHtml(s.username)}@${escapeHtml(s.hostname)}</div>
@@ -469,6 +623,10 @@ function renderSessionList() {
 }
 
 async function selectSession(id) {
+  state.viewMode = "live";
+  state.selectedHistoryId = null;
+  setConsoleReadOnly(false);
+  renderHistoryList();
   state.selectedId = id;
   state.lastEventId = 0;
   state.echoedCommands.clear();
@@ -514,6 +672,9 @@ async function selectSession(id) {
 
 function showEmptyConsole() {
   state.selectedId = null;
+  state.selectedHistoryId = null;
+  state.viewMode = "live";
+  setConsoleReadOnly(false);
   show($("#empty-state"));
   hide($("#console-panel"));
   $("#shell-input").value = "";
@@ -746,6 +907,7 @@ async function killSession() {
   if (status === 200) {
     showEmptyConsole();
     await refreshSessions();
+    await fetchSessionHistory();
   }
 }
 
@@ -774,7 +936,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter") connect();
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
-  $("#refresh-btn").addEventListener("click", refreshSessions);
   $("#btn-kill").addEventListener("click", killSession);
   $("#btn-config").addEventListener("click", applyConfig);
   $("#btn-download").addEventListener("click", queueDownload);

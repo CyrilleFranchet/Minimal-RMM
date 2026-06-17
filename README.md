@@ -75,7 +75,7 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 ### Web UI
 
-With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates, and supports **download**, **upload**, and **screenshot** actions. Completed agent downloads appear in the **Downloads from agent** panel (remote path, size, browser download/preview). The token is kept in `sessionStorage` for the browser tab only.
+With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates (new agents appear automatically; no manual refresh). Completed agent downloads appear in the **Downloads from agent** panel. **Session history** lists archived transcripts from killed sessions. The token is kept in `sessionStorage` for the browser tab only.
 
 **AI Assistant** (button **AI** in the header): opens a chat panel on the right. Set your **OpenAI API key** in the panel (stored in `sessionStorage` for this tab). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`. The selected session in the sidebar is passed as context.
 
@@ -168,6 +168,9 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[…],"model":"gpt-4o-mini","selected_session_id":null,"exegol_mcp_enabled":false,"exegol_mcp_url":null,"exegol_mcp_token":null}` | OpenAI agent loop via MCP (RMM + optional Exegol) |
 | `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (fallback) |
 | `GET` | `/sessions/{id}/downloads` | — | List `__DOWNLOAD__` artifacts for session (remote path, size, artifact URL) |
+| `GET` | `/history` | — | List archived (ended) session transcripts |
+| `GET` | `/history/{id}` | — | Archived session metadata |
+| `GET` | `/history/{id}/events?since=0&limit=500` | — | Read-only event transcript from disk |
 | `GET` | `/artifacts/{downloads\|screenshots}/{filename}` | `?token=` | Download saved artifact (auth required) |
 | `WS` | `/ws?token=…&session=…` | — | Live events + session list (WebSocket) |
 

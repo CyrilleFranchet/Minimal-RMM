@@ -91,6 +91,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Chunked download reassembly (`_save_file_upload`: `.part` staging, `upload_id` / `offset` / `eof`)
 - [x] `GET /api/v1/sessions/{id}/downloads` — per-session download artifact index (`download_artifacts`, disk backfill)
 - [x] `queue_agent_download` / `register_download_artifact` — track remote path from queue + agent `remote_path` field
+- [x] Session transcript persistence — `RMM_logs/history/{id}/events.jsonl` + `meta.json`; archive on kill
+- [x] `GET /api/v1/history` — list ended sessions; `GET …/history/{id}/events` read-only transcript
 
 ### SOCKS (`rmm_socks.py`)
 
@@ -132,6 +134,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Shell: queue command, exec (wait), kill session
 - [x] Files: download queue, upload (base64), screenshot
 - [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`
+- [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
+- [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`)
 - [x] Beacon config apply (PATCH sleep/jitter)
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
 - [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); OpenAI key in tab; optional Exegol MCP settings
@@ -152,6 +156,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `README.md` — setup, API tables, SOCKS troubleshooting, MCP mapping
 - [x] `CLAUDE.md` — project overview for agents
 - [x] `docs/downloads-browser.md` — web downloads panel + `GET …/downloads` API
+- [x] `docs/session-history.md` — archived transcripts + history API
 - [x] `mcp.example.json` — Cursor MCP config template
 
 ---
@@ -171,6 +176,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Patch sleep/jitter | ✅ | ✅ `set_*` | ✅ `config` | ✅ | ✅ | ✅ |
 | Download file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | List session downloads | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| Session history (archived) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Upload file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Screenshot | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | SOCKS start/stop | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
