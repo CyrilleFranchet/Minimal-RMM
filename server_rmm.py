@@ -1257,7 +1257,9 @@ class RMMHandler(BaseHTTPRequestHandler):
         self.close_connection = False
 
         try:
-            hub.broadcast_sessions(self.server_instance.sessions_to_json())
+            sessions = self.server_instance.sessions_to_json()
+            ws.send_json({"op": "sessions", "sessions": sessions})
+            hub.broadcast_sessions(sessions)
             while self.server_instance.running and not ws.closed:
                 msg = ws.recv_json()
                 if msg is None:

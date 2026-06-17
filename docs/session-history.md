@@ -38,7 +38,7 @@ GET /api/v1/history/{id}/events?since=0&limit=500
 
 ## Web UI
 
-- **Sessions** — live agents; updates via WebSocket `sessions` messages + 12 s poll fallback; beacon status recomputed client-side every 30 s.
+- **Sessions** — live agents; updates via WebSocket `sessions` messages + 5 s poll fallback; beacon status recomputed client-side every 15 s.
 - **Session history** — archived sessions; click to view read-only transcript (shell input and tools hidden).
 - **Kill session** — closes the console panel immediately and refreshes both lists.
 
