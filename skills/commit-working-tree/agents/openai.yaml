@@ -1,0 +1,7 @@
+---
+interface:
+  display_name: "Commit Working Tree"
+  short_description: "Review changes, run checks, and commit cleanly"
+  default_prompt: >-
+    Use $commit-working-tree to review the working tree, run the required
+    checks, and create one or more focused commits.
