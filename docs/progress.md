@@ -7,9 +7,9 @@
 
 | Field | Value |
 |-------|--------|
-| **Phase** | SOCKS relay + operator tooling mature; docs / test gap |
+| **Phase** | Web downloads browser shipped; traffic charts / file.io next |
 | **Branch** | `main` |
-| **Last updated** | 2026-06-02 |
+| **Last updated** | 2026-06-17 |
 | **HEAD** | `ec4392e` — global SOCKS relay list (`GET /api/v1/socks`) |
 | **Commits** | ~60 since initial import |
 | **Tests** | None in-repo (manual lab validation only) |
@@ -89,6 +89,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Embedded `--cli` (readline / prompt_toolkit): full command set including keylog, persist, socks list
 - [x] Security: `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, `--insecure` lab flag; `MAX_BODY_BYTES` via `RMM_MAX_BODY_BYTES` (default 32 MB); path traversal guards on artifacts
 - [x] Chunked download reassembly (`_save_file_upload`: `.part` staging, `upload_id` / `offset` / `eof`)
+- [x] `GET /api/v1/sessions/{id}/downloads` — per-session download artifact index (`download_artifacts`, disk backfill)
+- [x] `queue_agent_download` / `register_download_artifact` — track remote path from queue + agent `remote_path` field
 
 ### SOCKS (`rmm_socks.py`)
 
@@ -107,7 +109,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] HTTP transport: IPv4-only tunnel resolution, `Host` header, optional corporate proxy + default credentials
 - [x] User commands: bare `cmd.exe`, `cmd:`, `PS:` / `powershell:`, `pwsh:`; cwd tracking via `RMM_CWD_SIG`
 - [x] Internal commands: `__DOWNLOAD__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
-- [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload`)
+- [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload` with `remote_path` metadata)
 - [x] Keylogger job (`__KEYLOG__ start|stop|dump`) → temp file → `keylog` result type
 - [x] Persistence installer copies script to `%APPDATA%` + Run key (with current URL/sleep/jitter)
 - [x] SOCKS: `Sync-RmmSocksChannelFromServer` on `socks_active` from `/cmd`; dedicated runspace worker
@@ -129,6 +131,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Session sidebar with beacon status, sleep/jitter display
 - [x] Shell: queue command, exec (wait), kill session
 - [x] Files: download queue, upload (base64), screenshot
+- [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`
 - [x] Beacon config apply (PATCH sleep/jitter)
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
 - [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); OpenAI key in tab; optional Exegol MCP settings
@@ -148,6 +151,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 - [x] `README.md` — setup, API tables, SOCKS troubleshooting, MCP mapping
 - [x] `CLAUDE.md` — project overview for agents
+- [x] `docs/downloads-browser.md` — web downloads panel + `GET …/downloads` API
 - [x] `mcp.example.json` — Cursor MCP config template
 
 ---
@@ -166,6 +170,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Stop persistent | ✅ | ✅ `stop` | via API | ✅ | ❌ | ✅ |
 | Patch sleep/jitter | ✅ | ✅ `set_*` | ✅ `config` | ✅ | ✅ | ✅ |
 | Download file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| List session downloads | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Upload file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Screenshot | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | SOCKS start/stop | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
@@ -186,7 +191,6 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ## Up Next
 
-- [ ] **Web UI — downloaded files browser** — see [tech plan §3](tech-plan.md#3-downloaded-files-browser-web-ui): list `__DOWNLOAD__` artifacts per session, download/preview from browser
 - [ ] **Web UI — traffic & beacon charts** — see [tech plan §1](tech-plan.md#1-beacon--traffic-visualization-web-ui): `GET …/metrics`, poll/byte counters, Chart.js panel
 - [ ] **file.io upload** — see [tech plan §2](tech-plan.md#2-upload-to-fileio-url-returned-by-rmm): `__FILEIO__`, REST/CLI/MCP/web parity, link in events
 - [ ] **Web UI:** SOCKS controls + global relay list (`GET /api/v1/socks`)
@@ -218,7 +222,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ## Deviations from planned docs
 
-- `docs/prd.md` is **not in the repo** (only referenced in `CLAUDE.md` / catchup). `docs/tech-plan.md` covers planned traffic charts, file.io upload, and web downloads browser.
+- `docs/prd.md` is **not in the repo** (only referenced in `CLAUDE.md` / catchup). `docs/tech-plan.md` covers traffic charts and file.io upload; `docs/downloads-browser.md` documents the web downloads panel (shipped).
+- Agent `file_upload` JSON may include `remote_path` (full agent path) alongside `filename`.
 - SOCKS uses custom JSON task protocol over WebSocket, not a generic byte-stream tunnel.
 - Embedded `server_rmm.py --cli` remains alongside `rmm_cli.py` (duplicate UX).
 - Keylog + persistence exist on client and embedded CLI but are intentionally absent from MCP/web.
@@ -235,7 +240,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Proxy idle WS | Cloudflare/tunnels may drop long-idle WebSockets; `KeepAliveInterval=20s` on agent. |
 | No automated tests | Regressions caught manually only. |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
-| Web ↔ CLI parity | No SOCKS or keylog in web UI; no downloads browser, traffic/beacon charts, or file.io upload yet. |
+| Web ↔ CLI parity | No SOCKS or keylog in web UI; no traffic/beacon charts or file.io upload yet. |
 
 ---
 
