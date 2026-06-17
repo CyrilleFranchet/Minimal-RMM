@@ -192,6 +192,7 @@ function sessionAgoSeconds(session) {
 
 function applySessionsUpdate(sessions) {
   state.sessions = sessions || [];
+  updateSessionSidebarMeta();
   if (state.viewMode === "live" && state.selectedId) {
     if (!state.sessions.some((s) => s.id === state.selectedId)) {
       showEmptyConsole();
@@ -199,6 +200,24 @@ function applySessionsUpdate(sessions) {
   }
   renderSessionList();
   updateShellPrompt();
+}
+
+function updateSessionSidebarMeta() {
+  const countEl = $("#session-count");
+  const hintEl = $("#session-hint");
+  const n = state.sessions.length;
+  if (countEl) {
+    countEl.textContent = n ? `(${n})` : "";
+  }
+  if (hintEl) {
+    if (n === 0) {
+      hintEl.textContent =
+        "No agents connected. Confirm the client $u matches this server URL and RMM_BEACON_SECRET matches the server.";
+      hintEl.classList.remove("hidden");
+    } else {
+      hintEl.classList.add("hidden");
+    }
+  }
 }
 
 function setConsoleReadOnly(readonly) {
