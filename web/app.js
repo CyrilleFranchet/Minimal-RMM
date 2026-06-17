@@ -175,7 +175,10 @@ async function previewDownload(url, kind, name) {
 }
 
 function computeBeaconStatus(session) {
-  if (!session?.last_seen) return session?.beacon_status || "?";
+  if (session?.beacon_status) {
+    return session.beacon_status;
+  }
+  if (!session?.last_seen) return "?";
   const elapsed = (Date.now() - new Date(session.last_seen).getTime()) / 1000;
   const sleep = Number(session.sleep_seconds) || 60;
   const jitter = Number(session.jitter_percent) || 30;
@@ -186,6 +189,9 @@ function computeBeaconStatus(session) {
 }
 
 function sessionAgoSeconds(session) {
+  if (session?.last_seen_ago_seconds != null && Number.isFinite(session.last_seen_ago_seconds)) {
+    return Math.max(0, Math.floor(session.last_seen_ago_seconds));
+  }
   if (!session?.last_seen) return null;
   return Math.max(0, Math.floor((Date.now() - new Date(session.last_seen).getTime()) / 1000));
 }
