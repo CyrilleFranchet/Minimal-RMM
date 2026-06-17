@@ -186,12 +186,15 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ## Up Next
 
+- [ ] **Web UI — downloaded files browser** — see [tech plan §3](tech-plan.md#3-downloaded-files-browser-web-ui): list `__DOWNLOAD__` artifacts per session, download/preview from browser
+- [ ] **Web UI — traffic & beacon charts** — see [tech plan §1](tech-plan.md#1-beacon--traffic-visualization-web-ui): `GET …/metrics`, poll/byte counters, Chart.js panel
+- [ ] **file.io upload** — see [tech plan §2](tech-plan.md#2-upload-to-fileio-url-returned-by-rmm): `__FILEIO__`, REST/CLI/MCP/web parity, link in events
 - [ ] **Web UI:** SOCKS controls + global relay list (`GET /api/v1/socks`)
 - [ ] **Chunked upload** (symmetry with download; large `content_b64` still single POST today)
 - [ ] **CLI subcommands:** `screenshot`, `socks start|stop` (only interactive today)
 - [ ] **MCP:** optional `queue_keylog` / `install_persistence` wrappers (or document `queue_command` tokens)
 - [ ] **Tests:** SOCKS task ordering, chunked download reassembly, API auth, WS handshake
-- [ ] **Docs:** `docs/prd.md`, `docs/tech-plan.md` (referenced in `CLAUDE.md` but not created); fix README security line (still says 10 MB cap)
+- [ ] **Docs:** `docs/prd.md`; fix README security line (still says 10 MB cap)
 - [ ] **LICENSE** file (README notes absence)
 
 ---
@@ -215,7 +218,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ## Deviations from planned docs
 
-- `docs/prd.md` and `docs/tech-plan.md` are **not in the repo** (only referenced in `CLAUDE.md` / catchup).
+- `docs/prd.md` is **not in the repo** (only referenced in `CLAUDE.md` / catchup). `docs/tech-plan.md` covers planned traffic charts, file.io upload, and web downloads browser.
 - SOCKS uses custom JSON task protocol over WebSocket, not a generic byte-stream tunnel.
 - Embedded `server_rmm.py --cli` remains alongside `rmm_cli.py` (duplicate UX).
 - Keylog + persistence exist on client and embedded CLI but are intentionally absent from MCP/web.
@@ -232,7 +235,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Proxy idle WS | Cloudflare/tunnels may drop long-idle WebSockets; `KeepAliveInterval=20s` on agent. |
 | No automated tests | Regressions caught manually only. |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
-| Web ↔ CLI parity | No SOCKS or keylog in web UI. |
+| Web ↔ CLI parity | No SOCKS or keylog in web UI; no downloads browser, traffic/beacon charts, or file.io upload yet. |
 
 ---
 
