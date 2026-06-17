@@ -178,6 +178,8 @@ class Session:
         self.wait_lock = threading.Lock()
         self.wait_event = None
         self.wait_result = None
+        self.download_artifacts = []
+        self.pending_downloads = deque()
     
     def beacon_status(self):
         """online / stale / offline from last beacon poll vs configured sleep+jitter."""
@@ -488,6 +490,110 @@ class RMMServer:
             return self.find_session_by_prefix(session_id_or_prefix)
         return None
 
+    def note_download_queued(self, session, remote_path: str) -> None:
+        """Remember remote path for the next file_upload from this session."""
+        path = (remote_path or "").strip()
+        if not path or not session:
+            return
+        with self.session_lock:
+            session.pending_downloads.append(path)
+
+    def pop_pending_download_path(self, session, filename: str) -> str:
+        """Match a completed upload to a queued __DOWNLOAD__ path by basename, else FIFO."""
+        basename = os.path.basename((filename or "").replace("\\", "/"))
+        with self.session_lock:
+            for i, remote_path in enumerate(session.pending_downloads):
+                rp_base = os.path.basename(remote_path.replace("\\", "/"))
+                if rp_base == basename:
+                    del session.pending_downloads[i]
+                    return remote_path
+            if session.pending_downloads:
+                return session.pending_downloads.popleft()
+        return basename or filename or "unknown"
+
+    @staticmethod
+    def _make_download_entry(filepath: str, remote_path: str) -> dict:
+        basename = os.path.basename(filepath)
+        try:
+            size = os.path.getsize(filepath)
+            received_at = datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat()
+        except OSError:
+            size = 0
+            received_at = datetime.now().isoformat()
+        return {
+            "artifact": basename,
+            "remote_path": remote_path,
+            "size": size,
+            "received_at": received_at,
+            "artifact_url": RMMServer._artifact_public_url(filepath),
+        }
+
+    def register_download_artifact(self, session, filepath: str, remote_path: str) -> None:
+        """Index a completed agent download for operator listing."""
+        prefix = safe_session_storage_prefix(session.id)
+        basename = os.path.basename(filepath)
+        if not basename.startswith(f"{prefix}_"):
+            return
+        entry = self._make_download_entry(filepath, remote_path)
+        with self.session_lock:
+            session.download_artifacts = [
+                e for e in session.download_artifacts if e.get("artifact") != basename
+            ]
+            session.download_artifacts.append(entry)
+            session.download_artifacts.sort(
+                key=lambda e: e.get("received_at") or "", reverse=True
+            )
+
+    def backfill_download_artifacts(self, session) -> None:
+        """Scan RMM_logs/downloads for files belonging to this session."""
+        prefix = safe_session_storage_prefix(session.id)
+        downloads_dir = os.path.join(LOG_DIR, "downloads")
+        if not os.path.isdir(downloads_dir):
+            return
+        pattern_prefix = f"{prefix}_"
+        with self.session_lock:
+            known = {e.get("artifact") for e in session.download_artifacts}
+        try:
+            names = sorted(os.listdir(downloads_dir))
+        except OSError:
+            return
+        for name in names:
+            if not name.startswith(pattern_prefix) or name.endswith(".part"):
+                continue
+            if name in known:
+                continue
+            try:
+                path = safe_join_under(downloads_dir, name)
+            except ValueError:
+                continue
+            if not os.path.isfile(path):
+                continue
+            stored_name = name[len(pattern_prefix) :]
+            self.register_download_artifact(session, path, stored_name)
+
+    def list_session_downloads(self, session_id_or_prefix):
+        """Return download index rows for a session, or None if not found."""
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None
+        self.backfill_download_artifacts(session)
+        prefix = safe_session_storage_prefix(session.id)
+        with self.session_lock:
+            rows = [
+                dict(e)
+                for e in session.download_artifacts
+                if str(e.get("artifact", "")).startswith(f"{prefix}_")
+            ]
+        rows.sort(key=lambda e: e.get("received_at") or "", reverse=True)
+        return rows
+
+    def queue_agent_download(self, session, remote_path: str) -> str:
+        """Queue __DOWNLOAD__ on the agent and track the remote path."""
+        cmd = f"__DOWNLOAD__ {remote_path}"
+        self.set_command(session.id, cmd, "oneshot")
+        self.note_download_queued(session, remote_path)
+        return cmd
+
     @staticmethod
     def _artifact_public_url(filepath):
         if not filepath:
@@ -660,6 +766,7 @@ class RMMServer:
                         s.jitter_percent = max(0, min(100, int(jitter_percent)))
                 to_save = s
         if to_save is not None:
+            self.backfill_download_artifacts(to_save)
             self.save_session(to_save)
         if is_new:
             self.log(f"New session: {to_save}", "SUCCESS")
@@ -803,9 +910,15 @@ class RMMServer:
                 filepath = self._save_file_upload(session, data, timestamp)
                 if not filepath:
                     return
+                remote_path = (data.get("remote_path") or "").strip()
+                if not remote_path:
+                    remote_path = self.pop_pending_download_path(
+                        session, data.get("filename", "")
+                    )
+                self.register_download_artifact(session, filepath, remote_path)
                 artifact = filepath
-                event_body = f"saved to {filepath}"
-                tty_lines.append(("log", f"File downloaded: {filepath}", "SUCCESS"))
+                event_body = f"{remote_path} → {os.path.basename(filepath)}"
+                tty_lines.append(("log", f"File downloaded: {remote_path}", "SUCCESS"))
             except Exception as e:
                 event_body = str(e)
                 tty_lines.append(("log", f"Download error: {e}", "ERROR"))
@@ -1164,6 +1277,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"events": events})
             return True
 
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "downloads":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            downloads = srv.list_session_downloads(session.id)
+            self._json(
+                200,
+                {"session_id": session.id, "downloads": downloads or []},
+            )
+            return True
+
         if len(parts) == 3 and parts[0] == "artifacts":
             return self._serve_artifact(parts[1], parts[2])
 
@@ -1245,8 +1370,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not remote_path:
                 self._json(400, {"error": "missing_remote_path"})
                 return True
-            cmd = f"__DOWNLOAD__ {remote_path}"
-            srv.set_command(session.id, cmd, "oneshot")
+            cmd = srv.queue_agent_download(session, remote_path)
             srv.record_operator_action(session, cmd, "download")
             self._json(200, {"ok": True, "session_id": session.id, "queued": cmd})
             return True
@@ -1827,10 +1951,13 @@ class CommandInterface:
 
             elif cmd == "download":
                 if args:
-                    filepath = args[0]
-                    command = f"__DOWNLOAD__ {filepath}"
-                    self.server.set_command(self.server.current_session, command, "oneshot")
-                    self.server.tty_print(f"{Colors.DIM}Downloading {filepath}...{Colors.END}")
+                    filepath = " ".join(args)
+                    session = self.server.get_session(self.server.current_session)
+                    if session:
+                        self.server.queue_agent_download(session, filepath)
+                        self.server.tty_print(f"{Colors.DIM}Downloading {filepath}...{Colors.END}")
+                    else:
+                        self.server.tty_print(f"{Colors.RED}No active session{Colors.END}")
                 else:
                     self.server.tty_print(f"{Colors.RED}Usage: download <file>{Colors.END}")
 

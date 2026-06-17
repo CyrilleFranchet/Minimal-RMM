@@ -216,7 +216,7 @@ In tools panel:
 
 ## 3. Downloaded files browser (web UI)
 
-**Status:** planned  
+**Status:** done  
 **Surfaces:** Web UI (primary); REST API for listing; optional CLI `downloads list` later  
 **Goal:** Operators can browse, open, and save files pulled from the agent (`__DOWNLOAD__`) directly in the web UI — not only via a one-off link buried in the shell transcript.
 
