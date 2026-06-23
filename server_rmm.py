@@ -637,12 +637,7 @@ class RMMServer:
             meta.setdefault("ended_at", None)
             meta.setdefault("end_reason", None)
         try:
-            events_path = self._history_events_path(session.id)
-            if os.path.isfile(events_path):
-                with open(events_path, "r", encoding="utf-8") as f:
-                    meta["event_count"] = sum(1 for line in f if line.strip())
-            else:
-                meta["event_count"] = len(session.result_events)
+            meta["event_count"] = len(session.result_events)
         except OSError:
             meta["event_count"] = len(session.result_events)
         try:
@@ -814,6 +809,15 @@ class RMMServer:
         with self.session_lock:
             return [s.to_dict() for s in self.sessions.values()]
 
+    def _broadcast_sessions_async(self) -> None:
+        """Push session list to operator WS clients without blocking beacon handlers."""
+        sessions = self.sessions_to_json()
+        threading.Thread(
+            target=self.event_hub.broadcast_sessions,
+            args=(sessions,),
+            daemon=True,
+        ).start()
+
     def kill_session(self, session_id_or_prefix):
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -944,14 +948,14 @@ class RMMServer:
                         s.sleep_seconds = max(1, min(3600, int(sleep_seconds)))
                     if jitter_percent is not None:
                         s.jitter_percent = max(0, min(100, int(jitter_percent)))
-                to_save = s
-        if to_save is not None:
+                to_save = s if sync_client_config else None
+        if is_new and to_save is not None:
             self.backfill_download_artifacts(to_save)
+        if to_save is not None:
             self.save_session(to_save)
         if is_new:
             self.log(f"New session: {to_save}", "SUCCESS")
-        if to_save is not None:
-            self.event_hub.broadcast_sessions(self.sessions_to_json())
+        self._broadcast_sessions_async()
         return is_new
     
     def update_session_config(self, session_id, sleep_seconds=None, jitter_percent=None):

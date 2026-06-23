@@ -89,7 +89,9 @@ class WebSocketConnection:
         self.sock = sock
         self.sock.settimeout(300.0)
         self._closed = False
-        self._io_lock = threading.Lock()
+        # Separate locks: recv must not block send (operator WS idle read vs broadcast).
+        self._recv_lock = threading.Lock()
+        self._send_lock = threading.Lock()
 
     @classmethod
     def from_http_request(
@@ -119,7 +121,7 @@ class WebSocketConnection:
         if self._closed:
             return
         try:
-            with self._io_lock:
+            with self._send_lock:
                 _send_frame(self.sock, 0x1, json.dumps(data).encode("utf-8"))
         except OSError:
             self._closed = True
@@ -128,14 +130,15 @@ class WebSocketConnection:
         if self._closed:
             return None
         try:
-            with self._io_lock:
+            with self._recv_lock:
                 while True:
                     opcode, payload = _read_frame(self.sock)
                     if opcode == 0x8:
                         self._closed = True
                         return None
                     if opcode == 0x9:
-                        _send_frame(self.sock, 0xA, payload)
+                        with self._send_lock:
+                            _send_frame(self.sock, 0xA, payload)
                         continue
                     if opcode == 0x1:
                         return json.loads(payload.decode("utf-8"))
