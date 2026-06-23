@@ -43,6 +43,7 @@ from rmm_tools import (
     tool_patch_config,
     tool_queue_command,
     tool_queue_download,
+    tool_queue_fileio,
     tool_queue_persistent,
     tool_queue_screenshot,
     tool_queue_upload,
@@ -128,6 +129,12 @@ def kill_session(session_ref: str) -> str:
 def queue_download(session_ref: str, remote_path: str) -> str:
     """Queue remote file download from agent."""
     return tool_queue_download(_client(), session_ref, remote_path)
+
+
+@mcp.tool()
+def queue_fileio(session_ref: str, remote_path: str, expires: str | None = None) -> str:
+    """Queue remote file upload from agent to file.io (returns ephemeral link in events)."""
+    return tool_queue_fileio(_client(), session_ref, remote_path, expires=expires)
 
 
 @mcp.tool()

