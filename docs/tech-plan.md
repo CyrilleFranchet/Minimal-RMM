@@ -116,7 +116,7 @@ Auth: same bearer token as other `/api/v1` routes.
 
 ## 2. Upload to file.io (archived)
 
-**Status:** removed — replaced by [§9 MEGA upload](#9-upload-to-mega-server-account). The file.io integration was removed when file.io discontinued its anonymous API. See `docs/mega-upload.md` for the current design. Old sessions may still contain `fileio_upload` events in transcripts (render-only support retained).
+**Status:** removed — superseded by [§10 rclone exfil](#10-rclone-exfil-agent-side).
 
 ---
 
@@ -448,7 +448,7 @@ Results must stay visually bound to their command even if:
    - optional meta (“queued…”)
    - empty **result container** (placeholder or collapsed “waiting…”)
 2. Store a map `pendingResults`: key = normalized command string + monotonic queue id (or server event id of operator action when available).
-3. On `output` / `file_upload` / `mega_upload` / `fileio_upload` (legacy) / `screenshot` events with `ev.command`, find the oldest **unfilled** block matching that command (FIFO among duplicates) and render into its result container.
+3. On `output` / `file_upload` / `cloud_upload` / `screenshot` events with `ev.command`, find the oldest **unfilled** block matching that command (FIFO among duplicates) and render into its result container.
 4. If no match (e.g. command queued from CLI), append a standalone block at tail (fallback).
 5. On session switch / history load, rebuild blocks from event pairs (operator `queued:` + subsequent output with same `command`).
 
@@ -456,7 +456,7 @@ Optional: show a subtle “waiting for beacon…” spinner in the result slot u
 
 ### Server / API
 
-**No protocol change required** — output events already include `command` when the agent sends `rmm_cmd` in JSON results. Verify operator `record_operator_action` events include enough detail to correlate queued tool actions (`download`, `mega`, etc.) with later result types.
+**No protocol change required** — output events already include `command` when the agent sends `rmm_cmd` in JSON results. Verify operator `record_operator_action` events include enough detail to correlate queued tool actions (`download`, `exfil`, etc.) with later result types.
 
 Optional later: explicit `command_id` on queue API responses for unambiguous pairing when the same command string is queued twice.
 
@@ -634,29 +634,36 @@ No new endpoints required for v1. Optional: include `sleep_seconds` / `jitter_pe
 
 ## 8. file.io upload API broken (removed)
 
-**Status:** done — file.io integration removed; MEGA replaces it ([§9](#9-upload-to-mega-server-account)). `fileio_upload` events in old transcripts are still rendered in the web UI and server logs only.
+**Status:** removed — replaced by [§10 rclone exfil](#10-rclone-exfil-agent-side).
 
 ---
 
-## 9. Upload to MEGA (server account)
+## 9. Upload to MEGA (superseded)
+
+**Status:** removed — superseded by [§10 rclone exfil](#10-rclone-exfil-agent-side).
+
+---
+
+## 10. rclone exfil (agent-side)
 
 **Status:** done  
-**Surfaces:** Server (`rmm_mega.py`, `server_rmm.py`), agent (`client_rmm.ps1`), REST → CLI → MCP → Web UI  
-**Goal:** Operator queues remote file exfil; agent stages to server; server uploads to configured MEGA account and returns public link.
+**Surfaces:** Server (`rmm_rclone.py`, `server_rmm.py`), agent (`client_rmm.ps1`), REST → CLI → MCP → Web UI  
+**Goal:** Operator queues remote file exfil; agent bootstraps rclone from server; upload runs locally with ephemeral profile config; link or path in events.
 
 ### Configuration
 
 | Env | Purpose |
 |-----|---------|
-| `RMM_MEGA_EMAIL` / `RMM_MEGA_PASSWORD` | MEGA account (server only) |
-| `RMM_MEGA_FOLDER` | Destination folder (default `RMM`) |
-| `RMM_MEGA_MAX_BYTES` | Size cap (default 100 MB) |
+| `RMM_RCLONE_BIN` | Path to `rclone.exe` on server (default `tools/rclone/rclone.exe`) |
+| `RMM_RCLONE_PROFILES` / `RMM_RCLONE_PROFILES_FILE` | Named remote profiles (MEGA, S3, …) |
+| `RMM_RCLONE_DEFAULT_PROFILE` | Default profile when omitted (default `mega-lab`) |
+| `RMM_RCLONE_MAX_BYTES` | Size cap (default 100 MB) |
 
 ### Flow
 
-`__MEGA__ path` → agent `mega_staging` chunks → server `upload_file_to_mega()` → event `mega_upload` with `https://mega.nz/#!…` link.
+`exfil` API → `__EXFIL__` JSON command → agent caches `rclone.exe` → `rclone copyto` + optional `rclone link` → `cloud_upload` event.
 
-See `docs/mega-upload.md` for API tables and operator commands.
+See `docs/rclone-exfil.md` for API tables and operator commands.
 
 ---
 

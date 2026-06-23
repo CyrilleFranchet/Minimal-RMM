@@ -1,0 +1,9 @@
+{
+  "mega-lab": {
+    "type": "mega",
+    "user": "lab@example.com",
+    "pass": "change-me",
+    "folder": "RMM",
+    "description": "Lab MEGA account"
+  }
+}

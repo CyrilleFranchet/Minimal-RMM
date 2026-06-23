@@ -76,11 +76,15 @@
                 <input type="text" id="download-remote" placeholder="Remote path to download">
                 <button type="button" id="btn-download" class="secondary">Download</button>
               </div>
-              <div class="file-row mega-row">
-                <input type="text" id="mega-remote" placeholder="Remote path to upload to MEGA">
-                <button type="button" id="btn-mega" class="secondary">Upload to MEGA</button>
+              <div class="file-row exfil-row">
+                <input type="text" id="exfil-remote" placeholder="Remote path to exfil">
+                <label class="exfil-profile-label" for="exfil-profile">Profile</label>
+                <select id="exfil-profile" title="rclone profile on server" disabled>
+                  <option value="">Loading…</option>
+                </select>
+                <button type="button" id="btn-exfil" class="secondary" disabled>Exfil (rclone)</button>
               </div>
-              <p class="tools-hint" id="mega-status-hint">MEGA: checking server configuration…</p>
+              <p class="tools-hint" id="exfil-status-hint">rclone: checking server configuration…</p>
               <div class="file-row">
                 <input type="file" id="upload-file">
                 <input type="text" id="upload-remote" placeholder="Remote destination path">
