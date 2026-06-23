@@ -451,11 +451,34 @@ button:disabled {
 .shell-input-line {
   flex-shrink: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
   padding: 0.5rem 1.25rem 0.75rem;
   border-top: 1px solid var(--border);
   background: var(--surface);
+}
+
+.shell-input-stack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.shell-completion-hint {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  padding: 0 0.35rem;
+  min-height: 1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shell-completion-hint.hidden {
+  display: none;
 }
 
 .shell-prompt {

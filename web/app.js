@@ -3,6 +3,11 @@
  */
 const STORAGE_KEY = "rmm_api_token";
 const EVENT_CURSORS_KEY = "rmm_event_cursors";
+const SHELL_HISTORY_KEY = "rmm_shell_history";
+const SHELL_HISTORY_MAX = 100;
+
+/** Agent dispatch prefixes (client_rmm.ps1 Invoke-RmmUserCommand). */
+const SHELL_DISPATCH_PREFIXES = ["cmd:", "PS:", "powershell:", "pwsh:"];
 
 const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
@@ -21,6 +26,12 @@ const state = {
   sessionDownloads: [],
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
+  /** Per-session command history for ↑/↓ and Tab (session id → string[]). */
+  shellHistoryBySession: {},
+  /** ↑/↓ navigation: index into history (-1 = draft at end). */
+  shellHistoryNav: { index: -1, draft: "" },
+  /** Tab cycle state for multi-match completion. */
+  shellTabCycle: { anchor: null, candidates: [], index: -1 },
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -234,6 +245,11 @@ function setConsoleReadOnly(readonly) {
   banner.classList.toggle("hidden", !readonly);
   if (input) {
     input.disabled = readonly;
+  }
+  if (readonly) {
+    resetShellHistoryNav();
+    const hint = $("#shell-completion-hint");
+    if (hint) hint.classList.add("hidden");
   }
 }
 
@@ -522,10 +538,297 @@ function appendShellLine(kind, html) {
 function appendShellEcho(cmd) {
   state.echoedCommands.add(cmd);
   setTimeout(() => state.echoedCommands.delete(cmd), 120000);
+  rememberShellCommand(cmd);
   appendShellLine(
     "echo",
     `<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(cmd)}`
   );
+}
+
+// --- Shell history & Tab completion (tech plan §4) ---
+
+function loadShellHistoryStore() {
+  try {
+    return JSON.parse(sessionStorage.getItem(SHELL_HISTORY_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveShellHistoryStore(store) {
+  try {
+    sessionStorage.setItem(SHELL_HISTORY_KEY, JSON.stringify(store));
+  } catch {
+    /* quota */
+  }
+}
+
+function getShellHistoryList(sessionId = state.selectedId) {
+  if (!sessionId) return [];
+  if (!state.shellHistoryBySession[sessionId]) {
+    const store = loadShellHistoryStore();
+    state.shellHistoryBySession[sessionId] = Array.isArray(store[sessionId])
+      ? store[sessionId].slice(-SHELL_HISTORY_MAX)
+      : [];
+  }
+  return state.shellHistoryBySession[sessionId];
+}
+
+function persistShellHistory(sessionId = state.selectedId) {
+  if (!sessionId) return;
+  const store = loadShellHistoryStore();
+  store[sessionId] = getShellHistoryList(sessionId).slice(-SHELL_HISTORY_MAX);
+  saveShellHistoryStore(store);
+}
+
+function rememberShellCommand(cmd, sessionId = state.selectedId) {
+  const text = String(cmd || "").trim();
+  if (!sessionId || !text) return;
+  const list = getShellHistoryList(sessionId);
+  if (list.length && list[list.length - 1] === text) return;
+  list.push(text);
+  while (list.length > SHELL_HISTORY_MAX) list.shift();
+  persistShellHistory(sessionId);
+}
+
+function extractShellCommandFromEvent(ev) {
+  if (!ev) return null;
+  const t = ev.type || "";
+  if (t === "operator") {
+    const cmd = operatorCommandFromBody(String(ev.body || ""));
+    if (!cmd || cmd.startsWith("__")) return null;
+    return cmd;
+  }
+  if (t === "output") {
+    const cmd = String(ev.command || "").trim();
+    if (cmd && !cmd.startsWith("__")) return cmd;
+  }
+  return null;
+}
+
+function mergeShellHistoryLists(stored, fromEvents) {
+  const out = Array.isArray(stored) ? [...stored] : [];
+  for (const cmd of fromEvents || []) {
+    if (!cmd) continue;
+    if (out.length && out[out.length - 1] === cmd) continue;
+    out.push(cmd);
+  }
+  return out.slice(-SHELL_HISTORY_MAX);
+}
+
+function rebuildShellHistoryFromEvents(events) {
+  const list = [];
+  for (const ev of events || []) {
+    const cmd = extractShellCommandFromEvent(ev);
+    if (!cmd) continue;
+    if (list.length && list[list.length - 1] === cmd) continue;
+    list.push(cmd);
+  }
+  return list;
+}
+
+function seedShellHistory(sessionId, events) {
+  if (!sessionId) return;
+  const fromEvents = rebuildShellHistoryFromEvents(events);
+  const stored = loadShellHistoryStore()[sessionId];
+  state.shellHistoryBySession[sessionId] = mergeShellHistoryLists(stored, fromEvents);
+  persistShellHistory(sessionId);
+  resetShellHistoryNav();
+}
+
+function resetShellHistoryNav() {
+  state.shellHistoryNav = { index: -1, draft: "" };
+  resetShellTabCycle();
+}
+
+function resetShellTabCycle() {
+  state.shellTabCycle = { anchor: null, candidates: [], index: -1 };
+}
+
+function shellHistoryRelativeIndex(navIndex, len) {
+  if (len === 0) return -1;
+  if (navIndex < 0) return -1;
+  return len - 1 - navIndex;
+}
+
+function navigateShellHistory(direction) {
+  const input = $("#shell-input");
+  if (!input || input.disabled || state.viewMode === "history") return false;
+  const list = getShellHistoryList();
+  if (!list.length) return false;
+
+  const nav = state.shellHistoryNav;
+  if (nav.index === -1) {
+    nav.draft = input.value;
+  }
+
+  if (direction < 0) {
+    if (nav.index < list.length - 1) nav.index += 1;
+  } else if (nav.index > -1) {
+    nav.index -= 1;
+  } else {
+    return true;
+  }
+
+  resetShellTabCycle();
+  if (nav.index === -1) {
+    input.value = nav.draft;
+  } else {
+    const idx = shellHistoryRelativeIndex(nav.index, list.length);
+    input.value = list[idx] ?? "";
+  }
+  updateShellCompletionHint();
+  return true;
+}
+
+function longestCommonPrefix(strings) {
+  if (!strings.length) return "";
+  let prefix = strings[0];
+  for (let i = 1; i < strings.length; i += 1) {
+    const s = strings[i];
+    let j = 0;
+    const max = Math.min(prefix.length, s.length);
+    while (j < max && prefix[j].toLowerCase() === s[j].toLowerCase()) j += 1;
+    prefix = prefix.slice(0, j);
+    if (!prefix.length) break;
+  }
+  return prefix;
+}
+
+function getShellCompletionCandidates(line) {
+  const q = String(line ?? "");
+  const lower = q.toLowerCase();
+  const seen = new Set();
+  const cands = [];
+
+  const add = (s) => {
+    const t = String(s);
+    if (!t || seen.has(t)) return;
+    if (q && !t.toLowerCase().startsWith(lower)) return;
+    seen.add(t);
+    cands.push(t);
+  };
+
+  const history = getShellHistoryList();
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    add(history[i]);
+  }
+  for (const p of SHELL_DISPATCH_PREFIXES) {
+    add(p);
+  }
+
+  cands.sort((a, b) => {
+    const aHist = history.includes(a);
+    const bHist = history.includes(b);
+    if (aHist !== bHist) return aHist ? -1 : 1;
+    return a.localeCompare(b, undefined, { sensitivity: "base" });
+  });
+  return cands;
+}
+
+function applyShellTabCompletion(shift) {
+  const input = $("#shell-input");
+  if (!input || input.disabled || state.viewMode === "history") return;
+  const line = input.value;
+  let cands = getShellCompletionCandidates(line);
+  if (!cands.length) return;
+
+  const cycle = state.shellTabCycle;
+  if (cycle.anchor !== line) {
+    cycle.anchor = line;
+    cycle.candidates = cands;
+    cycle.index = -1;
+  } else {
+    cands = cycle.candidates;
+  }
+
+  if (cands.length === 1) {
+    input.value = cands[0];
+    cycle.anchor = cands[0];
+    cycle.index = 0;
+    updateShellCompletionHint();
+    return;
+  }
+
+  const lcp = longestCommonPrefix(cands, line);
+  if (cycle.index < 0 && lcp.length > line.length) {
+    input.value = lcp;
+    cycle.anchor = lcp;
+    updateShellCompletionHint();
+    return;
+  }
+
+  let next = cycle.index + (shift ? -1 : 1);
+  if (next < 0) next = cands.length - 1;
+  if (next >= cands.length) next = 0;
+  cycle.index = next;
+  input.value = cands[next];
+  cycle.anchor = cands[next];
+  updateShellCompletionHint();
+}
+
+function updateShellCompletionHint() {
+  const hint = $("#shell-completion-hint");
+  const input = $("#shell-input");
+  if (!hint || !input || input.disabled) {
+    if (hint) hint.classList.add("hidden");
+    return;
+  }
+  const line = input.value;
+  const cands = getShellCompletionCandidates(line);
+  if (!line || !cands.length) {
+    hint.textContent = "";
+    hint.classList.add("hidden");
+    return;
+  }
+  const best = cands.find(
+    (c) => c.toLowerCase().startsWith(line.toLowerCase()) && c.length > line.length
+  );
+  if (best) {
+    hint.textContent = best;
+    hint.classList.remove("hidden");
+  } else if (cands.length > 1) {
+    hint.textContent = `${cands.length} matches — Tab to cycle`;
+    hint.classList.remove("hidden");
+  } else {
+    hint.textContent = "";
+    hint.classList.add("hidden");
+  }
+}
+
+function handleShellInputKeydown(e) {
+  if (e.key === "Enter" && e.ctrlKey) {
+    e.preventDefault();
+    runCommand(false);
+    return;
+  }
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    if (navigateShellHistory(-1)) return;
+  }
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (navigateShellHistory(1)) return;
+  }
+  if (e.key === "Tab") {
+    e.preventDefault();
+    applyShellTabCompletion(e.shiftKey);
+  }
+}
+
+let shellInputProgrammatic = false;
+
+function bindShellInputCompletion() {
+  const input = $("#shell-input");
+  if (!input || input.dataset.completionBound) return;
+  input.dataset.completionBound = "1";
+  input.addEventListener("keydown", handleShellInputKeydown);
+  input.addEventListener("input", () => {
+    if (shellInputProgrammatic) return;
+    resetShellHistoryNav();
+    resetShellTabCycle();
+    updateShellCompletionHint();
+  });
 }
 
 function appendShellOutput(text) {
@@ -679,7 +982,7 @@ async function selectSession(id) {
   $("#jitter-input").value = s.jitter_percent;
   shellOutputEl().innerHTML = "";
   updateShellPrompt();
-  appendShellMeta(`Session ${id.slice(0, 8)} — Enter run & wait, Ctrl+Enter queue`);
+  appendShellMeta(`Session ${id.slice(0, 8)} — Enter wait · Ctrl+Enter queue · ↑↓ history · Tab complete`);
 
   const input = $("#shell-input");
   input.value = "";
@@ -695,6 +998,7 @@ async function selectSession(id) {
   );
   if (status === 200) {
     const events = (data.events || []).sort((a, b) => (a.id || 0) - (b.id || 0));
+    seedShellHistory(id, events);
     for (const ev of events) {
       appendEvent(ev, { history: true });
     }
@@ -812,7 +1116,11 @@ function appendEvent(ev, { local = false, history = false } = {}) {
 
 function clearShellInput() {
   const input = $("#shell-input");
+  shellInputProgrammatic = true;
   input.value = "";
+  shellInputProgrammatic = false;
+  resetShellHistoryNav();
+  updateShellCompletionHint();
   input.blur();
   input.focus();
 }
@@ -1005,12 +1313,7 @@ document.addEventListener("DOMContentLoaded", () => {
     runCommand(true);
   });
 
-  $("#shell-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && e.ctrlKey) {
-      e.preventDefault();
-      runCommand(false);
-    }
-  });
+  bindShellInputCompletion();
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.token && !$("#app").classList.contains("hidden")) {
