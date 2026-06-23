@@ -662,6 +662,19 @@ button:disabled {
   margin-bottom: 0;
 }
 
+.exfil-row .exfil-profile-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+.exfil-row select {
+  flex: 0 1 auto;
+  min-width: 8rem;
+  max-width: 12rem;
+}
+
 .tools-hint {
   font-size: 0.8rem;
   color: var(--muted);
