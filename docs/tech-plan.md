@@ -114,103 +114,9 @@ Auth: same bearer token as other `/api/v1` routes.
 
 ---
 
-## 2. Upload to file.io (URL returned by RMM)
+## 2. Upload to file.io (archived)
 
-**Status:** done  
-**Surfaces:** REST API → `rmm_cli.py` → MCP → Web UI (parity rule)  
-**Goal:** Operator queues exfil of a **remote** file on the agent; the agent uploads it to [file.io](https://www.file.io/) and the RMM server returns the public download link to the operator (shell output, events, API response).
-
-### file.io — problem statement
-
-`__DOWNLOAD__` pulls files to `RMM_logs/downloads/` on the server. Operators sometimes want a **shareable ephemeral URL** without storing the file on the RMM host.
-
-### User flow
-
-1. Operator: `fileio upload C:\path\secret.zip` (CLI), web “Upload to file.io” button, or `POST /api/v1/sessions/{id}/fileio`.
-2. Server queues internal command for next beacon.
-3. Agent reads remote file, `POST multipart/form-data` to `https://file.io` (field `file`).
-4. Agent posts result to `/result` with JSON payload containing `link`, `expiry`, `size`, etc.
-5. Server surfaces link in event transcript + API wait response; web UI shows clickable link.
-
-### Protocol
-
-New internal command (agent `client_rmm.ps1`):
-
-```text
-__FILEIO__ <remote_path> [expires]
-```
-
-- `remote_path` — file on agent host (same validation as `__DOWNLOAD__`)
-- `expires` — optional file.io query param (`14d`, `1w`, `1m`, …); default server-configured or `14d`
-
-Result `type` (new): `fileio_upload`
-
-```json
-{
-  "type": "fileio_upload",
-  "remote_path": "C:\\Users\\x\\doc.pdf",
-  "success": true,
-  "link": "https://file.io/AbCd12",
-  "key": "AbCd12",
-  "expiry": "14 days",
-  "size": 12345,
-  "error": null
-}
-```
-
-On failure: `success: false`, `error` message (HTTP status, file missing, size limit).
-
-### Agent implementation (`client_rmm.ps1`)
-
-- Add handler alongside `__DOWNLOAD__` / `__UPLOAD__`.
-- Stream file to multipart upload (avoid loading entire file into memory when possible; for v1, chunked read into `MultipartFormData` is acceptable up to agent memory limits).
-- Use same HTTP stack as beacon (`Invoke-RmmHttp` / proxy settings) so corporate egress matches existing agent traffic.
-- Respect existing verbose logging; do not log file contents.
-
-**Limits:** file.io documents up to ~4 GB; RMM should enforce a configurable max (env `RMM_FILEIO_MAX_BYTES`, default e.g. 100 MB for lab safety) before upload.
-
-### Server (`server_rmm.py`)
-
-- `POST /api/v1/sessions/{id}/fileio` body: `{"remote_path": "…", "expires": "14d"}` → queue `__FILEIO__ …`
-- `handle_result`: parse `fileio_upload`, `_record_event` with body containing link; no local artifact file.
-- Optional: `GET /api/v1/sessions/{id}/fileio` not needed if exec/wait returns link inline.
-
-### CLI & MCP
-
-| Surface | Action |
-|---------|--------|
-| `rmm_cli.py` | `fileio <remote_path> [--expires 1w]` subcommand + interactive alias |
-| `rmm_tools.py` | `queue_fileio(session_ref, remote_path, expires=None)` |
-| `mcp_rmm_server.py` | `queue_fileio` tool |
-
-### Web UI
-
-In tools panel:
-
-- Remote path input + optional expires dropdown
-- **Upload to file.io** button
-- On success: show link in shell transcript (existing event rendering) + copy button
-
-### Security & ops notes
-
-- file.io is a **third-party** service; files leave the agent host and are stored externally. Document clearly in README (lab-only, data handling).
-- No API key required for basic file.io uploads; optional future support for authenticated file.io accounts is out of scope.
-- Operator must trust file.io retention (one-time download / auto-delete per their policy).
-- Block `__FILEIO__` when server flag `--no-external-upload` (optional hardening) — not required for v1.
-
-### file.io — implementation order
-
-1. Agent `__FILEIO__` + result JSON
-2. Server queue + result handling + REST endpoint
-3. CLI + MCP
-4. Web UI control
-5. README + metrics: count file.io bytes in feature 1 counters
-
-### file.io — acceptance criteria
-
-- Operator receives a working `https://file.io/…` link in events within one beacon interval after queueing
-- Failed uploads (missing file, file.io down) produce clear error in transcript
-- Parity: REST, CLI, MCP, and web can trigger the same command
+**Status:** removed — replaced by [§9 MEGA upload](#9-upload-to-mega-server-account). The file.io integration was removed when file.io discontinued its anonymous API. See `docs/mega-upload.md` for the current design. Old sessions may still contain `fileio_upload` events in transcripts (render-only support retained).
 
 ---
 
@@ -306,7 +212,10 @@ Optional: `DELETE /api/v1/sessions/{id}/downloads/{artifact}` to remove server-s
 
 Not required for first ship if web UI is the primary ask; REST list endpoint is enough for automation.
 
-### Downloads browser — security notes; artifact URLs continue to require token.
+### Downloads browser — security notes
+
+Artifact URLs continue to require token.
+
 - List endpoint must only return artifacts whose stored `hashPrefix` maps to the requested session (no cross-session leakage).
 - Preview only for allowlisted MIME/types and max size (e.g. 1 MB text, images) to avoid loading huge binaries into the DOM.
 
@@ -378,6 +287,7 @@ Optional later:
 - Parse `RMM_CWD_SIG:` from result events into `session.work_dir` on the server so the web prompt can show `C:\…>` accurately (today `work_dir` is rarely populated).
 
 ### Command completion — out of scope (v1)
+
 - Agent-side filesystem completion without an explicit slow round-trip
 - MCP / CLI changes
 
@@ -503,7 +413,7 @@ It breaks for **queued** work:
 2. Operator queues `hostname` before the first result returns.
 3. `whoami` output arrives on the next beacon but is rendered **at the tail**, below the second command echo — not under `whoami`.
 
-The same ordering issue affects rapid tool actions (download, file.io, screenshot) when multiple items are queued: results drift to the transcript bottom instead of staying paired with the command that produced them.
+The same ordering issue affects rapid tool actions (download, MEGA upload, screenshot) when multiple items are queued: results drift to the transcript bottom instead of staying paired with the command that produced them.
 
 `exec` (wait) mode is largely unaffected; the bug is specific to **non-blocking queue** UX and multi-command sessions.
 
@@ -538,7 +448,7 @@ Results must stay visually bound to their command even if:
    - optional meta (“queued…”)
    - empty **result container** (placeholder or collapsed “waiting…”)
 2. Store a map `pendingResults`: key = normalized command string + monotonic queue id (or server event id of operator action when available).
-3. On `output` / `file_upload` / `fileio_upload` / `screenshot` events with `ev.command`, find the oldest **unfilled** block matching that command (FIFO among duplicates) and render into its result container.
+3. On `output` / `file_upload` / `mega_upload` / `fileio_upload` (legacy) / `screenshot` events with `ev.command`, find the oldest **unfilled** block matching that command (FIFO among duplicates) and render into its result container.
 4. If no match (e.g. command queued from CLI), append a standalone block at tail (fallback).
 5. On session switch / history load, rebuild blocks from event pairs (operator `queued:` + subsequent output with same `command`).
 
@@ -546,7 +456,7 @@ Optional: show a subtle “waiting for beacon…” spinner in the result slot u
 
 ### Server / API
 
-**No protocol change required** — output events already include `command` when the agent sends `rmm_cmd` in JSON results. Verify operator `record_operator_action` events include enough detail to correlate queued tool actions (`download`, `fileio`, etc.) with later result types.
+**No protocol change required** — output events already include `command` when the agent sends `rmm_cmd` in JSON results. Verify operator `record_operator_action` events include enough detail to correlate queued tool actions (`download`, `mega`, etc.) with later result types.
 
 Optional later: explicit `command_id` on queue API responses for unambiguous pairing when the same command string is queued twice.
 
@@ -567,7 +477,7 @@ Optional later: explicit `command_id` on queue API responses for unambiguous pai
 
 1. Command block DOM + pending map for locally queued shell commands
 2. Match `output` events via `ev.command` into the correct block
-3. Extend to tool queues (download, file.io, screenshot, upload)
+3. Extend to tool queues (download, MEGA upload, screenshot, upload)
 4. History reload parity
 5. Document in `README.md` / `docs/progress.md`; close known-issue row
 
@@ -577,6 +487,176 @@ Optional later: explicit `command_id` on queue API responses for unambiguous pai
 - Ctrl+Enter queue + later WS/poll delivery preserves pairing after tab refresh (events reload)
 - Exec (Enter) behavior unchanged
 - Unmatched results (CLI-queued) still appear at tail with command label
+
+---
+
+## 7. Server restart resets agent sleep/jitter (bug)
+
+**Status:** planned (bug)  
+**Surfaces:** Server (`server_rmm.py`), agent (`client_rmm.ps1`)  
+**Goal:** When the RMM server restarts, reconnecting agents must keep their **current** beacon sleep and jitter — not be pushed back to server class defaults (`60` s / `30` %). Operator **PATCH / Apply config** after reconnect must actually change the agent’s beacon interval within a predictable window (not appear applied on the server while the agent keeps the old sleep).
+
+### Restart config — problem
+
+After **server restart**, in-memory sessions are empty. The server writes `RMM_logs/sessions.json` on `save_session()` but **does not reload it on startup**, so a reconnecting agent with the same session ID is registered as a **new** in-memory `Session`:
+
+```python
+# Session.__init__ defaults (server_rmm.py)
+self.sleep_seconds = 60
+self.jitter_percent = 30
+```
+
+On every idle `/cmd` poll, `get_command()` returns:
+
+```text
+__CONFIG__ {session.sleep_seconds} {session.jitter_percent}
+```
+
+So the agent receives **`__CONFIG__ 60 30`** (server defaults) even when:
+
+- The operator had previously set sleep/jitter via PATCH / web UI / CLI (lost with restart), or
+- The agent was running script timing (e.g. `$baseSleepSeconds = 5`) adopted earlier in the session.
+
+The client makes this worse on reconnect:
+
+1. **`RmmRegisterConfigSynced`** is set `$true` after the first successful `/register` in a process and is **never cleared** on server outage.
+2. Later registers (including `-Reconnect` after errors) **omit** `s=`, `j=`, and `sync=1`, so the restarted server never learns the agent’s script timing.
+3. **`Update-Configuration`** applies server `__CONFIG__` when values differ, so the next idle beacon can **overwrite** the agent’s in-memory sleep/jitter with the wrong defaults.
+
+```text
+Agent (5s sleep, running) ──► server restart ──► register (no sync)
+       ▲                                              │
+       │         __CONFIG__ 60 30 on idle /cmd ◄──────┘
+       └── client sleep/jitter changed unexpectedly
+```
+
+### Operator PATCH not honored (same reconnect window)
+
+After server restart, operators often **PATCH** sleep/jitter (web UI **Apply config**, CLI `set_sleep`, `PATCH /api/v1/sessions/{id}/config`) to correct a reconnecting agent. The server session updates immediately and the UI shows the new values, but the **agent may keep beaconing at the old interval** — sometimes for a full extra cycle at the wrong sleep.
+
+This is a separate symptom from the default `__CONFIG__` push, but shares the same reconnect/config pipeline.
+
+#### What the operator sees
+
+1. Server restarts; agent reconnects (same session ID).
+2. Operator sets sleep to e.g. **5 s** via PATCH — server `to_dict()` / sidebar show `sleep 5s`.
+3. Agent **`last_seen`** and command latency still reflect the **old** interval (e.g. ~60 s).
+4. Optional: no `[config_ack]` in the transcript, or `config_ack` arrives but beacons stay slow.
+
+#### Why PATCH does not reach the agent promptly
+
+| Mechanism | Current behavior |
+|-----------|------------------|
+| **PATCH is server-only** | `update_session_config()` updates in-memory `session.sleep_seconds` / `jitter_percent` and persists to `sessions.json`. Nothing is queued; delivery is **passive** on the next idle `/cmd`. |
+| **`get_command()` priority** | Persistent command → FIFO queue → **`__CONFIG__` last**. Queued or interactive work delays config delivery. |
+| **Sleep-before-poll** | Main loop calls `Get-JitteredSleep` **before** `/cmd`. If the agent is mid-cycle at 60 s when the operator PATCHes to 5 s, it will not poll until that sleep finishes — up to ~78 s with 30 % jitter. |
+| **`/cmd` before `/register`** | On reconnect, the agent polls `/cmd` **before** `Register-RmmSession`. If the session does not exist yet, `get_command()` returns `("", "none")` — **no `__CONFIG__` that cycle**. Register then creates a session with defaults; the agent sleeps again before the next poll. |
+| **Wrong default applied first** | Idle `/cmd` may deliver `__CONFIG__ 60 30` before or after the operator PATCH. The agent applies 60 s locally, then the operator PATCHes the server to 5 s. The agent will not see `__CONFIG__ 5` until it completes the **60 s sleep** it just started — even though the server already shows 5 s. |
+| **UI shows server truth, not agent truth** | Web sidebar and API report `session.sleep_seconds` from the server object, not the agent’s in-memory `$baseSleepSeconds`. Operators assume “Apply config” took effect when only the server record changed. |
+
+```text
+Operator PATCH sleep=5 ──► server session.sleep_seconds = 5 (UI updates)
+                                    │
+Agent loop: [sleep 60s] ────────────┼──► still sleeping; cannot poll /cmd yet
+            poll /cmd ◄─────────────┘
+            __CONFIG__ 5 30 ──► Update-Configuration ──► continue ──► [sleep ~5s]
+```
+
+`rmm_run_on_host.py` already warns about this class of delay (`Waiting up to {old_sleep + jitter + 25}s…`), but after restart the **server-reported** sleep may already be the new value while the **agent** is still on the old interval — so wait heuristics based on server fields underestimate the lag.
+
+#### Expected behavior (operator PATCH)
+
+- PATCH updates server **and** the agent applies the new sleep on the **next practical beacon**, without waiting through a full cycle at a stale/wrong interval when possible.
+- UI distinguishes **server config** vs **agent-applied config** (e.g. pending until `config_ack`, or show agent-reported values from ack body).
+- After reconnect + PATCH, operator can rely on `last_seen` updating at the new interval within one jittered period of the **target** sleep, not the pre-reconnect sleep.
+
+#### Fix directions (operator PATCH)
+
+1. **Eager config delivery** — on PATCH, set a `config_pending` flag or prepend `__CONFIG__` ahead of the queue (or dedicated high-priority slot) so the next `/cmd` returns config even when other work is queued.
+2. **Interruptible sleep** — after PATCH, optionally wake the agent sooner (requires agent-side change: shorter poll during “config pending”, or server signal on register response).
+3. **Register returns desired config** — `/register` response includes `sleep_seconds` / `jitter_percent` so the agent reconciles **before** the pre-poll sleep on the next loop iteration (or immediately after reconnect `continue`).
+4. **Apply config before sleep on change** — agent tracks “config received this poll”; if values changed, skip or shorten the **next** sleep (or move sleep to after `/cmd` handling when only `__CONFIG__` was received).
+5. **Reconnect register sends current agent timing** — `-Reconnect` with `sync=1` so server and agent agree before operator has to PATCH manually.
+
+### Restart config — expected behavior
+
+- **Server restart + same session ID:** restore operator-configured sleep/jitter from disk (or treat reconnect as config resync, not a blank session).
+- **Agent reconnect:** either push client script values to the server again, or **do not** push `__CONFIG__` until server state matches agent state.
+- **Operator PATCH before restart:** persisted values survive restart and are what idle `/cmd` advertises.
+
+### Restart config — root cause (current code)
+
+| Area | Behavior |
+|------|----------|
+| `save_session()` | Writes `sessions.json` with `sleep_seconds` / `jitter_percent` |
+| Server startup | No loader for `sessions.json` into `self.sessions` |
+| `register_session()` | New session → `Session()` defaults unless `sync=1` + `s`/`j` on that register |
+| Client `Register-RmmSession` | `sync=1` only when `RmmRegisterConfigSynced` is false (once per process) |
+| `get_command()` | Always emits `__CONFIG__` from server session fields when queue empty |
+| PATCH `/sessions/{id}/config` | Updates server session only; no queue entry; agent learns on next idle `/cmd` |
+| Agent main loop | `Get-JitteredSleep` runs **before** `/cmd`; config handled after poll, then `continue` → sleep again |
+
+### Restart config — fix directions (pick one or combine)
+
+1. **Load `sessions.json` on startup** — rehydrate active sessions (or at least a `{session_id → sleep, jitter}` map) before beacons arrive.
+2. **Reconnect register** — client sends `s`, `j`, `sync=1` on `Register-RmmSession -Reconnect` (or whenever server was unreachable), so restarted server adopts agent script timing when no persisted operator config exists.
+3. **Defer `__CONFIG__`** — after register, skip config push until server has explicit config (restored from disk, operator PATCH, or client sync); avoid broadcasting class defaults on first idle poll.
+4. **Persist on PATCH only** — ensure `update_session_config` / PATCH is the source of truth in `sessions.json`; load wins over `Session()` defaults on reconnect.
+
+### Restart config — server / API
+
+No new endpoints required for v1. Optional: include `sleep_seconds` / `jitter_percent` in `/register` response so the client can reconcile without waiting for `/cmd`.
+
+### Restart config — out of scope (v1)
+
+- Cross-server replication of session state
+- Changing agent script defaults in the field automatically
+
+### Restart config — implementation order
+
+1. Reproduce **default push:** start server, PATCH sleep/jitter or use 5 s client script → restart server → observe `__CONFIG__ 60 30` on agent
+2. Reproduce **PATCH not honored:** restart server with live agent → operator PATCH sleep to 5 s → confirm agent `last_seen` still ~60 s and/or no timely `config_ack`
+3. Load persisted session config on server startup (minimal: sleep/jitter by session id)
+4. Client reconnect sync (`-Reconnect` sends `sync=1` or clear `RmmRegisterConfigSynced` after prolonged failure)
+5. Guard `get_command()` so fresh post-restart sessions do not push defaults before sync
+6. Eager or prioritized config delivery after PATCH; agent-side sleep/interrupt strategy
+7. Document in `README.md` / `docs/progress.md`; close known-issue row
+
+### Restart config — acceptance criteria
+
+- Restart server with agent still running: agent sleep/jitter unchanged unless operator had persisted a different value before restart
+- Operator PATCH to 120 s / 10 % survives server restart and is reflected in UI + agent after reconnect
+- Operator PATCH to 5 s on a reconnecting agent that was wrongly at 60 s: agent beacons at ~5 s within **one target interval**, not after an additional full 60 s sleep
+- New session (first register with `sync=1`) still adopts client script timing as today
+- UI or events distinguish server-configured vs agent-acknowledged sleep when they differ
+
+---
+
+## 8. file.io upload API broken (removed)
+
+**Status:** done — file.io integration removed; MEGA replaces it ([§9](#9-upload-to-mega-server-account)). `fileio_upload` events in old transcripts are still rendered in the web UI and server logs only.
+
+---
+
+## 9. Upload to MEGA (server account)
+
+**Status:** done  
+**Surfaces:** Server (`rmm_mega.py`, `server_rmm.py`), agent (`client_rmm.ps1`), REST → CLI → MCP → Web UI  
+**Goal:** Operator queues remote file exfil; agent stages to server; server uploads to configured MEGA account and returns public link.
+
+### Configuration
+
+| Env | Purpose |
+|-----|---------|
+| `RMM_MEGA_EMAIL` / `RMM_MEGA_PASSWORD` | MEGA account (server only) |
+| `RMM_MEGA_FOLDER` | Destination folder (default `RMM`) |
+| `RMM_MEGA_MAX_BYTES` | Size cap (default 100 MB) |
+
+### Flow
+
+`__MEGA__ path` → agent `mega_staging` chunks → server `upload_file_to_mega()` → event `mega_upload` with `https://mega.nz/#!…` link.
+
+See `docs/mega-upload.md` for API tables and operator commands.
 
 ---
 

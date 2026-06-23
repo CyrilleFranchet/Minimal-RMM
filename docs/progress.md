@@ -82,16 +82,17 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `ThreadingHTTPServer` — concurrent beacons, operator API, WebSocket handlers
 - [x] Session registry: register, touch, kill, prefix resolution, `beacon_status` (online/stale/offline)
 - [x] Command queue: oneshot FIFO, persistent until `__STOP__`, idle `__CONFIG__` push
-- [x] Result handling: `output`, `file_upload`, `fileio_upload`, `screenshot`, `keylog`, `config_ack`
+- [x] Result handling: `output`, `file_upload`, `mega_upload`, `fileio_upload` (legacy), `screenshot`, `keylog`, `config_ack`
 - [x] Event transcript per session (`deque`, max 500); operator action logging; WebSocket broadcast (`OperatorEventHub`)
-- [x] Operator REST `/api/v1`: health, sessions CRUD, config PATCH, commands, exec (blocking), upload, download, fileio, screenshot, socks, events, artifacts, AI chat
+- [x] Operator REST `/api/v1`: health, sessions CRUD, config PATCH, commands, exec (blocking), upload, download, mega, screenshot, socks, events, artifacts, AI chat
 - [x] `GET /api/v1/socks` — list active relays with hostname, WS channel, tunnel count
 - [x] Embedded `--cli` (readline / prompt_toolkit): full command set including keylog, persist, socks list
 - [x] Security: `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, `--insecure` lab flag; `MAX_BODY_BYTES` via `RMM_MAX_BODY_BYTES` (default 32 MB); path traversal guards on artifacts
 - [x] Chunked download reassembly (`_save_file_upload`: `.part` staging, `upload_id` / `offset` / `eof`)
 - [x] `GET /api/v1/sessions/{id}/downloads` — per-session download artifact index (`download_artifacts`, disk backfill)
 - [x] `queue_agent_download` / `register_download_artifact` — track remote path from queue + agent `remote_path` field
-- [x] `queue_agent_fileio` — `POST …/fileio` queues `__FILEIO__` (link in events, no server artifact)
+- [x] `queue_agent_mega` — `POST …/mega` queues `__MEGA__` (agent stages → server uploads to MEGA; link in events)
+- [x] `GET /api/v1/mega/config` — masked MEGA account status for operators
 - [x] Session transcript persistence — `RMM_logs/history/{id}/events.jsonl` + `meta.json`; archive on kill
 - [x] `GET /api/v1/history` — list ended sessions; `GET …/history/{id}/events` read-only transcript
 
@@ -111,8 +112,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Register with infinite retry; `sync=1` on first register to adopt script sleep/jitter
 - [x] HTTP transport: IPv4-only tunnel resolution, `Host` header, optional corporate proxy + default credentials
 - [x] User commands: bare `cmd.exe`, `cmd:`, `PS:` / `powershell:`, `pwsh:`; cwd tracking via `RMM_CWD_SIG`
-- [x] Internal commands: `__DOWNLOAD__`, `__FILEIO__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
-- [x] `__FILEIO__` — multipart upload to file.io; result `type=fileio_upload` (`RMM_FILEIO_MAX_BYTES`, default 100 MB)
+- [x] Internal commands: `__DOWNLOAD__`, `__MEGA__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
+- [x] `__MEGA__` — chunked staging to server + `rmm_mega.py` upload to configured MEGA account (`RMM_MEGA_MAX_BYTES`, default 100 MB)
 - [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload` with `remote_path` metadata)
 - [x] Keylogger job (`__KEYLOG__ start|stop|dump`) → temp file → `keylog` result type
 - [x] Persistence installer copies script to `%APPDATA%` + Run key (with current URL/sleep/jitter)
@@ -134,7 +135,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Login via API token (`sessionStorage`)
 - [x] Session sidebar with beacon status, sleep/jitter display
 - [x] Shell: queue command, exec (wait), kill session; **↑/↓ history + Tab completion** (§4)
-- [x] Files: download queue, upload (base64), screenshot, **file.io upload** (third-party link in transcript)
+- [x] Files: download queue, upload (base64), screenshot, **MEGA upload** (server account; link in transcript)
 - [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`
 - [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
 - [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`)
@@ -144,7 +145,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ### MCP & AI (`mcp_rmm_server.py`, `rmm_tools.py`, `rmm_ai.py`)
 
-- [x] **17 MCP tools:** `health`, `list_sessions`, `get_session`, `exec_command`, `queue_command`, `queue_persistent`, `stop_persistent`, `patch_config`, `get_events`, `kill_session`, `queue_download`, `queue_fileio`, `queue_upload`, `queue_screenshot`, `list_socks`, `start_socks`, `stop_socks`
+- [x] **18 MCP tools:** `health`, `list_sessions`, `get_session`, `exec_command`, `queue_command`, `queue_persistent`, `stop_persistent`, `patch_config`, `get_events`, `kill_session`, `queue_download`, `queue_mega`, `get_mega_config`, `queue_upload`, `queue_screenshot`, `list_socks`, `start_socks`, `stop_socks`
 - [x] `session_ref` = hostname, id prefix, or full UUID (`_resolve_session_id`)
 - [x] Web AI can use MCP stdio or direct `execute_tool` (`RMM_AI_USE_MCP=0`)
 
@@ -177,7 +178,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Stop persistent | ✅ | ✅ `stop` | via API | ✅ | ❌ | ✅ |
 | Patch sleep/jitter | ✅ | ✅ `set_*` | ✅ `config` | ✅ | ✅ | ✅ |
 | Download file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Upload to file.io | ✅ | ✅ `fileio` | ✅ | ✅ `queue_fileio` | ✅ | ✅ `fileio` |
+| Upload to MEGA | ✅ | ✅ `mega` | ✅ | ✅ `queue_mega` | ✅ | ✅ `mega` |
 | List session downloads | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Session history (archived) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Upload file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -200,6 +201,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ## Up Next
 
+- [ ] **Server restart / beacon config bugs** — see [tech plan §7](tech-plan.md#7-server-restart-resets-agent-sleepjitter-bug)
 - [ ] **Web UI — queued command result placement** — see [tech plan §6](tech-plan.md#6-web-ui--queued-command-result-placement-bug): show results under echoed command, not at transcript tail
 - [ ] **Web UI — traffic & beacon charts** — see [tech plan §1](tech-plan.md#1-beacon--traffic-visualization-web-ui): `GET …/metrics`, poll/byte counters, Chart.js panel
 - [ ] **Web UI — interactive shell (cmd / PowerShell)** — see [tech plan §5](tech-plan.md#5-web-ui--interactive-shell-mode-cmd--powershell): shell mode selector, cwd prompt, `PS:` / `pwsh:` dispatch
@@ -232,7 +234,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ## Deviations from planned docs
 
-- `docs/tech-plan.md` covers traffic charts; `docs/fileio-upload.md` documents file.io upload (shipped); `docs/downloads-browser.md` documents the web downloads panel (shipped).
+- `docs/tech-plan.md` covers traffic charts; `docs/mega-upload.md` documents MEGA upload; `docs/downloads-browser.md` documents the web downloads panel (shipped).
 - Agent `file_upload` JSON may include `remote_path` (full agent path) alongside `filename`.
 - SOCKS uses custom JSON task protocol over WebSocket, not a generic byte-stream tunnel.
 - Embedded `server_rmm.py --cli` remains alongside `rmm_cli.py` (duplicate UX).
@@ -252,6 +254,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | ~~Beacon hang after large results~~ | **Fixed:** `/result` waited for history write + full-body WS push before HTTP 200; slow clients could block origin. Now respond 200 immediately, process async; truncate WS event bodies; 15s WS send timeout; client shows `Beacon poll…` and reports failed result POSTs. |
 | No automated tests | Regressions caught manually only. |
 | Web UI queued results | Queued command output appends at transcript **tail** instead of under the echoed command — see [tech plan §6](tech-plan.md#6-web-ui--queued-command-result-placement-bug). |
+| Server restart vs beacon config | After server restart: reconnecting agents may get default **`__CONFIG__ 60 30`**; operator PATCH/`Apply config` updates the server immediately but the agent can keep the old sleep for a full cycle — see [tech plan §7](tech-plan.md#7-server-restart-resets-agent-sleepjitter-bug). |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
 | Web ↔ CLI parity | No SOCKS or keylog in web UI; no interactive cmd/PS mode or traffic/beacon charts yet. |
 
