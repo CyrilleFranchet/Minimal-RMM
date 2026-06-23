@@ -124,9 +124,14 @@ python server_rmm.py --cli
 
 ### Tunnel (example)
 
+Start the server first and note the port in its startup banner (`RMM listening on …:PORT`). Point **cloudflared at that same port**:
+
 ```bash
-cloudflared tunnel --url http://localhost:8080
+python server_rmm.py 8081          # example: listen on 8081
+cloudflared tunnel --url http://127.0.0.1:8081
 ```
+
+Default port is **8080** if you omit the port argument. A mismatch (server on 8081, tunnel on 8080) causes **HTTP 524** from the client.
 
 Use the HTTPS URL as `RMM_BASE_URL` on the client (no trailing slash).
 
@@ -307,7 +312,7 @@ All settings live in a **configuration block at the top of the script** (`$u`, `
 - **Registration:** retries **indefinitely** until the server is back. Re-registers every beacon and after errors so a restarted server is picked up automatically. Only stops on explicit server kill (`TERMINATED` / `__EXIT__`), not on network or auth errors.
 - **Debug:** set `$verboseHttp = $true` or `RMM_VERBOSE=1` to log each HTTP call (logical URL, wire IPv4, `Host` header, status, error bodies).
 
-**HTTP 524 (Cloudflare):** the tunnel reached Cloudflare but the origin did not answer in time. On the host running `cloudflared`, ensure `python server_rmm.py --bind 0.0.0.0` is up and the tunnel targets `http://127.0.0.1:8080` (or your port). This is not a wrong beacon token (that is usually `401`/`403`).
+**HTTP 524 (Cloudflare):** the tunnel reached Cloudflare but **cloudflared could not get a timely response from your origin**. Common cause: **port mismatch** — server on `8081` but `cloudflared tunnel --url http://127.0.0.1:8080`. Restart cloudflared with the port shown in the server banner (`Tunnel: cloudflared tunnel --url http://localhost:PORT`). Also ensure `server_rmm.py` is running on that host. This is not a wrong beacon token (that is usually `401`/`403`).
 
 ---
 

@@ -182,7 +182,7 @@ function Get-RmmHttpStatusHint {
         404 { return 'Not found — check RMM_BASE_URL path.' }
         502 { return 'Bad gateway — tunnel/origin down (is cloudflared + server_rmm.py running?).' }
         503 { return 'Service unavailable — origin not ready.' }
-        524 { return 'Cloudflare timeout — origin did not answer in time (cloudflared cannot reach server_rmm.py on 127.0.0.1:8080?).' }
+        524 { return 'Cloudflare timeout — cloudflared could not reach server_rmm.py (tunnel --url port must match server listen port, e.g. 8081).' }
         default { return '' }
     }
 }
