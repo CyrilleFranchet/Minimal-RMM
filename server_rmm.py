@@ -63,6 +63,8 @@ BEACON_SECRET = os.environ.get("RMM_BEACON_SECRET", "").strip()
 INSECURE = False
 LISTEN_HOST = "127.0.0.1"
 MAX_RESULT_EVENTS = 500
+# Cap event body size on operator WebSocket pushes (full text stays in memory/history/API).
+MAX_WS_EVENT_BODY = 16 * 1024
 
 
 def _env_int(name: str, default: int) -> int:
@@ -150,6 +152,17 @@ def _history_session_dir(session_id: str) -> str:
 def _event_for_history(ev: dict) -> dict:
     """Drop server-local filesystem paths before writing transcripts to disk."""
     return {k: v for k, v in ev.items() if k != "artifact"}
+
+
+def _event_for_ws(ev: dict) -> dict:
+    """Shrink large bodies so WS send_json does not block beacon handlers on slow clients."""
+    out = dict(ev)
+    body = out.get("body")
+    if isinstance(body, str) and len(body) > MAX_WS_EVENT_BODY:
+        omitted = len(body) - MAX_WS_EVENT_BODY
+        out["body"] = body[:MAX_WS_EVENT_BODY] + f"\n… [{omitted} chars truncated for live WS]"
+        out["body_truncated"] = True
+    return out
 
 # Create directories
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -417,6 +430,8 @@ class RMMServer:
         self.running = True
         self.event_hub = OperatorEventHub()
         self.socks = SocksManager(log_fn=self.log)
+        self._sessions_broadcast_lock = threading.Lock()
+        self._sessions_broadcast_timer = None
 
     @staticmethod
     def _format_ago(seconds):
@@ -799,7 +814,12 @@ class RMMServer:
             session.result_events.append(ev)
         self._history_append_event(session, ev)
         self._history_write_meta(session)
-        self.event_hub.broadcast_event(session.id, ev)
+        ws_ev = _event_for_ws(ev)
+        threading.Thread(
+            target=self.event_hub.broadcast_event,
+            args=(session.id, ws_ev),
+            daemon=True,
+        ).start()
         with session.wait_lock:
             if session.wait_event is not None:
                 session.wait_result = ev
@@ -811,12 +831,18 @@ class RMMServer:
 
     def _broadcast_sessions_async(self) -> None:
         """Push session list to operator WS clients without blocking beacon handlers."""
-        sessions = self.sessions_to_json()
-        threading.Thread(
-            target=self.event_hub.broadcast_sessions,
-            args=(sessions,),
-            daemon=True,
-        ).start()
+        def fire() -> None:
+            with self._sessions_broadcast_lock:
+                self._sessions_broadcast_timer = None
+            sessions = self.sessions_to_json()
+            self.event_hub.broadcast_sessions(sessions)
+
+        with self._sessions_broadcast_lock:
+            if self._sessions_broadcast_timer is not None:
+                self._sessions_broadcast_timer.cancel()
+            self._sessions_broadcast_timer = threading.Timer(0.2, fire)
+            self._sessions_broadcast_timer.daemon = True
+            self._sessions_broadcast_timer.start()
 
     def kill_session(self, session_id_or_prefix):
         session = self.resolve_session(session_id_or_prefix)
@@ -1263,7 +1289,6 @@ class RMMHandler(BaseHTTPRequestHandler):
         try:
             sessions = self.server_instance.sessions_to_json()
             ws.send_json({"op": "sessions", "sessions": sessions})
-            hub.broadcast_sessions(sessions)
             while self.server_instance.running and not ws.closed:
                 msg = ws.recv_json()
                 if msg is None:
@@ -1897,11 +1922,15 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not session_id:
                 self._respond(400, "INVALID SESSION ID")
                 return
-            self.server_instance.handle_result(session_id, body, result_type)
             self._respond(200, "OK")
-        
-        else:
-            self._respond(404, "Not Found")
+            threading.Thread(
+                target=self.server_instance.handle_result,
+                args=(session_id, body, result_type),
+                daemon=True,
+            ).start()
+            return
+
+        self._respond(404, "Not Found")
 
     def do_PATCH(self):
         parsed = urllib.parse.urlparse(self.path)

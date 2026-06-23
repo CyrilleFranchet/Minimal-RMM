@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional, Set
 
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS_SEND_TIMEOUT = 15.0
 
 
 def _ws_accept_key(sec_key: str) -> str:
@@ -122,7 +123,15 @@ class WebSocketConnection:
             return
         try:
             with self._send_lock:
-                _send_frame(self.sock, 0x1, json.dumps(data).encode("utf-8"))
+                prior = self.sock.gettimeout()
+                try:
+                    self.sock.settimeout(WS_SEND_TIMEOUT)
+                    _send_frame(self.sock, 0x1, json.dumps(data).encode("utf-8"))
+                finally:
+                    try:
+                        self.sock.settimeout(prior)
+                    except OSError:
+                        pass
         except OSError:
             self._closed = True
 
@@ -138,7 +147,15 @@ class WebSocketConnection:
                         return None
                     if opcode == 0x9:
                         with self._send_lock:
-                            _send_frame(self.sock, 0xA, payload)
+                            prior = self.sock.gettimeout()
+                            try:
+                                self.sock.settimeout(WS_SEND_TIMEOUT)
+                                _send_frame(self.sock, 0xA, payload)
+                            finally:
+                                try:
+                                    self.sock.settimeout(prior)
+                                except OSError:
+                                    pass
                         continue
                     if opcode == 0x1:
                         return json.loads(payload.decode("utf-8"))

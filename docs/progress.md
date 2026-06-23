@@ -246,7 +246,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Upload size | Single base64 POST per file; no chunking (downloads are chunked). |
 | SOCKS throughput | Pull-loop latency; adequate for interactive use, not bulk transfer optimized. |
 | Proxy idle WS | Cloudflare/tunnels may drop long-idle WebSockets; `KeepAliveInterval=20s` on agent. |
-| ~~Register + Web UI WS deadlock~~ | **Fixed:** single `_io_lock` on operator WS blocked `broadcast_sessions` during idle `recv_json` → Cloudflare 524 (~100s). Split send/recv locks in `rmm_ws.py`; async session broadcast; lighter register path (no disk write every beacon). |
+| ~~Register + Web UI WS deadlock~~ | **Fixed:** single `_io_lock` on operator WS blocked `broadcast_sessions` during idle `recv_json` → Cloudflare 524 (~100s). Split send/recv locks in `rmm_ws.py`; async/debounced session broadcast; lighter register path. |
+| ~~Beacon hang after large results~~ | **Fixed:** `/result` waited for history write + full-body WS push before HTTP 200; slow clients could block origin. Now respond 200 immediately, process async; truncate WS event bodies; 15s WS send timeout; client shows `Beacon poll…` and reports failed result POSTs. |
 | No automated tests | Regressions caught manually only. |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
 | Web ↔ CLI parity | No SOCKS or keylog in web UI; no shell completion, interactive cmd/PS mode, traffic/beacon charts, or file.io upload yet. |
