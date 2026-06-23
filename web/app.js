@@ -564,6 +564,13 @@ function renderEventBodyHtml(ev) {
     const src = artifactSrc(ev.artifact_url);
     return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" download>Download file</a>`;
   }
+  if (ev.type === "fileio_upload") {
+    const m = body.match(/https:\/\/file\.io\/\S+/i);
+    if (m) {
+      const url = m[0];
+      return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open file.io link</a>`;
+    }
+  }
   if (ev.artifact_url) {
     const src = artifactSrc(ev.artifact_url);
     return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" target="_blank" rel="noopener">Open artifact</a>`;
@@ -881,6 +888,27 @@ async function queueDownload() {
   }
 }
 
+async function queueFileIo() {
+  const remote = $("#fileio-remote").value.trim();
+  if (!remote || !state.selectedId) return;
+  const expires = $("#fileio-expires").value || "14d";
+  appendShellEcho(`fileio ${remote} ${expires}`);
+  $("#fileio-remote").value = "";
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/fileio`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remote_path: remote, expires }),
+    }
+  );
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+  } else {
+    appendShellMeta("(file.io upload queued — link appears in transcript)");
+  }
+}
+
 async function queueScreenshot() {
   if (!state.selectedId) return;
   appendShellEcho("screenshot");
@@ -968,6 +996,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-kill").addEventListener("click", killSession);
   $("#btn-config").addEventListener("click", applyConfig);
   $("#btn-download").addEventListener("click", queueDownload);
+  $("#btn-fileio").addEventListener("click", queueFileIo);
   $("#btn-screenshot").addEventListener("click", queueScreenshot);
   $("#btn-upload").addEventListener("click", queueUpload);
 
