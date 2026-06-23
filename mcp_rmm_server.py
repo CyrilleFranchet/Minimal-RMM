@@ -43,7 +43,8 @@ from rmm_tools import (
     tool_patch_config,
     tool_queue_command,
     tool_queue_download,
-    tool_queue_fileio,
+    tool_queue_mega,
+    tool_get_mega_config,
     tool_queue_persistent,
     tool_queue_screenshot,
     tool_queue_upload,
@@ -132,9 +133,15 @@ def queue_download(session_ref: str, remote_path: str) -> str:
 
 
 @mcp.tool()
-def queue_fileio(session_ref: str, remote_path: str, expires: str | None = None) -> str:
-    """Queue remote file upload from agent to file.io (returns ephemeral link in events)."""
-    return tool_queue_fileio(_client(), session_ref, remote_path, expires=expires)
+def queue_mega(session_ref: str, remote_path: str) -> str:
+    """Queue remote file upload from agent to MEGA (server account; public link in events)."""
+    return tool_queue_mega(_client(), session_ref, remote_path)
+
+
+@mcp.tool()
+def get_mega_config() -> str:
+    """Show MEGA account configuration on the RMM server."""
+    return tool_get_mega_config(_client())
 
 
 @mcp.tool()

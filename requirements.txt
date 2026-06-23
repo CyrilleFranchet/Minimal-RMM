@@ -1,5 +1,8 @@
 # Required for interactive rmm_cli.py (fixed prompt line at bottom of terminal)
 prompt_toolkit>=3.0.0,<4
 
+# MEGA.nz uploads from server (Python 3.10+)
+mega.py-v2>=2.1.0,<3
+
 # Web AI assistant spawns mcp_rmm_server.py (Python 3.10+)
 -r requirements-mcp.txt

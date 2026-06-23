@@ -64,7 +64,7 @@ client_rmm.ps1 (Windows agent)
 - Progress Log: `docs/progress.md` — living doc of completed work, open items, blockers
 - README: `README.md` — setup, API reference, SOCKS troubleshooting
 - PRD: `docs/prd.md` — *(not yet created)*
-- Tech Plan: `docs/tech-plan.md` — planned features (traffic/beacon charts, file.io upload, web shell completion, interactive cmd/PS mode, …)
+- Tech Plan: `docs/tech-plan.md` — planned features (traffic/beacon charts, MEGA upload, web shell completion, …)
 
 When starting a new task, read the relevant sections of these docs before writing code.
 

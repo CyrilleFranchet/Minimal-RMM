@@ -867,11 +867,12 @@ function renderEventBodyHtml(ev) {
     const src = artifactSrc(ev.artifact_url);
     return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" download>Download file</a>`;
   }
-  if (ev.type === "fileio_upload") {
-    const m = body.match(/https:\/\/file\.io\/\S+/i);
+  if (ev.type === "mega_upload" || ev.type === "fileio_upload") {
+    const m = body.match(/https:\/\/(?:mega\.nz|file\.io)\/\S+/i);
     if (m) {
       const url = m[0];
-      return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open file.io link</a>`;
+      const label = ev.type === "mega_upload" ? "Open MEGA link" : "Open link";
+      return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${label}</a>`;
     }
   }
   if (ev.artifact_url) {
@@ -916,6 +917,7 @@ async function connect() {
   startStatusTick();
   await refreshSessions();
   await fetchSessionHistory();
+  await refreshMegaStatus();
 }
 
 function disconnect() {
@@ -1196,24 +1198,40 @@ async function queueDownload() {
   }
 }
 
-async function queueFileIo() {
-  const remote = $("#fileio-remote").value.trim();
+async function refreshMegaStatus() {
+  const hint = $("#mega-status-hint");
+  if (!hint) return;
+  const { status, data } = await api("/mega/config");
+  if (status !== 200) {
+    hint.textContent = "MEGA: unable to read server configuration";
+    return;
+  }
+  if (!data.configured) {
+    hint.textContent =
+      "MEGA not configured on server — set RMM_MEGA_EMAIL and RMM_MEGA_PASSWORD";
+    return;
+  }
+  const lib = data.library_available ? "ready" : "mega.py-v2 missing on server";
+  hint.textContent = `MEGA ${data.email || "configured"} · folder ${data.folder || "/"} · ${lib} (lab use only)`;
+}
+
+async function queueMega() {
+  const remote = $("#mega-remote").value.trim();
   if (!remote || !state.selectedId) return;
-  const expires = $("#fileio-expires").value || "14d";
-  appendShellEcho(`fileio ${remote} ${expires}`);
-  $("#fileio-remote").value = "";
+  appendShellEcho(`mega ${remote}`);
+  $("#mega-remote").value = "";
   const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/fileio`,
+    `/sessions/${encodeURIComponent(state.selectedId)}/mega`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remote_path: remote, expires }),
+      body: JSON.stringify({ remote_path: remote }),
     }
   );
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
   } else {
-    appendShellMeta("(file.io upload queued — link appears in transcript)");
+    appendShellMeta("(MEGA upload queued — link appears in transcript)");
   }
 }
 
@@ -1304,7 +1322,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#btn-kill").addEventListener("click", killSession);
   $("#btn-config").addEventListener("click", applyConfig);
   $("#btn-download").addEventListener("click", queueDownload);
-  $("#btn-fileio").addEventListener("click", queueFileIo);
+  $("#btn-mega").addEventListener("click", queueMega);
   $("#btn-screenshot").addEventListener("click", queueScreenshot);
   $("#btn-upload").addEventListener("click", queueUpload);
 

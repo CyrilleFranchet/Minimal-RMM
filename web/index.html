@@ -76,17 +76,11 @@
                 <input type="text" id="download-remote" placeholder="Remote path to download">
                 <button type="button" id="btn-download" class="secondary">Download</button>
               </div>
-              <div class="file-row fileio-row">
-                <input type="text" id="fileio-remote" placeholder="Remote path to upload to file.io">
-                <select id="fileio-expires" title="file.io expiry">
-                  <option value="14d" selected>14 days</option>
-                  <option value="7d">7 days</option>
-                  <option value="1w">1 week</option>
-                  <option value="1m">1 month</option>
-                </select>
-                <button type="button" id="btn-fileio" class="secondary">Upload to file.io</button>
+              <div class="file-row mega-row">
+                <input type="text" id="mega-remote" placeholder="Remote path to upload to MEGA">
+                <button type="button" id="btn-mega" class="secondary">Upload to MEGA</button>
               </div>
-              <p class="tools-hint">file.io uploads leave the agent and are stored on a third-party service (lab use only).</p>
+              <p class="tools-hint" id="mega-status-hint">MEGA: checking server configuration…</p>
               <div class="file-row">
                 <input type="file" id="upload-file">
                 <input type="text" id="upload-remote" placeholder="Remote destination path">
