@@ -174,6 +174,83 @@ function Get-RmmHttpErrorBody {
     }
 }
 
+function Get-RmmHttpResponseHeader {
+    param(
+        [System.Net.HttpWebResponse]$Response,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    if (-not $Response -or -not $Response.Headers) { return '' }
+    try {
+        return [string]$Response.Headers[$Name]
+    } catch {
+        return ''
+    }
+}
+
+function Format-RmmHttpErrorBody {
+    param(
+        [string]$Body,
+        [System.Net.HttpWebResponse]$Response = $null,
+        [int]$MaxText = 1200
+    )
+    $lines = [System.Collections.Generic.List[string]]::new()
+    if ($Response) {
+        foreach ($header in @('CF-RAY', 'Server', 'CF-Cache-Status', 'Date', 'Content-Type')) {
+            $val = Get-RmmHttpResponseHeader -Response $Response -Name $header
+            if ($val) { $lines.Add("$header`: $val") }
+        }
+        $statusLine = [int]$Response.StatusCode
+        if ($statusLine -gt 0) {
+            $lines.Add("HTTP status: $statusLine $($Response.StatusDescription)")
+        }
+    }
+    if ($Body) {
+        if ($Body -match '(?is)<title[^>]*>([^<]+)</title>') {
+            $lines.Add("HTML title: $($Matches[1].Trim())")
+        }
+        if ($Body -match '(?i)Error code (\d{3})') {
+            $lines.Add("Cloudflare error code: $($Matches[1])")
+        }
+        if ($Body -match '(?i)Ray ID[^0-9a-f]*([0-9a-f]{16})') {
+            $lines.Add("Ray ID: $($Matches[1])")
+        }
+        if ($Body -match '(?i)(cloudflare tunnel error|origin DNS error|unable to reach the origin|error\s+\d{3})') {
+            $lines.Add("Snippet: $($Matches[1])")
+        }
+        $plain = ($Body -replace '(?s)<script[^>]*>.*?</script>', ' ' -replace '<[^>]+>', ' ' -replace '\s+', ' ').Trim()
+        if ($plain.Length -gt $MaxText) {
+            $plain = $plain.Substring(0, $MaxText) + '...'
+        }
+        if ($plain) {
+            $lines.Add('Body (text):')
+            $lines.Add($plain)
+        }
+    }
+    if ($lines.Count -eq 0) { return '' }
+    return ($lines -join [Environment]::NewLine)
+}
+
+function Write-RmmHttpErrorDetails {
+    param(
+        [System.Net.HttpWebResponse]$Response,
+        [string]$Body,
+        [int]$StatusCode = 0,
+        [switch]$AlwaysShow
+    )
+    if ($StatusCode -le 0 -and $Response) {
+        $StatusCode = [int]$Response.StatusCode
+    }
+    $show = $AlwaysShow -or $script:RmmVerbose -or $StatusCode -ge 500
+    if (-not $show) { return }
+    $formatted = Format-RmmHttpErrorBody -Body $Body -Response $Response
+    if (-not $formatted) { return }
+    Write-RmmLog '--- HTTP error response (Cloudflare / origin) ---' -Level WARN
+    foreach ($line in ($formatted -split [Environment]::NewLine)) {
+        if ($line) { Write-RmmLog $line -Level WARN }
+    }
+    Write-RmmLog '--- end HTTP error response ---' -Level WARN
+}
+
 function Get-RmmHttpStatusHint {
     param([int]$StatusCode)
     switch ($StatusCode) {
@@ -182,7 +259,7 @@ function Get-RmmHttpStatusHint {
         404 { return 'Not found — check RMM_BASE_URL path.' }
         502 { return 'Bad gateway — tunnel/origin down (is cloudflared + server_rmm.py running?).' }
         503 { return 'Service unavailable — origin not ready.' }
-        524 { return 'Cloudflare timeout — cloudflared could not reach server_rmm.py (tunnel --url port must match server listen port, e.g. 8081).' }
+        524 { return 'Cloudflare timeout (524) — cloudflared cannot reach server_rmm.py (tunnel --url port must match server; trycloudflare URL changes every cloudflared restart — update $u).' }
         default { return '' }
     }
 }
@@ -200,7 +277,9 @@ function Write-RmmHttpFailure {
     $body = ''
     if ($ex -is [System.Net.WebException] -and $ex.Response) {
         $status = [int]$ex.Response.StatusCode
-        $body = Get-RmmHttpErrorBody -Response $ex.Response
+        $httpResp = [System.Net.HttpWebResponse]$ex.Response
+        $body = Get-RmmHttpErrorBody -Response $httpResp
+        Write-RmmHttpErrorDetails -Response $httpResp -Body $body -StatusCode $status
     }
     $head = if ($Context) { "$Context — " } else { '' }
     if ($status -gt 0) {
@@ -209,10 +288,15 @@ function Write-RmmHttpFailure {
         if ($hint) { Write-RmmLog $hint -Level WARN }
     } else {
         Write-RmmLog ("{0}{1}" -f $head, $ex.Message) -Level ERROR
+        if ($ex.Message -match 'timed out|timeout') {
+            Write-RmmLog 'Request timed out — tunnel URL may be stale (trycloudflare changes each cloudflared restart), origin down, or network blocked.' -Level WARN
+        }
     }
     if ($body) {
-        $preview = if ($body.Length -gt 300) { $body.Substring(0, 300) + '...' } else { $body }
-        Write-RmmLog "Response body: $preview" -Level DEBUG
+        $preview = Format-RmmHttpErrorBody -Body $body -MaxText 400
+        if ($preview) {
+            Write-RmmLog "Response summary:`n$preview" -Level $(if ($status -ge 500) { 'WARN' } else { 'DEBUG' })
+        }
     }
     if ($status -eq 0 -and $ex.Message -match 'actively refused') {
         Write-RmmLog "Nothing listening at that host:port on this machine. Start server_rmm.py or fix RMM_BASE_URL." -Level WARN
@@ -373,12 +457,14 @@ function Invoke-RmmRestMethod {
         $statusNum = [int]$http.StatusCode
         if ($statusNum -ge 400) {
             $errBody = Get-RmmHttpErrorBody -Response $http
+            Write-RmmHttpErrorDetails -Response $http -Body $errBody -StatusCode $statusNum -AlwaysShow:($statusNum -ge 500)
             $hint = Get-RmmHttpStatusHint -StatusCode $statusNum
             $msg = "The remote server returned an error: ($statusNum) $($http.StatusCode)."
             if ($hint) { $msg += " $hint" }
-            if ($errBody) {
-                $prev = if ($errBody.Length -gt 200) { $errBody.Substring(0, 200) + '...' } else { $errBody }
-                $msg += " Body: $prev"
+            $summary = Format-RmmHttpErrorBody -Body $errBody -Response $http -MaxText 300
+            if ($summary) {
+                $firstLine = ($summary -split [Environment]::NewLine | Where-Object { $_ } | Select-Object -First 1)
+                if ($firstLine) { $msg += " $firstLine" }
             }
             Write-RmmLog "HTTP $statusNum on $Method $origUri — $msg" -Level ERROR
             throw [System.Net.WebException]::new(
@@ -401,14 +487,12 @@ function Invoke-RmmRestMethod {
         $logLevel = if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore') { 'DEBUG' } else { 'ERROR' }
         if ($we.Response) {
             $st = [int]$we.Response.StatusCode
+            $httpResp = [System.Net.HttpWebResponse]$we.Response
             Write-RmmLog "WebException HTTP $st on $Method $origUri — $($we.Message)" -Level $logLevel
             $hint = Get-RmmHttpStatusHint -StatusCode $st
             if ($hint) { Write-RmmLog $hint -Level $(if ($logLevel -eq 'DEBUG') { 'DEBUG' } else { 'WARN' }) }
-            $eb = Get-RmmHttpErrorBody -Response $we.Response
-            if ($eb) {
-                $pv = if ($eb.Length -gt 300) { $eb.Substring(0, 300) + '...' } else { $eb }
-                Write-RmmLog "Response body: $pv" -Level DEBUG
-            }
+            $eb = Get-RmmHttpErrorBody -Response $httpResp
+            Write-RmmHttpErrorDetails -Response $httpResp -Body $eb -StatusCode $st -AlwaysShow:($st -ge 500)
         } else {
             Write-RmmLog "WebException on $Method $origUri — $($we.Message)" -Level $logLevel
         }
@@ -419,8 +503,11 @@ function Invoke-RmmRestMethod {
             if ($hint) { $enriched += " $hint" }
         }
         if ($eb) {
-            $prev = if ($eb.Length -gt 200) { $eb.Substring(0, 200) + '...' } else { $eb }
-            $enriched += " Body: $prev"
+            $summary = Format-RmmHttpErrorBody -Body $eb -Response $httpResp -MaxText 300
+            if ($summary) {
+                $firstLine = ($summary -split [Environment]::NewLine | Where-Object { $_ } | Select-Object -First 1)
+                if ($firstLine) { $enriched += " $firstLine" }
+            }
         }
         if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore' -or $RestErrorAction -eq 'Continue') {
             return $null
