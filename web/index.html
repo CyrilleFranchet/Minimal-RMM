@@ -53,16 +53,19 @@
             <div id="shell-output" class="shell-output" aria-live="polite"></div>
             <form id="shell-form" class="shell-input-line" autocomplete="off">
               <span id="shell-prompt" class="shell-prompt">rmm&gt;</span>
-              <input
-                type="text"
-                id="shell-input"
-                class="shell-input"
-                placeholder="Enter to run &amp; wait · Ctrl+Enter to queue"
-                autocomplete="off"
-                autocorrect="off"
-                autocapitalize="off"
-                spellcheck="false"
-              >
+              <div class="shell-input-stack">
+                <input
+                  type="text"
+                  id="shell-input"
+                  class="shell-input"
+                  placeholder="Enter wait · Ctrl+Enter queue · ↑↓ · Tab"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                >
+                <div id="shell-completion-hint" class="shell-completion-hint hidden" aria-live="polite"></div>
+              </div>
             </form>
           </div>
 

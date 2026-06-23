@@ -7,7 +7,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Phase** | file.io upload shipped; traffic charts / shell UX next |
+| **Phase** | Web shell completion (§4) shipped; traffic charts / §6 bug next |
 | **Branch** | `main` |
 | **Last updated** | 2026-06-17 |
 | **HEAD** | `ec4392e` — global SOCKS relay list (`GET /api/v1/socks`) |
@@ -133,7 +133,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 - [x] Login via API token (`sessionStorage`)
 - [x] Session sidebar with beacon status, sleep/jitter display
-- [x] Shell: queue command, exec (wait), kill session
+- [x] Shell: queue command, exec (wait), kill session; **↑/↓ history + Tab completion** (§4)
 - [x] Files: download queue, upload (base64), screenshot, **file.io upload** (third-party link in transcript)
 - [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`
 - [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
@@ -158,7 +158,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `README.md` — setup, API tables, SOCKS troubleshooting, MCP mapping
 - [x] `CLAUDE.md` — project overview for agents
 - [x] `docs/downloads-browser.md` — web downloads panel + `GET …/downloads` API
-- [x] `docs/fileio-upload.md` — agent `__FILEIO__`, REST/CLI/MCP/web parity
+- [x] `docs/web-shell-completion.md` — shell ↑/↓ history and Tab completion
 - [x] `mcp.example.json` — Cursor MCP config template
 
 ---
@@ -202,7 +202,6 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 - [ ] **Web UI — queued command result placement** — see [tech plan §6](tech-plan.md#6-web-ui--queued-command-result-placement-bug): show results under echoed command, not at transcript tail
 - [ ] **Web UI — traffic & beacon charts** — see [tech plan §1](tech-plan.md#1-beacon--traffic-visualization-web-ui): `GET …/metrics`, poll/byte counters, Chart.js panel
-- [ ] **Web UI — command completion** — see [tech plan §4](tech-plan.md#4-web-ui--command-completion): tab hints, Up/Down history in shell input
 - [ ] **Web UI — interactive shell (cmd / PowerShell)** — see [tech plan §5](tech-plan.md#5-web-ui--interactive-shell-mode-cmd--powershell): shell mode selector, cwd prompt, `PS:` / `pwsh:` dispatch
 - [ ] **Web UI:** SOCKS controls + global relay list (`GET /api/v1/socks`)
 - [ ] **Chunked upload** (symmetry with download; large `content_b64` still single POST today)
@@ -254,7 +253,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | No automated tests | Regressions caught manually only. |
 | Web UI queued results | Queued command output appends at transcript **tail** instead of under the echoed command — see [tech plan §6](tech-plan.md#6-web-ui--queued-command-result-placement-bug). |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
-| Web ↔ CLI parity | No SOCKS or keylog in web UI; no shell completion, interactive cmd/PS mode, or traffic/beacon charts yet. |
+| Web ↔ CLI parity | No SOCKS or keylog in web UI; no interactive cmd/PS mode or traffic/beacon charts yet. |
 
 ---
 

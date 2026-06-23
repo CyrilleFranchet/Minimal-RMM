@@ -329,7 +329,7 @@ Not required for first ship if web UI is the primary ask; REST list endpoint is 
 
 ## 4. Web UI — command completion
 
-**Status:** planned  
+**Status:** done  
 **Surfaces:** Web UI (primary)  
 **Goal:** Make the web shell input feel closer to `rmm_cli.py` / a local terminal: tab completion and command history without leaving the browser.
 
