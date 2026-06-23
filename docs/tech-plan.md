@@ -116,7 +116,7 @@ Auth: same bearer token as other `/api/v1` routes.
 
 ## 2. Upload to file.io (URL returned by RMM)
 
-**Status:** planned  
+**Status:** done  
 **Surfaces:** REST API → `rmm_cli.py` → MCP → Web UI (parity rule)  
 **Goal:** Operator queues exfil of a **remote** file on the agent; the agent uploads it to [file.io](https://www.file.io/) and the RMM server returns the public download link to the operator (shell output, events, API response).
 
@@ -484,6 +484,99 @@ No new internal agent commands required for v1 — reuse `Invoke-RmmUserCommand`
 - CMD mode behavior matches today’s bare-line dispatch
 - UI states beacon latency limitation clearly
 - Enter still exec-waits; Ctrl+Enter still queues
+
+---
+
+## 6. Web UI — queued command result placement (bug)
+
+**Status:** planned (bug)  
+**Surfaces:** Web UI (`web/app.js`, `web/style.css`)  
+**Goal:** When operators **queue** commands (Ctrl+Enter or tools panel), agent results must appear **directly under the echoed command line**, not always at the bottom of the shell transcript.
+
+### Queued results — problem
+
+Today the web console appends every incoming event to the **tail** of `#shell-output` (`appendShellOutput`, `appendShellLine`, artifact blocks). That works for **Enter** (exec + wait) because only one command is in flight and the user waits before typing again.
+
+It breaks for **queued** work:
+
+1. Operator queues `whoami` (Ctrl+Enter) — echo + “(queued — waiting for next beacon)” appear.
+2. Operator queues `hostname` before the first result returns.
+3. `whoami` output arrives on the next beacon but is rendered **at the tail**, below the second command echo — not under `whoami`.
+
+The same ordering issue affects rapid tool actions (download, file.io, screenshot) when multiple items are queued: results drift to the transcript bottom instead of staying paired with the command that produced them.
+
+`exec` (wait) mode is largely unaffected; the bug is specific to **non-blocking queue** UX and multi-command sessions.
+
+### Expected behavior
+
+```text
+rmm> whoami
+(queued — waiting for next beacon)
+desktop\labuser          ← result inserted here when it arrives
+
+rmm> hostname
+(queued — waiting for next beacon)
+DESKTOP-LAB              ← under hostname, even if whoami was slower
+```
+
+Results must stay visually bound to their command even if:
+
+- Another command was queued while waiting
+- Events arrive out of strict FIFO visual order (slow command first in queue, fast second)
+- The page reloads and events are replayed from `/events` (history mode should preserve the same pairing)
+
+### Root cause (current code)
+
+- `appendEvent()` always appends new DOM nodes to `#shell-output` end; there is no per-command anchor.
+- `state.echoedCommands` only suppresses duplicate **operator** event lines for locally echoed commands; it does not reserve a slot for later **output** events.
+- Server events already carry `ev.command` (from agent `rmm_cmd` JSON) for output results — the web UI does not use it for placement.
+
+### UX / DOM model (target)
+
+1. On local echo (`appendShellEcho` / queue path), create a **command block**:
+   - echo line (`rmm> …`)
+   - optional meta (“queued…”)
+   - empty **result container** (placeholder or collapsed “waiting…”)
+2. Store a map `pendingResults`: key = normalized command string + monotonic queue id (or server event id of operator action when available).
+3. On `output` / `file_upload` / `fileio_upload` / `screenshot` events with `ev.command`, find the oldest **unfilled** block matching that command (FIFO among duplicates) and render into its result container.
+4. If no match (e.g. command queued from CLI), append a standalone block at tail (fallback).
+5. On session switch / history load, rebuild blocks from event pairs (operator `queued:` + subsequent output with same `command`).
+
+Optional: show a subtle “waiting for beacon…” spinner in the result slot until filled.
+
+### Server / API
+
+**No protocol change required** — output events already include `command` when the agent sends `rmm_cmd` in JSON results. Verify operator `record_operator_action` events include enough detail to correlate queued tool actions (`download`, `fileio`, etc.) with later result types.
+
+Optional later: explicit `command_id` on queue API responses for unambiguous pairing when the same command string is queued twice.
+
+### Web client implementation notes
+
+- Refactor `appendShellEcho` / `runCommand(false)` / tool queue helpers to register a block id.
+- Replace tail-only `appendShellOutput` for matched results with `fillCommandResult(blockId, ev)`.
+- Keep `scrollShellToBottom()` only when the filled block is near the bottom or user is already pinned to bottom (avoid jarring scroll when an older command completes).
+- History replay (`appendEvent(..., { history: true })`) should use the same block builder so refresh matches live WS behavior.
+
+### Queued results — out of scope (v1)
+
+- Reordering events server-side
+- CLI transcript changes (CLI already streams in arrival order; issue is web DOM placement)
+- Persistent command (`persist`) streaming semantics
+
+### Queued results — implementation order
+
+1. Command block DOM + pending map for locally queued shell commands
+2. Match `output` events via `ev.command` into the correct block
+3. Extend to tool queues (download, file.io, screenshot, upload)
+4. History reload parity
+5. Document in `README.md` / `docs/progress.md`; close known-issue row
+
+### Acceptance criteria
+
+- Queue two commands quickly; each result appears under its own echo, not at transcript tail
+- Ctrl+Enter queue + later WS/poll delivery preserves pairing after tab refresh (events reload)
+- Exec (Enter) behavior unchanged
+- Unmatched results (CLI-queued) still appear at tail with command label
 
 ---
 
