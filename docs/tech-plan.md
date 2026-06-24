@@ -399,9 +399,7 @@ No new internal agent commands required for v1 — reuse `Invoke-RmmUserCommand`
 
 ## 6. Web UI — queued command result placement (bug)
 
-**Status:** planned (bug)  
-**Surfaces:** Web UI (`web/app.js`, `web/style.css`)  
-**Goal:** When operators **queue** commands (Ctrl+Enter or tools panel), agent results must appear **directly under the echoed command line**, not always at the bottom of the shell transcript.
+**Status:** done  
 
 ### Queued results — problem
 
@@ -492,9 +490,7 @@ Optional later: explicit `command_id` on queue API responses for unambiguous pai
 
 ## 7. Server restart resets agent sleep/jitter (bug)
 
-**Status:** planned (bug)  
-**Surfaces:** Server (`server_rmm.py`), agent (`client_rmm.ps1`)  
-**Goal:** When the RMM server restarts, reconnecting agents must keep their **current** beacon sleep and jitter — not be pushed back to server class defaults (`60` s / `30` %). Operator **PATCH / Apply config** after reconnect must actually change the agent’s beacon interval within a predictable window (not appear applied on the server while the agent keeps the old sleep).
+**Status:** done  
 
 ### Restart config — problem
 

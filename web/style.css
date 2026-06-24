@@ -408,6 +408,14 @@ button:disabled {
   line-height: 1.45;
 }
 
+.shell-command-block {
+  margin-bottom: 0.35rem;
+}
+
+.shell-command-result .shell-line-output:last-child {
+  margin-bottom: 0.65rem;
+}
+
 .shell-line {
   margin: 0 0 0.15rem;
   white-space: pre-wrap;

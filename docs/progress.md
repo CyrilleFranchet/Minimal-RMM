@@ -7,7 +7,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Phase** | Web shell completion (§4) shipped; traffic charts / §6 bug next |
+| **Phase** | §6 queued result placement + §7 restart/config bugs shipped |
 | **Branch** | `main` |
 | **Last updated** | 2026-06-17 |
 | **HEAD** | `ec4392e` — global SOCKS relay list (`GET /api/v1/socks`) |
@@ -81,8 +81,10 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 - [x] `ThreadingHTTPServer` — concurrent beacons, operator API, WebSocket handlers
 - [x] Session registry: register, touch, kill, prefix resolution, `beacon_status` (online/stale/offline)
-- [x] Command queue: oneshot FIFO, persistent until `__STOP__`, idle `__CONFIG__` push
+- [x] Command queue: oneshot FIFO, persistent until `__STOP__`, idle `__CONFIG__` push (deferred until `config_synced`; `config_pending` after PATCH)
+- [x] Load `sessions.json` on startup — restore sleep/jitter per session id after server restart
 - [x] Result handling: `output`, `file_upload`, `cloud_upload`, `screenshot`, `keylog`, `config_ack`
+- [x] Result events: `file_upload` / `screenshot` include `command` for web UI pairing
 - [x] Event transcript per session (`deque`, max 500); operator action logging; WebSocket broadcast (`OperatorEventHub`)
 - [x] Operator REST `/api/v1`: health, sessions CRUD, config PATCH, commands, exec (blocking), upload, download, exfil, screenshot, socks, events, artifacts, AI chat
 - [x] `GET /api/v1/socks` — list active relays with hostname, WS channel, tunnel count
@@ -109,7 +111,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 ### Windows client (`client_rmm.ps1`)
 
 - [x] Config block + env overrides (`RMM_BASE_URL`, `RMM_BEACON_SECRET`, proxy, verbose, persistent HTTP)
-- [x] Register with infinite retry; `sync=1` on first register to adopt script sleep/jitter
+- [x] Register with infinite retry; `sync=1` on first register and on `-Reconnect` to adopt script sleep/jitter
+- [x] Fast poll after reconnect or config change (`RmmFastPoll`) — skip one sleep cycle for timely `/cmd`
 - [x] HTTP transport: IPv4-only tunnel resolution, `Host` header, optional corporate proxy + default credentials
 - [x] User commands: bare `cmd.exe`, `cmd:`, `PS:` / `powershell:`, `pwsh:`; cwd tracking via `RMM_CWD_SIG`
 - [x] Internal commands: `__DOWNLOAD__`, `__EXFIL__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
@@ -135,6 +138,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Login via API token (`sessionStorage`)
 - [x] Session sidebar with beacon status, sleep/jitter display
 - [x] Shell: queue command, exec (wait), kill session; **↑/↓ history + Tab completion** (§4)
+- [x] **Queued result placement** (§6) — command blocks; results render under echoed line via `ev.command` / tool kind
 - [x] Files: download queue, upload (base64), screenshot, **rclone exfil** (profile dropdown from `GET /rclone/config`)
 - [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`
 - [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
@@ -201,8 +205,6 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ## Up Next
 
-- [ ] **Server restart / beacon config bugs** — see [tech plan §7](tech-plan.md#7-server-restart-resets-agent-sleepjitter-bug)
-- [ ] **Web UI — queued command result placement** — see [tech plan §6](tech-plan.md#6-web-ui--queued-command-result-placement-bug): show results under echoed command, not at transcript tail
 - [ ] **Web UI — traffic & beacon charts** — see [tech plan §1](tech-plan.md#1-beacon--traffic-visualization-web-ui): `GET …/metrics`, poll/byte counters, Chart.js panel
 - [ ] **Web UI — interactive shell (cmd / PowerShell)** — see [tech plan §5](tech-plan.md#5-web-ui--interactive-shell-mode-cmd--powershell): shell mode selector, cwd prompt, `PS:` / `pwsh:` dispatch
 - [ ] **Web UI:** SOCKS controls + global relay list (`GET /api/v1/socks`)
@@ -253,8 +255,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | ~~Register + Web UI WS deadlock~~ | **Fixed:** single `_io_lock` on operator WS blocked `broadcast_sessions` during idle `recv_json` → Cloudflare 524 (~100s). Split send/recv locks in `rmm_ws.py`; async/debounced session broadcast; lighter register path. |
 | ~~Beacon hang after large results~~ | **Fixed:** `/result` waited for history write + full-body WS push before HTTP 200; slow clients could block origin. Now respond 200 immediately, process async; truncate WS event bodies; 15s WS send timeout; client shows `Beacon poll…` and reports failed result POSTs. |
 | No automated tests | Regressions caught manually only. |
-| Web UI queued results | Queued command output appends at transcript **tail** instead of under the echoed command — see [tech plan §6](tech-plan.md#6-web-ui--queued-command-result-placement-bug). |
-| Server restart vs beacon config | After server restart: reconnecting agents may get default **`__CONFIG__ 60 30`**; operator PATCH/`Apply config` updates the server immediately but the agent can keep the old sleep for a full cycle — see [tech plan §7](tech-plan.md#7-server-restart-resets-agent-sleepjitter-bug). |
+| ~~Web UI queued results~~ | **Fixed:** command blocks + `pendingCommandBlocks` map in `web/app.js`; results match via `ev.command` / tool kind (download, exfil, screenshot, upload); history replay uses same pairing. |
+| ~~Server restart vs beacon config~~ | **Fixed:** load `sessions.json` on startup; defer idle `__CONFIG__` until `config_synced`; `config_pending` priority after PATCH; agent `-Reconnect` sends `sync=1`; fast poll after reconnect/config change. |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
 | Web ↔ CLI parity | No SOCKS or keylog in web UI; no interactive cmd/PS mode or traffic/beacon charts yet. |
 
