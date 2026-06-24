@@ -663,6 +663,82 @@ See `docs/rclone-exfil.md` for API tables and operator commands.
 
 ---
 
+## 11. Web UI — archived sessions missing entered commands (bug)
+
+**Status:** planned (bug)  
+**Surfaces:** Web UI (`web/app.js`), optional server (`record_operator_action` in `server_rmm.py`)  
+**Goal:** When operators open an **archived session** from the history sidebar, the transcript must show the same **`rmm> …` command lines** they typed or queued during the live session — not only agent output or internal dispatch tokens.
+
+### Archive commands — problem
+
+Live sessions echo commands locally (`appendShellEcho` / command blocks). Archived transcripts replay events from `GET /api/v1/history/{id}/events` with `appendEvent(..., { history: true })`.
+
+Today the archive view often **does not show what the operator entered**:
+
+1. **Tool actions** — server logs operator events with internal payloads (`download: __DOWNLOAD__ C:\path`, `screenshot: __SCREENSHOT__`, `upload: __UPLOAD__ …`) while the web UI echoed user-facing text (`download C:\path`, `screenshot`, `upload file.txt → C:\dest`). History replay uses `operatorCommandFromBody()` and renders the **internal** string, or fails to match tool results to the label the operator saw.
+2. **Output-only rows** — when no operator event precedes a result (CLI-only queue, older transcripts, or missing `record_operator_action`), `appendUnmatchedEvent()` shows a small `result » command` meta line instead of a full prompt echo (`rmm> …`).
+3. **Exec (Enter) mode** — relies on an `exec: …` operator event in the archive; if absent, only stdout appears with no command line above it.
+4. **§6 command blocks** — history replay builds blocks from `operator` events only (`createCommandBlock(opCmd, …)`). There is no fallback to synthesize an echo from `ev.command` on the next `output` / artifact event when the operator row is missing or uses a different string than the live echo.
+
+```text
+Live (web UI):
+  rmm:abc123> whoami
+  desktop\labuser
+
+Archive (same session after kill):
+  desktop\labuser                    ← missing "rmm> whoami"
+
+Live (download tool):
+  rmm:abc123> download C:\secret.txt
+  C:\secret.txt → secret.txt
+
+Archive:
+  archive> __DOWNLOAD__ C:\secret.txt   ← wrong label; or output only
+```
+
+### Archive commands — expected behavior
+
+- Archived transcript matches live session layout: **prompt + entered command**, optional queued meta, then result — for shell queue, exec, download, exfil, upload, and screenshot.
+- Prompt in archive may read `archive>` (read-only) but the **command text** must be what the operator typed.
+- Refreshing a live session (`/events?since=0`) and opening the same session from history must show the same command/result pairing.
+
+### Archive commands — root cause (current code)
+
+| Area | Behavior |
+|------|----------|
+| `record_operator_action()` | Stores `{action}: {command}` where `command` is often the agent dispatch line (`__DOWNLOAD__ …`), not the web/CLI display string |
+| `appendEvent(..., { history: true })` | Operator branch calls `createCommandBlock(opCmd)` only when `opCmd` is truthy; no mapping from internal tokens to UI labels |
+| `appendUnmatchedEvent()` | Fallback for unmatched results — meta `result » …`, not prompt echo |
+| `historyOperatorKind` / meta | Covers download/exfil/upload/screenshot actions but not `exec`, `queued`, or display-label normalization |
+| Disk history | `events.jsonl` has no separate `display_command` field |
+
+### Archive commands — fix directions
+
+1. **Display command on record** — extend `record_operator_action(session, command, action, display_command=None)`; web/API pass the user-facing string; persist in events and `events.jsonl`.
+2. **History replay fallback** — on `output` / artifact events with `ev.command`, if no pending block matches, create a retroactive echo block from `ev.command` (or mapped display label) before filling results.
+3. **Token → label map** — in `web/app.js`, map `__DOWNLOAD__ path` → `download path`, `__SCREENSHOT__` → `screenshot`, etc., when replaying legacy archives without `display_command`.
+4. **CLI parity** — ensure embedded CLI and `rmm_cli.py` paths that queue work also record a display-friendly operator line where feasible.
+
+### Archive commands — out of scope (v1)
+
+- Re-writing old `events.jsonl` files on disk
+- Changing agent protocol
+
+### Archive commands — implementation order
+
+1. Reproduce: kill session after web queue + tool actions; open history sidebar; confirm missing or wrong command lines
+2. Add optional `display_command` to operator events (server + API callers)
+3. History replay: prefer `display_command`, then mapped internal token, then `ev.command` fallback block
+4. Document in `README.md` / `docs/progress.md`; close known-issue row
+
+### Archive commands — acceptance criteria
+
+- Archived session shows `whoami` (or `download C:\path`, etc.) above its result for web-queued and exec commands
+- Tool actions show the same label the operator saw live, not `__DOWNLOAD__` / `__SCREENSHOT__` tokens
+- Output-only legacy rows still show a sensible command line via `ev.command` fallback
+
+---
+
 ## Backlog (referenced elsewhere)
 
 Items tracked in `docs/progress.md` **Up Next** but not spec’d here yet:
