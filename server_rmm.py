@@ -215,6 +215,9 @@ class Session:
         self.wait_result = None
         self.download_artifacts = []
         self.pending_downloads = deque()
+        # True once operator/client config is known; defers idle __CONFIG__ until then.
+        self.config_synced = False
+        self.config_pending = False
     
     def beacon_status(self):
         """online / stale / offline from last beacon poll vs configured sleep+jitter."""
@@ -431,6 +434,7 @@ class RMMServer:
     def __init__(self):
         self.sessions = {}
         self.killed_sessions = set()
+        self._persisted_session_configs = self._load_persisted_session_configs()
         self.session_lock = threading.Lock()
         self.tty_lock = threading.Lock()  # Serialize async client stdout
         self._cli_use_ptk = False  # True when using prompt_toolkit (skip readline.redisplay in handle_result)
@@ -476,6 +480,30 @@ class RMMServer:
         }.get(level, Colors.END)
         self.tty_print(f"{Colors.DIM}[{timestamp}]{Colors.END} {color}[{level}]{Colors.END} {message}")
     
+    @staticmethod
+    def _load_persisted_session_configs():
+        """Load sleep/jitter by session id from disk (survives server restart)."""
+        configs = {}
+        if not os.path.exists(SESSION_FILE):
+            return configs
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+                sessions_data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return configs
+        if not isinstance(sessions_data, dict):
+            return configs
+        for session_id, rec in sessions_data.items():
+            if not isinstance(rec, dict):
+                continue
+            if "sleep_seconds" not in rec and "jitter_percent" not in rec:
+                continue
+            configs[session_id] = {
+                "sleep_seconds": max(1, min(3600, int(rec.get("sleep_seconds", 60)))),
+                "jitter_percent": max(0, min(100, int(rec.get("jitter_percent", 30)))),
+            }
+        return configs
+
     def save_session(self, session):
         sessions_data = {}
         if os.path.exists(SESSION_FILE):
@@ -483,6 +511,10 @@ class RMMServer:
                 sessions_data = json.load(f)
         
         sessions_data[session.id] = session.to_dict()
+        self._persisted_session_configs[session.id] = {
+            "sleep_seconds": session.sleep_seconds,
+            "jitter_percent": session.jitter_percent,
+        }
         
         with open(SESSION_FILE, 'w') as f:
             json.dump(sessions_data, f, indent=2)
@@ -978,14 +1010,21 @@ class RMMServer:
         with self.session_lock:
             if session_id in self.killed_sessions:
                 return None
+            persisted = self._persisted_session_configs.get(session_id)
             if session_id not in self.sessions:
                 session = Session(session_id, hostname, username, ip)
-                if sleep_seconds is not None:
-                    session.sleep_seconds = max(1, min(3600, int(sleep_seconds)))
-                if jitter_percent is not None:
-                    session.jitter_percent = max(0, min(100, int(jitter_percent)))
+                if persisted:
+                    session.sleep_seconds = persisted["sleep_seconds"]
+                    session.jitter_percent = persisted["jitter_percent"]
+                    session.config_synced = True
+                elif sync_client_config:
+                    if sleep_seconds is not None:
+                        session.sleep_seconds = max(1, min(3600, int(sleep_seconds)))
+                    if jitter_percent is not None:
+                        session.jitter_percent = max(0, min(100, int(jitter_percent)))
+                    session.config_synced = True
                 self.sessions[session_id] = session
-                to_save = session
+                to_save = session if (persisted or sync_client_config) else None
                 is_new = True
             else:
                 s = self.sessions[session_id]
@@ -994,12 +1033,15 @@ class RMMServer:
                 s.username = username
                 if ip is not None:
                     s.ip = ip
-                if sync_client_config:
+                if sync_client_config and not persisted and not s.config_synced:
                     if sleep_seconds is not None:
                         s.sleep_seconds = max(1, min(3600, int(sleep_seconds)))
                     if jitter_percent is not None:
                         s.jitter_percent = max(0, min(100, int(jitter_percent)))
-                to_save = s if sync_client_config else None
+                    s.config_synced = True
+                    to_save = s
+                else:
+                    to_save = None
         if is_new and to_save is not None:
             self.backfill_download_artifacts(to_save)
         if to_save is not None:
@@ -1017,6 +1059,8 @@ class RMMServer:
                     session.sleep_seconds = max(1, min(3600, sleep_seconds))
                 if jitter_percent is not None:
                     session.jitter_percent = max(0, min(100, jitter_percent))
+                session.config_synced = True
+                session.config_pending = True
             self.save_session(session)
             return True
         return False
@@ -1078,6 +1122,12 @@ class RMMServer:
             if session.cmd_queue:
                 cmd = session.cmd_queue.popleft()
                 return (cmd, "execute")
+            if session.config_pending:
+                session.config_pending = False
+                config_cmd = f"__CONFIG__ {session.sleep_seconds} {session.jitter_percent}"
+                return (config_cmd, "config")
+            if not session.config_synced:
+                return ("", "none")
             config_cmd = f"__CONFIG__ {session.sleep_seconds} {session.jitter_percent}"
             return (config_cmd, "config")
 
@@ -1153,6 +1203,7 @@ class RMMServer:
                 self.register_download_artifact(session, filepath, remote_path)
                 artifact = filepath
                 event_body = f"{remote_path} → {os.path.basename(filepath)}"
+                echoed_cmd = f"download {remote_path}"
                 tty_lines.append(("log", f"File downloaded: {remote_path}", "SUCCESS"))
             except Exception as e:
                 event_body = str(e)
@@ -1170,6 +1221,7 @@ class RMMServer:
                     f.write(content)
                 artifact = filepath
                 event_body = filepath
+                echoed_cmd = "screenshot"
                 tty_lines.append(("log", f"Screenshot saved: {filepath}", "SUCCESS"))
             except Exception as e:
                 event_body = str(e)
