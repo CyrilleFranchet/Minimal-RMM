@@ -34,7 +34,8 @@ Define named profiles as JSON:
 | `RMM_RCLONE_PROFILES_FILE` | Path to a JSON file (overrides inline if both set) |
 | `server_rmm.py --rclone-profiles PATH` | Same as `RMM_RCLONE_PROFILES_FILE` at startup |
 | `RMM_RCLONE_DEFAULT_PROFILE` | Default profile when `--profile` omitted (default `mega-lab`) |
-| `RMM_RCLONE_MAX_BYTES` | Max file size (default 100 MB) |
+| `RMM_RCLONE_MAX_BYTES` | Max file size in bytes (default 100 MB); **`0` = unlimited** |
+| `server_rmm.py --rclone-max-bytes N` | Same as `RMM_RCLONE_MAX_BYTES` at startup |
 
 Example file (`tools/rclone/profiles.example.json`):
 
@@ -61,6 +62,15 @@ Example file (`tools/rclone/profiles.example.json`):
 Copy credentials into your lab config; do not commit real secrets.
 
 For MEGA (and other remotes using `pass`), put the **plain** password in JSON. The agent runs `rclone obscure` before upload. If you pre-obscured with `rclone obscure`, set `"pass_obscured": true` on that profile.
+
+**Large files:** default cap is 100 MB. For multi-GB exfil (e.g. a 6.6 GB ISO), raise the limit and restart the server:
+
+```bash
+python server_rmm.py --rclone-max-bytes 0   # unlimited
+# or: export RMM_RCLONE_MAX_BYTES=7000000000   # ~6.5 GB for one file
+```
+
+Then queue exfil again (new jobs pick up the updated limit). Check your cloud backend quota (MEGA free tier may block very large uploads).
 
 Start the server with profiles:
 

