@@ -32,6 +32,7 @@ Define named profiles as JSON:
 |----------|---------|
 | `RMM_RCLONE_PROFILES` | Inline JSON object of profiles |
 | `RMM_RCLONE_PROFILES_FILE` | Path to a JSON file (overrides inline if both set) |
+| `server_rmm.py --rclone-profiles PATH` | Same as `RMM_RCLONE_PROFILES_FILE` at startup |
 | `RMM_RCLONE_DEFAULT_PROFILE` | Default profile when `--profile` omitted (default `mega-lab`) |
 | `RMM_RCLONE_MAX_BYTES` | Max file size (default 100 MB) |
 
@@ -59,10 +60,20 @@ Example file (`tools/rclone/profiles.example.json`):
 
 Copy credentials into your lab config; do not commit real secrets.
 
+Start the server with profiles:
+
+```bash
+python server_rmm.py --rclone-profiles /path/to/profiles.json
+# or
+export RMM_RCLONE_PROFILES_FILE="/path/to/profiles.json"
+python server_rmm.py
+```
+
 Check status:
 
 ```bash
 rmm_cli.py rclone-config
+# or
 curl -s -H "Authorization: Bearer $RMM_API_TOKEN" http://127.0.0.1:8080/api/v1/rclone/config
 ```
 
