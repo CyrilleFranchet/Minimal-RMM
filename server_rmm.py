@@ -855,6 +855,15 @@ class RMMServer:
             return
         self._record_event(session, "operator", f"{action}: {command}", command=command)
 
+    def _broadcast_ephemeral_event(self, session_id: str, ev: dict) -> None:
+        """WebSocket-only event (not stored in transcript or session history)."""
+        ws_ev = _event_for_ws(ev)
+        threading.Thread(
+            target=self.event_hub.broadcast_event,
+            args=(session_id, ws_ev),
+            daemon=True,
+        ).start()
+
     def _record_event(self, session, event_type, body, command=None, artifact=None):
         artifact_url = self._artifact_public_url(artifact) if artifact else None
         with self.session_lock:
@@ -1272,6 +1281,32 @@ class RMMServer:
             except Exception as e:
                 event_body = str(e)
                 tty_lines.append(("log", f"Exfil result error: {e}", "ERROR"))
+
+        elif cmd_type == "exfil_progress":
+            try:
+                data = json.loads(result)
+                remote_path = (data.get("remote_path") or "").strip()
+                profile = (data.get("profile") or "").strip()
+                echoed_cmd = f"exfil {remote_path}" + (f" --profile {profile}" if profile else "")
+                pct = float(data.get("percent") or 0)
+                bytes_done = int(data.get("bytes") or 0)
+                total_bytes = int(data.get("total_bytes") or 0)
+                speed_bps = int(data.get("speed_bps") or 0)
+                eta_seconds = int(data.get("eta_seconds") or -1)
+                self._broadcast_ephemeral_event(
+                    session.id,
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "type": "exfil_progress",
+                        "body": json.dumps(data, ensure_ascii=False),
+                        "command": echoed_cmd,
+                        "artifact": None,
+                        "artifact_url": None,
+                    },
+                )
+            except Exception as e:
+                self.log(f"Exfil progress error: {e}", "WARNING")
+            return
 
         else:
             text, echoed_cmd = self._unwrap_rmm_result_text(result)

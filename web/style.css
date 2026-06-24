@@ -408,6 +408,33 @@ button:disabled {
   line-height: 1.45;
 }
 
+.exfil-progress {
+  padding-left: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.exfil-progress-bar {
+  height: 0.45rem;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 0.35rem;
+}
+
+.exfil-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.35s ease;
+}
+
+.exfil-progress-detail {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-family: var(--mono);
+}
+
 .shell-command-block {
   margin-bottom: 0.35rem;
 }
