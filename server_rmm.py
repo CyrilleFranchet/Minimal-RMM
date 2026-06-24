@@ -2458,6 +2458,12 @@ def main():
         action="store_true",
         help="LAB ONLY: allow missing API/beacon secrets (open C2 — never on a network)",
     )
+    parser.add_argument(
+        "--rclone-profiles",
+        default="",
+        metavar="PATH",
+        help="rclone exfil profiles JSON file (or set RMM_RCLONE_PROFILES_FILE)",
+    )
     args = parser.parse_args()
     PORT = args.port
     LISTEN_HOST = args.bind
@@ -2466,6 +2472,15 @@ def main():
         API_TOKEN = args.token.strip()
     if args.beacon_secret:
         BEACON_SECRET = args.beacon_secret.strip()
+    if args.rclone_profiles:
+        profiles_path = os.path.abspath(args.rclone_profiles.strip())
+        if not os.path.isfile(profiles_path):
+            print(
+                f"{Colors.RED}[!] rclone profiles file not found: {profiles_path}{Colors.END}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        os.environ["RMM_RCLONE_PROFILES_FILE"] = profiles_path
 
     if not INSECURE:
         if not API_TOKEN:

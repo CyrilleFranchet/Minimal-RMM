@@ -55,8 +55,8 @@ export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urls
 python server_rmm.py              # default port 8080, bind 127.0.0.1
 python server_rmm.py 9000 --bind 0.0.0.0   # expose on LAN (use firewall + secrets)
 # Optional rclone exfil (see docs/rclone-exfil.md):
-# Place rclone.exe in tools/rclone/ and configure profiles:
-export RMM_RCLONE_PROFILES_FILE="$PWD/tools/rclone/profiles.example.json"
+python server_rmm.py --rclone-profiles /path/to/profiles.json
+# or: export RMM_RCLONE_PROFILES_FILE="$PWD/tools/rclone/profiles.example.json"
 ```
 
 ### Operator CLI
