@@ -47,7 +47,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-RCLONE_MAX_BYTES = _env_int("RMM_RCLONE_MAX_BYTES", 100 * 1024 * 1024)
+def get_rclone_max_bytes() -> int:
+    """Max exfil file size; 0 means unlimited (agent skips size check)."""
+    return _env_int("RMM_RCLONE_MAX_BYTES", 100 * 1024 * 1024)
+
+
+# Backward-compatible alias (prefer get_rclone_max_bytes() after env may change at startup).
+RCLONE_MAX_BYTES = get_rclone_max_bytes()
 
 
 def rclone_binary_available() -> bool:
@@ -162,7 +168,7 @@ def build_exfil_payload(
         "env": profile_to_rclone_env(profile),
         "env_skip_obscure": env_skip_obscure,
         "remote_name": remote,
-        "max_bytes": RCLONE_MAX_BYTES,
+        "max_bytes": get_rclone_max_bytes(),
         "rclone_url": RCLONE_TOOLS_URL,
         "link_command": bool(profile.get("type") == "mega"),
     }
@@ -189,7 +195,7 @@ def rclone_public_config() -> dict:
         load_error = None
     return {
         "upload_location": "agent",
-        "max_bytes": RCLONE_MAX_BYTES,
+        "max_bytes": get_rclone_max_bytes(),
         "default_profile": DEFAULT_PROFILE,
         "rclone_binary": rclone_binary_available(),
         "rclone_binary_path": RCLONE_BIN_PATH if rclone_binary_available() else None,
