@@ -10,6 +10,8 @@ Operators queue exfil of a **remote file on the agent** to cloud storage (MEGA, 
 4. Agent runs `rclone copyto` (and `rclone link` for MEGA) with `--config NUL`.
 5. Agent POSTs `cloud_upload` result; transcript shows `remote_path → link` or destination path.
 
+During upload the agent also POSTs **`exfil_progress`** updates (bytes, percent, speed, ETA) roughly every 5s or 1% change. The web UI shows a live progress bar; progress events are **WebSocket-only** (not stored in session history).
+
 Traffic exits the **agent network**, not the RMM server.
 
 ## Server setup
@@ -126,6 +128,28 @@ GET /api/v1/rclone/config
   "error": null
 }
 ```
+
+### Progress (live only)
+
+While `rclone copyto` runs, the agent POSTs `type=exfil_progress`:
+
+```http
+POST /result?id=<session>&type=exfil_progress
+```
+
+```json
+{
+  "remote_path": "C:\\Users\\x\\doc.pdf",
+  "profile": "mega-lab",
+  "bytes": 104857600,
+  "total_bytes": 6666666666,
+  "percent": 1.6,
+  "speed_bps": 12500000,
+  "eta_seconds": 520
+}
+```
+
+The server broadcasts these on the operator WebSocket (`exfil_progress` events). The web UI renders a progress bar under the queued exfil command. Progress is **not** appended to `events.jsonl` (avoids transcript spam on multi-GB uploads).
 
 ## Security (lab)
 

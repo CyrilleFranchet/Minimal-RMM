@@ -614,6 +614,98 @@ function findPendingCommandBlock(ev) {
   return null;
 }
 
+function parseExfilProgressBody(ev) {
+  const raw = ev?.body;
+  if (!raw) return null;
+  try {
+    return typeof raw === "object" ? raw : JSON.parse(String(raw));
+  } catch {
+    return null;
+  }
+}
+
+function formatByteSize(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "?";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatDuration(seconds) {
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s < 0) return "?";
+  const sec = Math.round(s);
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+}
+
+function formatExfilProgressLabel(data) {
+  const pct = Number(data?.percent);
+  const pctText = Number.isFinite(pct) ? `${pct.toFixed(1)}%` : "…";
+  const done = formatByteSize(data?.bytes);
+  const total = formatByteSize(data?.total_bytes);
+  const speed = formatByteSize(data?.speed_bps);
+  const eta = Number(data?.eta_seconds);
+  const etaText = Number.isFinite(eta) && eta >= 0 ? formatDuration(eta) : "?";
+  return `${pctText} · ${done} / ${total} · ${speed}/s · ETA ${etaText}`;
+}
+
+function findExfilProgressBlock(ev) {
+  const data = parseExfilProgressBody(ev);
+  const remote = String(data?.remote_path || "").trim();
+  const evCmd = normalizeCmdKey(ev.command);
+  for (const block of state.pendingCommandBlocks) {
+    if (block.filled || block.kind !== "exfil") continue;
+    if (remote && block.remotePath) {
+      if (remote === block.remotePath || remote.includes(block.remotePath) || block.remotePath.includes(remote)) {
+        return block;
+      }
+    }
+    if (evCmd && block.matchKeys.some((k) => commandKeysMatch(k, evCmd))) {
+      return block;
+    }
+  }
+  return null;
+}
+
+function updateExfilProgressBlock(block, ev) {
+  const data = parseExfilProgressBody(ev);
+  if (!block || !data) return false;
+  const pct = Math.min(100, Math.max(0, Number(data.percent) || 0));
+
+  if (block.metaLine) {
+    block.metaLine.textContent = `Uploading via rclone — ${formatExfilProgressLabel(data)}`;
+  }
+
+  let wrap = block.progressEl;
+  if (!wrap || !wrap.isConnected) {
+    wrap = document.createElement("div");
+    wrap.className = "exfil-progress";
+    wrap.innerHTML = `
+      <div class="exfil-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+        <div class="exfil-progress-fill"></div>
+      </div>
+      <div class="exfil-progress-detail"></div>`;
+    block.resultEl.prepend(wrap);
+    block.progressEl = wrap;
+  }
+
+  const fill = wrap.querySelector(".exfil-progress-fill");
+  const detail = wrap.querySelector(".exfil-progress-detail");
+  const bar = wrap.querySelector(".exfil-progress-bar");
+  if (fill) fill.style.width = `${pct}%`;
+  if (bar) {
+    bar.setAttribute("aria-valuenow", String(Math.round(pct)));
+    bar.setAttribute("aria-label", `Exfil upload ${pct.toFixed(1)} percent`);
+  }
+  if (detail) detail.textContent = formatExfilProgressLabel(data);
+  scrollShellIfNearBottom();
+  return true;
+}
+
 function renderEventResultHtml(ev) {
   const evType = ev.type || "output";
   const body = String(ev.body || "").trim();
@@ -637,6 +729,10 @@ function fillCommandBlock(block, ev) {
   if (block.metaLine) {
     block.metaLine.remove();
     block.metaLine = null;
+  }
+  if (block.progressEl) {
+    block.progressEl.remove();
+    block.progressEl = null;
   }
   const evType = ev.type || "output";
   const resultEl = block.resultEl;
@@ -705,6 +801,7 @@ function createCommandBlock(cmd, { meta = null, kind = null, remotePath = null, 
     blockEl,
     metaLine,
     resultEl,
+    progressEl: null,
     filled: false,
   };
   state.pendingCommandBlocks.push(block);
@@ -1321,8 +1418,6 @@ function appendEvent(ev, { local = false, history = false } = {}) {
 
   const evType = ev.type || "output";
   const body = String(ev.body || "").trim();
-  const cmdEcho = (ev.command || "").trim();
-
   if (evType === "operator") {
     const opCmd = operatorCommandFromBody(body);
     if (history && opCmd) {
@@ -1340,6 +1435,14 @@ function appendEvent(ev, { local = false, history = false } = {}) {
     }
     const label = body || "operator action";
     appendShellLine("operator", escapeHtml(label));
+    return;
+  }
+
+  if (evType === "exfil_progress") {
+    const block = findExfilProgressBlock(ev);
+    if (block) {
+      updateExfilProgressBlock(block, ev);
+    }
     return;
   }
 
