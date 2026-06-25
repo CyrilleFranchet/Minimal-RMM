@@ -2,7 +2,8 @@
 
 Remote profiles (MEGA, S3, …) are configured on the RMM server. When an operator
 queues exfil, the server embeds ephemeral ``RCLONE_CONFIG_*`` variables in the
-``__EXFIL__`` command; the agent runs ``rclone copyto`` locally.
+``__EXFIL__`` command; the agent runs ``rclone copyto`` (file) or ``rclone copy``
+(directory) locally.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def get_rclone_max_bytes() -> int:
-    """Max exfil file size; 0 means unlimited (agent skips size check)."""
+    """Max exfil size in bytes (single file or whole folder); 0 means unlimited."""
     return _env_int("RMM_RCLONE_MAX_BYTES", 100 * 1024 * 1024)
 
 
@@ -137,7 +138,7 @@ def profile_to_rclone_env(profile: dict) -> dict[str, str]:
 
 
 def resolve_dest_path(profile: dict, local_path: str, dest: str | None) -> str:
-    """Cloud destination path inside the configured remote."""
+    """Cloud destination path inside the configured remote (file or folder basename)."""
     if dest and dest.strip():
         return dest.strip().lstrip("/")
     folder = str(profile.get("folder") or "").strip().strip("/")
