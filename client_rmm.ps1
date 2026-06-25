@@ -2180,6 +2180,59 @@ function Apply-RmmCwdFromCmdOutput {
     return ($kept -join [Environment]::NewLine).TrimEnd()
 }
 
+function Invoke-RmmHiddenProcessWait {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = Format-RmmRcloneProcessArgs -ArgumentList $ArgumentList
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.WaitForExit()
+    return [pscustomobject]@{
+        ExitCode = $proc.ExitCode
+        StdOut   = $stdoutTask.GetAwaiter().GetResult()
+        StdErr   = $stderrTask.GetAwaiter().GetResult()
+    }
+}
+
+function Join-RmmProcessOutputText {
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [string]$EmptyExitLabel = ''
+    )
+    $parts = @()
+    if ($Result.StdOut.TrimEnd().Length) { $parts += $Result.StdOut.TrimEnd() }
+    if ($Result.StdErr.TrimEnd().Length) { $parts += $Result.StdErr.TrimEnd() }
+    $text = $parts -join [Environment]::NewLine
+    if ($EmptyExitLabel -and $Result.ExitCode -ne 0 -and -not $text.Trim()) {
+        $text = "($EmptyExitLabel exited with code $($Result.ExitCode))"
+    }
+    return $text
+}
+
+function Invoke-RmmHiddenEncodedPowerShell {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [Parameter(Mandatory = $true)][string]$EncodedCommand
+    )
+    $result = Invoke-RmmHiddenProcessWait -FilePath $ExecutablePath -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoLogo', '-NonInteractive',
+        '-WindowStyle', 'Hidden',
+        '-EncodedCommand', $EncodedCommand
+    )
+    return (Join-RmmProcessOutputText -Result $result)
+}
+
 function Get-RmmPlainCmdOutput {
     param([Parameter(Mandatory)][string]$InnerCommand)
     $base = $script:RmmShellCwd
@@ -2189,25 +2242,9 @@ function Get-RmmPlainCmdOutput {
     }
     $baseQ = '"' + ($base.Trim() -replace '"', '""') + '"'
     $combined = 'cd /d ' + $baseQ + ' & ' + $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
-    $stdoutFile = [System.IO.Path]::GetTempFileName()
-    $stderrFile = [System.IO.Path]::GetTempFileName()
-    try {
-        $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/c', $combined) `
-            -Wait -NoNewWindow -PassThru `
-            -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
-        $so = [System.IO.File]::ReadAllText($stdoutFile)
-        $se = [System.IO.File]::ReadAllText($stderrFile)
-        $parts = @()
-        if ($so.TrimEnd().Length) { $parts += $so.TrimEnd() }
-        if ($se.TrimEnd().Length) { $parts += $se.TrimEnd() }
-        $text = $parts -join [Environment]::NewLine
-        if ($proc.ExitCode -ne 0 -and -not $text.Trim()) {
-            $text = "(cmd exited with code $($proc.ExitCode))"
-        }
-        return (Apply-RmmCwdFromCmdOutput -Text $text)
-    } finally {
-        Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
-    }
+    $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -ArgumentList @('/d', '/c', $combined)
+    $text = Join-RmmProcessOutputText -Result $result -EmptyExitLabel 'cmd'
+    return (Apply-RmmCwdFromCmdOutput -Text $text)
 }
 
 # Default: cmd.exe. Prefix PS: or powershell: for Windows PowerShell; pwsh: for PS 7 if installed.
@@ -2259,11 +2296,7 @@ function Invoke-RmmUserCommand {
             $wdEsc = $script:RmmShellCwd -replace "'", "''"
             $innerPs = "Set-Location -LiteralPath '$wdEsc' -ErrorAction SilentlyContinue`r`n" + $inner + "`r`nWrite-Output ('RMM_CWD_SIG:' + (Get-Location).Path)"
             $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerPs))
-            $out = & powershell.exe @(
-                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoLogo', '-NonInteractive',
-                '-EncodedCommand', $enc
-            ) 2>&1
-            $txt = [string](ConvertTo-RmmPlainText @($out))
+            $txt = Invoke-RmmHiddenEncodedPowerShell -ExecutablePath 'powershell.exe' -EncodedCommand $enc
             return (Apply-RmmCwdFromCmdOutput -Text $txt)
         }
         if ($trimmed -match '^(?i)pwsh\s*:\s*(.*)$') {
@@ -2273,11 +2306,7 @@ function Invoke-RmmUserCommand {
             $innerPs = "Set-Location -LiteralPath '$wdEsc' -ErrorAction SilentlyContinue`r`n" + $inner + "`r`nWrite-Output ('RMM_CWD_SIG:' + (Get-Location).Path)"
             $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerPs))
             $launcher = if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) { 'pwsh.exe' } else { 'powershell.exe' }
-            $out = & $launcher @(
-                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoLogo', '-NonInteractive',
-                '-EncodedCommand', $enc
-            ) 2>&1
-            $txt = [string](ConvertTo-RmmPlainText @($out))
+            $txt = Invoke-RmmHiddenEncodedPowerShell -ExecutablePath $launcher -EncodedCommand $enc
             return (Apply-RmmCwdFromCmdOutput -Text $txt)
         }
         if ($trimmed -match '^(?i)cmd\s*:\s*(.*)$') {
