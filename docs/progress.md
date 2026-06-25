@@ -137,6 +137,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 - [x] Login via API token (`sessionStorage`)
 - [x] **Deploy agent** sidebar — generate `client_rmm.ps1` config snippet (see `docs/web-agent-generator.md`)
+- [x] **Resizable sidebar** — drag handle between sidebar and console; width stored in `sessionStorage`
 - [x] Session sidebar with beacon status, sleep/jitter display
 - [x] Shell: queue command, exec (wait), kill session; **↑/↓ history + Tab completion** (§4)
 - [x] **Queued result placement** (§6) — command blocks; results render under echoed line via `ev.command` / tool kind

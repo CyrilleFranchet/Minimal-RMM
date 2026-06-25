@@ -11,6 +11,7 @@
   --mono: "JetBrains Mono", "SF Mono", "Consolas", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --header-h: 52px;
+  --sidebar-width: 280px;
 }
 
 * {
@@ -184,17 +185,17 @@ button:disabled {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: var(--sidebar-width) 6px 1fr;
   overflow: hidden;
 }
 
 .app-body.ai-open {
-  grid-template-columns: 280px 1fr 360px;
+  grid-template-columns: var(--sidebar-width) 6px 1fr 360px;
 }
 
 @media (max-width: 1100px) {
   .app-body.ai-open {
-    grid-template-columns: 220px 1fr 300px;
+    grid-template-columns: var(--sidebar-width) 6px 1fr 300px;
   }
 }
 
@@ -206,6 +207,9 @@ button:disabled {
   .app-body.ai-open {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr auto;
+  }
+  .sidebar-resizer {
+    display: none;
   }
   .sidebar {
     border-right: none !important;
@@ -221,10 +225,46 @@ button:disabled {
 
 .sidebar {
   background: var(--surface);
-  border-right: 1px solid var(--border);
   padding: 1rem;
   overflow-y: auto;
   min-height: 0;
+  min-width: 0;
+}
+
+.sidebar-resizer {
+  position: relative;
+  z-index: 2;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--border);
+  opacity: 0.35;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible,
+.sidebar-resizer.dragging {
+  opacity: 1;
+  background: var(--accent);
+  outline: none;
+}
+
+body.sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.sidebar-resizing iframe {
+  pointer-events: none;
 }
 
 .sidebar h2 {
