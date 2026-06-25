@@ -64,7 +64,7 @@ client_rmm.ps1 (Windows agent)
 
 - Progress Log: `docs/progress.md` — living doc of completed work, open items, blockers
 - README: `README.md` — setup, API reference, SOCKS troubleshooting
-- PRD: `docs/prd.md` — *(not yet created)*
+- PRD: `docs/prd.md` — product vision; **EDR/AV compatibility required for commercial sale**
 - Tech Plan: `docs/tech-plan.md` — planned features (traffic/beacon charts, Docker deploy, …)
 - MCP parity: `docs/mcp-parity.md` — REST operator API must map to MCP tools
 

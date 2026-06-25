@@ -1,6 +1,6 @@
 # Tech Plan — Minimal-RMM
 
-Living technical design for planned features. For completed work and parity gaps, see `docs/progress.md`. For API/protocol details, see `README.md`.
+Living technical design for planned features. For completed work and parity gaps, see `docs/progress.md`. For API/protocol details, see `README.md`. **Product constraints** (including EDR/AV compatibility as a commercial gate): `docs/prd.md`.
 
 **Status key:** `planned` → `in progress` → `done` (update this doc when implementation lands).
 
