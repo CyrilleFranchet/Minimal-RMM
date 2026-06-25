@@ -378,15 +378,57 @@ function renderHistoryList() {
     const ended = s.ended_at ? formatTime(s.ended_at) : formatTime(s.updated_at || s.last_seen);
     const reason = s.end_reason ? ` · ${s.end_reason}` : "";
     const connected = formatFirstConnected(s.first_seen);
+    const sessionId = s.session_id;
+
     li.innerHTML = `
-      <div class="id">${escapeHtml((s.session_id || "").slice(0, 8))}<span class="ended-tag">archived</span></div>
+      <div class="id">${escapeHtml((sessionId || "").slice(0, 8))}<span class="ended-tag">archived</span></div>
       <div class="meta">${escapeHtml(s.username || "?")}@${escapeHtml(s.hostname || "?")}</div>
       ${connected ? `<div class="sub sub-connected">connected ${escapeHtml(connected)}</div>` : ""}
       <div class="sub">${escapeHtml(String(s.event_count || 0))} events · ended ${escapeHtml(ended)}${escapeHtml(reason)}</div>
     `;
-    li.addEventListener("click", () => selectHistorySession(s.session_id));
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "history-delete secondary";
+    delBtn.title = "Delete archived transcript from disk";
+    delBtn.setAttribute("aria-label", "Delete archived session");
+    delBtn.textContent = "Delete";
+    delBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      deleteHistorySession(sessionId);
+    });
+    li.insertBefore(delBtn, li.firstChild);
+
+    li.addEventListener("click", () => selectHistorySession(sessionId));
     ul.appendChild(li);
   }
+}
+
+async function deleteHistorySession(id) {
+  const shortId = (id || "").slice(0, 8);
+  if (
+    !confirm(
+      `Delete archived session ${shortId}? This permanently removes the transcript from disk.`
+    )
+  ) {
+    return;
+  }
+  const { status, data } = await api(`/history/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (status === 409) {
+    appendShellError("Cannot delete archive — session is still active");
+    return;
+  }
+  if (status !== 200) {
+    appendShellError(data.error || data.detail || `Delete failed (${status})`);
+    return;
+  }
+  if (state.selectedHistoryId === id) {
+    showEmptyConsole();
+  }
+  await fetchSessionHistory();
 }
 
 async function selectHistorySession(id) {

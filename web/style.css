@@ -438,6 +438,29 @@ body.sidebar-resizing iframe {
   color: var(--muted);
 }
 
+.session-item.history-item {
+  position: relative;
+  padding-right: 4.5rem;
+}
+
+.session-item.history-item .history-delete {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.45rem;
+  opacity: 0;
+  pointer-events: none;
+  padding: 0.15rem 0.45rem;
+  font-size: 0.65rem;
+  line-height: 1.2;
+  transition: opacity 0.15s ease;
+}
+
+.session-item.history-item:hover .history-delete,
+.session-item.history-item:focus-within .history-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .session-item.history-item .id {
   color: var(--muted);
 }

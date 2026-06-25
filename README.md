@@ -183,6 +183,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `GET` | `/history` | — | List archived (ended) session transcripts |
 | `GET` | `/history/{id}` | — | Archived session metadata |
 | `GET` | `/history/{id}/events?since=0&limit=500` | — | Read-only event transcript from disk |
+| `DELETE` | `/history/{id}` | — | Remove archived transcript from disk (ended sessions only) |
 | `GET` | `/artifacts/{downloads\|screenshots}/{filename}` | `?token=` | Download saved artifact (auth required) |
 | `WS` | `/ws?token=…&session=…` | — | Live events + session list (WebSocket) |
 
