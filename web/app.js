@@ -1750,6 +1750,7 @@ async function selectSession(id) {
 }
 
 function showEmptyConsole() {
+  stopEventPolling();
   state.selectedId = null;
   state.selectedHistoryId = null;
   state.viewMode = "live";
@@ -1762,8 +1763,13 @@ function showEmptyConsole() {
     dl.innerHTML = '<p class="downloads-empty">No files downloaded yet.</p>';
   }
   renderSessionList();
+  renderHistoryList();
   updateShellPrompt();
   connectWebSocket();
+}
+
+function closeConsole() {
+  showEmptyConsole();
 }
 
 function loadEventCursors() {
@@ -2378,6 +2384,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter") connect();
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
+  $("#console-close")?.addEventListener("click", closeConsole);
   bindBeaconConfigDialog();
   $("#btn-download").addEventListener("click", queueDownload);
   $("#btn-exfil").addEventListener("click", queueExfil);
