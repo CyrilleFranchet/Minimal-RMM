@@ -446,6 +446,7 @@ class RMMServer:
         self.socks = SocksManager(log_fn=self.log)
         self._sessions_broadcast_lock = threading.Lock()
         self._sessions_broadcast_timer = None
+        self._archive_orphaned_sessions_on_startup()
 
     @staticmethod
     def _format_ago(seconds):
@@ -505,6 +506,106 @@ class RMMServer:
                 "jitter_percent": max(0, min(100, int(rec.get("jitter_percent", 30)))),
             }
         return configs
+
+    @staticmethod
+    def _load_persisted_session_records() -> dict[str, dict]:
+        """Load full session records from sessions.json (id → dict)."""
+        if not os.path.exists(SESSION_FILE):
+            return {}
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+                sessions_data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(sessions_data, dict):
+            return {}
+        records: dict[str, dict] = {}
+        for session_id, rec in sessions_data.items():
+            sid = validate_beacon_session_id(session_id)
+            if sid and isinstance(rec, dict):
+                records[sid] = rec
+        return records
+
+    @staticmethod
+    def _session_from_record(session_id: str, rec: dict) -> Session:
+        """Rebuild a Session from sessions.json or history meta (no in-memory events)."""
+        session = Session(
+            session_id,
+            rec.get("hostname") or "?",
+            rec.get("username") or "?",
+            rec.get("ip"),
+        )
+        for attr, key in (("first_seen", "first_seen"), ("last_seen", "last_seen")):
+            raw = rec.get(key)
+            if not raw:
+                continue
+            try:
+                setattr(session, attr, datetime.fromisoformat(str(raw)))
+            except (TypeError, ValueError):
+                pass
+        session.sleep_seconds = max(1, min(3600, int(rec.get("sleep_seconds", 60))))
+        session.jitter_percent = max(0, min(100, int(rec.get("jitter_percent", 30))))
+        if rec.get("work_dir") is not None:
+            session.work_dir = rec.get("work_dir")
+        if rec.get("os_type"):
+            session.os_type = rec.get("os_type")
+        session.config_synced = True
+        return session
+
+    def _history_event_count(self, session_id: str) -> int:
+        events_path = self._history_events_path(session_id)
+        if not os.path.isfile(events_path):
+            return 0
+        try:
+            with open(events_path, "r", encoding="utf-8") as f:
+                return sum(1 for line in f if line.strip())
+        except OSError:
+            return 0
+
+    def _archive_orphaned_sessions_on_startup(self) -> None:
+        """Mark pre-restart sessions as ended so they appear in session history."""
+        candidates: dict[str, dict] = {}
+        for sid, rec in self._load_persisted_session_records().items():
+            candidates[sid] = rec
+        if os.path.isdir(HISTORY_DIR):
+            try:
+                names = os.listdir(HISTORY_DIR)
+            except OSError:
+                names = []
+            for name in names:
+                sid = validate_beacon_session_id(name)
+                if not sid or sid in candidates:
+                    continue
+                meta_path = os.path.join(HISTORY_DIR, name, "meta.json")
+                rec: dict = {}
+                if os.path.isfile(meta_path):
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            loaded = json.load(f)
+                        if isinstance(loaded, dict):
+                            rec = loaded
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                candidates[sid] = rec
+
+        archived = 0
+        for sid, rec in candidates.items():
+            if sid in self.sessions:
+                continue
+            meta_path = self._history_meta_path(sid)
+            if os.path.isfile(meta_path):
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                    if isinstance(existing, dict) and existing.get("ended_at"):
+                        continue
+                except (OSError, json.JSONDecodeError):
+                    pass
+            session = self._session_from_record(sid, rec)
+            self._finalize_session_history(session, reason="server_restart")
+            archived += 1
+        if archived:
+            self.log(f"Archived {archived} orphaned session(s) from before restart", "INFO")
 
     def save_session(self, session):
         sessions_data = {}
@@ -708,12 +809,12 @@ class RMMServer:
             meta["ended_at"] = datetime.now().isoformat()
             meta["end_reason"] = end_reason or "ended"
         else:
-            meta.setdefault("ended_at", None)
-            meta.setdefault("end_reason", None)
-        try:
+            meta["ended_at"] = None
+            meta["end_reason"] = None
+        if session.result_events:
             meta["event_count"] = len(session.result_events)
-        except OSError:
-            meta["event_count"] = len(session.result_events)
+        else:
+            meta["event_count"] = self._history_event_count(session.id)
         try:
             with open(self._history_meta_path(session.id), "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
@@ -1062,7 +1163,7 @@ class RMMServer:
                         session.jitter_percent = max(0, min(100, int(jitter_percent)))
                     session.config_synced = True
                 self.sessions[session_id] = session
-                to_save = session if (persisted or sync_client_config) else None
+                to_save = session
                 is_new = True
             else:
                 s = self.sessions[session_id]
@@ -1082,6 +1183,7 @@ class RMMServer:
                     to_save = None
         if is_new and to_save is not None:
             self.backfill_download_artifacts(to_save)
+            self._history_write_meta(to_save)
         if to_save is not None:
             self.save_session(to_save)
         if is_new:
