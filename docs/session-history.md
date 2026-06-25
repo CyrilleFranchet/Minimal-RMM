@@ -46,6 +46,7 @@ Removes `RMM_logs/history/{id}/` from disk and drops the session from `sessions.
 
 - **Sessions** — live agents; hover a row to reveal **Beacon** (sleep/jitter dialog) and **Kill**. Updates via WebSocket `sessions` messages + 5 s poll fallback; beacon status recomputed client-side every 15 s.
 - **Session history** — archived sessions; click to view read-only transcript (shell input and tools hidden). Hover a row to reveal **Delete** (permanent disk removal, with confirmation).
+- **Close console** — **×** top-right on the session panel closes the view (live or archived) without killing the agent; sidebar selection clears.
 - **Kill session** — hover **Kill** on a live session row (same pattern as archived **Delete**); closes the console if that session was selected and refreshes both lists.
 
 ## Server methods

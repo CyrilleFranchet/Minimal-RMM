@@ -609,9 +609,24 @@ body.sidebar-resizing iframe {
   border-bottom: 1px solid var(--border);
 }
 
-.console-header h2 {
+.console-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.console-header-row h2 {
   margin: 0;
   font-size: 1rem;
+  min-width: 0;
+}
+
+.console-close {
+  flex-shrink: 0;
+  padding: 0.25rem 0.55rem;
+  font-size: 1.1rem;
+  line-height: 1;
 }
 
 .console-header .detail {
