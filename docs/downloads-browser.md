@@ -16,6 +16,8 @@ Operators can browse files pulled from agents (`__DOWNLOAD__`) in the web consol
 2. Agent uploads chunks via `file_upload` result; server reassembles under `RMM_logs/downloads/{hashPrefix}_{basename}`.
 3. While uploading, the agent POSTs **`download_progress`** updates (bytes, percent, speed, ETA) roughly every chunk or 1% / 10s. The web UI shows a live progress bar under the queued download command (WebSocket-only, not stored in history).
 4. Server indexes the file on `session.download_artifacts`.
+
+**Large files (> 2 GB):** the agent uses `[long]` offsets and sizes in `Send-RmmFileDownload` so ISOs and other multi-gigabyte files are not limited by .NET `Int32` in progress math.
 5. Web UI lists remote path, size, received time; **Download** and optional **Preview** (text ≤ 1 MB, images).
 6. On new `file_upload` events (WebSocket or poll), the list refreshes automatically.
 

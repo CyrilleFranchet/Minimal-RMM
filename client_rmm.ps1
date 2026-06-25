@@ -1012,7 +1012,7 @@ function Send-RmmTransferProgressIfChanged {
 
     $LastSentPct.Value = $pct
     $LastSentAt.Value = $now
-    $speedBps = [long][math]::Max(0, [math]::Round($Speed))
+    $speedBps = [long][Math]::Max([long]0, [long][math]::Round($Speed))
     $etaSec = if ($Eta -ge 0) { [int][math]::Round($Eta) } else { -1 }
 
     $out = @{} + $Payload
@@ -1302,7 +1302,7 @@ function Send-RmmFileDownload {
     $fs = [System.IO.File]::OpenRead($FilePath)
     try {
         $offset = [long]0
-        $fileLen = $fs.Length
+        $fileLen = [long]$fs.Length
         if ($fileLen -gt 0) {
             Send-RmmTransferProgressResult -ResultType 'download_progress' -Payload @{
                 remote_path = [string]$RemotePath
@@ -1342,15 +1342,15 @@ function Send-RmmFileDownload {
                 filename     = $fileName
                 remote_path  = $RemotePath
                 upload_id    = $uploadId
-                offset       = $offset
+                offset       = [long]$offset
                 eof          = $eof
                 content      = $b64
             } | ConvertTo-Json -Compress
             Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
-            $offset += $n
+            $offset = [long]($offset + $n)
             $elapsed = ([DateTime]::UtcNow - $startTime).TotalSeconds
             $speed = if ($elapsed -gt 0) { $offset / $elapsed } else { 0.0 }
-            $remaining = [math]::Max(0, $fileLen - $offset)
+            $remaining = [Math]::Max([long]0, $fileLen - $offset)
             $eta = if ($speed -gt 0) { $remaining / $speed } else { -1.0 }
             Send-RmmDownloadProgressIfChanged -RemotePath $RemotePath -Headers $Headers -Bytes $offset `
                 -TotalBytes $fileLen -Speed $speed -Eta $eta -LastSentPct ([ref]$lastSentPct) -LastSentAt ([ref]$lastSentAt)
