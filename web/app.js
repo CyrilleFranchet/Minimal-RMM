@@ -656,13 +656,13 @@ function findPendingCommandBlock(ev) {
     for (const block of pending) {
       if (block.kind !== kind) continue;
       if (kind === "download" && block.remotePath) {
-        if (body.startsWith(block.remotePath) || body.includes(block.remotePath)) {
+        if (remotePathsMatch(body, block.remotePath) || body.includes(block.remotePath)) {
           return block;
         }
         continue;
       }
       if (kind === "exfil" && block.remotePath) {
-        if (body.startsWith(block.remotePath) || body.includes(block.remotePath)) {
+        if (remotePathsMatch(body, block.remotePath) || body.includes(block.remotePath)) {
           return block;
         }
         continue;
@@ -672,6 +672,78 @@ function findPendingCommandBlock(ev) {
   }
 
   return null;
+}
+
+function normalizeRemotePath(path) {
+  return String(path || "")
+    .trim()
+    .replace(/\//g, "\\")
+    .toLowerCase();
+}
+
+function remotePathsMatch(a, b) {
+  if (!a || !b) return false;
+  const na = normalizeRemotePath(a);
+  const nb = normalizeRemotePath(b);
+  if (na === nb) return true;
+  return na.includes(nb) || nb.includes(na);
+}
+
+function parseCloudUploadBody(ev) {
+  const raw = ev?.body;
+  if (raw == null || raw === "") return null;
+  let data = null;
+  if (typeof raw === "object") {
+    data = raw;
+  } else {
+    const text = String(raw).trim();
+    if (text.startsWith("{")) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        /* formatted string */
+      }
+    }
+    if (!data) {
+      const link = text.match(/https?:\/\/\S+/i)?.[0] || null;
+      return { text, link };
+    }
+  }
+  const remote = String(data.remote_path || "").trim();
+  const profile = String(data.profile || data.backend || "cloud").trim();
+  if (data.success === false) {
+    const err = String(data.error || "Exfil failed").trim();
+    return { text: remote ? `${remote}: ${err}` : err, error: true };
+  }
+  const link = String(data.link || "").trim();
+  const dest = String(data.dest || "").trim();
+  if (link) return { text: `${remote} → ${link}`, link };
+  if (dest) return { text: `${remote} → ${profile}:${dest}` };
+  if (remote) return { text: remote };
+  return { text: "Exfil complete" };
+}
+
+function renderCloudUploadHtml(ev) {
+  const parsed = parseCloudUploadBody(ev);
+  if (!parsed) return escapeHtml("(exfil complete)");
+  let html = escapeHtml(parsed.text);
+  if (parsed.link) {
+    html += `<br><a class="artifact-link" href="${escapeHtml(parsed.link)}" target="_blank" rel="noopener">Open link</a>`;
+  }
+  return html;
+}
+
+function looksLikeTransferProgressJson(body) {
+  try {
+    const data = typeof body === "object" ? body : JSON.parse(String(body));
+    return Boolean(
+      data &&
+        data.remote_path &&
+        (data.percent != null || data.bytes != null || data.total_bytes != null)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function parseProgressBody(ev) {
@@ -719,16 +791,31 @@ function findProgressBlock(ev, kind) {
   const evCmd = normalizeCmdKey(ev.command);
   for (const block of state.pendingCommandBlocks) {
     if (block.filled || block.kind !== kind) continue;
-    if (remote && block.remotePath) {
-      if (remote === block.remotePath || remote.includes(block.remotePath) || block.remotePath.includes(remote)) {
-        return block;
-      }
+    if (remote && block.remotePath && remotePathsMatch(remote, block.remotePath)) {
+      return block;
     }
     if (evCmd && block.matchKeys.some((k) => commandKeysMatch(k, evCmd))) {
       return block;
     }
   }
+  const pending = state.pendingCommandBlocks.filter((b) => !b.filled && b.kind === kind);
+  if (pending.length === 1) return pending[0];
   return null;
+}
+
+function seedTransferProgress(block, statusPrefix) {
+  if (!block) return;
+  updateProgressBlock(
+    block,
+    {
+      bytes: 0,
+      total_bytes: 0,
+      percent: 0,
+      speed_bps: 0,
+      eta_seconds: -1,
+    },
+    statusPrefix
+  );
 }
 
 function updateProgressBlock(block, data, statusPrefix) {
@@ -796,6 +883,9 @@ function renderEventResultHtml(ev) {
   if (evType === "screenshot" || evType === "file_upload" || ev.artifact_url) {
     return renderEventBodyHtml(ev);
   }
+  if (evType === "cloud_upload") {
+    return renderCloudUploadHtml(ev);
+  }
   if (evType === "output") {
     if (!body) return escapeHtml("(no output)");
     return body
@@ -820,13 +910,21 @@ function fillCommandBlock(block, ev) {
   }
   const evType = ev.type || "output";
   const resultEl = block.resultEl;
-  if (evType === "screenshot" || evType === "file_upload" || ev.artifact_url) {
+  if (evType === "cloud_upload") {
+    const line = document.createElement("div");
+    line.className = "shell-line shell-line-output";
+    line.innerHTML = renderCloudUploadHtml(ev);
+    resultEl.appendChild(line);
+  } else if (evType === "screenshot" || evType === "file_upload" || ev.artifact_url) {
     const line = document.createElement("div");
     line.className = "shell-line shell-line-output";
     line.innerHTML = renderEventResultHtml(ev);
     resultEl.appendChild(line);
   } else if (evType === "output") {
     const text = String(ev.body || "");
+    if (looksLikeTransferProgressJson(text)) {
+      return true;
+    }
     if (!text) {
       const line = document.createElement("div");
       line.className = "shell-line shell-line-meta";
@@ -889,6 +987,11 @@ function createCommandBlock(cmd, { meta = null, kind = null, remotePath = null, 
     filled: false,
   };
   state.pendingCommandBlocks.push(block);
+  if (kind === "exfil") {
+    seedTransferProgress(block, "Uploading via rclone");
+  } else if (kind === "download") {
+    seedTransferProgress(block, "Downloading from agent");
+  }
   return block;
 }
 
@@ -922,6 +1025,15 @@ function appendUnmatchedEvent(ev) {
     const block = document.createElement("div");
     block.className = "shell-line shell-line-output";
     block.innerHTML = renderEventBodyHtml(ev);
+    shellOutputEl().appendChild(block);
+    scrollShellIfNearBottom();
+    return;
+  }
+
+  if (evType === "cloud_upload") {
+    const block = document.createElement("div");
+    block.className = "shell-line shell-line-output";
+    block.innerHTML = renderCloudUploadHtml(ev);
     shellOutputEl().appendChild(block);
     scrollShellIfNearBottom();
     return;
@@ -1313,11 +1425,7 @@ function renderEventBodyHtml(ev) {
     return `${escapeHtml(body)}<br><a class="artifact-link artifact-download" href="#" data-artifact-url="${escapeHtml(ev.artifact_url)}" data-download-name="${escapeHtml(name)}">Download file</a>`;
   }
   if (ev.type === "cloud_upload") {
-    const m = body.match(/https?:\/\/\S+/i);
-    if (m) {
-      const url = m[0];
-      return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open link</a>`;
-    }
+    return renderCloudUploadHtml(ev);
   }
   if (ev.artifact_url) {
     const src = artifactSrc(ev.artifact_url);

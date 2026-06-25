@@ -141,7 +141,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Session sidebar with beacon status, sleep/jitter display
 - [x] Shell: queue command, exec (wait), kill session; **↑/↓ history + Tab completion** (§4)
 - [x] **Queued result placement** (§6) — command blocks; results render under echoed line via `ev.command` / tool kind
-- [x] Files: download queue, upload (base64), screenshot, **rclone exfil** (profile dropdown + live upload progress bar)
+- [x] Files: download queue, upload (base64), screenshot, **rclone exfil** (profile dropdown + live upload progress bar, same UI as downloads)
 - [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`; live download progress bar in shell
 - [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
 - [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`)

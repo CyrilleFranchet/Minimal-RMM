@@ -1092,7 +1092,11 @@ function Read-RmmRcloneJsonLogProgress {
             }
             if (-not $stats) { continue }
             $bytes = [long]$stats.bytes
-            $total = [long]$stats.totalBytes
+            $total = [long]$Context.total_bytes
+            if ($stats.PSObject.Properties['totalBytes']) {
+                $statsTotal = [long]$stats.totalBytes
+                if ($statsTotal -gt 0) { $total = $statsTotal }
+            }
             $speed = [double]$stats.speed
             $eta = [double]$stats.eta
             Send-RmmExfilProgressIfChanged -Context $Context -Headers $Headers -Bytes $bytes -TotalBytes $total `
@@ -1159,6 +1163,18 @@ function Invoke-RmmRcloneCopytoWithProgress {
                 if ($detail.Length -gt 500) { $detail = $detail.Substring($detail.Length - 500) }
             }
             throw "rclone copyto failed (exit $($proc.ExitCode)): $detail"
+        }
+        $totalBytes = [long]$Context.total_bytes
+        if ($totalBytes -gt 0) {
+            Send-RmmTransferProgressResult -ResultType 'exfil_progress' -Payload @{
+                remote_path = [string]$Context.remote_path
+                profile     = [string]$Context.profile
+                bytes       = $totalBytes
+                total_bytes = $totalBytes
+                percent     = 100
+                speed_bps   = 0
+                eta_seconds = 0
+            } -Headers $Headers
         }
     } finally {
         Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue
