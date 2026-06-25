@@ -9,6 +9,7 @@
   const EXEGOL_ENABLED_STORAGE = "rmm_exegol_mcp_enabled";
   const EXEGOL_URL_STORAGE = "rmm_exegol_mcp_url";
   const EXEGOL_TOKEN_STORAGE = "rmm_exegol_mcp_token";
+  const AI_SKILLS_ENABLED_STORAGE = "rmm_ai_skills_enabled";
   const DEFAULT_EXEGOL_MCP_URL = "http://127.0.0.1:8000/mcp";
   const CUSTOM_MODEL_VALUE = "__custom__";
   const DEFAULT_MODEL =
@@ -18,6 +19,7 @@
 
   let chatHistory = [];
   let sending = false;
+  let aiSkills = [];
 
   function escapeHtml(s) {
     const d = document.createElement("div");
@@ -97,6 +99,84 @@
     sessionStorage.setItem(EXEGOL_ENABLED_STORAGE, enabled ? "1" : "0");
     sessionStorage.setItem(EXEGOL_URL_STORAGE, url);
     sessionStorage.setItem(EXEGOL_TOKEN_STORAGE, token);
+  }
+
+  function loadEnabledSkillIds() {
+    const raw = sessionStorage.getItem(AI_SKILLS_ENABLED_STORAGE);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed.map((id) => String(id).trim()).filter(Boolean);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return aiSkills.filter((s) => s.default).map((s) => s.id);
+  }
+
+  function persistEnabledSkillIds(ids) {
+    sessionStorage.setItem(AI_SKILLS_ENABLED_STORAGE, JSON.stringify(ids));
+  }
+
+  function getEnabledSkillIds() {
+    const known = new Set(aiSkills.map((s) => s.id));
+    return loadEnabledSkillIds().filter((id) => known.has(id));
+  }
+
+  function renderAiSkillsList() {
+    const container = $("#ai-skills-list");
+    if (!container) return;
+    if (!aiSkills.length) {
+      container.innerHTML = '<p class="ai-skills-empty">No skills on server.</p>';
+      return;
+    }
+    const enabled = new Set(getEnabledSkillIds());
+    container.replaceChildren();
+    for (const skill of aiSkills) {
+      const label = document.createElement("label");
+      label.className = "ai-skill-item";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = skill.id;
+      input.checked = enabled.has(skill.id);
+      input.addEventListener("change", () => {
+        const next = [];
+        for (const el of container.querySelectorAll('input[type="checkbox"]')) {
+          if (el.checked) next.push(el.value);
+        }
+        persistEnabledSkillIds(next);
+      });
+      const text = document.createElement("span");
+      text.className = "ai-skill-label";
+      text.title = skill.description || skill.id;
+      text.textContent = skill.title || skill.id;
+      label.appendChild(input);
+      label.appendChild(text);
+      container.appendChild(label);
+    }
+  }
+
+  async function fetchAiSkills() {
+    const apiFn = window.rmmApi;
+    const st = window.rmmState;
+    const container = $("#ai-skills-list");
+    if (!apiFn || !st?.token) {
+      if (container) {
+        container.innerHTML = '<p class="ai-skills-empty">Connect to load skills.</p>';
+      }
+      return;
+    }
+    const { status, data } = await apiFn("/ai/skills");
+    if (status !== 200) {
+      if (container) {
+        container.innerHTML = '<p class="ai-skills-empty">Failed to load skills.</p>';
+      }
+      return;
+    }
+    aiSkills = data.skills || [];
+    renderAiSkillsList();
   }
 
   function setAiPanelOpen(open) {
@@ -182,6 +262,7 @@
           exegol_mcp_enabled: exegol.enabled,
           exegol_mcp_url: exegol.enabled ? exegol.url : null,
           exegol_mcp_token: exegol.enabled ? exegol.token || null : null,
+          skill_ids: getEnabledSkillIds(),
         }),
       });
 
@@ -274,7 +355,9 @@
         : "RMM tools via MCP (list sessions, run commands, change beacon sleep, etc.). Enable Exegol MCP in settings to add container orchestration and offensive tools."
     );
     chatHistory = [];
+    fetchAiSkills().catch(() => {});
   }
 
   window.initAiPanel = initAiPanel;
+  window.fetchAiSkills = fetchAiSkills;
 })();

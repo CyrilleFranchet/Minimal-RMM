@@ -1655,6 +1655,9 @@ async function connect() {
   startStatusTick();
   await refreshSessions();
   await fetchSessionHistory();
+  if (typeof window.fetchAiSkills === "function") {
+    window.fetchAiSkills().catch(() => {});
+  }
   await refreshExfilStatus();
 }
 

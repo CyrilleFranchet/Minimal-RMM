@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 from rmm_tools import OPENAI_TOOLS, SYSTEM_PROMPT, execute_tool, make_client
+from rmm_ai_skills import compose_system_prompt
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 MAX_TOOL_ROUNDS = 12
@@ -73,13 +74,19 @@ def _run_ai_chat_mcp(
     exegol_mcp_enabled: bool | None = None,
     exegol_mcp_url: str | None = None,
     exegol_mcp_token: str | None = None,
+    skill_ids: list[str] | None = None,
 ) -> dict:
     from rmm_mcp_client import run_with_mcp_session
 
     context = _selected_session_context(selected_session_id)
 
     async def _chat(mcp) -> dict:
-        system = (mcp.server_instructions or SYSTEM_PROMPT) + context
+        base = mcp.server_instructions or SYSTEM_PROMPT
+        system = compose_system_prompt(
+            base,
+            skill_ids=skill_ids,
+            session_context=context,
+        )
         convo = _build_convo(messages, system)
         tools = mcp.openai_tools
 
@@ -165,9 +172,14 @@ def _run_ai_chat_direct(
     model: str,
     selected_session_id: str | None,
     max_rounds: int,
+    skill_ids: list[str] | None = None,
 ) -> dict:
     client = make_client(rmm_base_url, rmm_token)
-    system = SYSTEM_PROMPT + _selected_session_context(selected_session_id)
+    system = compose_system_prompt(
+        SYSTEM_PROMPT,
+        skill_ids=skill_ids,
+        session_context=_selected_session_context(selected_session_id),
+    )
     convo = _build_convo(messages, system)
 
     tool_log: list[dict] = []
@@ -234,6 +246,7 @@ def run_ai_chat(
     exegol_mcp_enabled: bool | None = None,
     exegol_mcp_url: str | None = None,
     exegol_mcp_token: str | None = None,
+    skill_ids: list[str] | None = None,
 ) -> dict:
     """
     Run agent loop; returns {message, tool_calls_made, via, ...} for the client.
@@ -264,6 +277,7 @@ def run_ai_chat(
             exegol_mcp_enabled=exegol_mcp_enabled,
             exegol_mcp_url=exegol_mcp_url,
             exegol_mcp_token=exegol_mcp_token,
+            skill_ids=skill_ids,
         )
 
     return _run_ai_chat_direct(
@@ -274,4 +288,5 @@ def run_ai_chat(
         model=model,
         selected_session_id=selected_session_id,
         max_rounds=max_rounds,
+        skill_ids=skill_ids,
     )

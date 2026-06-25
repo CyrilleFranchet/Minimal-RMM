@@ -981,33 +981,83 @@ class RMMServer:
             meta["active"] = session_id in self.sessions and not meta.get("ended_at")
         return meta
 
-    def delete_history_session(self, session_id_or_prefix: str) -> tuple[bool, str | None, str | None]:
+    def purge_session_artifacts(self, session_id: str) -> dict[str, int]:
+        """Remove downloads, screenshots, keylogs, and .part staging files for a session."""
+        sid = validate_beacon_session_id(session_id)
+        counts = {"downloads": 0, "screenshots": 0, "keylogs": 0, "staging": 0}
+        if not sid:
+            return counts
+        prefix = safe_session_storage_prefix(sid)
+        pattern_prefix = f"{prefix}_"
+        for subdir in ("downloads", "screenshots", "keylogs"):
+            dir_path = os.path.join(LOG_DIR, subdir)
+            if not os.path.isdir(dir_path):
+                continue
+            try:
+                names = os.listdir(dir_path)
+            except OSError:
+                continue
+            for name in names:
+                if not name.startswith(pattern_prefix):
+                    continue
+                try:
+                    path = safe_join_under(dir_path, name)
+                except ValueError:
+                    continue
+                if not os.path.isfile(path):
+                    continue
+                try:
+                    os.remove(path)
+                except OSError as e:
+                    self.log(f"Artifact delete failed {name}: {e}", "WARNING")
+                    continue
+                if subdir == "downloads" and name.endswith(".part"):
+                    counts["staging"] += 1
+                else:
+                    counts[subdir] += 1
+        with self.session_lock:
+            live = self.sessions.get(sid)
+            if live:
+                live.download_artifacts = []
+                live.pending_downloads.clear()
+        return counts
+
+    def delete_history_session(
+        self, session_id_or_prefix: str
+    ) -> tuple[bool, str | None, str | None, dict[str, int] | None]:
         """Remove an archived transcript directory from disk.
 
-        Returns (ok, session_id, error_code). error_code is set when ok is False
+        Returns (ok, session_id, error_code, artifacts_purged). error_code is set when ok is False
         (e.g. session_still_active, history_not_found).
         """
         session_id = self.resolve_history_session_id(session_id_or_prefix)
         if not session_id:
-            return False, None, "history_not_found"
+            return False, None, "history_not_found", None
         meta = self.get_history_meta(session_id)
         if not meta:
-            return False, None, "history_not_found"
+            return False, None, "history_not_found", None
         if meta.get("active"):
-            return False, None, "session_still_active"
+            return False, None, "session_still_active", None
         try:
             session_dir = _history_session_dir(session_id)
         except ValueError:
-            return False, None, "history_not_found"
+            return False, None, "history_not_found", None
         if not os.path.isdir(session_dir):
-            return False, None, "history_not_found"
+            return False, None, "history_not_found", None
+        artifacts = self.purge_session_artifacts(session_id)
         try:
             shutil.rmtree(session_dir)
         except OSError as e:
             self.log(f"History delete failed for {session_id[:8]}: {e}", "WARNING")
-            return False, None, "delete_failed"
+            return False, None, "delete_failed", None
         self.remove_persisted_session(session_id)
-        return True, session_id, None
+        total = sum(artifacts.values())
+        if total:
+            self.log(
+                f"Purged {total} artifact file(s) for session {session_id[:8]}: {artifacts}",
+                "INFO",
+            )
+        return True, session_id, None, artifacts
 
     def clear_session_history(self) -> tuple[int, list[dict]]:
         """Delete all ended (non-active) archived sessions from disk."""
@@ -1021,7 +1071,7 @@ class RMMServer:
         deleted = 0
         errors: list[dict] = []
         for sid in to_delete:
-            ok, session_id, err = self.delete_history_session(sid)
+            ok, session_id, err, _artifacts = self.delete_history_session(sid)
             if ok:
                 deleted += 1
             else:
@@ -1869,6 +1919,13 @@ class RMMHandler(BaseHTTPRequestHandler):
             )
             return True
 
+        if parts == ["ai", "skills"]:
+            from rmm_ai_skills import ai_skills_dir, list_ai_skills
+
+            skills = list_ai_skills()
+            self._json(200, {"skills": skills, "count": len(skills), "directory": ai_skills_dir()})
+            return True
+
         if parts == ["history"]:
             rows = srv.list_session_history()
             ended = [r for r in rows if not r.get("active")]
@@ -2058,6 +2115,10 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             model = str(body.get("model") or "gpt-5.2")
             selected = body.get("selected_session_id")
+            skill_ids = body.get("skill_ids")
+            if skill_ids is not None and not isinstance(skill_ids, list):
+                self._json(400, {"error": "invalid_skill_ids"})
+                return True
             rmm_token = (self._api_token_from_request() or API_TOKEN or "").strip()
             if not rmm_token:
                 self._json(401, {
@@ -2078,6 +2139,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     exegol_mcp_enabled=body.get("exegol_mcp_enabled"),
                     exegol_mcp_url=body.get("exegol_mcp_url"),
                     exegol_mcp_token=body.get("exegol_mcp_token"),
+                    skill_ids=skill_ids,
                 )
                 status = 200 if result.get("ok") else 500
                 self._json(status, result)
@@ -2166,12 +2228,15 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 2 and parts[0] == "history":
-            ok, session_id, err = srv.delete_history_session(parts[1])
+            ok, session_id, err, artifacts = srv.delete_history_session(parts[1])
             if not ok:
                 status = 409 if err == "session_still_active" else 404
                 self._json(status, {"error": err or "history_not_found"})
                 return True
-            self._json(200, {"ok": True, "session_id": session_id})
+            body = {"ok": True, "session_id": session_id}
+            if artifacts:
+                body["artifacts_purged"] = artifacts
+            self._json(200, body)
             return True
 
         self._json(404, {"error": "not_found"})
