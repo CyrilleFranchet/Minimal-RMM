@@ -1099,6 +1099,37 @@ body.sidebar-resizing iframe {
   cursor: pointer;
 }
 
+.ai-skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.ai-skills-empty {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.ai-skill-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.ai-skill-item input {
+  margin-top: 0.15rem;
+  flex-shrink: 0;
+}
+
+.ai-skill-label {
+  color: var(--text);
+}
+
 .ai-checkbox input {
   width: auto;
   margin: 0;

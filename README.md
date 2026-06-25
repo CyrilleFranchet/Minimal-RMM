@@ -80,7 +80,7 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates (new agents appear automatically; no manual refresh). The shell supports **↑/↓ command history** and **Tab completion** (session history + `cmd:` / `PS:` / `powershell:` / `pwsh:` prefixes). Completed agent downloads appear in the **Downloads from agent** panel. **Session history** lists archived transcripts from killed sessions. Sidebar **Deploy agent (PowerShell)** generates a ready-to-run **`client_rmm.ps1`** (or config/env snippet) — see `docs/web-agent-generator.md`. The token is kept in `sessionStorage` for the browser tab only.
 
-**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Set your **OpenAI API key** in the panel (stored in `sessionStorage` for this tab). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`. The selected session in the sidebar is passed as context.
+**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Set your **OpenAI API key** in the panel (stored in `sessionStorage` for this tab). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). **Skills** — Markdown files in `ai-skills/` on the server are injected into the system prompt (see `docs/web-ai-skills.md`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_AI_SKILLS_DIR`. The selected session in the sidebar is passed as context.
 
 Same-origin hosting avoids CORS; do not expose `/ui/` on the public internet without TLS and a strong API token. Sending an OpenAI key to your RMM server is only appropriate on a trusted/self-hosted instance.
 
@@ -185,7 +185,8 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080}` or `{"stop":true}` | Start/stop SOCKS5 on `127.0.0.1` via agent |
-| `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[…],"model":"gpt-5.2",…}` | OpenAI agent loop via MCP (RMM + optional Exegol); model list in `web/ai-models.js` |
+| `GET` | `/ai/skills` | — | List server AI skills (metadata only) |
+| `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[…],"model":"gpt-5.2","skill_ids":[…],…}` | OpenAI agent loop via MCP (RMM + optional Exegol); model list in `web/ai-models.js` |
 | `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (fallback) |
 | `GET` | `/sessions/{id}/downloads` | — | List `__DOWNLOAD__` artifacts for session (remote path, size, artifact URL) |
 | `GET` | `/history` | — | List archived (ended) session transcripts |

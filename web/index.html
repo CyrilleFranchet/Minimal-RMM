@@ -234,6 +234,13 @@
           <p class="ai-hint">Stored in this browser tab only. Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
         </details>
         <details class="ai-settings">
+          <summary>Skills</summary>
+          <p class="ai-hint">Markdown files in the server <code>ai-skills/</code> directory (override with <code>RMM_AI_SKILLS_DIR</code>). Checked skills are injected into the system prompt.</p>
+          <div id="ai-skills-list" class="ai-skills-list">
+            <p class="ai-skills-empty">Connect to load skills.</p>
+          </div>
+        </details>
+        <details class="ai-settings">
           <summary>Exegol MCP (optional)</summary>
           <label class="ai-checkbox">
             <input type="checkbox" id="exegol-mcp-enabled">

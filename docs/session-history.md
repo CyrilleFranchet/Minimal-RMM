@@ -40,13 +40,13 @@ GET /api/v1/history/{id}/events?since=0&limit=500
 DELETE /api/v1/history/{id}
 ```
 
-Removes `RMM_logs/history/{id}/` from disk and drops the session from `sessions.json` (archived sessions only). Returns `409 session_still_active` if the session is still live. Without removing `sessions.json`, a server restart would recreate the archive from stale rows.
+Removes `RMM_logs/history/{id}/` from disk, drops the session from `sessions.json`, and deletes matching files under `RMM_logs/downloads/`, `screenshots/`, and `keylogs/` (12-char hash prefix derived from session id). Returns `409 session_still_active` if the session is still live. Response may include `artifacts_purged` counts.
 
 ```http
 DELETE /api/v1/history
 ```
 
-Removes **all** ended archived sessions (same filter as `GET /history`). Returns `{ "ok": true, "deleted": N, "errors": [...] }`.
+Removes **all** ended archived sessions (same filter as `GET /history`). Also purges each session's download, screenshot, and keylog files. Returns `{ "ok": true, "deleted": N, "errors": [...] }`.
 
 ## Web UI
 
@@ -65,7 +65,8 @@ Removes **all** ended archived sessions (same filter as `GET /history`). Returns
 | `_archive_orphaned_sessions_on_startup` | Finalize stale/offline sessions after server restart |
 | `list_session_history` | Scan history dir for archived rows |
 | `get_history_meta` / `get_history_events` | Read archive for API / web |
-| `delete_history_session` | Remove archived transcript directory from disk and `sessions.json` row |
+| `purge_session_artifacts` | Delete session-scoped files in downloads / screenshots / keylogs |
+| `delete_history_session` | Remove archived transcript, `sessions.json` row, and session artifacts |
 | `clear_session_history` | Delete all ended archived sessions |
 | `remove_persisted_session` | Drop session id from `sessions.json` (kill, delete, post-restart archive) |
 
