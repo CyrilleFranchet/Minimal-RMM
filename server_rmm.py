@@ -1891,7 +1891,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not messages:
                 self._json(400, {"error": "missing_messages"})
                 return True
-            model = str(body.get("model") or "gpt-4o-mini")
+            model = str(body.get("model") or "gpt-5.2")
             selected = body.get("selected_session_id")
             rmm_token = (self._api_token_from_request() or API_TOKEN or "").strip()
             if not rmm_token:

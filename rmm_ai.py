@@ -228,7 +228,7 @@ def run_ai_chat(
     rmm_token: str,
     openai_api_key: str,
     messages: list[dict],
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5.2",
     selected_session_id: str | None = None,
     max_rounds: int = MAX_TOOL_ROUNDS,
     exegol_mcp_enabled: bool | None = None,
