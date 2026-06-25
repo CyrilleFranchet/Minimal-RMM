@@ -97,6 +97,8 @@ python mcp_rmm_server.py
 
 Copy `mcp.example.json` into your Cursor MCP config (`~/.cursor/mcp.json`) and fix the script path.
 
+After changing operator tools, run `make check-parity` (see `docs/mcp-parity.md`).
+
 MCP tools mirror `rmm_cli.py` operator actions:
 
 | CLI (interactive / subcommand) | MCP tool |
@@ -118,6 +120,12 @@ MCP tools mirror `rmm_cli.py` operator actions:
 | `screenshot` | `queue_screenshot` |
 | `socks list` | `list_socks` |
 | `socks` / `socks stop` | `start_socks` / `stop_socks` |
+| — | `list_history`, `get_history_session`, `get_history_events`, `delete_history` |
+| — | `list_session_downloads` |
+| — | `get_agent_script` |
+| — | `queue_keylog`, `install_persistence`, `remove_persistence` |
+
+Full REST ↔ MCP mapping: `docs/mcp-parity.md`.
 
 Interactive-only: `use`, `background`, `clear`, `help`, `quit` (session selection is via `session_ref` on each tool).
 
@@ -172,7 +180,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/exec` | `{"command":"…","timeout":120}` | Queue and **wait** for next result event |
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
 | `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
-| `POST` | `/sessions/{id}/exfil` | `{"remote_path":"…","profile":"mega-lab","dest":"…"}` | Queue `__EXFIL__` (agent rclone upload; link in events) |
+| `POST` | `/sessions/{id}/exfil` | `{"remote_path":"…","profile":"mega-lab","dest":"…"}` | Queue `__EXFIL__` (agent rclone upload of file or folder; link in events for files) |
 | `GET` | `/rclone/config` | — | rclone binary + profile status |
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
@@ -298,7 +306,7 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `config set-sleep <n>` | 1–3600 |
 | `config set-jitter <n>` | 0–100 |
 | `download <remote_path>` | Queue `__DOWNLOAD__` |
-| `exfil <remote_path> [--profile NAME]` | Queue rclone exfil from agent |
+| `exfil <remote_path> [--profile NAME]` | Queue rclone exfil (file or folder) from agent |
 | `rclone-config` | Show rclone profiles + binary status |
 | `upload <local> <remote>` | Queue `__UPLOAD__` |
 | `socks [port]` / `socks stop` | SOCKS5 on 127.0.0.1 via remote agent (default port 1080) |
