@@ -116,7 +116,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] HTTP transport: IPv4-only tunnel resolution, `Host` header, optional corporate proxy + default credentials
 - [x] User commands: bare `cmd.exe`, `cmd:`, `PS:` / `powershell:`, `pwsh:`; cwd tracking via `RMM_CWD_SIG`
 - [x] Internal commands: `__DOWNLOAD__`, `__EXFIL__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
-- [x] `__EXFIL__` — bootstrap rclone from server, ephemeral `RCLONE_CONFIG_*` env, `rclone copyto` + optional `link`; live `exfil_progress` POSTs during upload
+- [x] `__EXFIL__` — bootstrap rclone from server, ephemeral `RCLONE_CONFIG_*` env, `rclone copyto` / `rclone copy` (folders) + optional `link`; live `exfil_progress` POSTs during upload
 - [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload` with `remote_path` metadata; live `download_progress` POSTs)
 - [x] Keylogger job (`__KEYLOG__ start|stop|dump`) → temp file → `keylog` result type
 - [x] Persistence installer copies script to `%APPDATA%` + Run key (with current URL/sleep/jitter)
@@ -152,7 +152,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ### MCP & AI (`mcp_rmm_server.py`, `rmm_tools.py`, `rmm_ai.py`)
 
-- [x] MCP tools include `queue_exfil`, `get_rclone_config`
+- [x] MCP tools mirror REST operator API — see `docs/mcp-parity.md`; enforced by `make check-parity` (`scripts/check_operator_parity.py`)
 - [x] `session_ref` = hostname, id prefix, or full UUID (`_resolve_session_id`)
 - [x] Web AI can use MCP stdio or direct `execute_tool` (`RMM_AI_USE_MCP=0`)
 
@@ -186,17 +186,19 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Patch sleep/jitter | ✅ | ✅ `set_*` | ✅ `config` | ✅ | ✅ | ✅ |
 | Download file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Cloud exfil (rclone) | ✅ | ✅ `exfil` | ✅ | ✅ `queue_exfil` | ✅ profile select | ✅ `exfil` |
-| List session downloads | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Session history (archived) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| List session downloads | ✅ | ❌ | ❌ | ✅ `list_session_downloads` | ✅ | ❌ |
+| Session history (archived) | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| Delete archived history | ✅ | ❌ | ❌ | ✅ `delete_history` | ✅ | ❌ |
+| Agent script (`GET /agent/script`) | ✅ | ❌ | ❌ | ✅ `get_agent_script` | ✅ | ❌ |
 | Upload file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Screenshot | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | SOCKS start/stop | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
 | SOCKS list all | ✅ | ✅ `socks list` | ✅ `socks list` | ✅ | ❌ | ✅ `socks list` |
 | Events / transcript | ✅ | ✅ | ✅ | ✅ | ✅ WS | ❌ |
-| Keylog | queue only | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Install/remove persist | queue only | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Keylog | queue only | ❌ | ❌ | ✅ `queue_keylog` | ❌ | ✅ |
+| Install/remove persist | queue only | ❌ | ❌ | ✅ `install_persistence` / `remove_persistence` | ❌ | ✅ |
 
-**Gaps to note:** Web UI and CLI subcommands lack SOCKS start/stop and keylog. MCP has no keylog/persist-install tools (use `queue_command` with `__KEYLOG__` / `__INSTALL_PERSIST__` if needed).
+**Gaps to note:** Web UI and CLI subcommands lack SOCKS start/stop. MCP parity requirement: `docs/mcp-parity.md`.
 
 ---
 
@@ -214,7 +216,6 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [ ] **Web UI:** SOCKS controls + global relay list (`GET /api/v1/socks`)
 - [ ] **Chunked upload** (symmetry with download; large `content_b64` still single POST today)
 - [ ] **CLI subcommands:** `screenshot`, `socks start|stop` (only interactive today)
-- [ ] **MCP:** optional `queue_keylog` / `install_persistence` wrappers (or document `queue_command` tokens)
 - [ ] **Tests:** SOCKS task ordering, chunked download reassembly, API auth, WS handshake
 - [ ] **Docs:** `docs/prd.md`; fix README security line (still says 10 MB cap)
 - [ ] **LICENSE** file (README notes absence)
