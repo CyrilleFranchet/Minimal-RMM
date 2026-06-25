@@ -2183,11 +2183,18 @@ function Apply-RmmCwdFromCmdOutput {
 function Invoke-RmmHiddenProcessWait {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+        [string[]]$ArgumentList,
+        [string]$Arguments
     )
+    if (-not $Arguments) {
+        if (-not $ArgumentList) {
+            throw 'Invoke-RmmHiddenProcessWait requires -ArgumentList or -Arguments.'
+        }
+        $Arguments = Format-RmmRcloneProcessArgs -ArgumentList $ArgumentList
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $FilePath
-    $psi.Arguments = Format-RmmRcloneProcessArgs -ArgumentList $ArgumentList
+    $psi.Arguments = $Arguments
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
@@ -2233,6 +2240,12 @@ function Invoke-RmmHiddenEncodedPowerShell {
     return (Join-RmmProcessOutputText -Result $result)
 }
 
+function Format-RmmCmdProcessArguments {
+    param([Parameter(Mandatory = $true)][string]$CommandLine)
+    # CMD /c needs doubled quotes inside the command string, not backslash escapes.
+    '/d /c "' + ($CommandLine -replace '"', '""') + '"'
+}
+
 function Get-RmmPlainCmdOutput {
     param([Parameter(Mandatory)][string]$InnerCommand)
     $base = $script:RmmShellCwd
@@ -2242,7 +2255,8 @@ function Get-RmmPlainCmdOutput {
     }
     $baseQ = '"' + ($base.Trim() -replace '"', '""') + '"'
     $combined = 'cd /d ' + $baseQ + ' & ' + $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
-    $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -ArgumentList @('/d', '/c', $combined)
+    $cmdArgs = Format-RmmCmdProcessArguments -CommandLine $combined
+    $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -Arguments $cmdArgs
     $text = Join-RmmProcessOutputText -Result $result -EmptyExitLabel 'cmd'
     return (Apply-RmmCwdFromCmdOutput -Text $text)
 }
