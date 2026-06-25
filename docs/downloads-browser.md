@@ -14,9 +14,29 @@ Operators can browse files pulled from agents (`__DOWNLOAD__`) in the web consol
 
 1. Queue a download (web **Download** field, CLI, or API `POST …/download`).
 2. Agent uploads chunks via `file_upload` result; server reassembles under `RMM_logs/downloads/{hashPrefix}_{basename}`.
-3. Server indexes the file on `session.download_artifacts`.
-4. Web UI lists remote path, size, received time; **Download** and optional **Preview** (text ≤ 1 MB, images).
-5. On new `file_upload` events (WebSocket or poll), the list refreshes automatically.
+3. While uploading, the agent POSTs **`download_progress`** updates (bytes, percent, speed, ETA) roughly every chunk or 1% / 10s. The web UI shows a live progress bar under the queued download command (WebSocket-only, not stored in history).
+4. Server indexes the file on `session.download_artifacts`.
+5. Web UI lists remote path, size, received time; **Download** and optional **Preview** (text ≤ 1 MB, images).
+6. On new `file_upload` events (WebSocket or poll), the list refreshes automatically.
+
+### Progress (live only)
+
+```http
+POST /result?id=<session>&type=download_progress
+```
+
+```json
+{
+  "remote_path": "C:\\Users\\x\\report.pdf",
+  "bytes": 6291456,
+  "total_bytes": 12582912,
+  "percent": 50.0,
+  "speed_bps": 8500000,
+  "eta_seconds": 1
+}
+```
+
+The web UI uses `fetch` with `Authorization: Bearer` (same token as the rest of the console). Plain `<a href>` links are not used for downloads — API auth requires the operator token.
 
 ## REST API
 

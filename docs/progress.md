@@ -83,7 +83,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Session registry: register, touch, kill, prefix resolution, `beacon_status` (online/stale/offline)
 - [x] Command queue: oneshot FIFO, persistent until `__STOP__`, idle `__CONFIG__` push (deferred until `config_synced`; `config_pending` after PATCH)
 - [x] Load `sessions.json` on startup — restore sleep/jitter per session id after server restart
-- [x] Result handling: `output`, `file_upload`, `cloud_upload`, `exfil_progress`, `screenshot`, `keylog`, `config_ack`
+- [x] Result handling: `output`, `file_upload`, `cloud_upload`, `exfil_progress`, `download_progress`, `screenshot`, `keylog`, `config_ack`
 - [x] Result events: `file_upload` / `screenshot` include `command` for web UI pairing
 - [x] Event transcript per session (`deque`, max 500); operator action logging; WebSocket broadcast (`OperatorEventHub`)
 - [x] Operator REST `/api/v1`: health, sessions CRUD, config PATCH, commands, exec (blocking), upload, download, exfil, screenshot, socks, events, artifacts, AI chat
@@ -117,7 +117,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] User commands: bare `cmd.exe`, `cmd:`, `PS:` / `powershell:`, `pwsh:`; cwd tracking via `RMM_CWD_SIG`
 - [x] Internal commands: `__DOWNLOAD__`, `__EXFIL__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
 - [x] `__EXFIL__` — bootstrap rclone from server, ephemeral `RCLONE_CONFIG_*` env, `rclone copyto` + optional `link`; live `exfil_progress` POSTs during upload
-- [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload` with `remote_path` metadata)
+- [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload` with `remote_path` metadata; live `download_progress` POSTs)
 - [x] Keylogger job (`__KEYLOG__ start|stop|dump`) → temp file → `keylog` result type
 - [x] Persistence installer copies script to `%APPDATA%` + Run key (with current URL/sleep/jitter)
 - [x] SOCKS: `Sync-RmmSocksChannelFromServer` on `socks_active` from `/cmd`; dedicated runspace worker
@@ -140,7 +140,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Shell: queue command, exec (wait), kill session; **↑/↓ history + Tab completion** (§4)
 - [x] **Queued result placement** (§6) — command blocks; results render under echoed line via `ev.command` / tool kind
 - [x] Files: download queue, upload (base64), screenshot, **rclone exfil** (profile dropdown + live upload progress bar)
-- [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`
+- [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`; live download progress bar in shell
 - [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
 - [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`)
 - [x] Beacon config apply (PATCH sleep/jitter)
