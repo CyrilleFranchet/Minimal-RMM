@@ -32,6 +32,7 @@ from collections import deque
 import os
 import readline
 import glob
+import shutil
 
 try:
     from prompt_toolkit.completion import Completer as _PTCompleterBase
@@ -838,6 +839,33 @@ class RMMServer:
             meta["session_id"] = session_id
             meta["active"] = session_id in self.sessions and not meta.get("ended_at")
         return meta
+
+    def delete_history_session(self, session_id_or_prefix: str) -> tuple[bool, str | None, str | None]:
+        """Remove an archived transcript directory from disk.
+
+        Returns (ok, session_id, error_code). error_code is set when ok is False
+        (e.g. session_still_active, history_not_found).
+        """
+        session_id = self.resolve_history_session_id(session_id_or_prefix)
+        if not session_id:
+            return False, None, "history_not_found"
+        meta = self.get_history_meta(session_id)
+        if not meta:
+            return False, None, "history_not_found"
+        if meta.get("active"):
+            return False, None, "session_still_active"
+        try:
+            session_dir = _history_session_dir(session_id)
+        except ValueError:
+            return False, None, "history_not_found"
+        if not os.path.isdir(session_dir):
+            return False, None, "history_not_found"
+        try:
+            shutil.rmtree(session_dir)
+        except OSError as e:
+            self.log(f"History delete failed for {session_id[:8]}: {e}", "WARNING")
+            return False, None, "delete_failed"
+        return True, session_id, None
 
     @staticmethod
     def _artifact_public_url(filepath):
@@ -1965,6 +1993,15 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "session_not_found"})
                 return True
             self._json(200, {"ok": True, "session_id": detail})
+            return True
+
+        if len(parts) == 2 and parts[0] == "history":
+            ok, session_id, err = srv.delete_history_session(parts[1])
+            if not ok:
+                status = 409 if err == "session_still_active" else 404
+                self._json(status, {"error": err or "history_not_found"})
+                return True
+            self._json(200, {"ok": True, "session_id": session_id})
             return True
 
         self._json(404, {"error": "not_found"})
