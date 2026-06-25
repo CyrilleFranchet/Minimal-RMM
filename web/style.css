@@ -438,7 +438,29 @@ body.sidebar-resizing iframe {
   color: var(--muted);
 }
 
-.session-item .session-kill,
+.session-item .session-item-actions {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.45rem;
+  display: flex;
+  gap: 0.3rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.session-item .session-item-actions button {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.65rem;
+  line-height: 1.2;
+}
+
+.session-item:hover .session-item-actions,
+.session-item:focus-within .session-item-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .session-item.history-item .history-delete {
   position: absolute;
   top: 0.45rem;
@@ -451,8 +473,6 @@ body.sidebar-resizing iframe {
   transition: opacity 0.15s ease;
 }
 
-.session-item:hover .session-kill,
-.session-item:focus-within .session-kill,
 .session-item.history-item:hover .history-delete,
 .session-item.history-item:focus-within .history-delete {
   opacity: 1;
@@ -497,7 +517,7 @@ body.sidebar-resizing iframe {
 
 .session-item {
   position: relative;
-  padding: 0.65rem 4.5rem 0.65rem 0.75rem;
+  padding: 0.65rem 7.5rem 0.65rem 0.75rem;
   border-radius: 8px;
   cursor: pointer;
   margin-bottom: 0.25rem;
@@ -874,21 +894,53 @@ body.sidebar-resizing iframe {
   overflow-y: auto;
 }
 
-.config-row {
+.beacon-config-dialog {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+  background: var(--surface);
+  color: var(--text);
+  max-width: 22rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.beacon-config-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.beacon-config-form {
+  padding: 1rem 1.15rem 1.1rem;
+  margin: 0;
+}
+
+.beacon-config-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.beacon-config-session {
+  margin: 0 0 0.85rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.beacon-config-form label {
+  display: block;
+  margin-top: 0.55rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.beacon-config-form input[type="number"] {
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.beacon-config-actions {
   display: flex;
+  justify-content: flex-end;
   gap: 0.5rem;
-  margin-top: 0.75rem;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.config-row input[type="number"] {
-  width: 5rem;
-  margin-bottom: 0;
-}
-
-.config-row label {
-  margin-bottom: 0;
+  margin-top: 1rem;
 }
 
 .file-row {
