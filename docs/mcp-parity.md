@@ -58,6 +58,7 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `GET /history/{id}` | `get_history_session` | |
 | `GET /history/{id}/events` | `get_history_events` | |
 | `DELETE /history/{id}` | `delete_history` | |
+| `DELETE /history` | `clear_history` | All ended archives |
 | `GET /agent/script` | `get_agent_script` | Full `client_rmm.ps1` text |
 | Agent `__KEYLOG__` | `queue_keylog` | Wrapper over `queue_command` |
 | Agent `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | `install_persistence`, `remove_persistence` | Lab only |

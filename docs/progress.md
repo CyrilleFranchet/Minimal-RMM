@@ -145,7 +145,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Files: download queue, upload (base64), screenshot, **rclone exfil** (profile dropdown + live upload progress bar, same UI as downloads); panel renamed **Files & screenshot** (beacon config moved to sidebar)
 - [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`; live download progress bar in shell
 - [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
-- [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`); hover **Delete** removes archive (`DELETE /api/v1/history/{id}`)
+- [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`); hover **Delete** removes one archive; **Clear all** removes every ended archive (`DELETE /api/v1/history`)
 - [x] Beacon config apply (PATCH sleep/jitter) — per-session **Beacon** button opens modal dialog
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
 - [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); OpenAI key in tab; optional Exegol MCP settings
@@ -188,7 +188,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Cloud exfil (rclone) | ✅ | ✅ `exfil` | ✅ | ✅ `queue_exfil` | ✅ profile select | ✅ `exfil` |
 | List session downloads | ✅ | ❌ | ❌ | ✅ `list_session_downloads` | ✅ | ❌ |
 | Session history (archived) | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
-| Delete archived history | ✅ | ❌ | ❌ | ✅ `delete_history` | ✅ | ❌ |
+| Delete archived history | ✅ | ❌ | ❌ | ✅ `delete_history` | ✅ per row | ❌ |
+| Clear all archived history | ✅ | ❌ | ❌ | ✅ `clear_history` | ✅ header button | ❌ |
 | Agent script (`GET /agent/script`) | ✅ | ❌ | ❌ | ✅ `get_agent_script` | ✅ | ❌ |
 | Upload file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Screenshot | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |

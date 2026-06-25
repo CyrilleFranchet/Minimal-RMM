@@ -354,6 +354,18 @@ def tool_delete_history(client: RmmApiClient, session_ref: str) -> str:
     })
 
 
+def tool_clear_history(client: RmmApiClient) -> str:
+    code, data = client.clear_history()
+    payload = data if isinstance(data, dict) else {}
+    return _json_result({
+        "ok": code == 200,
+        "status": code,
+        "deleted": payload.get("deleted", 0),
+        "errors": payload.get("errors", []),
+        "data": data,
+    })
+
+
 def tool_list_session_downloads(client: RmmApiClient, session_ref: str) -> str:
     sid, _ = _resolve_session_id(client, session_ref)
     if not sid:
@@ -450,6 +462,7 @@ TOOL_HANDLERS = {
         c, a["session_ref"], int(a.get("since", 0)), int(a.get("limit", 500))
     ),
     "delete_history": lambda c, a: tool_delete_history(c, a["session_ref"]),
+    "clear_history": lambda c, a: tool_clear_history(c),
     "list_session_downloads": lambda c, a: tool_list_session_downloads(c, a["session_ref"]),
     "get_agent_script": lambda c, a: tool_get_agent_script(c),
     "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
@@ -766,6 +779,14 @@ OPENAI_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "clear_history",
+            "description": "Permanently delete all archived (ended) session transcripts from disk.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_session_downloads",
             "description": "List files downloaded from the agent for a live session (artifact names and URLs).",
             "parameters": {
@@ -834,8 +855,9 @@ Guidelines:
 - Use list_sessions first if you do not know which host to target.
 - session_ref can be hostname, id prefix (first 8 chars), or full session UUID.
 - Use list_history / get_history_events for archived (killed) session transcripts.
+- clear_history removes all archived transcripts; delete_history removes one.
 - Prefer exec_command when the user wants command output; use queue_command when beacon sleep is long.
 - list_session_downloads shows completed agent→server file pulls; queue_download starts a new pull.
 - Be concise; summarize command output for the user.
-- Destructive actions (kill_session, delete_history) require clear user intent.
+- Destructive actions (kill_session, delete_history, clear_history) require clear user intent.
 """

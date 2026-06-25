@@ -34,6 +34,7 @@ from mcp.server.fastmcp import FastMCP
 from rmm_tools import (
     make_client,
     tool_delete_history,
+    tool_clear_history,
     tool_exec_command,
     tool_get_agent_script,
     tool_get_events,
@@ -222,6 +223,12 @@ def get_history_events(session_ref: str, since: int = 0, limit: int = 500) -> st
 def delete_history(session_ref: str) -> str:
     """Permanently delete an archived session transcript (ended sessions only)."""
     return tool_delete_history(_client(), session_ref)
+
+
+@mcp.tool()
+def clear_history() -> str:
+    """Permanently delete all archived (ended) session transcripts from disk."""
+    return tool_clear_history(_client())
 
 
 @mcp.tool()

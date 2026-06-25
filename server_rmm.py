@@ -1009,6 +1009,25 @@ class RMMServer:
         self.remove_persisted_session(session_id)
         return True, session_id, None
 
+    def clear_session_history(self) -> tuple[int, list[dict]]:
+        """Delete all ended (non-active) archived sessions from disk."""
+        to_delete: list[str] = []
+        for meta in self.list_session_history():
+            if meta.get("active"):
+                continue
+            sid = meta.get("session_id")
+            if sid:
+                to_delete.append(sid)
+        deleted = 0
+        errors: list[dict] = []
+        for sid in to_delete:
+            ok, session_id, err = self.delete_history_session(sid)
+            if ok:
+                deleted += 1
+            else:
+                errors.append({"session_id": session_id or sid, "error": err or "delete_failed"})
+        return deleted, errors
+
     @staticmethod
     def _artifact_public_url(filepath):
         if not filepath:
@@ -2139,6 +2158,11 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "session_not_found"})
                 return True
             self._json(200, {"ok": True, "session_id": detail})
+            return True
+
+        if parts == ["history"]:
+            deleted, errors = srv.clear_session_history()
+            self._json(200, {"ok": True, "deleted": deleted, "errors": errors})
             return True
 
         if len(parts) == 2 and parts[0] == "history":
