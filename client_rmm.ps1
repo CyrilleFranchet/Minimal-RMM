@@ -1062,6 +1062,71 @@ function Send-RmmDownloadProgressIfChanged {
         -LastSentPct $LastSentPct -LastSentAt $LastSentAt -LogLabel 'Download'
 }
 
+function Format-RmmRcloneProcessArgs {
+    param([string[]]$ArgumentList)
+    $quoted = foreach ($arg in $ArgumentList) {
+        if ($null -eq $arg) { continue }
+        if ($arg -match '[\s"]') {
+            '"' + ($arg -replace '"', '\"') + '"'
+        } else {
+            $arg
+        }
+    }
+    return ($quoted -join ' ')
+}
+
+function Start-RmmRcloneProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$RclonePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $RclonePath
+    $psi.Arguments = Format-RmmRcloneProcessArgs -ArgumentList $ArgumentList
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    return [System.Diagnostics.Process]::Start($psi)
+}
+
+function Get-RmmRcloneLogErrorSummary {
+    param(
+        [string]$LogPath,
+        [int]$MaxLength = 900
+    )
+    if (-not (Test-Path -LiteralPath $LogPath)) { return '' }
+    $errors = New-Object System.Collections.Generic.List[string]
+    Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue | ForEach-Object {
+        $line = $_.Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) { return }
+        try {
+            $obj = $line | ConvertFrom-Json
+        } catch {
+            if ($line -match '(?i)(error|failed|fatal)') {
+                [void]$errors.Add($line)
+            }
+            return
+        }
+        $level = [string]$obj.level
+        if ($level -match '^(?i)(error|fatal|critical|alert|emergency)$') {
+            $msg = [string]$obj.msg
+            if ($msg) {
+                [void]$errors.Add($msg.Trim())
+            }
+        }
+    }
+    if ($errors.Count -gt 0) {
+        $text = ($errors | Select-Object -Last 3) -join ' | '
+    } else {
+        $text = (Get-Content -LiteralPath $LogPath -Raw -ErrorAction SilentlyContinue)
+        if ($text) { $text = $text.Trim() }
+    }
+    if (-not $text) { return '' }
+    if ($text.Length -gt $MaxLength) {
+        return $text.Substring($text.Length - $MaxLength)
+    }
+    return $text
+}
+
 function Read-RmmRcloneJsonLogProgress {
     param(
         [string]$LogPath,
@@ -1098,7 +1163,7 @@ function Read-RmmRcloneJsonLogProgress {
                 if ($statsTotal -gt 0) { $total = $statsTotal }
             }
             $speed = [double]$stats.speed
-            $eta = [double]$stats.eta
+            $eta = if ($null -eq $stats.eta) { -1.0 } else { [double]$stats.eta }
             Send-RmmExfilProgressIfChanged -Context $Context -Headers $Headers -Bytes $bytes -TotalBytes $total `
                 -Speed $speed -Eta $eta -LastSentPct $LastSentPct -LastSentAt $LastSentAt
         }
@@ -1144,7 +1209,7 @@ function Invoke-RmmRcloneCopytoWithProgress {
             } -Headers $Headers
             Write-Host "[*] Exfil starting ($(Format-RmmByteSize $totalBytes))…" -ForegroundColor Cyan
         }
-        $proc = Start-Process -FilePath $RclonePath -ArgumentList $argList -NoNewWindow -PassThru
+        $proc = Start-RmmRcloneProcess -RclonePath $RclonePath -ArgumentList $argList
         if (-not $proc) {
             throw 'Failed to start rclone copyto'
         }
@@ -1156,13 +1221,14 @@ function Invoke-RmmRcloneCopytoWithProgress {
         Read-RmmRcloneJsonLogProgress -LogPath $logFile -ReadOffset ([ref]$readOffset) -Context $Context `
             -Headers $Headers -LastSentPct ([ref]$lastSentPct) -LastSentAt ([ref]$lastSentAt)
         $proc.WaitForExit()
-        if ($proc.ExitCode -ne 0) {
-            $detail = ''
-            if (Test-Path -LiteralPath $logFile) {
-                $detail = (Get-Content -LiteralPath $logFile -Raw -ErrorAction SilentlyContinue).Trim()
-                if ($detail.Length -gt 500) { $detail = $detail.Substring($detail.Length - 500) }
-            }
-            throw "rclone copyto failed (exit $($proc.ExitCode)): $detail"
+        $proc.Refresh()
+        $exitCode = $proc.ExitCode
+        $logDetail = Get-RmmRcloneLogErrorSummary -LogPath $logFile
+        $failed = ($null -ne $exitCode -and $exitCode -ne 0) -or ($null -eq $exitCode -and $logDetail)
+        if ($failed) {
+            $codeText = if ($null -ne $exitCode) { [string]$exitCode } else { '?' }
+            $detail = if ($logDetail) { $logDetail } else { '(no rclone log detail — check agent verbose or run rclone manually)' }
+            throw "rclone copyto failed (exit $codeText): $detail"
         }
         $totalBytes = [long]$Context.total_bytes
         if ($totalBytes -gt 0) {
@@ -1213,7 +1279,7 @@ function Invoke-RmmRcloneExfil {
     $fileInfo = Get-Item -LiteralPath $localPath
     $maxBytes = [long]$job.max_bytes
     if ($maxBytes -gt 0 -and $fileInfo.Length -gt $maxBytes) {
-        $err = "File size $($fileInfo.Length) exceeds exfil limit ($maxBytes bytes)"
+        $err = "File size $(Format-RmmByteSize $fileInfo.Length) exceeds exfil limit ($(Format-RmmByteSize $maxBytes); set RMM_RCLONE_MAX_BYTES=0 on server for unlimited)"
         Send-RmmCloudUploadResult -Payload @{
             remote_path = $localPath
             profile     = [string]$job.profile

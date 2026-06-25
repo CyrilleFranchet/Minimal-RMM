@@ -1935,12 +1935,15 @@ async function refreshExfilStatus() {
     return;
   }
   const count = (data.profiles || []).length;
+  const maxBytes = Number(data.max_bytes);
+  const limit =
+    maxBytes === 0 ? "no size cap" : `max ${formatByteSize(maxBytes)} per file`;
   if (!count) {
     hint.textContent =
       "No rclone profiles — set RMM_RCLONE_PROFILES or RMM_RCLONE_PROFILES_FILE on the server";
     return;
   }
-  hint.textContent = `rclone ready · ${count} profile${count === 1 ? "" : "s"} · default ${data.default_profile || "—"} (lab use only)`;
+  hint.textContent = `rclone ready · ${count} profile${count === 1 ? "" : "s"} · ${limit} · default ${data.default_profile || "—"} (lab use only)`;
 }
 
 async function queueExfil() {

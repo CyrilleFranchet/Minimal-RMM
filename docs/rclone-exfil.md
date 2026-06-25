@@ -74,6 +74,17 @@ python server_rmm.py --rclone-max-bytes 0   # unlimited
 
 Then queue exfil again (new jobs pick up the updated limit). Check your cloud backend quota (MEGA free tier may block very large uploads).
 
+### Troubleshooting failed exfil
+
+| Symptom | Likely cause |
+|---------|----------------|
+| `exceeds exfil limit` | Default **100 MB** cap — set `RMM_RCLONE_MAX_BYTES=0` or `--rclone-max-bytes 0` on the server |
+| `rclone copyto failed (exit ?)` with stats JSON only | rclone exited before transfer; read the **error** line in the message (agent now parses JSON log `level=error`) |
+| `0 B / 0 B` in log tail | Often auth/config or remote path — verify MEGA credentials in profiles and folder name |
+| Large ISO (~6 GB+) | Raise server size cap **and** confirm cloud storage quota (MEGA free accounts may reject multi-GB files) |
+
+The web UI **Exfil** hint shows the current per-file cap from `GET /api/v1/rclone/config` (`max_bytes`).
+
 Start the server with profiles:
 
 ```bash
