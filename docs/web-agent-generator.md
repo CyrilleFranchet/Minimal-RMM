@@ -4,7 +4,7 @@ Operators can build a **ready-to-run `client_rmm.ps1`** from the web console wit
 
 ## Location
 
-Sidebar → **Deploy agent (PowerShell)** (visible after login).
+Sidebar → **Deploy agent (PowerShell)** (pinned to the bottom of the sidebar; session lists scroll above it).
 
 ## Fields
 

@@ -214,7 +214,16 @@ button:disabled {
   .sidebar {
     border-right: none !important;
     border-bottom: 1px solid var(--border);
-    max-height: 180px;
+    max-height: 40vh;
+  }
+
+  .sidebar-scroll {
+    padding: 0.75rem;
+    padding-bottom: 0.35rem;
+  }
+
+  .agent-gen-inner {
+    max-height: min(35vh, 18rem);
   }
   .ai-panel {
     border-left: none !important;
@@ -225,10 +234,26 @@ button:disabled {
 
 .sidebar {
   background: var(--surface);
-  padding: 1rem;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   min-width: 0;
+  overflow: hidden;
+}
+
+.sidebar-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
+  padding-bottom: 0.5rem;
+}
+
+.sidebar-footer.agent-gen-panel {
+  flex-shrink: 0;
+  margin-top: 0;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .sidebar-resizer {
@@ -280,13 +305,11 @@ body.sidebar-resizing iframe {
 }
 
 .agent-gen-panel {
-  margin-top: 1.25rem;
-  border-top: 1px solid var(--border);
   font-size: 0.82rem;
 }
 
 .agent-gen-panel summary {
-  padding: 0.65rem 0.75rem;
+  padding: 0.65rem 1rem;
   cursor: pointer;
   color: var(--muted);
   user-select: none;
@@ -299,10 +322,12 @@ body.sidebar-resizing iframe {
 }
 
 .agent-gen-inner {
-  padding: 0.65rem 0.75rem 1rem;
+  padding: 0.65rem 1rem 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
+  max-height: min(42vh, 28rem);
+  overflow-y: auto;
 }
 
 .agent-gen-inner label {
