@@ -114,7 +114,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Register with infinite retry; `sync=1` on first register and on `-Reconnect` to adopt script sleep/jitter
 - [x] Fast poll after reconnect or config change (`RmmFastPoll`) — skip one sleep cycle for timely `/cmd`
 - [x] HTTP transport: IPv4-only tunnel resolution, `Host` header, optional corporate proxy + default credentials
-- [x] User commands: bare `cmd.exe`, `cmd:`, `PS:` / `powershell:`, `pwsh:`; cwd tracking via `RMM_CWD_SIG`
+- [x] User commands: bare `cmd.exe`, `cmd:`, `PS:` / `powershell:`, `pwsh:`; cwd tracking via `RMM_CWD_SIG`; **hidden child processes** (no console flash) — see `docs/client-command-execution.md`
 - [x] Internal commands: `__DOWNLOAD__`, `__EXFIL__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
 - [x] `__EXFIL__` — bootstrap rclone from server, ephemeral `RCLONE_CONFIG_*` env, `rclone copyto` / `rclone copy` (folders) + optional `link`; live `exfil_progress` POSTs during upload
 - [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload` with `remote_path` metadata; live `download_progress` POSTs)
@@ -167,6 +167,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `CLAUDE.md` — project overview for agents
 - [x] `docs/downloads-browser.md` — web downloads panel + `GET …/downloads` API
 - [x] `docs/web-shell-completion.md` — shell ↑/↓ history and Tab completion
+- [x] `docs/client-command-execution.md` — hidden CMD/PS process launch on the agent
 - [x] `mcp.example.json` — Cursor MCP config template
 
 ---
