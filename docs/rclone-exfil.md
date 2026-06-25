@@ -149,7 +149,9 @@ POST /result?id=<session>&type=exfil_progress
 }
 ```
 
-The server broadcasts these on the operator WebSocket (`exfil_progress` events). The web UI renders a progress bar under the queued exfil command. Progress is **not** appended to `events.jsonl` (avoids transcript spam on multi-GB uploads).
+The server broadcasts these on the operator WebSocket (`exfil_progress` events). The web UI renders a **progress bar** (same component as agent downloads) under the queued exfil command. Progress is **not** appended to `events.jsonl` (avoids transcript spam on multi-GB uploads).
+
+When rclone JSON stats omit `totalBytes`, the agent falls back to the source file size from the exfil job so progress updates are not skipped.
 
 ## Security (lab)
 
