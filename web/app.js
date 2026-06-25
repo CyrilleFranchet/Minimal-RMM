@@ -1336,6 +1336,90 @@ function showLogin(err = "") {
   errEl.classList.toggle("hidden", !err);
 }
 
+function initSidebarResize() {
+  const body = $("#app-body");
+  const resizer = $("#sidebar-resizer");
+  if (!body || !resizer) return;
+
+  const STORAGE_KEY = "rmm_sidebar_width";
+  const MIN = 200;
+  const MAX = 560;
+
+  function maxWidth() {
+    return Math.min(MAX, Math.floor(window.innerWidth * 0.5));
+  }
+
+  function currentWidth() {
+    return parseInt(getComputedStyle(body).getPropertyValue("--sidebar-width"), 10) || 280;
+  }
+
+  function setWidth(px) {
+    const w = Math.min(maxWidth(), Math.max(MIN, px));
+    body.style.setProperty("--sidebar-width", `${w}px`);
+    resizer.setAttribute("aria-valuenow", String(w));
+    sessionStorage.setItem(STORAGE_KEY, String(w));
+  }
+
+  const saved = parseInt(sessionStorage.getItem(STORAGE_KEY), 10);
+  if (!Number.isNaN(saved)) {
+    setWidth(saved);
+  } else {
+    resizer.setAttribute("aria-valuenow", String(currentWidth()));
+  }
+
+  let startX = 0;
+  let startW = 0;
+
+  function onPointerMove(e) {
+    setWidth(startW + (e.clientX - startX));
+  }
+
+  function stopDrag() {
+    document.body.classList.remove("sidebar-resizing");
+    resizer.classList.remove("dragging");
+    document.removeEventListener("pointermove", onPointerMove);
+    document.removeEventListener("pointerup", stopDrag);
+    document.removeEventListener("pointercancel", stopDrag);
+  }
+
+  resizer.addEventListener("pointerdown", (e) => {
+    if (window.matchMedia("(max-width: 768px)").matches) return;
+    e.preventDefault();
+    startX = e.clientX;
+    startW = currentWidth();
+    document.body.classList.add("sidebar-resizing");
+    resizer.classList.add("dragging");
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", stopDrag);
+    document.addEventListener("pointercancel", stopDrag);
+  });
+
+  resizer.addEventListener("keydown", (e) => {
+    if (window.matchMedia("(max-width: 768px)").matches) return;
+    const step = e.shiftKey ? 40 : 10;
+    const cur = currentWidth();
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setWidth(cur - step);
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      setWidth(cur + step);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setWidth(MIN);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setWidth(maxWidth());
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    if (currentWidth() > maxWidth()) {
+      setWidth(maxWidth());
+    }
+  });
+}
+
 function showApp() {
   hide($("#login"));
   show($("#app"));
@@ -1886,6 +1970,8 @@ document.addEventListener("DOMContentLoaded", () => {
   if (typeof window.initAgentGenerator === "function") {
     window.initAgentGenerator();
   }
+
+  initSidebarResize();
 
   if (state.token) {
     $("#token-input").value = state.token;
