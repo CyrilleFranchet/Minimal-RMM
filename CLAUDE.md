@@ -47,9 +47,10 @@ client_rmm.ps1 (Windows agent)
 1. Read `README.md` for API tables and protocol details.
 2. Read `docs/progress.md` for recent work, decisions, and known issues.
 3. Match existing style: small focused diffs, American English comments/docs.
-4. Operator features should be exposed consistently: **REST API → `rmm_cli.py` → MCP** (`rmm_tools.py` + `mcp_rmm_server.py`).
-5. Do not break the beacon path (`/cmd` latency, register sync, beacon secret).
-6. SOCKS changes touch `rmm_socks.py`, `server_rmm.py`, and `client_rmm.ps1` together; test through tunnels if relevant.
+4. Operator features should be exposed consistently: **REST API → `rmm_cli.py` → MCP** (`rmm_tools.py` + `mcp_rmm_server.py`). See `docs/mcp-parity.md`.
+5. After operator-surface changes, run **`make check-parity`** and update `scripts/check_operator_parity.py` if tools or shell meta commands changed.
+6. Do not break the beacon path (`/cmd` latency, register sync, beacon secret).
+7. SOCKS changes touch `rmm_socks.py`, `server_rmm.py`, and `client_rmm.ps1` together; test through tunnels if relevant.
 
 ## Project Instructions
 
@@ -64,7 +65,8 @@ client_rmm.ps1 (Windows agent)
 - Progress Log: `docs/progress.md` — living doc of completed work, open items, blockers
 - README: `README.md` — setup, API reference, SOCKS troubleshooting
 - PRD: `docs/prd.md` — *(not yet created)*
-- Tech Plan: `docs/tech-plan.md` — planned features (traffic/beacon charts, rclone exfil, web shell completion, …)
+- Tech Plan: `docs/tech-plan.md` — planned features (traffic/beacon charts, Docker deploy, …)
+- MCP parity: `docs/mcp-parity.md` — REST operator API must map to MCP tools
 
 When starting a new task, read the relevant sections of these docs before writing code.
 

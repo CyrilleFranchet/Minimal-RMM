@@ -34,6 +34,8 @@ Determine required checks from the paths in the commit group you are about to co
 - Run **`make lint-yaml`** if any `*.yml` or `*.yaml` file in the commit group changed.
 - You may run **`make lint`** once to run both markdown and YAML checks when either kind of file changed.
 - Run **`make test`** if any `*.py` file in the commit group changed (syntax check via `py_compile`).
+- Run **`make check-parity`** if any of these changed: `mcp_rmm_server.py`, `rmm_tools.py`, `rmm_cli.py`, `server_rmm.py`, `web/app.js`, or `scripts/check_operator_parity.py`.
+- You may run **`make check`** once to run test, check-parity, and lint together.
 
 Install lint tools once with **`make install-lint`** if `pymarkdown` or `yamllint` is missing.
 

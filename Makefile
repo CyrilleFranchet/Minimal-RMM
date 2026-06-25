@@ -7,7 +7,7 @@ PY_MODULES := server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tools.py rmm_r
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test
+.PHONY: help install-lint lint-md lint-yaml lint test check-parity check
 
 help:
 	@printf "Available targets:\n"
@@ -16,6 +16,8 @@ help:
 	@printf "  make lint-yaml     YAML lint (yamllint)\n"
 	@printf "  make lint          Run lint-md and lint-yaml\n"
 	@printf "  make test          Python syntax check (py_compile)\n"
+	@printf "  make check-parity  MCP / API client / web shell alignment\n"
+	@printf "  make check         test + check-parity + lint\n"
 
 install-lint:
 	$(PYTHON) -m pip install pymarkdownlnt yamllint
@@ -39,4 +41,9 @@ lint-yaml:
 lint: lint-md lint-yaml
 
 test:
-	@$(PYTHON) -m py_compile $(PY_MODULES)
+	@$(PYTHON) -m py_compile $(PY_MODULES) scripts/check_operator_parity.py
+
+check-parity:
+	@$(PYTHON) scripts/check_operator_parity.py
+
+check: test check-parity lint
