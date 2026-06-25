@@ -69,6 +69,24 @@ Removes **all** ended archived sessions (same filter as `GET /history`). Also pu
 | `delete_history_session` | Remove archived transcript, `sessions.json` row, and session artifacts |
 | `clear_session_history` | Delete all ended archived sessions |
 | `remove_persisted_session` | Drop session id from `sessions.json` (kill, delete, post-restart archive) |
+| `_rehydrate_session_events_from_history` | Reload `events.jsonl` into memory when an agent reconnects after restart |
+
+## Troubleshooting lost history
+
+**History is not in git.** Transcripts live under `RMM_logs/history/{session_id}/` on the machine where the server runs. `git pull` does not move or delete that folder unless you run something like `git clean`.
+
+**Working directory matters.** `RMM_logs` is relative to the process cwd when you start `server_rmm.py`. If you restart from a different directory, the server creates a fresh empty `RMM_logs` and prior transcripts stay in the old path.
+
+**After server restart + agent reconnect (same session id):** On startup the server archives the old session (`end_reason: server_restart`). When the agent registers again, the live console used to start with an empty in-memory transcript even though `events.jsonl` was still on disk. Reconnect now **rehydrates** events from `events.jsonl` into the live session. The session moves back to the live sidebar (not the history list) but the full transcript should appear when you open it.
+
+**Check whether data still exists:**
+
+```bash
+ls RMM_logs/history/
+curl -s -H "Authorization: Bearer $RMM_API_TOKEN" http://127.0.0.1:8080/api/v1/history
+```
+
+If `events.jsonl` exists under a session folder, the transcript can be recovered (web UI after rehydrate fix, or read the file directly).
 
 ## Limitations (v1)
 

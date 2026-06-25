@@ -562,6 +562,61 @@ class RMMServer:
         except OSError:
             return 0
 
+    def _load_history_events_from_disk(self, session_id: str) -> list[dict]:
+        """Read archived transcript lines for a session (empty if none)."""
+        events_path = self._history_events_path(session_id)
+        if not os.path.isfile(events_path):
+            return []
+        loaded: list[dict] = []
+        try:
+            with open(events_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(ev, dict):
+                        loaded.append(ev)
+        except OSError:
+            return []
+        return loaded
+
+    def _apply_history_meta_to_session(self, session) -> None:
+        """Restore first_seen / work_dir from on-disk meta when a session reconnects."""
+        meta_path = self._history_meta_path(session.id)
+        if not os.path.isfile(meta_path):
+            return
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(meta, dict):
+            return
+        raw_first = meta.get("first_seen")
+        if raw_first:
+            try:
+                session.first_seen = datetime.fromisoformat(str(raw_first))
+            except (TypeError, ValueError):
+                pass
+        if meta.get("work_dir") is not None:
+            session.work_dir = meta.get("work_dir")
+
+    def _rehydrate_session_events_from_history(self, session) -> int:
+        """Load archived events into memory after restart so live console keeps the transcript."""
+        loaded = self._load_history_events_from_disk(session.id)
+        if not loaded:
+            return 0
+        max_id = 0
+        for ev in loaded[-MAX_RESULT_EVENTS:]:
+            session.result_events.append(ev)
+            max_id = max(max_id, int(ev.get("id") or 0))
+        session._event_seq = max_id
+        return len(loaded)
+
     def _archive_orphaned_sessions_on_startup(self) -> None:
         """Mark pre-restart sessions as ended so they appear in session history."""
         candidates: dict[str, dict] = {}
@@ -1296,6 +1351,13 @@ class RMMServer:
                     to_save = None
         if is_new and to_save is not None:
             self.backfill_download_artifacts(to_save)
+            self._apply_history_meta_to_session(to_save)
+            restored = self._rehydrate_session_events_from_history(to_save)
+            if restored:
+                self.log(
+                    f"Restored {restored} event(s) from history for {to_save.id[:8]}",
+                    "INFO",
+                )
             self._history_write_meta(to_save)
         if to_save is not None:
             self.save_session(to_save)
