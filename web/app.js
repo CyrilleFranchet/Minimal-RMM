@@ -1662,6 +1662,20 @@ function renderSessionList() {
       ${connected ? `<div class="sub sub-connected">connected ${escapeHtml(connected)}</div>` : ""}
       <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)}</div>
     `;
+
+    const killBtn = document.createElement("button");
+    killBtn.type = "button";
+    killBtn.className = "session-kill danger";
+    killBtn.title = "Kill session (remote client exits on next beacon)";
+    killBtn.setAttribute("aria-label", "Kill session");
+    killBtn.textContent = "Kill";
+    killBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      killSession(s.id);
+    });
+    li.insertBefore(killBtn, li.firstChild);
+
     li.addEventListener("click", () => selectSession(s.id));
     ul.appendChild(li);
   }
@@ -2238,14 +2252,18 @@ async function queueUpload() {
   }
 }
 
-async function killSession() {
-  if (!state.selectedId || !confirm("Kill this session? The remote client will exit.")) return;
-  const id = state.selectedId;
-  const { status } = await api(`/sessions/${encodeURIComponent(id)}`, {
+async function killSession(id) {
+  const sessionId = id || state.selectedId;
+  if (!sessionId) return;
+  const shortId = sessionId.slice(0, 8);
+  if (!confirm(`Kill session ${shortId}? The remote client will exit.`)) return;
+  const { status } = await api(`/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
   });
   if (status === 200) {
-    showEmptyConsole();
+    if (state.selectedId === sessionId) {
+      showEmptyConsole();
+    }
     await refreshSessions();
     await fetchSessionHistory();
   }
@@ -2276,7 +2294,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter") connect();
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
-  $("#btn-kill").addEventListener("click", killSession);
   $("#btn-config").addEventListener("click", applyConfig);
   $("#btn-download").addEventListener("click", queueDownload);
   $("#btn-exfil").addEventListener("click", queueExfil);

@@ -438,11 +438,7 @@ body.sidebar-resizing iframe {
   color: var(--muted);
 }
 
-.session-item.history-item {
-  position: relative;
-  padding-right: 4.5rem;
-}
-
+.session-item .session-kill,
 .session-item.history-item .history-delete {
   position: absolute;
   top: 0.45rem;
@@ -455,6 +451,8 @@ body.sidebar-resizing iframe {
   transition: opacity 0.15s ease;
 }
 
+.session-item:hover .session-kill,
+.session-item:focus-within .session-kill,
 .session-item.history-item:hover .history-delete,
 .session-item.history-item:focus-within .history-delete {
   opacity: 1;
@@ -498,7 +496,8 @@ body.sidebar-resizing iframe {
 }
 
 .session-item {
-  padding: 0.65rem 0.75rem;
+  position: relative;
+  padding: 0.65rem 4.5rem 0.65rem 0.75rem;
   border-radius: 8px;
   cursor: pointer;
   margin-bottom: 0.25rem;

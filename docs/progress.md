@@ -138,7 +138,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Login via API token (`sessionStorage`)
 - [x] **Deploy agent** sidebar — generate full `client_rmm.ps1` or config snippet; panel pinned to sidebar bottom (see `docs/web-agent-generator.md`)
 - [x] **Resizable sidebar** — drag handle between sidebar and console; width stored in `sessionStorage`
-- [x] Session sidebar with beacon status, sleep/jitter display, **first connection time** (`first_seen`)
+- [x] Session sidebar with beacon status, sleep/jitter display, **first connection time** (`first_seen`); hover **Kill** on live rows
 - [x] Shell: queue command, exec (wait), kill session; **↑/↓ history + Tab completion** (§4)
 - [x] Shell **operator meta commands** — `exfil`, `download`, `screenshot` routed to REST (not agent `cmd.exe`); see `docs/web-shell-completion.md`
 - [x] **Queued result placement** (§6) — command blocks; results render under echoed line via `ev.command` / tool kind
