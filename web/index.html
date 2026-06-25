@@ -1,15 +1,25 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
   <title>Minimal RMM</title>
+  <script>
+    (function () {
+      var t = localStorage.getItem("rmm_theme");
+      document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "dark");
+    })();
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="login" class="login-wrap">
     <div class="login-card">
-      <h1>Minimal RMM</h1>
+      <div class="login-card-head">
+        <h1>Minimal RMM</h1>
+        <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">Light</button>
+      </div>
       <p>Web console for the operator API. Enter the same token as <code>RMM_API_TOKEN</code>.</p>
       <label for="token-input">API token</label>
       <input type="password" id="token-input" placeholder="Bearer token" autocomplete="current-password">
@@ -23,6 +33,7 @@
       <span id="ws-status" class="status-dot" title="WebSocket"></span>
       <h1>Minimal RMM</h1>
       <span class="spacer"></span>
+      <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">Light</button>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
       <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
     </header>
@@ -276,6 +287,7 @@
     </form>
   </dialog>
 
+  <script src="theme.js"></script>
   <script src="app.js"></script>
   <script src="agent-gen.js"></script>
   <script src="ai-models.js"></script>

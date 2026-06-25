@@ -136,6 +136,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 ### Web UI (`web/`)
 
 - [x] Login via API token (`sessionStorage`)
+- [x] **Light / dark theme** — default dark; toggle on login + header; `localStorage` `rmm_theme` — see `docs/web-ui-theme.md`
 - [x] **Deploy agent** sidebar — generate full `client_rmm.ps1` or config snippet; panel pinned to sidebar bottom (see `docs/web-agent-generator.md`)
 - [x] **Resizable sidebar** — drag handle between sidebar and console; width stored in `sessionStorage`
 - [x] Session sidebar with beacon status, sleep/jitter display, **first connection time** (`first_seen`); hover **Beacon** (sleep/jitter dialog) and **Kill** on live rows
