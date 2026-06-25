@@ -185,7 +185,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080}` or `{"stop":true}` | Start/stop SOCKS5 on `127.0.0.1` via agent |
-| `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[…],"model":"gpt-4o-mini","selected_session_id":null,"exegol_mcp_enabled":false,"exegol_mcp_url":null,"exegol_mcp_token":null}` | OpenAI agent loop via MCP (RMM + optional Exegol) |
+| `POST` | `/ai/chat` | `{"openai_api_key":"sk-…","messages":[…],"model":"gpt-5.2",…}` | OpenAI agent loop via MCP (RMM + optional Exegol); model list in `web/ai-models.js` |
 | `GET` | `/sessions/{id}/events?since=0&limit=50` | — | Poll result events (fallback) |
 | `GET` | `/sessions/{id}/downloads` | — | List `__DOWNLOAD__` artifacts for session (remote path, size, artifact URL) |
 | `GET` | `/history` | — | List archived (ended) session transcripts |

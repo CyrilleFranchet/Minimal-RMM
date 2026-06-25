@@ -231,12 +231,8 @@
           <label for="openai-key-input">API key</label>
           <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off">
           <label for="openai-model-select">Model</label>
-          <select id="openai-model-select">
-            <option value="gpt-4o-mini">gpt-4o-mini</option>
-            <option value="gpt-4o">gpt-4o</option>
-            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-            <option value="gpt-4.1">gpt-4.1</option>
-          </select>
+          <select id="openai-model-select" title="OpenAI Chat Completions model"></select>
+          <input type="text" id="openai-model-custom" class="hidden" placeholder="e.g. gpt-5.2-pro" autocomplete="off" spellcheck="false">
           <p class="ai-hint">Stored in this browser tab only. Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
         </details>
         <details class="ai-settings">
@@ -262,6 +258,7 @@
 
   <script src="app.js"></script>
   <script src="agent-gen.js"></script>
+  <script src="ai-models.js"></script>
   <script src="ai.js"></script>
 </body>
 </html>

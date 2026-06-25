@@ -1022,6 +1022,13 @@ body.sidebar-resizing iframe {
   font-size: 0.85rem;
 }
 
+#openai-model-custom {
+  width: 100%;
+  margin-top: 0.25rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
 .ai-hint {
   margin: 0 0 0.5rem;
   color: var(--muted);

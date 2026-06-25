@@ -4,11 +4,15 @@
 (function () {
   const OPENAI_KEY_STORAGE = "rmm_openai_api_key";
   const OPENAI_MODEL_STORAGE = "rmm_openai_model";
+  const OPENAI_MODEL_CUSTOM_STORAGE = "rmm_openai_model_custom";
   const AI_PANEL_OPEN_STORAGE = "rmm_ai_panel_open";
   const EXEGOL_ENABLED_STORAGE = "rmm_exegol_mcp_enabled";
   const EXEGOL_URL_STORAGE = "rmm_exegol_mcp_url";
   const EXEGOL_TOKEN_STORAGE = "rmm_exegol_mcp_token";
   const DEFAULT_EXEGOL_MCP_URL = "http://127.0.0.1:8000/mcp";
+  const CUSTOM_MODEL_VALUE = "__custom__";
+  const DEFAULT_MODEL =
+    (typeof window !== "undefined" && window.RMM_OPENAI_DEFAULT_MODEL) || "gpt-5.2";
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -27,7 +31,58 @@
 
   function getModel() {
     const sel = $("#openai-model-select");
-    return sel ? sel.value : sessionStorage.getItem(OPENAI_MODEL_STORAGE) || "gpt-4o-mini";
+    const custom = $("#openai-model-custom");
+    if (sel?.value === CUSTOM_MODEL_VALUE) {
+      return (custom?.value || sessionStorage.getItem(OPENAI_MODEL_CUSTOM_STORAGE) || "").trim();
+    }
+    return sel ? sel.value : sessionStorage.getItem(OPENAI_MODEL_STORAGE) || DEFAULT_MODEL;
+  }
+
+  function syncCustomModelField() {
+    const sel = $("#openai-model-select");
+    const custom = $("#openai-model-custom");
+    if (!sel || !custom) return;
+    const show = sel.value === CUSTOM_MODEL_VALUE;
+    custom.classList.toggle("hidden", !show);
+    if (show) custom.focus();
+  }
+
+  function populateModelSelect() {
+    const sel = $("#openai-model-select");
+    if (!sel) return;
+    const groups = window.RMM_OPENAI_MODEL_GROUPS || [];
+    sel.replaceChildren();
+    for (const group of groups) {
+      const optgroup = document.createElement("optgroup");
+      optgroup.label = group.label;
+      for (const model of group.models || []) {
+        const opt = document.createElement("option");
+        opt.value = model.id;
+        opt.textContent = model.id === CUSTOM_MODEL_VALUE ? "Custom model ID…" : model.id;
+        opt.title = model.hint || model.id;
+        optgroup.appendChild(opt);
+      }
+      sel.appendChild(optgroup);
+    }
+  }
+
+  function restoreModelSelection() {
+    const sel = $("#openai-model-select");
+    const custom = $("#openai-model-custom");
+    if (!sel) return;
+    const saved = sessionStorage.getItem(OPENAI_MODEL_STORAGE) || DEFAULT_MODEL;
+    const savedCustom = sessionStorage.getItem(OPENAI_MODEL_CUSTOM_STORAGE) || "";
+    const known = Array.from(sel.options).some((o) => o.value === saved);
+    if (known) {
+      sel.value = saved;
+    } else if (saved) {
+      sel.value = CUSTOM_MODEL_VALUE;
+      if (custom) custom.value = saved;
+    } else {
+      sel.value = DEFAULT_MODEL;
+    }
+    if (custom && savedCustom) custom.value = savedCustom;
+    syncCustomModelField();
   }
 
   function getExegolMcpSettings() {
@@ -94,7 +149,15 @@
     }
 
     sessionStorage.setItem(OPENAI_KEY_STORAGE, openaiKey);
-    sessionStorage.setItem(OPENAI_MODEL_STORAGE, getModel());
+    const model = getModel();
+    if (!model) {
+      appendChatMessage("error", "Choose a model or enter a custom model ID.");
+      return;
+    }
+    sessionStorage.setItem(OPENAI_MODEL_STORAGE, $("#openai-model-select")?.value || model);
+    if ($("#openai-model-select")?.value === CUSTOM_MODEL_VALUE) {
+      sessionStorage.setItem(OPENAI_MODEL_CUSTOM_STORAGE, model);
+    }
     persistExegolMcpSettings();
     const exegol = getExegolMcpSettings();
 
@@ -149,6 +212,8 @@
   function initAiPanel() {
     const keyInput = $("#openai-key-input");
     const modelSelect = $("#openai-model-select");
+    const modelCustom = $("#openai-model-custom");
+    populateModelSelect();
     if (keyInput) {
       keyInput.value = sessionStorage.getItem(OPENAI_KEY_STORAGE) || "";
       keyInput.addEventListener("change", () => {
@@ -156,10 +221,15 @@
       });
     }
     if (modelSelect) {
-      const saved = sessionStorage.getItem(OPENAI_MODEL_STORAGE);
-      if (saved) modelSelect.value = saved;
+      restoreModelSelection();
       modelSelect.addEventListener("change", () => {
         sessionStorage.setItem(OPENAI_MODEL_STORAGE, modelSelect.value);
+        syncCustomModelField();
+      });
+    }
+    if (modelCustom) {
+      modelCustom.addEventListener("change", () => {
+        sessionStorage.setItem(OPENAI_MODEL_CUSTOM_STORAGE, modelCustom.value.trim());
       });
     }
 
