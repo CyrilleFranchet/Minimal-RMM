@@ -78,7 +78,7 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 ### Web UI
 
-With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates (new agents appear automatically; no manual refresh). The shell supports **↑/↓ command history** and **Tab completion** (session history + `cmd:` / `PS:` / `powershell:` / `pwsh:` prefixes). Completed agent downloads appear in the **Downloads from agent** panel. **Session history** lists archived transcripts from killed sessions. The token is kept in `sessionStorage` for the browser tab only.
+With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates (new agents appear automatically; no manual refresh). The shell supports **↑/↓ command history** and **Tab completion** (session history + `cmd:` / `PS:` / `powershell:` / `pwsh:` prefixes). Completed agent downloads appear in the **Downloads from agent** panel. **Session history** lists archived transcripts from killed sessions. Sidebar **Deploy agent (PowerShell)** generates a `client_rmm.ps1` configuration snippet (server URL, beacon secret, timing, proxy) — see `docs/web-agent-generator.md`. The token is kept in `sessionStorage` for the browser tab only.
 
 **AI Assistant** (button **AI** in the header): opens a chat panel on the right. Set your **OpenAI API key** in the panel (stored in `sessionStorage` for this tab). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`. The selected session in the sidebar is passed as context.
 
@@ -334,7 +334,7 @@ All settings live in a **configuration block at the top of the script** (`$u`, `
 |------|------|
 | `server_rmm.py` | HTTP server + operator API |
 | `rmm_cli.py` | Operator CLI |
-| `web/` | Static web operator UI (`index.html`, `app.js`, `style.css`) |
+| `web/` | Static web operator UI (`index.html`, `app.js`, `agent-gen.js`, `style.css`) |
 | `client_rmm.ps1` | Windows beacon |
 | `requirements.txt` | `prompt_toolkit` (required for `rmm_cli.py` interactive) |
 | `RMM_logs/` | Runtime logs and artifacts |
