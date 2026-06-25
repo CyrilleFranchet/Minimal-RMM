@@ -8,7 +8,7 @@ Operators can browse **archived transcripts** from ended sessions in the web con
 |---------|---------|
 | Web UI | **Session history** list in sidebar; read-only transcript view |
 | REST API | `GET /api/v1/history`, `GET /api/v1/history/{id}`, `GET /api/v1/history/{id}/events`, `DELETE /api/v1/history/{id}` |
-| CLI / MCP | Not in v1 |
+| CLI / MCP | MCP: `list_history`, `get_history_session`, `get_history_events`, `delete_history` (CLI subcommands not in v1) |
 
 ## Storage
 

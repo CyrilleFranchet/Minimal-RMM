@@ -235,6 +235,27 @@ class RmmApiClient:
     def list_socks(self):
         return self.request("GET", "/api/v1/socks")
 
+    def list_history(self):
+        return self.request("GET", "/api/v1/history")
+
+    def get_history_session(self, session_ref: str):
+        return self.request("GET", f"/api/v1/history/{session_ref}")
+
+    def get_history_events(self, session_ref: str, since: int = 0, limit: int = 500):
+        return self.request(
+            "GET",
+            f"/api/v1/history/{session_ref}/events?since={since}&limit={limit}",
+        )
+
+    def delete_history(self, session_ref: str):
+        return self.request("DELETE", f"/api/v1/history/{session_ref}")
+
+    def list_session_downloads(self, session_ref: str):
+        return self.request("GET", f"/api/v1/sessions/{session_ref}/downloads")
+
+    def get_agent_script(self):
+        return self.request("GET", "/api/v1/agent/script")
+
 
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):

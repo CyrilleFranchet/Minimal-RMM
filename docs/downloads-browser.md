@@ -8,7 +8,7 @@ Operators can browse files pulled from agents (`__DOWNLOAD__`) in the web consol
 |---------|---------|
 | Web UI | **Downloads from agent** panel (per session) |
 | REST API | `GET /api/v1/sessions/{id}/downloads` |
-| CLI / MCP | Not in v1 (use events or list API) |
+| CLI / MCP | MCP: `list_session_downloads` (CLI subcommand not in v1) |
 
 ## User flow
 

