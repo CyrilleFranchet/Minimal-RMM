@@ -66,7 +66,7 @@ PS: whoami.exe /groups
 |----------|------|
 | Who is the beacon running as? | `whoami`, `PS: [WindowsIdentity]::GetCurrent().Name` |
 | What groups are in my token? | `whoami /groups`, `whoami /all` |
-| Domain user / group enumeration | LDAP/ADWS — **windows-ad-recon-stealth** (`Get-AD*`, `[ADSI]`; not `net user /domain`) |
+| Domain user / group enumeration | ADWS (`Get-AD*`) first — **windows-ad-recon-stealth**; direct LDAP only if ADWS unavailable |
 | List **local** accounts | `PS: Get-LocalUser` — **windows-ad-recon-stealth** |
 | Members of a **local** group | `PS: Get-LocalGroupMember` — **windows-ad-recon-stealth** (not `net localgroup` by default) |
 
@@ -77,7 +77,7 @@ For domain users, use `whoami` / token APIs or LDAP — not `net user`. For loca
 1. `list_sessions` / `get_session` — hostname and registration username for display only.
 2. `exec_command` with `whoami` and/or `whoami /groups` — canonical identity and effective groups.
 3. If the operator asks for local group members, prefer `PS: Get-LocalGroupMember -Group 'Administrators'` — see **windows-ad-recon-stealth** (avoid `net localgroup` unless operator accepts RPC noise).
-4. If AD enumeration is required, probe `ActiveDirectory` module then use `Get-AD*` / LDAP — not `net user /domain` — see **windows-ad-recon-stealth**.
+4. If AD enumeration is required, probe `ActiveDirectory` module and use **`Get-AD*`** (ADWS) first — direct LDAP/`[ADSI]` only as fallback — not `net user /domain` — see **windows-ad-recon-stealth**.
 
 ## Common mistakes
 
