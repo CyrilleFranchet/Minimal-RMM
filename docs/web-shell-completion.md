@@ -24,8 +24,21 @@ A hint line under the input shows the top completion match or match count.
 
 - Session command history (most recent first in candidate list)
 - Static agent dispatch prefixes: `cmd:`, `PS:`, `powershell:`, `pwsh:`
+- Operator meta commands: `exfil`, `download`, `screenshot`
 
 Agent-side path completion is out of scope (tech plan §4 v2).
+
+## Operator meta commands (shell)
+
+These commands are handled in the browser (same as `rmm_cli.py`) and POST to the operator API instead of being sent to the agent shell:
+
+| Command | API | Notes |
+|---------|-----|-------|
+| `download <remote_path>` | `POST …/download` | Spaces in path: quote or omit extra tokens are joined |
+| `exfil <remote_path> [profile]` | `POST …/exfil` | Profile defaults to Exfil panel selection / server default |
+| `screenshot` | `POST …/screenshot` | No arguments |
+
+Example: `exfil C:\Users\…\file.iso mega-lab` queues rclone upload; it is not passed to `cmd.exe`.
 
 ## Files
 
