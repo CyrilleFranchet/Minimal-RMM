@@ -1,9 +1,13 @@
 /**
- * Web UI — PowerShell agent deploy snippet generator (client_rmm.ps1 config).
+ * Web UI — PowerShell agent deploy generator (full client_rmm.ps1 or config snippet).
  */
 (function () {
   const PREFS_KEY = "rmm_agent_gen_prefs";
+  const TOKEN_KEY = "rmm_api_token";
   const $ = (sel) => document.querySelector(sel);
+
+  let scriptTemplate = null;
+  let scriptTemplatePromise = null;
 
   function psQuote(value) {
     return `'${String(value ?? "").replace(/'/g, "''")}'`;
@@ -19,6 +23,10 @@
     } catch {
       return "";
     }
+  }
+
+  function apiToken() {
+    return sessionStorage.getItem(TOKEN_KEY) || "";
   }
 
   function loadPrefs() {
@@ -39,7 +47,7 @@
 
   function readForm() {
     const sessionMode = document.querySelector('input[name="agent-session-mode"]:checked')?.value || "new";
-    const outputMode = document.querySelector('input[name="agent-output-mode"]:checked')?.value || "config";
+    const outputMode = document.querySelector('input[name="agent-output-mode"]:checked')?.value || "script";
     return {
       serverUrl: ($("#agent-server-url")?.value || "").trim().replace(/\/$/, ""),
       beaconSecret: ($("#agent-beacon-secret")?.value || "").trim(),
@@ -63,10 +71,8 @@
     return "$sessionId = [System.Guid]::NewGuid().ToString()";
   }
 
-  function buildConfigBlock(opts) {
-    const lines = [
-      "# Minimal-RMM agent — paste into client_rmm.ps1 configuration block (lab use only)",
-      "",
+  function buildConfigLines(opts) {
+    return [
       `$u = ${psQuote(opts.serverUrl || "https://your-server.example.com")}`,
       `$beaconSecret = ${psQuote(opts.beaconSecret)}`,
       sessionIdLine(opts),
@@ -81,7 +87,14 @@
       "",
       `$verboseHttp = ${psBool(opts.verboseHttp)}`,
     ];
-    return lines.join("\r\n");
+  }
+
+  function buildConfigBlock(opts) {
+    return [
+      "# Minimal-RMM agent — paste into client_rmm.ps1 configuration block (lab use only)",
+      "",
+      ...buildConfigLines(opts),
+    ].join("\r\n");
   }
 
   function buildEnvBlock(opts) {
@@ -106,11 +119,68 @@
       lines.push("$env:RMM_VERBOSE = '1'");
     }
     lines.push("");
-    lines.push("# Timing env vars are not supported — edit client_rmm.ps1 or use server __CONFIG__.");
+    lines.push("# Use with an unmodified client_rmm.ps1 from the repo or GET /api/v1/agent/script.");
     if (opts.sessionMode === "fixed" && opts.sessionId) {
       lines.push(`# Fixed session ID: set $sessionId in client_rmm.ps1 to ${psQuote(opts.sessionId)}`);
     }
     return lines.join("\r\n");
+  }
+
+  function patchScriptTemplate(template, opts) {
+    const lines = template.replace(/\r\n/g, "\n").split("\n");
+    let start = -1;
+    let end = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].startsWith("$u = ")) start = i;
+      if (start >= 0 && lines[i].startsWith("$verboseHttp = ")) {
+        end = i;
+        break;
+      }
+    }
+    if (start < 0 || end < 0) return null;
+    const patched = [
+      ...lines.slice(0, start),
+      ...buildConfigLines(opts),
+      ...lines.slice(end + 1),
+    ];
+    return patched.join("\r\n");
+  }
+
+  async function fetchScriptTemplate() {
+    const token = apiToken();
+    if (!token) {
+      throw new Error("Connect with your API token to load client_rmm.ps1.");
+    }
+    const res = await fetch("/api/v1/agent/script", {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || data.error || `Failed to load script (${res.status})`);
+    }
+    if (!data.content) {
+      throw new Error("Script response missing content.");
+    }
+    return data.content;
+  }
+
+  async function ensureScriptTemplate() {
+    if (scriptTemplate) return scriptTemplate;
+    if (!scriptTemplatePromise) {
+      scriptTemplatePromise = fetchScriptTemplate()
+        .then((content) => {
+          scriptTemplate = content;
+          return content;
+        })
+        .catch((err) => {
+          scriptTemplatePromise = null;
+          throw err;
+        });
+    }
+    return scriptTemplatePromise;
   }
 
   function buildRunCommand() {
@@ -130,30 +200,85 @@
     }
   }
 
-  function renderOutput() {
+  function setOutputHint(opts, errMsg) {
+    const hint = $("#agent-gen-hint");
+    if (!hint) return;
+    if (errMsg) {
+      hint.textContent = errMsg;
+      return;
+    }
+    if (opts.outputMode === "env") {
+      hint.textContent =
+        "Copy the env block, save client_rmm.ps1 on the target, set variables, then run the command below.";
+    } else if (opts.outputMode === "config") {
+      hint.textContent = "Replace lines 45–57 in client_rmm.ps1, then run the command below on the target host.";
+    } else {
+      hint.textContent =
+        "Save as client_rmm.ps1 on the Windows lab host, then run the command below. Script is loaded from this server.";
+    }
+  }
+
+  function updateOutputLabels(opts) {
+    const label = $("#agent-gen-output-label");
+    const copyBtn = $("#agent-gen-copy-script");
+    const downloadBtn = $("#agent-gen-download-script");
+    const isScript = opts.outputMode === "script";
+    if (label) {
+      label.textContent = isScript ? "Generated script" : "Generated output";
+    }
+    if (copyBtn) {
+      copyBtn.textContent = isScript ? "Copy script" : "Copy output";
+    }
+    if (downloadBtn) {
+      downloadBtn.classList.toggle("hidden", !isScript);
+    }
+  }
+
+  async function renderOutput() {
     const opts = readForm();
     savePrefs(opts);
     const out = $("#agent-gen-output");
     const run = $("#agent-gen-run");
-    const hint = $("#agent-gen-hint");
     if (!out) return;
 
+    updateOutputLabels(opts);
+
     if (!opts.serverUrl) {
-      out.value = "# Set server URL to generate configuration.";
-      if (hint) {
-        hint.textContent = "Server URL is required (no trailing slash).";
-      }
+      out.value = "# Set server URL to generate output.";
+      setOutputHint(opts, "Server URL is required (no trailing slash).");
       return;
     }
 
-    const body = opts.outputMode === "env" ? buildEnvBlock(opts) : buildConfigBlock(opts);
-    out.value = body;
-    if (run) run.value = buildRunCommand();
-    if (hint) {
-      hint.textContent =
-        opts.outputMode === "env"
-          ? "Copy env block + run command. Place client_rmm.ps1 on the target host first."
-          : "Replace lines 45–57 in client_rmm.ps1, then run the command below on the target host.";
+    if (opts.outputMode === "env") {
+      out.value = buildEnvBlock(opts);
+      if (run) run.value = buildRunCommand();
+      setOutputHint(opts);
+      return;
+    }
+
+    if (opts.outputMode === "config") {
+      out.value = buildConfigBlock(opts);
+      if (run) run.value = buildRunCommand();
+      setOutputHint(opts);
+      return;
+    }
+
+    out.value = "Loading client_rmm.ps1…";
+    setOutputHint(opts, "Fetching agent script from server…");
+    try {
+      const template = await ensureScriptTemplate();
+      const patched = patchScriptTemplate(template, opts);
+      if (!patched) {
+        out.value = "# Failed to patch client_rmm.ps1 template (config block not found).";
+        setOutputHint(opts, "Script template format changed — report to operator.");
+        return;
+      }
+      out.value = patched;
+      if (run) run.value = buildRunCommand();
+      setOutputHint(opts);
+    } catch (err) {
+      out.value = `# ${err.message || String(err)}`;
+      setOutputHint(opts, err.message || String(err));
     }
   }
 
@@ -169,7 +294,6 @@
         }, 1500);
       }
     } catch {
-      /* fallback */
       const ta = document.createElement("textarea");
       ta.value = text;
       document.body.appendChild(ta);
@@ -177,6 +301,19 @@
       document.execCommand("copy");
       ta.remove();
     }
+  }
+
+  function downloadScript(content) {
+    if (!content || content.startsWith("# ") || content.startsWith("Loading")) return;
+    const blob = new Blob([content], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "client_rmm.ps1";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   function applyPrefs(prefs) {
@@ -214,7 +351,10 @@
     if ($("#agent-verbose-http")) {
       $("#agent-verbose-http").checked = Boolean(prefs.verboseHttp);
     }
-    if (prefs.outputMode === "env") {
+    if (prefs.outputMode === "config") {
+      const cfg = document.querySelector('input[name="agent-output-mode"][value="config"]');
+      if (cfg) cfg.checked = true;
+    } else if (prefs.outputMode === "env") {
       const env = document.querySelector('input[name="agent-output-mode"][value="env"]');
       if (env) env.checked = true;
     }
@@ -229,8 +369,20 @@
     applyPrefs(loadPrefs());
 
     panel.querySelectorAll("input, select, textarea").forEach((el) => {
-      el.addEventListener("input", renderOutput);
-      el.addEventListener("change", renderOutput);
+      el.addEventListener("input", () => {
+        renderOutput();
+      });
+      el.addEventListener("change", () => {
+        renderOutput();
+      });
+    });
+
+    panel.addEventListener("toggle", () => {
+      if (panel.open && apiToken()) {
+        ensureScriptTemplate()
+          .then(() => renderOutput())
+          .catch(() => renderOutput());
+      }
     });
 
     document.querySelectorAll('input[name="agent-session-mode"]').forEach((el) => {
@@ -248,8 +400,12 @@
       }
     });
 
-    $("#agent-gen-copy-config")?.addEventListener("click", () => {
-      copyText($("#agent-gen-output")?.value, $("#agent-gen-copy-config"));
+    $("#agent-gen-copy-script")?.addEventListener("click", () => {
+      copyText($("#agent-gen-output")?.value, $("#agent-gen-copy-script"));
+    });
+
+    $("#agent-gen-download-script")?.addEventListener("click", () => {
+      downloadScript($("#agent-gen-output")?.value);
     });
 
     $("#agent-gen-copy-run")?.addEventListener("click", () => {
@@ -266,4 +422,11 @@
   }
 
   window.initAgentGenerator = bindAgentGenerator;
+  window.refreshAgentScriptTemplate = function refreshAgentScriptTemplate() {
+    scriptTemplate = null;
+    scriptTemplatePromise = null;
+    if ($("#agent-gen-panel")?.open) {
+      renderOutput();
+    }
+  };
 })();
