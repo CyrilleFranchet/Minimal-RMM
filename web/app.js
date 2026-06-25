@@ -66,6 +66,60 @@ function artifactSrc(url) {
   return `${url}${sep}token=${encodeURIComponent(state.token)}`;
 }
 
+async function fetchArtifact(url) {
+  if (!url) throw new Error("Missing artifact URL");
+  const headers = { Accept: "*/*" };
+  if (state.token) {
+    headers.Authorization = `Bearer ${state.token}`;
+  }
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const data = await res.json();
+      detail = data.detail || data.error || "";
+    } catch {
+      try {
+        detail = (await res.text()).slice(0, 200);
+      } catch {
+        /* ignore */
+      }
+    }
+    throw new Error(
+      `Artifact fetch failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`
+    );
+  }
+  return res;
+}
+
+function suggestedDownloadFilename(entry) {
+  const remote = entry?.remote_path || "";
+  if (remote) {
+    const base = String(remote).replace(/\\/g, "/").split("/").filter(Boolean).pop();
+    if (base) return base;
+  }
+  const art = String(entry?.artifact || "");
+  const idx = art.indexOf("_");
+  if (idx >= 0 && idx < art.length - 1) return art.slice(idx + 1);
+  return art || "download";
+}
+
+async function downloadArtifactEntry(entry) {
+  const url = entry?.artifact_url;
+  if (!url) throw new Error("No download URL for this file");
+  const res = await fetchArtifact(url);
+  const blob = await res.blob();
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objUrl;
+  a.download = suggestedDownloadFilename(entry);
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objUrl);
+}
+
 function show(el) {
   el.classList.remove("hidden");
 }
@@ -110,7 +164,6 @@ function renderDownloadsList(downloads) {
   }
   const rows = state.sessionDownloads
     .map((d, i) => {
-      const src = artifactSrc(d.artifact_url);
       const previewKind = canPreviewDownload(d);
       const previewBtn = previewKind
         ? `<button type="button" class="secondary btn-dl-preview" data-idx="${i}">Preview</button>`
@@ -120,7 +173,7 @@ function renderDownloadsList(downloads) {
         <td>${escapeHtml(formatFileSize(d.size))}</td>
         <td>${escapeHtml(formatAgoFromIso(d.received_at))}</td>
         <td><div class="downloads-actions">
-          <a class="secondary" href="${escapeHtml(src)}" download>Download</a>
+          <button type="button" class="secondary btn-dl-download" data-idx="${i}">Download</button>
           ${previewBtn}
         </div></td>
       </tr>`;
@@ -131,13 +184,23 @@ function renderDownloadsList(downloads) {
     <tbody>${rows}</tbody>
   </table>
   <div id="downloads-preview" class="downloads-preview hidden"></div>`;
+  container.querySelectorAll(".btn-dl-download").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.idx);
+      const entry = state.sessionDownloads[idx];
+      if (!entry) return;
+      downloadArtifactEntry(entry).catch((err) => {
+        appendShellError(err.message || String(err));
+      });
+    });
+  });
   container.querySelectorAll(".btn-dl-preview").forEach((btn) => {
     btn.addEventListener("click", () => {
       const idx = Number(btn.dataset.idx);
       const entry = state.sessionDownloads[idx];
       if (!entry) return;
       const kind = canPreviewDownload(entry);
-      previewDownload(artifactSrc(entry.artifact_url), kind, entry.remote_path || entry.artifact).catch(
+      previewDownload(entry.artifact_url, kind, entry.remote_path || entry.artifact).catch(
         (err) => {
           appendShellError(err.message || String(err));
         }
@@ -174,10 +237,7 @@ async function previewDownload(url, kind, name) {
   if (!panel) return;
   panel.classList.remove("hidden");
   panel.innerHTML = `<p class="downloads-empty">Loading ${escapeHtml(name)}…</p>`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Preview failed (HTTP ${res.status})`);
-  }
+  const res = await fetchArtifact(url);
   if (kind === "image") {
     const blob = await res.blob();
     const objUrl = URL.createObjectURL(blob);
@@ -614,7 +674,7 @@ function findPendingCommandBlock(ev) {
   return null;
 }
 
-function parseExfilProgressBody(ev) {
+function parseProgressBody(ev) {
   const raw = ev?.body;
   if (!raw) return null;
   try {
@@ -642,7 +702,7 @@ function formatDuration(seconds) {
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
 }
 
-function formatExfilProgressLabel(data) {
+function formatTransferProgressLabel(data) {
   const pct = Number(data?.percent);
   const pctText = Number.isFinite(pct) ? `${pct.toFixed(1)}%` : "…";
   const done = formatByteSize(data?.bytes);
@@ -653,12 +713,12 @@ function formatExfilProgressLabel(data) {
   return `${pctText} · ${done} / ${total} · ${speed}/s · ETA ${etaText}`;
 }
 
-function findExfilProgressBlock(ev) {
-  const data = parseExfilProgressBody(ev);
+function findProgressBlock(ev, kind) {
+  const data = parseProgressBody(ev);
   const remote = String(data?.remote_path || "").trim();
   const evCmd = normalizeCmdKey(ev.command);
   for (const block of state.pendingCommandBlocks) {
-    if (block.filled || block.kind !== "exfil") continue;
+    if (block.filled || block.kind !== kind) continue;
     if (remote && block.remotePath) {
       if (remote === block.remotePath || remote.includes(block.remotePath) || block.remotePath.includes(remote)) {
         return block;
@@ -671,39 +731,63 @@ function findExfilProgressBlock(ev) {
   return null;
 }
 
-function updateExfilProgressBlock(block, ev) {
-  const data = parseExfilProgressBody(ev);
+function updateProgressBlock(block, data, statusPrefix) {
   if (!block || !data) return false;
   const pct = Math.min(100, Math.max(0, Number(data.percent) || 0));
+  const label = formatTransferProgressLabel(data);
 
   if (block.metaLine) {
-    block.metaLine.textContent = `Uploading via rclone — ${formatExfilProgressLabel(data)}`;
+    block.metaLine.textContent = `${statusPrefix} — ${label}`;
   }
 
   let wrap = block.progressEl;
   if (!wrap || !wrap.isConnected) {
     wrap = document.createElement("div");
-    wrap.className = "exfil-progress";
+    wrap.className = "transfer-progress";
     wrap.innerHTML = `
-      <div class="exfil-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
-        <div class="exfil-progress-fill"></div>
+      <div class="transfer-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+        <div class="transfer-progress-fill"></div>
       </div>
-      <div class="exfil-progress-detail"></div>`;
+      <div class="transfer-progress-detail"></div>`;
     block.resultEl.prepend(wrap);
     block.progressEl = wrap;
   }
 
-  const fill = wrap.querySelector(".exfil-progress-fill");
-  const detail = wrap.querySelector(".exfil-progress-detail");
-  const bar = wrap.querySelector(".exfil-progress-bar");
+  const fill = wrap.querySelector(".transfer-progress-fill");
+  const detail = wrap.querySelector(".transfer-progress-detail");
+  const bar = wrap.querySelector(".transfer-progress-bar");
   if (fill) fill.style.width = `${pct}%`;
   if (bar) {
     bar.setAttribute("aria-valuenow", String(Math.round(pct)));
-    bar.setAttribute("aria-label", `Exfil upload ${pct.toFixed(1)} percent`);
+    bar.setAttribute("aria-label", `${statusPrefix} ${pct.toFixed(1)} percent`);
   }
-  if (detail) detail.textContent = formatExfilProgressLabel(data);
+  if (detail) detail.textContent = label;
   scrollShellIfNearBottom();
   return true;
+}
+
+function parseExfilProgressBody(ev) {
+  return parseProgressBody(ev);
+}
+
+function formatExfilProgressLabel(data) {
+  return formatTransferProgressLabel(data);
+}
+
+function findExfilProgressBlock(ev) {
+  return findProgressBlock(ev, "exfil");
+}
+
+function updateExfilProgressBlock(block, ev) {
+  return updateProgressBlock(block, parseProgressBody(ev), "Uploading via rclone");
+}
+
+function findDownloadProgressBlock(ev) {
+  return findProgressBlock(ev, "download");
+}
+
+function updateDownloadProgressBlock(block, ev) {
+  return updateProgressBlock(block, parseProgressBody(ev), "Downloading from agent");
 }
 
 function renderEventResultHtml(ev) {
@@ -1225,8 +1309,8 @@ function renderEventBodyHtml(ev) {
   }
   if (ev.type === "file_upload" && ev.artifact_url) {
     fetchSessionDownloads().catch(() => {});
-    const src = artifactSrc(ev.artifact_url);
-    return `${escapeHtml(body)}<br><a class="artifact-link" href="${escapeHtml(src)}" download>Download file</a>`;
+    const name = suggestedDownloadFilename({ remote_path: body.split(" → ")[0], artifact: ev.artifact });
+    return `${escapeHtml(body)}<br><a class="artifact-link artifact-download" href="#" data-artifact-url="${escapeHtml(ev.artifact_url)}" data-download-name="${escapeHtml(name)}">Download file</a>`;
   }
   if (ev.type === "cloud_upload") {
     const m = body.match(/https?:\/\/\S+/i);
@@ -1442,6 +1526,14 @@ function appendEvent(ev, { local = false, history = false } = {}) {
     const block = findExfilProgressBlock(ev);
     if (block) {
       updateExfilProgressBlock(block, ev);
+    }
+    return;
+  }
+
+  if (evType === "download_progress") {
+    const block = findDownloadProgressBlock(ev);
+    if (block) {
+      updateDownloadProgressBlock(block, ev);
     }
     return;
   }
@@ -1771,6 +1863,18 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   bindShellInputCompletion();
+
+  $("#shell-output").addEventListener("click", (e) => {
+    const link = e.target.closest("a.artifact-download");
+    if (!link) return;
+    e.preventDefault();
+    downloadArtifactEntry({
+      artifact_url: link.dataset.artifactUrl,
+      remote_path: link.dataset.downloadName,
+    }).catch((err) => {
+      appendShellError(err.message || String(err));
+    });
+  });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.token && !$("#app").classList.contains("hidden")) {

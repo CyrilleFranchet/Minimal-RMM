@@ -1282,22 +1282,20 @@ class RMMServer:
                 event_body = str(e)
                 tty_lines.append(("log", f"Exfil result error: {e}", "ERROR"))
 
-        elif cmd_type == "exfil_progress":
+        elif cmd_type in ("exfil_progress", "download_progress"):
             try:
                 data = json.loads(result)
                 remote_path = (data.get("remote_path") or "").strip()
-                profile = (data.get("profile") or "").strip()
-                echoed_cmd = f"exfil {remote_path}" + (f" --profile {profile}" if profile else "")
-                pct = float(data.get("percent") or 0)
-                bytes_done = int(data.get("bytes") or 0)
-                total_bytes = int(data.get("total_bytes") or 0)
-                speed_bps = int(data.get("speed_bps") or 0)
-                eta_seconds = int(data.get("eta_seconds") or -1)
+                if cmd_type == "exfil_progress":
+                    profile = (data.get("profile") or "").strip()
+                    echoed_cmd = f"exfil {remote_path}" + (f" --profile {profile}" if profile else "")
+                else:
+                    echoed_cmd = f"download {remote_path}" if remote_path else None
                 self._broadcast_ephemeral_event(
                     session.id,
                     {
                         "timestamp": datetime.now().isoformat(),
-                        "type": "exfil_progress",
+                        "type": cmd_type,
                         "body": json.dumps(data, ensure_ascii=False),
                         "command": echoed_cmd,
                         "artifact": None,
@@ -1305,7 +1303,7 @@ class RMMServer:
                     },
                 )
             except Exception as e:
-                self.log(f"Exfil progress error: {e}", "WARNING")
+                self.log(f"{cmd_type} error: {e}", "WARNING")
             return
 
         else:
@@ -1492,7 +1490,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             ws.close()
         return True
 
-    def _serve_artifact(self, kind: str, filename: str):
+    def _serve_artifact(self, kind: str, filename: str, qs=None):
         if kind not in ("downloads", "screenshots"):
             self._json(404, {"error": "not_found"})
             return True
@@ -1509,11 +1507,17 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not_found"})
             return True
         mime = "image/png" if kind == "screenshots" else "application/octet-stream"
+        download_name = safe
+        if qs:
+            as_name = (qs.get("as", [""])[0] or "").strip()
+            if as_name:
+                download_name = safe_storage_filename(as_name, safe)
         with open(path, "rb") as f:
             data = f.read()
         self.send_response(200)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         self.end_headers()
         self._safe_write(data)
         return True
@@ -1682,7 +1686,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "artifacts":
-            return self._serve_artifact(parts[1], parts[2])
+            return self._serve_artifact(parts[1], parts[2], qs)
 
         self._json(404, {"error": "not_found"})
         return True

