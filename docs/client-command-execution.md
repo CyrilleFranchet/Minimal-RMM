@@ -36,3 +36,4 @@ After each command, the agent appends `RMM_CWD_SIG:<path>` (CMD via `%CD%`, Powe
 - Not a full interactive shell — one-shot commands only; latency is one beacon interval.
 - Very large stdout/stderr can still block if pipe buffers fill before the child exits (same class of risk as any redirected process).
 - CMD quoting rules still apply; complex nested quotes may need `PS:` with `-EncodedCommand` semantics.
+- **AI operators:** PowerShell sent without `PS:` / `powershell:` runs through CMD and CMD **still splits on `\|` inside double quotes** — use skill `agent-command-dispatch` and prefix `PS:` for any script with pipelines or cmdlets. See `docs/web-ai-skills.md`.
