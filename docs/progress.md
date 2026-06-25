@@ -10,7 +10,7 @@
 | **Phase** | §6 queued result placement + §7 restart/config bugs shipped |
 | **Branch** | `main` |
 | **Last updated** | 2026-06-17 |
-| **HEAD** | `ec4392e` — global SOCKS relay list (`GET /api/v1/socks`) |
+| **HEAD** | `3bdb2ac` — sun/moon theme toggle |
 | **Commits** | ~60 since initial import |
 | **Tests** | None in-repo (manual lab validation only) |
 
@@ -169,6 +169,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `docs/downloads-browser.md` — web downloads panel + `GET …/downloads` API
 - [x] `docs/web-shell-completion.md` — shell ↑/↓ history and Tab completion
 - [x] `docs/client-command-execution.md` — hidden CMD/PS process launch on the agent
+- [x] `docs/prd.md` — product vision; EDR/AV compatibility as commercial gate
 - [x] `mcp.example.json` — Cursor MCP config template
 
 ---
@@ -220,7 +221,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [ ] **Chunked upload** (symmetry with download; large `content_b64` still single POST today)
 - [ ] **CLI subcommands:** `screenshot`, `socks start|stop` (only interactive today)
 - [ ] **Tests:** SOCKS task ordering, chunked download reassembly, API auth, WS handshake
-- [ ] **Docs:** `docs/prd.md`; fix README security line (still says 10 MB cap)
+- [ ] **EDR/AV compatibility (commercial gate)** — see [PRD](prd.md#non-negotiable-edr-and-antivirus-compatibility): signing, lab matrix, review persistence/SOCKS/keylog detections
+- [ ] **Docs:** fix README security line (still says 10 MB cap)
 - [ ] **LICENSE** file (README notes absence)
 
 ---
@@ -229,6 +231,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 | Topic | Decision |
 |-------|----------|
+| Commercial viability | **EDR/AV must not routinely block the agent** — see `docs/prd.md`; otherwise the product is not sellable |
 | Control plane | Beacon HTTP only (`/cmd`); SOCKS control via `socks_active` flag, not shell command |
 | SOCKS data plane | WebSocket on `GET /socks` (upgrade); HTTP poll fallback; pull-based tasks (no push) |
 | WS receive | Never cancel `ClientWebSocket.ReceiveAsync` (Aborted state on .NET) |
