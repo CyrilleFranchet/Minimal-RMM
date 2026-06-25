@@ -29,14 +29,16 @@
 
     <div id="app-body" class="app-body">
       <aside class="sidebar">
-        <h2>Sessions <span id="session-count" class="session-count"></span></h2>
-        <p id="session-hint" class="sidebar-hint hidden"></p>
-        <ul id="session-list" class="session-list"></ul>
-        <h2 class="sidebar-sub">Session history</h2>
-        <p id="history-empty" class="sidebar-hint hidden">No archived sessions yet.</p>
-        <ul id="history-list" class="session-list history-list"></ul>
+        <div class="sidebar-scroll">
+          <h2>Sessions <span id="session-count" class="session-count"></span></h2>
+          <p id="session-hint" class="sidebar-hint hidden"></p>
+          <ul id="session-list" class="session-list"></ul>
+          <h2 class="sidebar-sub">Session history</h2>
+          <p id="history-empty" class="sidebar-hint hidden">No archived sessions yet.</p>
+          <ul id="history-list" class="session-list history-list"></ul>
+        </div>
 
-        <details class="agent-gen-panel" id="agent-gen-panel">
+        <details class="agent-gen-panel sidebar-footer" id="agent-gen-panel">
           <summary>Deploy agent (PowerShell)</summary>
           <div class="agent-gen-inner">
             <p class="agent-gen-intro">Generate a ready-to-run <code>client_rmm.ps1</code> for a Windows lab host.</p>
