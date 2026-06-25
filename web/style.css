@@ -1,4 +1,6 @@
-:root {
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0f1419;
   --surface: #1a2332;
   --border: #2d3a4f;
@@ -8,10 +10,35 @@
   --accent-dim: #2563b8;
   --danger: #f87171;
   --success: #4ade80;
+  --warn: #fbbf24;
+  --danger-bg: rgba(248, 113, 113, 0.12);
+  --success-bg: rgba(74, 222, 128, 0.12);
+  --warn-bg: rgba(251, 191, 36, 0.12);
+  --overlay: rgba(0, 0, 0, 0.45);
+  --shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.35);
   --mono: "JetBrains Mono", "SF Mono", "Consolas", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --header-h: 52px;
   --sidebar-width: 280px;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef1f6;
+  --surface: #ffffff;
+  --border: #c5ceda;
+  --text: #141c28;
+  --muted: #5a6778;
+  --accent: #2563eb;
+  --accent-dim: #1d4ed8;
+  --danger: #dc2626;
+  --success: #16a34a;
+  --warn: #d97706;
+  --danger-bg: rgba(220, 38, 38, 0.1);
+  --success-bg: rgba(22, 163, 74, 0.1);
+  --warn-bg: rgba(217, 119, 6, 0.1);
+  --overlay: rgba(15, 20, 25, 0.35);
+  --shadow-modal: 0 12px 40px rgba(15, 20, 25, 0.12);
 }
 
 * {
@@ -55,9 +82,23 @@ body {
 }
 
 .login-card h1 {
-  margin: 0 0 0.25rem;
+  margin: 0;
   font-size: 1.5rem;
   font-weight: 600;
+}
+
+.login-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.login-card-head .theme-toggle-btn {
+  flex-shrink: 0;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
 }
 
 .login-card p {
@@ -126,7 +167,7 @@ button.danger {
 }
 
 button.danger:hover {
-  background: rgba(248, 113, 113, 0.12);
+  background: var(--danger-bg);
 }
 
 button:disabled {
@@ -588,17 +629,17 @@ body.sidebar-resizing iframe {
 
 .beacon-status.status-online {
   color: var(--success);
-  background: rgba(74, 222, 128, 0.12);
+  background: var(--success-bg);
 }
 
 .beacon-status.status-stale {
-  color: #fbbf24;
-  background: rgba(251, 191, 36, 0.12);
+  color: var(--warn);
+  background: var(--warn-bg);
 }
 
 .beacon-status.status-offline {
   color: var(--danger);
-  background: rgba(248, 113, 113, 0.12);
+  background: var(--danger-bg);
 }
 
 .main-panel {
@@ -938,11 +979,11 @@ body.sidebar-resizing iframe {
   background: var(--surface);
   color: var(--text);
   max-width: 22rem;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-modal);
 }
 
 .beacon-config-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--overlay);
 }
 
 .beacon-config-form {
