@@ -24,7 +24,7 @@ Operators cannot quickly spot jitter drift, missed beacons, or bursty exfil with
 
 ### UX (target)
 
-Add a **Traffic & beacon** panel on the selected session (below shell or in a collapsible `<details>` next to “Files, screenshot & beacon config”):
+Add a **Traffic & beacon** panel on the selected session (below shell or in a collapsible `<details>` next to “Files & screenshot”):
 
 1. **Beacon timeline** — horizontal axis = last N minutes (default 15, configurable 5–60). Vertical ticks or bars at each `/cmd` poll and each `/result` POST. Color by type: poll (empty queue), poll (command delivered), result posted. Overlay expected interval band from `sleep_seconds` + `jitter_percent`.
 2. **Throughput chart** — stacked or dual-line area chart: bytes in vs bytes out per time bucket (e.g. 10 s bins). Separate series optional for SOCKS (`/socks` WS/HTTP) vs main beacon (`/cmd`, `/result`).

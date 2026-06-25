@@ -40,6 +40,8 @@ const state = {
   shellTabCycle: { anchor: null, candidates: [], index: -1 },
   /** Default rclone profile from GET /api/v1/rclone/config. */
   rcloneDefaultProfile: "",
+  /** Session id targeted by the beacon config dialog, if open. */
+  beaconConfigTargetId: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -1663,6 +1665,21 @@ function renderSessionList() {
       <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)}</div>
     `;
 
+    const actions = document.createElement("div");
+    actions.className = "session-item-actions";
+
+    const configBtn = document.createElement("button");
+    configBtn.type = "button";
+    configBtn.className = "session-beacon secondary";
+    configBtn.title = "Edit beacon sleep and jitter";
+    configBtn.setAttribute("aria-label", "Beacon config");
+    configBtn.textContent = "Beacon";
+    configBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openBeaconConfigDialog(s.id);
+    });
+
     const killBtn = document.createElement("button");
     killBtn.type = "button";
     killBtn.className = "session-kill danger";
@@ -1674,7 +1691,10 @@ function renderSessionList() {
       e.stopPropagation();
       killSession(s.id);
     });
-    li.insertBefore(killBtn, li.firstChild);
+
+    actions.appendChild(configBtn);
+    actions.appendChild(killBtn);
+    li.appendChild(actions);
 
     li.addEventListener("click", () => selectSession(s.id));
     ul.appendChild(li);
@@ -1699,8 +1719,6 @@ async function selectSession(id) {
 
   $("#console-title").textContent = `${s.username}@${s.hostname}`;
   $("#console-detail").textContent = `${s.id} · last seen ${formatTime(s.last_seen)}`;
-  $("#sleep-input").value = s.sleep_seconds;
-  $("#jitter-input").value = s.jitter_percent;
   shellOutputEl().innerHTML = "";
   updateShellPrompt();
   appendShellMeta(`Session ${id.slice(0, 8)} — Enter wait · Ctrl+Enter queue · ↑↓ history · Tab complete`);
@@ -2252,6 +2270,85 @@ async function queueUpload() {
   }
 }
 
+async function applyBeaconConfig(sessionId, sleep, jitter) {
+  const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}/config`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sleep_seconds: sleep, jitter_percent: jitter }),
+  });
+  if (status !== 200) {
+    appendShellError(data.error || `Beacon config failed (${status})`);
+    return false;
+  }
+  if (state.selectedId === sessionId) {
+    appendShellMeta(`Beacon config → sleep ${sleep}s, jitter ${jitter}%`);
+  }
+  await refreshSessions();
+  return true;
+}
+
+function openBeaconConfigDialog(sessionId) {
+  const s = state.sessions.find((x) => x.id === sessionId);
+  if (!s) return;
+  state.beaconConfigTargetId = sessionId;
+  const label = $("#beacon-config-session-label");
+  if (label) {
+    label.textContent = `${s.username}@${s.hostname} · ${sessionId.slice(0, 8)}`;
+  }
+  const sleepInput = $("#beacon-config-sleep");
+  const jitterInput = $("#beacon-config-jitter");
+  if (sleepInput) sleepInput.value = s.sleep_seconds;
+  if (jitterInput) jitterInput.value = s.jitter_percent;
+  const dialog = $("#beacon-config-dialog");
+  if (dialog?.showModal) {
+    dialog.showModal();
+    sleepInput?.focus();
+    sleepInput?.select();
+  }
+}
+
+function closeBeaconConfigDialog() {
+  const dialog = $("#beacon-config-dialog");
+  if (dialog?.open) dialog.close();
+  state.beaconConfigTargetId = null;
+}
+
+async function submitBeaconConfigDialog(e) {
+  e.preventDefault();
+  const sessionId = state.beaconConfigTargetId;
+  if (!sessionId) return;
+  const sleep = parseInt($("#beacon-config-sleep")?.value, 10);
+  const jitter = parseInt($("#beacon-config-jitter")?.value, 10);
+  if (!Number.isFinite(sleep) || sleep < 1 || sleep > 3600) {
+    appendShellError("Sleep must be between 1 and 3600 seconds");
+    return;
+  }
+  if (!Number.isFinite(jitter) || jitter < 0 || jitter > 100) {
+    appendShellError("Jitter must be between 0 and 100 percent");
+    return;
+  }
+  const ok = await applyBeaconConfig(sessionId, sleep, jitter);
+  if (ok) closeBeaconConfigDialog();
+}
+
+function bindBeaconConfigDialog() {
+  const dialog = $("#beacon-config-dialog");
+  const form = $("#beacon-config-form");
+  if (!dialog || !form) return;
+  form.addEventListener("submit", (e) => {
+    submitBeaconConfigDialog(e);
+  });
+  $("#beacon-config-cancel")?.addEventListener("click", () => {
+    closeBeaconConfigDialog();
+  });
+  dialog.addEventListener("close", () => {
+    state.beaconConfigTargetId = null;
+  });
+  dialog.addEventListener("cancel", () => {
+    state.beaconConfigTargetId = null;
+  });
+}
+
 async function killSession(id) {
   const sessionId = id || state.selectedId;
   if (!sessionId) return;
@@ -2269,19 +2366,6 @@ async function killSession(id) {
   }
 }
 
-async function applyConfig() {
-  if (!state.selectedId) return;
-  const sleep = parseInt($("#sleep-input").value, 10);
-  const jitter = parseInt($("#jitter-input").value, 10);
-  await api(`/sessions/${encodeURIComponent(state.selectedId)}/config`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sleep_seconds: sleep, jitter_percent: jitter }),
-  });
-  appendShellMeta(`Beacon config → sleep ${sleep}s, jitter ${jitter}%`);
-  await refreshSessions();
-}
-
 window.rmmApi = api;
 window.rmmState = state;
 
@@ -2294,7 +2378,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter") connect();
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
-  $("#btn-config").addEventListener("click", applyConfig);
+  bindBeaconConfigDialog();
   $("#btn-download").addEventListener("click", queueDownload);
   $("#btn-exfil").addEventListener("click", queueExfil);
   $("#btn-screenshot").addEventListener("click", queueScreenshot);

@@ -138,15 +138,15 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Login via API token (`sessionStorage`)
 - [x] **Deploy agent** sidebar — generate full `client_rmm.ps1` or config snippet; panel pinned to sidebar bottom (see `docs/web-agent-generator.md`)
 - [x] **Resizable sidebar** — drag handle between sidebar and console; width stored in `sessionStorage`
-- [x] Session sidebar with beacon status, sleep/jitter display, **first connection time** (`first_seen`); hover **Kill** on live rows
+- [x] Session sidebar with beacon status, sleep/jitter display, **first connection time** (`first_seen`); hover **Beacon** (sleep/jitter dialog) and **Kill** on live rows
 - [x] Shell: queue command, exec (wait), kill session; **↑/↓ history + Tab completion** (§4)
 - [x] Shell **operator meta commands** — `exfil`, `download`, `screenshot` routed to REST (not agent `cmd.exe`); see `docs/web-shell-completion.md`
 - [x] **Queued result placement** (§6) — command blocks; results render under echoed line via `ev.command` / tool kind
-- [x] Files: download queue, upload (base64), screenshot, **rclone exfil** (profile dropdown + live upload progress bar, same UI as downloads)
+- [x] Files: download queue, upload (base64), screenshot, **rclone exfil** (profile dropdown + live upload progress bar, same UI as downloads); panel renamed **Files & screenshot** (beacon config moved to sidebar)
 - [x] **Downloads from agent** panel — list `GET …/downloads`, download/preview, WS refresh on `file_upload`; live download progress bar in shell
 - [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
 - [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`); hover **Delete** removes archive (`DELETE /api/v1/history/{id}`)
-- [x] Beacon config apply (PATCH sleep/jitter)
+- [x] Beacon config apply (PATCH sleep/jitter) — per-session **Beacon** button opens modal dialog
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
 - [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); OpenAI key in tab; optional Exegol MCP settings
 

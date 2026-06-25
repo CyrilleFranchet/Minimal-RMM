@@ -176,7 +176,7 @@
           </div>
 
           <details class="tools-panel">
-            <summary>Files, screenshot &amp; beacon config</summary>
+            <summary>Files &amp; screenshot</summary>
             <div class="tools-inner">
               <div class="file-row">
                 <input type="text" id="download-remote" placeholder="Remote path to download">
@@ -198,13 +198,6 @@
               </div>
               <div class="file-row">
                 <button type="button" id="btn-screenshot" class="secondary">Screenshot</button>
-              </div>
-              <div class="config-row">
-                <label>Sleep</label>
-                <input type="number" id="sleep-input" min="1" max="3600" value="60">
-                <label>Jitter %</label>
-                <input type="number" id="jitter-input" min="0" max="100" value="30">
-                <button type="button" id="btn-config" class="secondary">Apply config</button>
               </div>
             </div>
           </details>
@@ -254,6 +247,21 @@
       </aside>
     </div>
   </div>
+
+  <dialog id="beacon-config-dialog" class="beacon-config-dialog">
+    <form id="beacon-config-form" method="dialog" class="beacon-config-form">
+      <h3 class="beacon-config-title">Beacon config</h3>
+      <p id="beacon-config-session-label" class="beacon-config-session"></p>
+      <label for="beacon-config-sleep">Sleep (seconds)</label>
+      <input type="number" id="beacon-config-sleep" min="1" max="3600" value="60" required>
+      <label for="beacon-config-jitter">Jitter (%)</label>
+      <input type="number" id="beacon-config-jitter" min="0" max="100" value="30" required>
+      <div class="beacon-config-actions">
+        <button type="button" id="beacon-config-cancel" class="secondary">Cancel</button>
+        <button type="submit" id="beacon-config-apply">Apply</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="app.js"></script>
   <script src="agent-gen.js"></script>
