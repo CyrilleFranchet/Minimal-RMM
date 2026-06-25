@@ -95,10 +95,13 @@ body {
   margin-bottom: 0.25rem;
 }
 
-.login-card-head .theme-toggle-btn {
+.login-card-head .theme-toggle-btn,
+.theme-toggle-btn {
   flex-shrink: 0;
-  padding: 0.35rem 0.65rem;
-  font-size: 0.8rem;
+  padding: 0.35rem 0.55rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  min-width: 2.25rem;
 }
 
 .login-card p {

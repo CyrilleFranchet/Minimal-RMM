@@ -11,12 +11,15 @@
     return normalizeTheme(document.documentElement.getAttribute("data-theme"));
   }
 
+  const ICON_SUN = "\u2600";
+  const ICON_MOON = "\u263E";
+
   function updateToggleButtons(theme) {
     const toLight = theme === "dark";
     const label = toLight ? "Switch to light mode" : "Switch to dark mode";
-    const text = toLight ? "Light" : "Dark";
+    const icon = toLight ? ICON_SUN : ICON_MOON;
     document.querySelectorAll(".theme-toggle-btn").forEach((btn) => {
-      btn.textContent = text;
+      btn.textContent = icon;
       btn.setAttribute("aria-label", label);
       btn.title = label;
     });

@@ -4,10 +4,10 @@ The operator console at `/ui/` supports **dark** (default) and **light** themes 
 
 ## Toggle
 
-- **Login screen** — **Light** / **Dark** button in the card header.
+- **Login screen** — sun / moon toggle in the card header (sun while dark → switch to light).
 - **Connected** — same control in the app header (before **AI**).
 
-Click toggles between themes. The choice is stored in **`localStorage`** key `rmm_theme` (`dark` | `light`). Default when unset: **`dark`**.
+Click toggles between themes (☀ in dark mode, ☽ in light mode). Preference is stored in **`localStorage`** key `rmm_theme` (`dark` | `light`). Default when unset: **`dark`**.
 
 ## Implementation
 
