@@ -408,11 +408,13 @@ button:disabled {
   line-height: 1.45;
 }
 
+.transfer-progress,
 .exfil-progress {
   padding-left: 1.25rem;
   margin-bottom: 0.5rem;
 }
 
+.transfer-progress-bar,
 .exfil-progress-bar {
   height: 0.45rem;
   background: var(--border);
@@ -421,6 +423,7 @@ button:disabled {
   margin-bottom: 0.35rem;
 }
 
+.transfer-progress-fill,
 .exfil-progress-fill {
   height: 100%;
   width: 0;
@@ -429,6 +432,7 @@ button:disabled {
   transition: width 0.35s ease;
 }
 
+.transfer-progress-detail,
 .exfil-progress-detail {
   color: var(--muted);
   font-size: 0.75rem;
