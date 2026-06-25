@@ -66,18 +66,18 @@ PS: whoami.exe /groups
 |----------|------|
 | Who is the beacon running as? | `whoami`, `PS: [WindowsIdentity]::GetCurrent().Name` |
 | What groups are in my token? | `whoami /groups`, `whoami /all` |
-| List **local** accounts only | `net user` (no args) |
-| Members of a **local** group | `net localgroup Administrators` (adjust group name) |
-| Domain user record / all AD groups | AD cmdlets (`Get-ADUser`, `Get-ADPrincipalGroupMembership`) **only if** RSAT/AD module is available; otherwise stick to token view or ask the operator |
+| Domain user / group enumeration | LDAP/ADWS — **windows-ad-recon-stealth** (`Get-AD*`, `[ADSI]`; not `net user /domain`) |
+| List **local** accounts | `PS: Get-LocalUser` — **windows-ad-recon-stealth** |
+| Members of a **local** group | `PS: Get-LocalGroupMember` — **windows-ad-recon-stealth** (not `net localgroup` by default) |
 
-For **local** built-in accounts (e.g. `Administrator`, `Guest`), `net user Administrator` can work. For typical domain users, use `whoami` / token APIs instead.
+For domain users, use `whoami` / token APIs or LDAP — not `net user`. For local accounts, prefer `Get-LocalUser` over `net user`.
 
 ## RMM workflow
 
 1. `list_sessions` / `get_session` — hostname and registration username for display only.
 2. `exec_command` with `whoami` and/or `whoami /groups` — canonical identity and effective groups.
-3. If the operator asks for local group members, use `net localgroup <GroupName>` (CMD), not `net user %USERNAME%`.
-4. If AD enumeration is required, probe for modules (`PS: Get-Module -ListAvailable ActiveDirectory`) before `Get-AD*`; explain limitations if unavailable.
+3. If the operator asks for local group members, prefer `PS: Get-LocalGroupMember -Group 'Administrators'` — see **windows-ad-recon-stealth** (avoid `net localgroup` unless operator accepts RPC noise).
+4. If AD enumeration is required, probe `ActiveDirectory` module then use `Get-AD*` / LDAP — not `net user /domain` — see **windows-ad-recon-stealth**.
 
 ## Common mistakes
 
@@ -86,4 +86,5 @@ For **local** built-in accounts (e.g. `Administrator`, `Guest`), `net user Admin
 | `net user %USERNAME%` on domain PC | Local SAM lookup | `whoami /groups` |
 | `PS: net user %USERNAME%` | `%USERNAME%` not expanded in PS | `PS: net user $env:USERNAME` still fails for domain users — use `whoami` |
 | Assume `username` from API equals SAM name | Profile/logon names differ | `whoami` on agent |
-| `net user DOMAIN\user` without server | Syntax/context dependent | `whoami /groups` or AD tools |
+| `net user DOMAIN\user` without server | RPC recon + wrong tool for domain | LDAP/`Get-ADUser` — **windows-ad-recon-stealth** |
+| `net localgroup` / `net user /domain` for enum | RPC recon, EDR noise | `Get-AD*`, `[ADSI]`, `Get-LocalGroupMember` |
