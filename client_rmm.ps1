@@ -2227,6 +2227,24 @@ function Join-RmmProcessOutputText {
     return $text
 }
 
+function Remove-RmmClixmlProgressOutput {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
+    if ($Text -notmatch '(?s)#< CLIXML') { return $Text }
+    return ($Text -replace '(?m)^\s*#< CLIXML[\s\S]*?</Objs>\s*', '').TrimEnd()
+}
+
+function Build-RmmEncodedPowerShellScript {
+    param([Parameter(Mandatory = $true)][string]$Inner)
+    $wdEsc = $script:RmmShellCwd -replace "'", "''"
+    @(
+        '$ProgressPreference = ''SilentlyContinue'''
+        "Set-Location -LiteralPath '$wdEsc' -ErrorAction SilentlyContinue"
+        $Inner
+        "Write-Output ('RMM_CWD_SIG:' + (Get-Location).Path)"
+    ) -join "`r`n"
+}
+
 function Invoke-RmmHiddenEncodedPowerShell {
     param(
         [Parameter(Mandatory = $true)][string]$ExecutablePath,
@@ -2237,7 +2255,8 @@ function Invoke-RmmHiddenEncodedPowerShell {
         '-WindowStyle', 'Hidden',
         '-EncodedCommand', $EncodedCommand
     )
-    return (Join-RmmProcessOutputText -Result $result)
+    $text = Join-RmmProcessOutputText -Result $result
+    return (Remove-RmmClixmlProgressOutput -Text $text)
 }
 
 function Format-RmmCmdProcessArguments {
@@ -2307,8 +2326,7 @@ function Invoke-RmmUserCommand {
         if ($trimmed -match '^(?i)(?:powershell|ps)\s*:\s*(.*)$') {
             $inner = $Matches[1]
             if ([string]::IsNullOrWhiteSpace($inner)) { return 'Error: empty script after PS: or powershell:' }
-            $wdEsc = $script:RmmShellCwd -replace "'", "''"
-            $innerPs = "Set-Location -LiteralPath '$wdEsc' -ErrorAction SilentlyContinue`r`n" + $inner + "`r`nWrite-Output ('RMM_CWD_SIG:' + (Get-Location).Path)"
+            $innerPs = Build-RmmEncodedPowerShellScript -Inner $inner
             $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerPs))
             $txt = Invoke-RmmHiddenEncodedPowerShell -ExecutablePath 'powershell.exe' -EncodedCommand $enc
             return (Apply-RmmCwdFromCmdOutput -Text $txt)
@@ -2316,8 +2334,7 @@ function Invoke-RmmUserCommand {
         if ($trimmed -match '^(?i)pwsh\s*:\s*(.*)$') {
             $inner = $Matches[1]
             if ([string]::IsNullOrWhiteSpace($inner)) { return 'Error: empty script after pwsh:' }
-            $wdEsc = $script:RmmShellCwd -replace "'", "''"
-            $innerPs = "Set-Location -LiteralPath '$wdEsc' -ErrorAction SilentlyContinue`r`n" + $inner + "`r`nWrite-Output ('RMM_CWD_SIG:' + (Get-Location).Path)"
+            $innerPs = Build-RmmEncodedPowerShellScript -Inner $inner
             $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerPs))
             $launcher = if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) { 'pwsh.exe' } else { 'powershell.exe' }
             $txt = Invoke-RmmHiddenEncodedPowerShell -ExecutablePath $launcher -EncodedCommand $enc

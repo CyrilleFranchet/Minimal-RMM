@@ -28,6 +28,8 @@ After each command, the agent appends `RMM_CWD_SIG:<path>` (CMD via `%CD%`, Powe
 | `Invoke-RmmHiddenProcessWait` | Start hidden child process; async read stdout/stderr; return exit code + streams |
 | `Join-RmmProcessOutputText` | Merge stdout/stderr; optional empty-output exit-code message (CMD only) |
 | `Invoke-RmmHiddenEncodedPowerShell` | Run `-EncodedCommand` script in hidden `powershell.exe` / `pwsh.exe` |
+| `Build-RmmEncodedPowerShellScript` | Wrap `PS:` body with cwd, `$ProgressPreference`, and `RMM_CWD_SIG` |
+| `Remove-RmmClixmlProgressOutput` | Strip leaked `#< CLIXML` progress blobs from redirected stdout |
 | `Apply-RmmCwdFromCmdOutput` | Strip `RMM_CWD_SIG` lines and update shell cwd |
 | `ConvertTo-RmmPlainText` | Flatten PowerShell `ErrorRecord` objects when capturing in-process (legacy paths) |
 
@@ -37,3 +39,4 @@ After each command, the agent appends `RMM_CWD_SIG:<path>` (CMD via `%CD%`, Powe
 - Very large stdout/stderr can still block if pipe buffers fill before the child exits (same class of risk as any redirected process).
 - CMD quoting rules still apply; complex nested quotes may need `PS:` with `-EncodedCommand` semantics.
 - **AI operators:** PowerShell sent without `PS:` / `powershell:` runs through CMD and CMD **still splits on `\|` inside double quotes** — use skill `agent-command-dispatch` and prefix `PS:` for any script with pipelines or cmdlets. See `docs/web-ai-skills.md`.
+- **CLIXML noise:** Hidden PowerShell with redirected stdout can serialize progress records (`Preparing modules for first use.`) as `#< CLIXML …` XML. The agent sets `$ProgressPreference = 'SilentlyContinue'` in the `PS:` wrapper and strips any remaining CLIXML from output.
