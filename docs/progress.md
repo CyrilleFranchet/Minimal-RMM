@@ -95,7 +95,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `queue_agent_download` / `register_download_artifact` — track remote path from queue + agent `remote_path` field
 - [x] `queue_agent_exfil` — `POST …/exfil` queues `__EXFIL__` (agent rclone upload; `cloud_upload` in events)
 - [x] `GET /api/v1/rclone/config` — rclone binary + masked profile status; `GET /tools/rclone.exe` beacon bootstrap
-- [x] Session transcript persistence — `RMM_logs/history/{id}/events.jsonl` + `meta.json`; archive on kill
+- [x] Session transcript persistence — `RMM_logs/history/{id}/events.jsonl` + `meta.json`; archive on kill; **orphan archive on server restart** (`server_restart`)
 - [x] `GET /api/v1/history` — list ended sessions; `GET …/history/{id}/events` read-only transcript
 
 ### SOCKS (`rmm_socks.py`)
