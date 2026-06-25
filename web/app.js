@@ -1883,6 +1883,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  if (typeof window.initAgentGenerator === "function") {
+    window.initAgentGenerator();
+  }
+
   if (state.token) {
     $("#token-input").value = state.token;
     connect();

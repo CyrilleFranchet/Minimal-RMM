@@ -239,6 +239,120 @@ button:disabled {
   margin-top: 1.25rem;
 }
 
+.agent-gen-panel {
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+
+.agent-gen-panel summary {
+  padding: 0.65rem 0.75rem;
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+  font-weight: 600;
+}
+
+.agent-gen-panel[open] summary {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.25rem;
+}
+
+.agent-gen-inner {
+  padding: 0.65rem 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.agent-gen-inner label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin-top: 0.15rem;
+}
+
+.agent-gen-intro,
+.agent-gen-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.agent-gen-inner input[type="url"],
+.agent-gen-inner input[type="text"],
+.agent-gen-inner input[type="password"],
+.agent-gen-inner input[type="number"],
+.agent-gen-run {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.agent-gen-output {
+  width: 100%;
+  min-height: 10rem;
+  padding: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  resize: vertical;
+}
+
+.agent-gen-row {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.agent-gen-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-gen-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.35rem;
+}
+
+.agent-gen-fieldset {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  margin: 0.15rem 0;
+}
+
+.agent-gen-fieldset legend {
+  padding: 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.agent-gen-radio,
+.agent-gen-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text);
+  font-size: 0.78rem;
+  margin: 0.15rem 0;
+}
+
+.agent-gen-radio input,
+.agent-gen-check input {
+  margin: 0;
+}
+
 .session-count {
   font-weight: 400;
   color: var(--muted);

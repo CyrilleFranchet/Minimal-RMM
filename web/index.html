@@ -35,6 +35,92 @@
         <h2 class="sidebar-sub">Session history</h2>
         <p id="history-empty" class="sidebar-hint hidden">No archived sessions yet.</p>
         <ul id="history-list" class="session-list history-list"></ul>
+
+        <details class="agent-gen-panel" id="agent-gen-panel">
+          <summary>Deploy agent (PowerShell)</summary>
+          <div class="agent-gen-inner">
+            <p class="agent-gen-intro">Generate <code>client_rmm.ps1</code> settings for a Windows lab host.</p>
+
+            <label for="agent-server-url">Server URL</label>
+            <div class="agent-gen-row">
+              <input type="url" id="agent-server-url" placeholder="https://your-server.example.com" autocomplete="off">
+              <button type="button" class="secondary" id="agent-use-origin" title="Use this browser origin">Use current</button>
+            </div>
+
+            <label for="agent-beacon-secret">Beacon secret</label>
+            <input type="password" id="agent-beacon-secret" placeholder="RMM_BEACON_SECRET (same as server)" autocomplete="off">
+
+            <fieldset class="agent-gen-fieldset">
+              <legend>Session ID</legend>
+              <label class="agent-gen-radio">
+                <input type="radio" name="agent-session-mode" value="new" checked>
+                New GUID each run
+              </label>
+              <label class="agent-gen-radio">
+                <input type="radio" name="agent-session-mode" value="fixed">
+                Fixed GUID
+              </label>
+              <div class="agent-gen-row">
+                <input type="text" id="agent-session-id" placeholder="00000000-0000-0000-0000-000000000000" disabled>
+                <button type="button" class="secondary" id="agent-session-regen" disabled>New</button>
+              </div>
+            </fieldset>
+
+            <div class="agent-gen-grid">
+              <div>
+                <label for="agent-sleep">Sleep (s)</label>
+                <input type="number" id="agent-sleep" min="1" max="3600" value="60">
+              </div>
+              <div>
+                <label for="agent-jitter">Jitter %</label>
+                <input type="number" id="agent-jitter" min="0" max="100" value="30">
+              </div>
+              <div>
+                <label for="agent-max-retries">Max retries</label>
+                <input type="number" id="agent-max-retries" min="1" max="99" value="3">
+              </div>
+            </div>
+
+            <label for="agent-http-proxy">HTTP proxy (optional)</label>
+            <input type="text" id="agent-http-proxy" placeholder="http://proxy.corp:8080">
+
+            <label class="agent-gen-check">
+              <input type="checkbox" id="agent-persistent-http">
+              Persistent HTTP (reuse TCP)
+            </label>
+            <label class="agent-gen-check">
+              <input type="checkbox" id="agent-proxy-creds">
+              Proxy default credentials (Windows)
+            </label>
+            <label class="agent-gen-check">
+              <input type="checkbox" id="agent-verbose-http">
+              Verbose HTTP logging
+            </label>
+
+            <fieldset class="agent-gen-fieldset">
+              <legend>Output format</legend>
+              <label class="agent-gen-radio">
+                <input type="radio" name="agent-output-mode" value="config" checked>
+                Script variables (paste into client_rmm.ps1)
+              </label>
+              <label class="agent-gen-radio">
+                <input type="radio" name="agent-output-mode" value="env">
+                Environment variables
+              </label>
+            </fieldset>
+
+            <label for="agent-gen-output">Generated configuration</label>
+            <textarea id="agent-gen-output" class="agent-gen-output" readonly rows="12" spellcheck="false"></textarea>
+            <button type="button" class="secondary" id="agent-gen-copy-config">Copy configuration</button>
+
+            <label for="agent-gen-run">Run on target host</label>
+            <div class="agent-gen-row">
+              <input type="text" id="agent-gen-run" class="agent-gen-run" readonly spellcheck="false">
+              <button type="button" class="secondary" id="agent-gen-copy-run">Copy</button>
+            </div>
+            <p class="agent-gen-hint" id="agent-gen-hint">Copy client_rmm.ps1 to the target, apply configuration, then run the command above.</p>
+          </div>
+        </details>
       </aside>
 
       <main class="main-panel">
@@ -155,6 +241,7 @@
   </div>
 
   <script src="app.js"></script>
+  <script src="agent-gen.js"></script>
   <script src="ai.js"></script>
 </body>
 </html>
