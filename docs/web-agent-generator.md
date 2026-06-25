@@ -1,6 +1,6 @@
 # Web UI — PowerShell agent generator
 
-Operators can build a **`client_rmm.ps1` configuration snippet** from the web console without hand-editing the script.
+Operators can build a **ready-to-run `client_rmm.ps1`** from the web console without hand-editing the script.
 
 ## Location
 
@@ -21,17 +21,28 @@ Sidebar → **Deploy agent (PowerShell)** (visible after login).
 
 ## Output modes
 
-1. **Script variables** — paste over lines 45–57 in `client_rmm.ps1`
-2. **Environment variables** — shell block before launching the script (timing still comes from the script or server `__CONFIG__`)
+1. **Full script** (default) — fetches `client_rmm.ps1` from the server, patches the configuration block, and offers **Copy script** / **Download .ps1**
+2. **Config snippet only** — paste over lines 45–57 in an existing copy of the agent
+3. **Environment variables** — shell block before launching an unmodified script
+
+## API
+
+`GET /api/v1/agent/script` (operator Bearer token) returns:
+
+```json
+{ "filename": "client_rmm.ps1", "content": "..." }
+```
+
+The Web UI uses this endpoint; operators can also fetch the template with curl for automation.
 
 ## Deploy steps
 
-1. Copy `client_rmm.ps1` to the Windows lab host.
-2. Generate configuration in the web UI; **Copy configuration**.
-3. Paste into the script config block (or set env vars).
-4. **Copy** the run command: `powershell -ExecutionPolicy Bypass -File .\client_rmm.ps1`
+1. Open **Deploy agent (PowerShell)** and fill in server URL + beacon secret.
+2. **Download .ps1** or **Copy script** (full script mode).
+3. Save as `client_rmm.ps1` on the Windows lab host.
+4. Run: `powershell -ExecutionPolicy Bypass -File .\client_rmm.ps1`
 
-Form values are stored in `sessionStorage` for this browser tab only (not sent to the server).
+Form values are stored in `sessionStorage` for this browser tab only. The generated script is built in the browser; only the template fetch hits the server.
 
 ## Related
 

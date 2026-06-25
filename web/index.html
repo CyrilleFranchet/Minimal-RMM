@@ -39,7 +39,7 @@
         <details class="agent-gen-panel" id="agent-gen-panel">
           <summary>Deploy agent (PowerShell)</summary>
           <div class="agent-gen-inner">
-            <p class="agent-gen-intro">Generate <code>client_rmm.ps1</code> settings for a Windows lab host.</p>
+            <p class="agent-gen-intro">Generate a ready-to-run <code>client_rmm.ps1</code> for a Windows lab host.</p>
 
             <label for="agent-server-url">Server URL</label>
             <div class="agent-gen-row">
@@ -100,8 +100,12 @@
             <fieldset class="agent-gen-fieldset">
               <legend>Output format</legend>
               <label class="agent-gen-radio">
-                <input type="radio" name="agent-output-mode" value="config" checked>
-                Script variables (paste into client_rmm.ps1)
+                <input type="radio" name="agent-output-mode" value="script" checked>
+                Full script (client_rmm.ps1)
+              </label>
+              <label class="agent-gen-radio">
+                <input type="radio" name="agent-output-mode" value="config">
+                Config snippet only
               </label>
               <label class="agent-gen-radio">
                 <input type="radio" name="agent-output-mode" value="env">
@@ -109,16 +113,19 @@
               </label>
             </fieldset>
 
-            <label for="agent-gen-output">Generated configuration</label>
+            <label for="agent-gen-output" id="agent-gen-output-label">Generated script</label>
             <textarea id="agent-gen-output" class="agent-gen-output" readonly rows="12" spellcheck="false"></textarea>
-            <button type="button" class="secondary" id="agent-gen-copy-config">Copy configuration</button>
+            <div class="agent-gen-actions">
+              <button type="button" class="secondary" id="agent-gen-copy-script">Copy script</button>
+              <button type="button" class="secondary" id="agent-gen-download-script">Download .ps1</button>
+            </div>
 
             <label for="agent-gen-run">Run on target host</label>
             <div class="agent-gen-row">
               <input type="text" id="agent-gen-run" class="agent-gen-run" readonly spellcheck="false">
               <button type="button" class="secondary" id="agent-gen-copy-run">Copy</button>
             </div>
-            <p class="agent-gen-hint" id="agent-gen-hint">Copy client_rmm.ps1 to the target, apply configuration, then run the command above.</p>
+            <p class="agent-gen-hint" id="agent-gen-hint">Save as client_rmm.ps1 on the target host, then run the command below.</p>
           </div>
         </details>
       </aside>

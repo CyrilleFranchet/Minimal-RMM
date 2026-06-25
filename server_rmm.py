@@ -56,6 +56,7 @@ HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 PORT = 8080
 LOG_DIR = "RMM_logs"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+CLIENT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "client_rmm.ps1")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
 WEB_MIME = {
@@ -1620,6 +1621,20 @@ class RMMHandler(BaseHTTPRequestHandler):
 
         if parts == ["health"]:
             self._json(200, {"status": "ok", "sessions": len(srv.sessions)})
+            return True
+
+        if parts == ["agent", "script"]:
+            script_path = os.path.realpath(CLIENT_SCRIPT)
+            repo_root = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+            if not script_path.startswith(repo_root + os.sep):
+                self._json(500, {"error": "invalid_script_path"})
+                return True
+            if not os.path.isfile(script_path):
+                self._json(404, {"error": "script_not_found"})
+                return True
+            with open(script_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self._json(200, {"filename": "client_rmm.ps1", "content": content})
             return True
 
         if parts == ["sessions"]:

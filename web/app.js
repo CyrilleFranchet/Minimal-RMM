@@ -1439,6 +1439,9 @@ async function connect() {
   }
   sessionStorage.setItem(STORAGE_KEY, token);
   showApp();
+  if (typeof window.refreshAgentScriptTemplate === "function") {
+    window.refreshAgentScriptTemplate();
+  }
   connectWebSocket();
   startEventPolling();
   startSessionPolling();
