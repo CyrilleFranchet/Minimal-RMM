@@ -71,6 +71,7 @@ On connect, the UI calls `GET /api/v1/ai/skills` and renders the list.
 | File | Purpose |
 |------|---------|
 | `ai-skills/agent-command-dispatch.md` | **Default.** CMD vs PowerShell dispatch; always use `PS:` for PowerShell (CMD breaks `\|` in `powershell -Command`). |
+| `ai-skills/windows-identity-and-groups.md` | **Default.** Identity and groups via `whoami` / token; do not use `net user %USERNAME%` on domain accounts. |
 | `ai-skills/windows-user-profile-path.md` | Do not assume `C:\Users\<username>`; resolve profile path on the agent before file ops. |
 
 ### Why `PS:` matters for the AI
