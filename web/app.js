@@ -377,9 +377,11 @@ function renderHistoryList() {
       (s.session_id === state.selectedHistoryId && state.viewMode === "history" ? " active" : "");
     const ended = s.ended_at ? formatTime(s.ended_at) : formatTime(s.updated_at || s.last_seen);
     const reason = s.end_reason ? ` · ${s.end_reason}` : "";
+    const connected = formatFirstConnected(s.first_seen);
     li.innerHTML = `
       <div class="id">${escapeHtml((s.session_id || "").slice(0, 8))}<span class="ended-tag">archived</span></div>
       <div class="meta">${escapeHtml(s.username || "?")}@${escapeHtml(s.hostname || "?")}</div>
+      ${connected ? `<div class="sub sub-connected">connected ${escapeHtml(connected)}</div>` : ""}
       <div class="sub">${escapeHtml(String(s.event_count || 0))} events · ended ${escapeHtml(ended)}${escapeHtml(reason)}</div>
     `;
     li.addEventListener("click", () => selectHistorySession(s.session_id));
@@ -429,6 +431,17 @@ function formatTime(iso) {
     return new Date(iso).toLocaleString();
   } catch {
     return iso;
+  }
+}
+
+function formatFirstConnected(iso) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleString();
+  } catch {
+    return null;
   }
 }
 
@@ -1592,9 +1605,11 @@ function renderSessionList() {
     const agoSec = sessionAgoSeconds(s);
     const ago = agoSec != null ? formatAgo(agoSec) : formatTime(s.last_seen);
     const st = computeBeaconStatus(s);
+    const connected = formatFirstConnected(s.first_seen);
     li.innerHTML = `
       <div class="id">${escapeHtml(s.id.slice(0, 8))} <span class="beacon-status ${statusClass(st)}">${escapeHtml(st)}</span></div>
       <div class="meta">${escapeHtml(s.username)}@${escapeHtml(s.hostname)}</div>
+      ${connected ? `<div class="sub sub-connected">connected ${escapeHtml(connected)}</div>` : ""}
       <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)}</div>
     `;
     li.addEventListener("click", () => selectSession(s.id));

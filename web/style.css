@@ -480,6 +480,11 @@ body.sidebar-resizing iframe {
 .session-item .sub {
   font-size: 0.75rem;
   color: var(--muted);
+  margin-top: 0.1rem;
+}
+
+.session-item .sub-connected {
+  margin-top: 0.2rem;
 }
 
 .beacon-status {
