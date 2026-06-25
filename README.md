@@ -120,7 +120,7 @@ MCP tools mirror `rmm_cli.py` operator actions:
 | `screenshot` | `queue_screenshot` |
 | `socks list` | `list_socks` |
 | `socks` / `socks stop` | `start_socks` / `stop_socks` |
-| — | `list_history`, `get_history_session`, `get_history_events`, `delete_history` |
+| — | `list_history`, `get_history_session`, `get_history_events`, `delete_history`, `clear_history` |
 | — | `list_session_downloads` |
 | — | `get_agent_script` |
 | — | `queue_keylog`, `install_persistence`, `remove_persistence` |
@@ -191,6 +191,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `GET` | `/history` | — | List archived (ended) session transcripts |
 | `GET` | `/history/{id}` | — | Archived session metadata |
 | `GET` | `/history/{id}/events?since=0&limit=500` | — | Read-only event transcript from disk |
+| `DELETE` | `/history` | — | Remove all archived transcripts (ended sessions only) |
 | `DELETE` | `/history/{id}` | — | Remove archived transcript from disk (ended sessions only) |
 | `GET` | `/artifacts/{downloads\|screenshots}/{filename}` | `?token=` | Download saved artifact (auth required) |
 | `WS` | `/ws?token=…&session=…` | — | Live events + session list (WebSocket) |

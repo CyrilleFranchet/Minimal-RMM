@@ -33,7 +33,10 @@
           <h2>Sessions <span id="session-count" class="session-count"></span></h2>
           <p id="session-hint" class="sidebar-hint hidden"></p>
           <ul id="session-list" class="session-list"></ul>
-          <h2 class="sidebar-sub">Session history</h2>
+          <div class="sidebar-section-head">
+            <h2 class="sidebar-sub">Session history</h2>
+            <button type="button" class="secondary history-clear-all hidden" id="history-clear-all" title="Delete all archived sessions" aria-label="Clear all archived sessions">Clear all</button>
+          </div>
           <p id="history-empty" class="sidebar-hint hidden">No archived sessions yet.</p>
           <ul id="history-list" class="session-list history-list"></ul>
         </div>

@@ -374,6 +374,11 @@ function renderHistoryList() {
   if (!ul) return;
   ul.innerHTML = "";
   const rows = state.historySessions.filter((s) => !s.active);
+  const clearBtn = $("#history-clear-all");
+  if (clearBtn) {
+    clearBtn.classList.toggle("hidden", rows.length === 0);
+    clearBtn.disabled = rows.length === 0;
+  }
   if (empty) {
     empty.classList.toggle("hidden", rows.length > 0);
   }
@@ -436,6 +441,35 @@ async function deleteHistorySession(id) {
     showEmptyConsole();
   }
   await fetchSessionHistory();
+}
+
+async function clearAllHistorySessions() {
+  const rows = state.historySessions.filter((s) => !s.active);
+  if (!rows.length) return;
+  const n = rows.length;
+  if (
+    !confirm(
+      `Delete all ${n} archived session${n === 1 ? "" : "s"}? This permanently removes transcripts from disk.`
+    )
+  ) {
+    return;
+  }
+  const { status, data } = await api("/history", { method: "DELETE" });
+  if (status !== 200) {
+    appendShellError(data.error || data.detail || `Clear failed (${status})`);
+    return;
+  }
+  const deleted = data.deleted ?? 0;
+  const errors = data.errors || [];
+  if (state.viewMode === "history" && state.selectedHistoryId) {
+    showEmptyConsole();
+  }
+  await fetchSessionHistory();
+  if (errors.length) {
+    appendShellError(`Cleared ${deleted} session(s); ${errors.length} failed`);
+  } else if (deleted > 0) {
+    appendShellMeta(`Cleared ${deleted} archived session${deleted === 1 ? "" : "s"}`);
+  }
 }
 
 async function selectHistorySession(id) {
@@ -2385,6 +2419,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
   $("#console-close")?.addEventListener("click", closeConsole);
+  $("#history-clear-all")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    clearAllHistorySessions();
+  });
   bindBeaconConfigDialog();
   $("#btn-download").addEventListener("click", queueDownload);
   $("#btn-exfil").addEventListener("click", queueExfil);

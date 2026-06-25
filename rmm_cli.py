@@ -250,6 +250,9 @@ class RmmApiClient:
     def delete_history(self, session_ref: str):
         return self.request("DELETE", f"/api/v1/history/{session_ref}")
 
+    def clear_history(self):
+        return self.request("DELETE", "/api/v1/history")
+
     def list_session_downloads(self, session_ref: str):
         return self.request("GET", f"/api/v1/sessions/{session_ref}/downloads")
 

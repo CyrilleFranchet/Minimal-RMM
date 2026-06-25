@@ -8,7 +8,7 @@ Operators can browse **archived transcripts** from ended sessions in the web con
 |---------|---------|
 | Web UI | **Session history** list in sidebar; read-only transcript view |
 | REST API | `GET /api/v1/history`, `GET /api/v1/history/{id}`, `GET /api/v1/history/{id}/events`, `DELETE /api/v1/history/{id}` |
-| CLI / MCP | MCP: `list_history`, `get_history_session`, `get_history_events`, `delete_history` (CLI subcommands not in v1) |
+| CLI / MCP | MCP: `list_history`, `get_history_session`, `get_history_events`, `delete_history`, `clear_history` (CLI subcommands not in v1) |
 
 ## Storage
 
@@ -42,10 +42,16 @@ DELETE /api/v1/history/{id}
 
 Removes `RMM_logs/history/{id}/` from disk and drops the session from `sessions.json` (archived sessions only). Returns `409 session_still_active` if the session is still live. Without removing `sessions.json`, a server restart would recreate the archive from stale rows.
 
+```http
+DELETE /api/v1/history
+```
+
+Removes **all** ended archived sessions (same filter as `GET /history`). Returns `{ "ok": true, "deleted": N, "errors": [...] }`.
+
 ## Web UI
 
 - **Sessions** — live agents; hover a row to reveal **Beacon** (sleep/jitter dialog) and **Kill**. Updates via WebSocket `sessions` messages + 5 s poll fallback; beacon status recomputed client-side every 15 s.
-- **Session history** — archived sessions; click to view read-only transcript (shell input and tools hidden). Hover a row to reveal **Delete** (permanent disk removal, with confirmation).
+- **Session history** — archived sessions; click to view read-only transcript (shell input and tools hidden). Hover a row to reveal **Delete** (permanent disk removal, with confirmation). **Clear all** (header button) deletes every archived session.
 - **Close console** — **×** top-right on the session panel closes the view (live or archived) without killing the agent; sidebar selection clears.
 - **Kill session** — hover **Kill** on a live session row (same pattern as archived **Delete**); closes the console if that session was selected and refreshes both lists.
 
@@ -60,6 +66,7 @@ Removes `RMM_logs/history/{id}/` from disk and drops the session from `sessions.
 | `list_session_history` | Scan history dir for archived rows |
 | `get_history_meta` / `get_history_events` | Read archive for API / web |
 | `delete_history_session` | Remove archived transcript directory from disk and `sessions.json` row |
+| `clear_session_history` | Delete all ended archived sessions |
 | `remove_persisted_session` | Drop session id from `sessions.json` (kill, delete, post-restart archive) |
 
 ## Limitations (v1)

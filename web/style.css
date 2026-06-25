@@ -304,6 +304,28 @@ body.sidebar-resizing iframe {
   margin-top: 1.25rem;
 }
 
+.sidebar-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin-top: 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.sidebar-section-head .sidebar-sub {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.history-clear-all {
+  flex-shrink: 0;
+  padding: 0.15rem 0.45rem;
+  font-size: 0.65rem;
+  line-height: 1.2;
+}
+
 .agent-gen-panel {
   font-size: 0.82rem;
 }
