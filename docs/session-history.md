@@ -40,7 +40,7 @@ GET /api/v1/history/{id}/events?since=0&limit=500
 DELETE /api/v1/history/{id}
 ```
 
-Removes `RMM_logs/history/{id}/` from disk (archived sessions only). Returns `409 session_still_active` if the session is still live.
+Removes `RMM_logs/history/{id}/` from disk and drops the session from `sessions.json` (archived sessions only). Returns `409 session_still_active` if the session is still live. Without removing `sessions.json`, a server restart would recreate the archive from stale rows.
 
 ## Web UI
 
@@ -58,7 +58,8 @@ Removes `RMM_logs/history/{id}/` from disk (archived sessions only). Returns `40
 | `_archive_orphaned_sessions_on_startup` | Finalize stale/offline sessions after server restart |
 | `list_session_history` | Scan history dir for archived rows |
 | `get_history_meta` / `get_history_events` | Read archive for API / web |
-| `delete_history_session` | Remove archived transcript directory from disk |
+| `delete_history_session` | Remove archived transcript directory from disk and `sessions.json` row |
+| `remove_persisted_session` | Drop session id from `sessions.json` (kill, delete, post-restart archive) |
 
 ## Limitations (v1)
 

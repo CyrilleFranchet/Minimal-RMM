@@ -598,14 +598,54 @@ class RMMServer:
                     with open(meta_path, "r", encoding="utf-8") as f:
                         existing = json.load(f)
                     if isinstance(existing, dict) and existing.get("ended_at"):
+                        self.remove_persisted_session(sid)
                         continue
                 except (OSError, json.JSONDecodeError):
                     pass
             session = self._session_from_record(sid, rec)
             self._finalize_session_history(session, reason="server_restart")
+            self.remove_persisted_session(sid)
             archived += 1
         if archived:
             self.log(f"Archived {archived} orphaned session(s) from before restart", "INFO")
+
+    def _persisted_config_from_history_meta(self, session_id: str) -> dict | None:
+        """Restore sleep/jitter from archived meta when sessions.json no longer has the row."""
+        meta_path = self._history_meta_path(session_id)
+        if not os.path.isfile(meta_path):
+            return None
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(meta, dict):
+            return None
+        if "sleep_seconds" not in meta and "jitter_percent" not in meta:
+            return None
+        return {
+            "sleep_seconds": max(1, min(3600, int(meta.get("sleep_seconds", 60)))),
+            "jitter_percent": max(0, min(100, int(meta.get("jitter_percent", 30)))),
+        }
+
+    def remove_persisted_session(self, session_id: str) -> None:
+        """Drop a session from sessions.json (live registry file, not history events)."""
+        self._persisted_session_configs.pop(session_id, None)
+        if not os.path.exists(SESSION_FILE):
+            return
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict) or session_id not in data:
+            return
+        del data[session_id]
+        try:
+            with open(SESSION_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except OSError as e:
+            self.log(f"Failed to remove {session_id[:8]} from sessions.json: {e}", "WARNING")
 
     def save_session(self, session):
         sessions_data = {}
@@ -966,6 +1006,7 @@ class RMMServer:
         except OSError as e:
             self.log(f"History delete failed for {session_id[:8]}: {e}", "WARNING")
             return False, None, "delete_failed"
+        self.remove_persisted_session(session_id)
         return True, session_id, None
 
     @staticmethod
@@ -1051,6 +1092,7 @@ class RMMServer:
                 del self.sessions[session.id]
             if self.current_session == session.id:
                 self.current_session = None
+        self.remove_persisted_session(session.id)
         self.event_hub.broadcast_sessions(self.sessions_to_json())
         self.socks.stop(session.id)
         return True, session.id
@@ -1150,6 +1192,8 @@ class RMMServer:
             if session_id in self.killed_sessions:
                 return None
             persisted = self._persisted_session_configs.get(session_id)
+            if not persisted:
+                persisted = self._persisted_config_from_history_meta(session_id)
             if session_id not in self.sessions:
                 session = Session(session_id, hostname, username, ip)
                 if persisted:
