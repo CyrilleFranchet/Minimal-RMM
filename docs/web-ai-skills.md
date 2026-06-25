@@ -66,11 +66,16 @@ AI panel → **Skills** → checkboxes. Selection is stored in `sessionStorage` 
 
 On connect, the UI calls `GET /api/v1/ai/skills` and renders the list.
 
-## Shipped skill
+## Shipped skills
 
 | File | Purpose |
 |------|---------|
+| `ai-skills/agent-command-dispatch.md` | **Default.** CMD vs PowerShell dispatch; always use `PS:` for PowerShell (CMD breaks `\|` in `powershell -Command`). |
 | `ai-skills/windows-user-profile-path.md` | Do not assume `C:\Users\<username>`; resolve profile path on the agent before file ops. |
+
+### Why `PS:` matters for the AI
+
+The agent default shell is **cmd.exe**. Lines sent as `powershell -Command "script | pipeline"` are parsed by CMD first; pipe characters split the line so cmdlets like `Select-Object` run as CMD programs and fail. Skills instruct the model to prefix PowerShell with **`PS:`** (script body only, no `powershell.exe` wrapper). See `docs/client-command-execution.md` for agent-side behavior.
 
 ## Code
 
