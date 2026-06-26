@@ -290,6 +290,19 @@
     </form>
   </dialog>
 
+  <dialog id="server-unreachable-dialog" class="server-unreachable-dialog" aria-labelledby="server-unreachable-title">
+    <div class="server-unreachable-inner">
+      <h2 id="server-unreachable-title" class="server-unreachable-title">Server unreachable</h2>
+      <p id="server-unreachable-detail" class="server-unreachable-detail">
+        The RMM server is not responding. Check that it is running and reachable.
+      </p>
+      <div class="server-unreachable-actions">
+        <button type="button" id="server-retry-btn">Retry</button>
+        <button type="button" id="server-disconnect-btn" class="secondary">Disconnect</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="theme.js"></script>
   <script src="app.js"></script>
   <script src="agent-gen.js"></script>

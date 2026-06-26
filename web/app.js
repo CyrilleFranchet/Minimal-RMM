@@ -26,6 +26,7 @@ const state = {
   pollTimer: null,
   sessionPollTimer: null,
   statusTickTimer: null,
+  connectivityProbeTimer: null,
   sessionDownloads: [],
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
@@ -46,6 +47,43 @@ const state = {
 
 const $ = (sel) => document.querySelector(sel);
 
+function isAppActive() {
+  return Boolean(state.token) && !$("#app").classList.contains("hidden");
+}
+
+function isServerUnreachableDialogOpen() {
+  const dialog = $("#server-unreachable-dialog");
+  return Boolean(dialog?.open);
+}
+
+function showServerUnreachableDialog(message) {
+  if (!isAppActive()) return;
+  const dialog = $("#server-unreachable-dialog");
+  const detail = $("#server-unreachable-detail");
+  if (detail) {
+    detail.textContent =
+      message || "The RMM server is not responding. Check that it is running and reachable.";
+  }
+  if (dialog?.showModal && !dialog.open) {
+    dialog.showModal();
+  }
+}
+
+function hideServerUnreachableDialog() {
+  const dialog = $("#server-unreachable-dialog");
+  if (dialog?.open) {
+    dialog.close();
+  }
+}
+
+function noteServerReachable() {
+  hideServerUnreachableDialog();
+}
+
+function noteServerUnreachable(message) {
+  showServerUnreachableDialog(message);
+}
+
 async function api(path, options = {}) {
   const headers = {
     Accept: "application/json",
@@ -54,7 +92,14 @@ async function api(path, options = {}) {
   if (state.token) {
     headers.Authorization = `Bearer ${state.token}`;
   }
-  const res = await fetch(`/api/v1${path}`, { ...options, headers });
+  let res;
+  try {
+    res = await fetch(`/api/v1${path}`, { ...options, headers });
+  } catch (err) {
+    noteServerUnreachable(err.message || "Cannot reach the RMM server.");
+    return { status: 0, data: { error: err.message || "network_error" } };
+  }
+  noteServerReachable();
   let data = {};
   const text = await res.text();
   if (text) {
@@ -65,6 +110,75 @@ async function api(path, options = {}) {
     }
   }
   return { status: res.status, data };
+}
+
+async function probeServerHealth() {
+  if (!isAppActive()) return false;
+  const { status, data } = await api("/health");
+  if (status === 401) {
+    disconnect();
+    return false;
+  }
+  if (status === 200) {
+    noteServerReachable();
+    return true;
+  }
+  if (status === 0) {
+    return false;
+  }
+  showServerUnreachableDialog(
+    data.detail || data.error || `Health check failed (HTTP ${status})`
+  );
+  return false;
+}
+
+async function retryServerConnection() {
+  const btn = $("#server-retry-btn");
+  if (btn) btn.disabled = true;
+  try {
+    const ok = await probeServerHealth();
+    if (!ok) return;
+    connectWebSocket();
+    await refreshSessions();
+    await fetchSessionHistory();
+    pollSessionEvents().catch(() => {});
+    if (typeof window.fetchAiSkills === "function") {
+      window.fetchAiSkills().catch(() => {});
+    }
+    await refreshExfilStatus();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function stopConnectivityProbe() {
+  if (state.connectivityProbeTimer) {
+    clearInterval(state.connectivityProbeTimer);
+    state.connectivityProbeTimer = null;
+  }
+}
+
+function startConnectivityProbe() {
+  stopConnectivityProbe();
+  state.connectivityProbeTimer = setInterval(() => {
+    if (!isAppActive()) return;
+    probeServerHealth().catch(() => {});
+  }, 20000);
+}
+
+function bindServerUnreachableDialog() {
+  const dialog = $("#server-unreachable-dialog");
+  if (!dialog) return;
+  dialog.addEventListener("cancel", (e) => {
+    e.preventDefault();
+  });
+  $("#server-retry-btn")?.addEventListener("click", () => {
+    retryServerConnection().catch(() => {});
+  });
+  $("#server-disconnect-btn")?.addEventListener("click", () => {
+    hideServerUnreachableDialog();
+    disconnect();
+  });
 }
 
 function artifactSrc(url) {
@@ -595,8 +709,11 @@ function connectWebSocket() {
 
   ws.onclose = () => {
     setWsStatus(false);
-    if (state.token && $("#app").classList.contains("hidden") === false) {
-      setTimeout(connectWebSocket, 3000);
+    if (isAppActive()) {
+      probeServerHealth().catch(() => {});
+      if (!isServerUnreachableDialogOpen()) {
+        setTimeout(connectWebSocket, 3000);
+      }
     }
   };
 
@@ -1662,6 +1779,8 @@ async function connect() {
   startEventPolling();
   startSessionPolling();
   startStatusTick();
+  startConnectivityProbe();
+  hideServerUnreachableDialog();
   await refreshSessions();
   await fetchSessionHistory();
   if (typeof window.fetchAiSkills === "function") {
@@ -1671,10 +1790,12 @@ async function connect() {
 }
 
 function disconnect() {
+  hideServerUnreachableDialog();
   disconnectWebSocket();
   stopEventPolling();
   stopSessionPolling();
   stopStatusTick();
+  stopConnectivityProbe();
   sessionStorage.removeItem(STORAGE_KEY);
   state.token = "";
   state.selectedId = null;
@@ -2470,11 +2591,20 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && state.token && !$("#app").classList.contains("hidden")) {
-      refreshSessions().catch(() => {});
-      fetchSessionHistory().catch(() => {});
+    if (document.visibilityState === "visible" && isAppActive()) {
+      probeServerHealth()
+        .then((ok) => {
+          if (ok) {
+            connectWebSocket();
+            refreshSessions().catch(() => {});
+            fetchSessionHistory().catch(() => {});
+          }
+        })
+        .catch(() => {});
     }
   });
+
+  bindServerUnreachableDialog();
 
   if (typeof window.initAgentGenerator === "function") {
     window.initAgentGenerator();
