@@ -73,6 +73,7 @@ BEACON_SECRET = os.environ.get("RMM_BEACON_SECRET", "").strip()
 INSECURE = False
 LISTEN_HOST = "127.0.0.1"
 MAX_RESULT_EVENTS = 500
+MAX_AI_CHAT_MESSAGES = 500
 # Cap event body size on operator WebSocket pushes (full text stays in memory/history/API).
 MAX_WS_EVENT_BODY = 16 * 1024
 
@@ -884,6 +885,90 @@ class RMMServer:
     def _history_events_path(self, session_id: str) -> str:
         return os.path.join(_history_session_dir(session_id), "events.jsonl")
 
+    def _ai_chat_path(self, session_id: str) -> str:
+        return os.path.join(_history_session_dir(session_id), "ai_chat.json")
+
+    @staticmethod
+    def _normalize_ai_chat_messages(messages) -> list[dict]:
+        if not isinstance(messages, list):
+            return []
+        out: list[dict] = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role")
+            content = m.get("content")
+            if role not in ("user", "assistant") or not isinstance(content, str):
+                continue
+            row: dict = {"role": role, "content": content}
+            tool_calls = m.get("tool_calls_made")
+            if not isinstance(tool_calls, list):
+                tool_calls = m.get("toolCalls")
+            if isinstance(tool_calls, list) and tool_calls:
+                row["tool_calls_made"] = tool_calls
+            out.append(row)
+            if len(out) >= MAX_AI_CHAT_MESSAGES:
+                break
+        return out
+
+    def get_ai_chat(self, session_id_or_prefix: str) -> tuple[str | None, list[dict] | None]:
+        """Load persisted AI chat for a live or archived session."""
+        session_id = self.resolve_history_session_id(session_id_or_prefix)
+        if not session_id:
+            return None, None
+        path = self._ai_chat_path(session_id)
+        if not os.path.isfile(path):
+            return session_id, []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            self.log(f"AI chat read failed for {session_id[:8]}: {e}", "WARNING")
+            return session_id, []
+        messages = data.get("messages") if isinstance(data, dict) else []
+        return session_id, self._normalize_ai_chat_messages(messages)
+
+    def save_ai_chat(self, session_id: str, messages: list[dict]) -> None:
+        """Persist AI chat under RMM_logs/history/{session_id}/ai_chat.json."""
+        sid = validate_beacon_session_id(session_id)
+        if not sid:
+            return
+        normalized = self._normalize_ai_chat_messages(messages)
+        if len(normalized) > MAX_AI_CHAT_MESSAGES:
+            normalized = normalized[-MAX_AI_CHAT_MESSAGES:]
+        try:
+            session_dir = _history_session_dir(sid)
+        except ValueError:
+            return
+        os.makedirs(session_dir, exist_ok=True)
+        payload = {
+            "updated_at": datetime.now().isoformat(),
+            "messages": normalized,
+        }
+        try:
+            with open(self._ai_chat_path(sid), "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            self.log(f"AI chat write failed for {sid[:8]}: {e}", "WARNING")
+
+    def clear_ai_chat(self, session_id: str) -> bool:
+        """Remove persisted AI chat for a session (no-op if missing)."""
+        sid = validate_beacon_session_id(session_id)
+        if not sid:
+            return False
+        try:
+            path = self._ai_chat_path(sid)
+        except ValueError:
+            return False
+        if not os.path.isfile(path):
+            return True
+        try:
+            os.remove(path)
+            return True
+        except OSError as e:
+            self.log(f"AI chat delete failed for {sid[:8]}: {e}", "WARNING")
+            return False
+
     def _history_write_meta(
         self,
         session,
@@ -1210,6 +1295,7 @@ class RMMServer:
         if not session:
             return False, "not_found"
         self._finalize_session_history(session, reason="killed")
+        self.clear_ai_chat(session.id)
         with self.session_lock:
             self.killed_sessions.add(session.id)
             if session.id in self.sessions:
@@ -1981,6 +2067,17 @@ class RMMHandler(BaseHTTPRequestHandler):
             )
             return True
 
+        if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":
+            session_id, messages = srv.get_ai_chat(parts[1])
+            if session_id is None or messages is None:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            self._json(
+                200,
+                {"session_id": session_id, "messages": messages, "count": len(messages)},
+            )
+            return True
+
         if parts == ["ai", "skills"]:
             from rmm_ai_skills import ai_skills_dir, list_ai_skills
 
@@ -2203,6 +2300,16 @@ class RMMHandler(BaseHTTPRequestHandler):
                     exegol_mcp_token=body.get("exegol_mcp_token"),
                     skill_ids=skill_ids,
                 )
+                if result.get("ok") and selected:
+                    stored = list(messages)
+                    reply = result.get("message")
+                    if isinstance(reply, str):
+                        assistant_row: dict = {"role": "assistant", "content": reply}
+                        tool_calls = result.get("tool_calls_made")
+                        if isinstance(tool_calls, list) and tool_calls:
+                            assistant_row["tool_calls_made"] = tool_calls
+                        stored.append(assistant_row)
+                        srv.save_ai_chat(str(selected), stored)
                 status = 200 if result.get("ok") else 500
                 self._json(status, result)
             except ValueError as e:
@@ -2275,6 +2382,15 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts is None:
             return False
         srv = self.server_instance
+
+        if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":
+            session_id, _messages = srv.get_ai_chat(parts[1])
+            if session_id is None:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            srv.clear_ai_chat(session_id)
+            self._json(200, {"ok": True, "session_id": session_id})
+            return True
 
         if len(parts) == 2 and parts[0] == "sessions":
             ok, detail = srv.kill_session(parts[1])

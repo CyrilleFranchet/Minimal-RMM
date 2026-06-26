@@ -440,6 +440,9 @@ async function deleteHistorySession(id) {
   if (state.selectedHistoryId === id) {
     showEmptyConsole();
   }
+  if (typeof window.clearAiChatMemory === "function") {
+    window.clearAiChatMemory(id);
+  }
   await fetchSessionHistory();
 }
 
@@ -459,6 +462,9 @@ async function clearAllHistorySessions() {
     appendShellError(data.error || data.detail || `Clear failed (${status})`);
     return;
   }
+  if (typeof window.purgeAiChatsForSessions === "function") {
+    window.purgeAiChatsForSessions(rows.map((s) => s.session_id).filter(Boolean));
+  }
   const deleted = data.deleted ?? 0;
   const errors = data.errors || [];
   if (state.viewMode === "history" && state.selectedHistoryId) {
@@ -476,6 +482,9 @@ async function selectHistorySession(id) {
   state.viewMode = "history";
   state.selectedHistoryId = id;
   state.selectedId = null;
+  if (typeof window.syncAiChatWithSession === "function") {
+    window.syncAiChatWithSession(id);
+  }
   state.lastEventId = 0;
   state.echoedCommands.clear();
   state.pendingCommandBlocks = [];
@@ -1744,6 +1753,9 @@ async function selectSession(id) {
   setConsoleReadOnly(false);
   renderHistoryList();
   state.selectedId = id;
+  if (typeof window.syncAiChatWithSession === "function") {
+    window.syncAiChatWithSession(id);
+  }
   state.lastEventId = 0;
   state.echoedCommands.clear();
   state.pendingCommandBlocks = [];
@@ -1791,6 +1803,9 @@ function showEmptyConsole() {
   state.selectedId = null;
   state.selectedHistoryId = null;
   state.viewMode = "live";
+  if (typeof window.syncAiChatWithSession === "function") {
+    window.syncAiChatWithSession(null);
+  }
   setConsoleReadOnly(false);
   show($("#empty-state"));
   hide($("#console-panel"));
@@ -2401,6 +2416,9 @@ async function killSession(id) {
     method: "DELETE",
   });
   if (status === 200) {
+    if (typeof window.clearAiChatMemory === "function") {
+      window.clearAiChatMemory(sessionId);
+    }
     if (state.selectedId === sessionId) {
       showEmptyConsole();
     }

@@ -233,7 +233,10 @@
       <aside id="ai-panel" class="ai-panel hidden" aria-label="AI assistant">
         <div class="ai-panel-header">
           <h2>AI Assistant</h2>
-          <button type="button" class="secondary ai-panel-close" id="ai-panel-close" title="Hide panel">×</button>
+          <div class="ai-panel-header-actions">
+            <button type="button" class="secondary" id="ai-chat-reset-btn" title="Clear AI chat for this session">Reset chat</button>
+            <button type="button" class="secondary ai-panel-close" id="ai-panel-close" title="Hide panel">×</button>
+          </div>
         </div>
         <details class="ai-settings" open>
           <summary>OpenAI settings</summary>
