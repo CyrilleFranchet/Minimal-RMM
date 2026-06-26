@@ -1101,8 +1101,21 @@ body.sidebar-resizing iframe {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.65rem 1rem;
   border-bottom: 1px solid var(--border);
+}
+
+.ai-panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+#ai-chat-reset-btn {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
 }
 
 .ai-panel-header h2 {

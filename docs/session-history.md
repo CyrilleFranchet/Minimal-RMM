@@ -18,6 +18,7 @@ Under `RMM_logs/history/{session_id}/`:
 |------|---------|
 | `meta.json` | Session fields (`hostname`, `username`, …), `event_count`, `updated_at`, `ended_at`, `end_reason` |
 | `events.jsonl` | One JSON event per line (same shape as live `/events`; no server filesystem paths) |
+| `ai_chat.json` | Operator AI chat for this session (see `docs/web-ai-chat-memory.md`) |
 
 Events append on every `_record_event` while the session is active. On **kill**, the server sets `ended_at` / `end_reason` before removing the live session. On **server restart**, sessions that were live before shutdown but are not in the new in-memory registry are finalized with `end_reason: server_restart` (from `sessions.json` and/or existing history directories). New agent registrations write initial `meta.json` and persist to `sessions.json` so beacon-only sessions can be archived too.
 

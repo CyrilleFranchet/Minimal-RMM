@@ -10,6 +10,7 @@
   const EXEGOL_URL_STORAGE = "rmm_exegol_mcp_url";
   const EXEGOL_TOKEN_STORAGE = "rmm_exegol_mcp_token";
   const AI_SKILLS_ENABLED_STORAGE = "rmm_ai_skills_enabled";
+  const LEGACY_AI_CHAT_STORAGE_KEY = "rmm_ai_chat_v1";
   const DEFAULT_EXEGOL_MCP_URL = "http://127.0.0.1:8000/mcp";
   const CUSTOM_MODEL_VALUE = "__custom__";
   const DEFAULT_MODEL =
@@ -17,7 +18,11 @@
 
   const $ = (sel) => document.querySelector(sel);
 
+  /** @type {{ role: string, content: string, toolCalls?: object[] }[]} */
   let chatHistory = [];
+  /** Session UUID whose messages are loaded, or null when none selected */
+  let loadedChatSessionId = undefined;
+  let chatLoadToken = 0;
   let sending = false;
   let aiSkills = [];
 
@@ -25,6 +30,36 @@
     const d = document.createElement("div");
     d.textContent = s;
     return d.innerHTML;
+  }
+
+  function normalizeStoredMessages(messages) {
+    if (!Array.isArray(messages)) return [];
+    return messages
+      .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+      .map((m) => {
+        const toolCalls = Array.isArray(m.toolCalls)
+          ? m.toolCalls
+          : Array.isArray(m.tool_calls_made)
+            ? m.tool_calls_made
+            : undefined;
+        return {
+          role: m.role,
+          content: m.content,
+          toolCalls: toolCalls?.length ? toolCalls : undefined,
+        };
+      });
+  }
+
+  function activeSessionId() {
+    const st = window.rmmState;
+    return st?.selectedId || st?.selectedHistoryId || null;
+  }
+
+  function welcomeText() {
+    const exegolOn = sessionStorage.getItem(EXEGOL_ENABLED_STORAGE) === "1";
+    return exegolOn
+      ? "RMM tools (sessions, commands, config) plus Exegol MCP (containers, in-container pentest tools). Select an RMM session in the sidebar for beacon context."
+      : "RMM tools via MCP (list sessions, run commands, change beacon sleep, etc.). Enable Exegol MCP in settings to add container orchestration and offensive tools.";
   }
 
   function getOpenAiKey() {
@@ -190,6 +225,16 @@
     sessionStorage.setItem(AI_PANEL_OPEN_STORAGE, open ? "1" : "0");
   }
 
+  function renderToolCalls(toolCalls) {
+    if (!toolCalls?.length) return "";
+    return toolCalls
+      .map(
+        (t) =>
+          `<div class="ai-msg-tool">→ ${escapeHtml(t.name)}(${escapeHtml(JSON.stringify(t.arguments || {}))})</div>`
+      )
+      .join("");
+  }
+
   function appendChatMessage(role, content, extraHtml = "") {
     const log = $("#ai-chat-log");
     if (!log) return;
@@ -204,14 +249,89 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  function renderToolCalls(toolCalls) {
-    if (!toolCalls?.length) return "";
-    return toolCalls
-      .map(
-        (t) =>
-          `<div class="ai-msg-tool">→ ${escapeHtml(t.name)}(${escapeHtml(JSON.stringify(t.arguments || {}))})</div>`
-      )
-      .join("");
+  function appendWelcomeMessage() {
+    appendChatMessage("assistant", welcomeText());
+  }
+
+  function renderChatLog() {
+    const log = $("#ai-chat-log");
+    if (!log) return;
+    log.replaceChildren();
+    if (!chatHistory.length) {
+      appendWelcomeMessage();
+      return;
+    }
+    for (const msg of chatHistory) {
+      const toolsHtml = renderToolCalls(msg.toolCalls);
+      appendChatMessage(msg.role, msg.content, toolsHtml);
+    }
+  }
+
+  async function syncAiChatWithSession(sessionId) {
+    if (loadedChatSessionId === sessionId) return;
+    loadedChatSessionId = sessionId;
+    const token = ++chatLoadToken;
+
+    if (!sessionId) {
+      chatHistory = [];
+      renderChatLog();
+      return;
+    }
+
+    const apiFn = window.rmmApi;
+    if (!apiFn || !window.rmmState?.token) {
+      chatHistory = [];
+      renderChatLog();
+      return;
+    }
+
+    try {
+      const { status, data } = await apiFn(
+        `/sessions/${encodeURIComponent(sessionId)}/ai/chat`
+      );
+      if (token !== chatLoadToken || loadedChatSessionId !== sessionId) return;
+      chatHistory = status === 200 ? normalizeStoredMessages(data.messages) : [];
+    } catch {
+      if (token !== chatLoadToken) return;
+      chatHistory = [];
+    }
+    renderChatLog();
+  }
+
+  async function resetAiChatForCurrentSession() {
+    const sessionId = loadedChatSessionId;
+    const label = sessionId ? `session ${sessionId.slice(0, 8)}` : "this chat";
+    if (!confirm(`Clear the AI chat for ${label}? This cannot be undone.`)) {
+      return;
+    }
+
+    if (sessionId && window.rmmApi && window.rmmState?.token) {
+      try {
+        await window.rmmApi(`/sessions/${encodeURIComponent(sessionId)}/ai/chat`, {
+          method: "DELETE",
+        });
+      } catch {
+        appendChatMessage("error", "Failed to clear AI chat on server.");
+        return;
+      }
+    }
+
+    chatHistory = [];
+    renderChatLog();
+  }
+
+  function clearAiChatMemory(sessionId) {
+    if (!sessionId || loadedChatSessionId !== sessionId) return;
+    chatHistory = [];
+    renderChatLog();
+  }
+
+  function purgeAiChatsForSessions(sessionIds) {
+    if (!sessionIds?.length || !loadedChatSessionId) return;
+    if (sessionIds.includes(loadedChatSessionId)) {
+      chatHistory = [];
+      renderChatLog();
+    }
   }
 
   async function sendAiMessage(text) {
@@ -241,6 +361,11 @@
     persistExegolMcpSettings();
     const exegol = getExegolMcpSettings();
 
+    const sessionId = activeSessionId();
+    if (loadedChatSessionId === undefined) {
+      loadedChatSessionId = sessionId;
+    }
+
     chatHistory.push({ role: "user", content: text.trim() });
     appendChatMessage("user", text.trim());
 
@@ -258,7 +383,7 @@
           openai_api_key: openaiKey,
           model: getModel(),
           messages: chatHistory,
-          selected_session_id: st.selectedId || null,
+          selected_session_id: sessionId,
           exegol_mcp_enabled: exegol.enabled,
           exegol_mcp_url: exegol.enabled ? exegol.url : null,
           exegol_mcp_token: exegol.enabled ? exegol.token || null : null,
@@ -270,15 +395,22 @@
         const err =
           data.detail || data.error || (typeof data.message === "string" ? data.message : `HTTP ${status}`);
         appendChatMessage("error", String(err));
+        chatHistory.pop();
         return;
       }
 
       const reply = data.message || "(empty response)";
-      const toolsHtml = renderToolCalls(data.tool_calls_made);
-      chatHistory.push({ role: "assistant", content: reply });
+      const toolCalls = data.tool_calls_made || [];
+      const toolsHtml = renderToolCalls(toolCalls);
+      chatHistory.push({
+        role: "assistant",
+        content: reply,
+        toolCalls: toolCalls.length ? toolCalls : undefined,
+      });
       appendChatMessage("assistant", reply, toolsHtml);
     } catch (e) {
       appendChatMessage("error", e.message || String(e));
+      chatHistory.pop();
     } finally {
       sending = false;
       if (input) {
@@ -340,6 +472,7 @@
       setAiPanelOpen(panel?.classList.contains("hidden"));
     });
     $("#ai-panel-close")?.addEventListener("click", () => setAiPanelOpen(false));
+    $("#ai-chat-reset-btn")?.addEventListener("click", resetAiChatForCurrentSession);
 
     $("#ai-chat-form")?.addEventListener("submit", (e) => {
       e.preventDefault();
@@ -347,17 +480,20 @@
       if (input) sendAiMessage(input.value);
     });
 
-    const exegolOn = sessionStorage.getItem(EXEGOL_ENABLED_STORAGE) === "1";
-    appendChatMessage(
-      "assistant",
-      exegolOn
-        ? "RMM tools (sessions, commands, config) plus Exegol MCP (containers, in-container pentest tools). Select an RMM session in the sidebar for beacon context."
-        : "RMM tools via MCP (list sessions, run commands, change beacon sleep, etc.). Enable Exegol MCP in settings to add container orchestration and offensive tools."
-    );
+    loadedChatSessionId = undefined;
     chatHistory = [];
+    try {
+      localStorage.removeItem(LEGACY_AI_CHAT_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    renderChatLog();
     fetchAiSkills().catch(() => {});
   }
 
   window.initAiPanel = initAiPanel;
   window.fetchAiSkills = fetchAiSkills;
+  window.syncAiChatWithSession = syncAiChatWithSession;
+  window.clearAiChatMemory = clearAiChatMemory;
+  window.purgeAiChatsForSessions = purgeAiChatsForSessions;
 })();
