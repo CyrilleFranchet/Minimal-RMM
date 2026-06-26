@@ -70,6 +70,22 @@ PS: Import-Module ActiveDirectory -ErrorAction SilentlyContinue; Get-ADUser -Fil
 PS: Import-Module ActiveDirectory -ErrorAction SilentlyContinue; Get-ADGroupMember -Identity 'Domain Admins' | Select-Object Name,SamAccountName,objectClass
 ```
 
+**Domain Admins members** — use **separate** `exec_command` steps (do not merge ADWS + LDAP fallback into one line):
+
+```text
+PS: Get-Module -ListAvailable ActiveDirectory | Select-Object Name,Version
+```
+
+```text
+PS: Import-Module ActiveDirectory -ErrorAction Stop; Get-ADGroupMember -Identity 'Domain Admins' | Select-Object Name,SamAccountName,ObjectClass | Format-Table -AutoSize
+```
+
+If the second command fails (no RSAT / ADWS), run the LDAP fallback as a **third** command — not nested inside the same script:
+
+```text
+PS: $base=([ADSI]'LDAP://RootDSE').defaultNamingContext; $root=New-Object DirectoryServices.DirectoryEntry("LDAP://$base"); $s=New-Object DirectoryServices.DirectorySearcher($root); $s.Filter='(&(objectCategory=group)(cn=Domain Admins))'; $g=$s.FindOne(); if(-not $g){'Domain Admins group not found.'; return}; @($g.Properties['member']) | ForEach-Object { try { $u=New-Object DirectoryServices.DirectoryEntry("LDAP://$_"); [PSCustomObject]@{Name=$u.Properties['name'].Value; SamAccountName=$u.Properties['samaccountname'].Value; ObjectClass=@($u.Properties['objectclass'].Value)[-1]} } catch { [PSCustomObject]@{Name='(error)'; SamAccountName=$_; ObjectClass=$_.Exception.Message} } } | Format-Table -AutoSize
+```
+
 ```text
 PS: Import-Module ActiveDirectory -ErrorAction SilentlyContinue; Get-ADPrincipalGroupMembership -Identity (whoami.exe /user) | Select-Object Name,GroupCategory,GroupScope
 ```
@@ -87,10 +103,23 @@ PS: $ds=[ADSI]"LDAP://RootDSE"; $base=$ds.defaultNamingContext; $s=[adsisearcher
 ```
 
 ```text
-PS: $base=([ADSI]"LDAP://RootDSE").defaultNamingContext; $s=New-Object DirectoryServices.DirectorySearcher; $s.SearchRoot="LDAP://$base"; $s.Filter='(&(objectCategory=group)(cn=Domain Admins))'; $s.FindOne() | Select-Object -ExpandProperty Properties
+PS: $base=([ADSI]"LDAP://RootDSE").defaultNamingContext; $root=New-Object DirectoryServices.DirectoryEntry("LDAP://$base"); $s=New-Object DirectoryServices.DirectorySearcher($root); $s.Filter='(&(objectCategory=group)(cn=Domain Admins))'; $hit=$s.FindOne(); if(-not $hit){'Domain Admins group not found.'} else { $hit.Properties | Format-List }
 ```
 
 These use the **current logon token** for bind. Tell the operator you used **direct LDAP** because ADWS/`Get-AD*` was not available.
+
+### PowerShell `exec_command` pitfalls (empty output)
+
+If the transcript shows **`result » PS: …`** with **no table or error below**, the script likely **failed to parse or exited silently**:
+
+| Mistake | Why it fails |
+|---------|----------------|
+| `foreach (...) { … } \| Format-Table` | **Invalid** — you cannot pipe directly off a `foreach` block; use `@(...) \| ForEach-Object { … } \| Format-Table` or collect in `$rows += …` then `$rows \| Format-Table` |
+| ADWS + LDAP fallback in **one** mega `if/else` line | Parser/brace errors; use **two or three** separate `exec_command` calls |
+| `-ErrorAction SilentlyContinue` everywhere | Hides module/load failures — probe with `Get-Module` first, then `-ErrorAction Stop` on the query |
+| `$s.SearchRoot="LDAP://$base"` on `DirectorySearcher` | Prefer `DirectoryEntry` as search root: `New-Object DirectoryServices.DirectorySearcher($root)` |
+
+Always surface errors: `$Error[0]` or `-ErrorAction Stop` on the query step after probing the module.
 
 ### 3. Local accounts/groups without `net.exe`
 
@@ -124,8 +153,8 @@ If `Get-LocalUser` is unavailable, say so and ask whether the operator accepts `
 ## RMM workflow
 
 1. Clarify whether the operator wants **token-only** view (quiet) or **directory** enumeration (ADWS first, not `net`).
-2. Probe **`ActiveDirectory`** module; `exec_command` with **`PS:`** **`Get-AD*`** cmdlets (ADWS).
-3. Only if ADWS/`Get-AD*` fails, fall back to **`PS:`** `[ADSI]` / `DirectorySearcher` (direct LDAP) — report which path was used.
+2. Probe **`ActiveDirectory`** module (`Get-Module -ListAvailable`); then **`Get-AD*`** in a **second** `exec_command` (ADWS).
+3. Only if step 2 fails, run a **separate** LDAP fallback command — never nest ADWS + LDAP in one line.
 4. If both fail (offline, no DC, non-domain host), report the error — do not chain noisy RPC tools without operator approval.
 
 ## Limitations
