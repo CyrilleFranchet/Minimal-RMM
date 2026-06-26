@@ -741,16 +741,20 @@ Archive:
 
 ## 12. Docker deployment (RMM server + Exegol MCP)
 
-**Status:** planned  
-**Surfaces:** `Dockerfile`, `docker-compose.yml`, `docs/docker-deploy.md`, optional `.env.example`  
-**Goal:** Package the **operator stack** (RMM server, web UI, AI/MCP, persisted logs and rclone config) for reproducible lab deployment; wire **Exegol MCP** over Docker networking instead of ad hoc `127.0.0.1` / `host.docker.internal` setup.
+**Status:** planned — **deferred** (not in current delivery scope; spec only)  
+**Surfaces:** `Dockerfile`, `docker-compose.yml`, `docs/docker-deploy.md`, `.env.example`, optional `Makefile` targets  
+**Goal:** Package the **operator stack** (RMM server, web UI, AI/MCP, persisted logs and rclone config) for reproducible lab deployment without local Python venvs; wire **Exegol MCP** and **SOCKS** over Docker networking instead of ad hoc `127.0.0.1` / `host.docker.internal` setup.
+
+**Rationale for deferral:** Docker touches networking (bind addresses, SOCKS, agent reachability), secrets, volumes, and cross-platform compose behaviour — too many moving parts for a quick “facilitate deploy” change. **Current workaround:** run RMM manually (host or inside an Exegol container) as today. Pick this up as a dedicated milestone when delivery bandwidth allows.
 
 ### Docker deploy — problem
 
 Today deployment is manual:
 
 - Python venv, `pip install -r requirements.txt`, export secrets (`RMM_API_TOKEN`, `RMM_BEACON_SECRET`)
-- Start `python server_rmm.py` on the host; default bind is `127.0.0.1`
+- Typical lab start (e.g. inside Exegol):  
+  `python server_rmm.py --rclone-profiles tools/rclone/profiles.json --rclone-max-bytes 0 --token … --beacon-secret … 8081`
+- Default HTTP bind is `127.0.0.1` — fine on host, **insufficient inside a container** (agents and port publishing need `--bind 0.0.0.0`)
 - Exegol MCP is optional HTTP (`RMM_EXEGOL_MCP_URL`, default `http://127.0.0.1:8000/mcp`) — works when RMM and Exegol MCP share the host, breaks easily when either runs in a container
 - `rmm_cli.py` already hints at Docker (`host.docker.internal` for `RMM_SERVER_URL`) but there is **no** `Dockerfile` or compose file in the repo
 
@@ -760,18 +764,19 @@ The **Windows agent** (`client_rmm.ps1`) is deployed separately on managed hosts
 
 | Area | Benefit |
 |------|---------|
-| RMM server + web UI | One `docker compose up`; pinned Python + MCP deps |
+| RMM server + web UI | One `docker compose up`; pinned Python + MCP deps; no venv per machine |
 | Secrets | `.env` / Docker secrets for API and beacon tokens |
-| Persistence | Volumes for `RMM_logs/`, rclone profiles, optional session archive |
+| Persistence | Volumes for `RMM_logs/` (sessions, history, AI chat, downloads, screenshots, keylogs), rclone profiles + `rclone.exe` |
 | Exegol MCP ↔ RMM AI | Shared Docker network; `RMM_EXEGOL_MCP_URL=http://exegol-mcp:8000/mcp` |
-| Operator CLI in Exegol | Unchanged pattern: `RMM_SERVER_URL=http://host.docker.internal:8080` |
+| Exegol operator tools | Attach existing Exegol container to compose network → `http://rmm:8081`, `socks5://rmm:1080` (cleaner than `host.docker.internal`) |
+| Operator CLI on host | `RMM_SERVER_URL=http://127.0.0.1:8081` with published port |
 
 ### What Docker does not simplify
 
 | Area | Why |
 |------|-----|
 | Windows agent deployment | Agent runs on target hosts; needs reachable server URL + `RMM_BEACON_SECRET` |
-| Agent → server connectivity | Server in a container must bind `0.0.0.0` and agents must use host LAN IP or tunnel — not container `127.0.0.1` |
+| Agent → server connectivity | Server in a container must bind `0.0.0.0` and agents must use **host LAN IP** or tunnel — not container `127.0.0.1` |
 | Full Exegol environment | Exegol is a separate pentest stack; only **Exegol MCP** (HTTP) is in scope for compose wiring |
 | Lab security | `--insecure` and `--bind 0.0.0.0` remain lab-only; Docker adds no isolation by itself |
 
@@ -779,29 +784,57 @@ The **Windows agent** (`client_rmm.ps1`) is deployed separately on managed hosts
 
 ```text
 ┌─────────────────────────────────────────────────────────┐
-│  docker compose (operator / lab server host)            │
+│  docker compose — network rmm-lab (operator host)       │
 │                                                         │
 │  ┌──────────────┐     HTTP MCP      ┌──────────────┐   │
 │  │  rmm-server  │◄─────────────────►│  exegol-mcp  │   │
-│  │  :8080 /ui/  │  (Docker network) │  :8000/mcp   │   │
+│  │  :8081 /ui/  │  (optional profile)│  :8000/mcp   │   │
 │  │  SOCKS :1080 │                   └──────────────┘   │
 │  └──────┬───────┘                                       │
-│         │ volumes: RMM_logs, tools/rclone, .env         │
+│         │ volumes: docker-data/RMM_logs, tools/rclone   │
 └─────────┼───────────────────────────────────────────────┘
           │ HTTP beacon (/register, /cmd, /result)
           ▼
-   ┌──────────────┐
-   │ Agent Windows│  client_rmm.ps1 — outside Docker
-   └──────────────┘
+   ┌──────────────┐          ┌──────────────────────────┐
+   │ Agent Windows│          │ Exegol (existing container)│
+   │ (LAN)        │          │ docker network connect …   │
+   └──────────────┘          │ API → rmm:8081, SOCKS → rmm:1080 │
+                             └──────────────────────────┘
 ```
+
+### Reference command (container equivalent)
+
+Host command today:
+
+```bash
+python server_rmm.py \
+  --rclone-profiles tools/rclone/profiles.json \
+  --rclone-max-bytes 0 \
+  --token test \
+  --beacon-secret test \
+  8081
+```
+
+Target container `CMD` (secrets via `.env`, not hard-coded):
+
+```bash
+python server_rmm.py 8081 \
+  --bind 0.0.0.0 \
+  --rclone-profiles /app/tools/rclone/profiles.json \
+  --rclone-max-bytes 0
+```
+
+(`RMM_API_TOKEN` / `RMM_BEACON_SECRET` from env or `--token` / `--beacon-secret`.)
 
 ### Deployment options
 
 | Option | Layout | When to use |
 |--------|--------|-------------|
-| **A — RMM only** | Single `rmm-server` service; Exegol MCP on host | Simplest; Exegol MCP started manually (`exegol-mcp`) |
-| **B — Compose integrated** | `rmm-server` + `exegol-mcp` on shared network | AI panel enabled by default; no host port juggling |
-| **C — Exegol operator** | RMM on host; CLI/tools inside Exegol container | Already supported via `host.docker.internal`; document only |
+| **A — RMM only** (ship first) | Single `rmm` service; Exegol MCP on host | Minimal impact; fastest path to “no venv” |
+| **B — Compose integrated** | `rmm` + `exegol-mcp` on shared network `rmm-lab` | AI panel + Exegol MCP without host port juggling |
+| **C — Exegol operator (today)** | RMM inside or on host; CLI/tools in Exegol | Document `host.docker.internal`; migrate to A/B later |
+
+**Migration from “RMM inside Exegol”:** stop in-container RMM → `docker compose up rmm` → `docker network connect <project>_rmm-lab <exegol-container>` → in Exegol set `RMM_SERVER_URL=http://rmm:8081` and `ALL_PROXY=socks5://rmm:1080` (or proxychains).
 
 ### Compose sketch (option B)
 
@@ -810,55 +843,84 @@ services:
   rmm:
     build: .
     ports:
-      - "8080:8080"
-      - "1080:1080"   # SOCKS — operator uses socks5://127.0.0.1:1080 on host
+      - "${RMM_PORT:-8081}:${RMM_PORT:-8081}"
+      - "1080:1080"   # SOCKS — host: socks5://127.0.0.1:1080
     env_file: .env
     environment:
       RMM_EXEGOL_MCP_URL: http://exegol-mcp:8000/mcp
     volumes:
-      - ./RMM_logs:/app/RMM_logs
-      - ./tools/rclone:/app/tools/rclone:ro
-    command: ["python", "server_rmm.py", "8080", "--bind", "0.0.0.0"]
-    networks: [lab]
+      - ./docker-data/RMM_logs:/app/RMM_logs
+      - ./tools/rclone/profiles.json:/app/tools/rclone/profiles.json:ro
+      - ./tools/rclone/rclone.exe:/app/tools/rclone/rclone.exe:ro
+    command:
+      - python
+      - server_rmm.py
+      - "${RMM_PORT:-8081}"
+      - --bind
+      - "0.0.0.0"
+      - --rclone-profiles
+      - /app/tools/rclone/profiles.json
+      - --rclone-max-bytes
+      - "0"
+    networks: [rmm-lab]
+    # Linux: extra_hosts: ["host.docker.internal:host-gateway"] if agents use host IP helpers
 
   exegol-mcp:
+    profiles: [exegol]
     # Image / command per Exegol MCP docs — placeholder until pinned
     ports:
       - "8000:8000"
-    networks: [lab]
+    networks: [rmm-lab]
 
 networks:
-  lab:
+  rmm-lab:
 ```
+
+Optional: mount `./ai-skills` → `/app/ai-skills` for skill edits without rebuild.
 
 ### Dockerfile (target)
 
-- Base: `python:3.12-slim` (or match repo minimum 3.10+)
+- Base: `python:3.12-slim` (repo minimum 3.10+)
 - Copy application tree; `pip install -r requirements.txt`
-- Expose `8080` (HTTP) and document `1080` for SOCKS when mapped
-- `WORKDIR /app`; default `CMD` headless server with `--bind 0.0.0.0`
-- Include `tools/rclone/` layout so agent bootstrap continues to work (binary may be bind-mounted on Linux hosts — document Windows `rclone.exe` serving to agents)
+- `.dockerignore`: `RMM_logs/`, `.git`, `**/.venv`, `docker-data/`
+- Expose `${RMM_PORT}` (default 8081) and document `1080` for SOCKS when mapped
+- `WORKDIR /app`; default headless server with `--bind 0.0.0.0`
+- `tools/rclone/` layout preserved; `rclone.exe` bind-mounted (served to Windows agents at `/tools/rclone.exe` even from a Linux image)
 
 ### Networking notes
 
 | Consumer | URL / binding |
 |----------|----------------|
-| Web UI / CLI on host | `http://127.0.0.1:8080/ui/` |
-| Windows agent (LAN) | `http://<host-lan-ip>:8080` + matching `RMM_BEACON_SECRET` |
-| CLI inside Exegol container | `RMM_SERVER_URL=http://host.docker.internal:8080` |
+| Web UI / CLI on host | `http://127.0.0.1:8081/ui/` (or `${RMM_PORT}`) |
+| Windows agent (LAN) | `http://<host-lan-ip>:8081` + matching `RMM_BEACON_SECRET` |
+| CLI inside Exegol (no shared network) | `RMM_SERVER_URL=http://host.docker.internal:8081` |
+| Exegol on `rmm-lab` network | `http://rmm:8081`, `socks5://rmm:1080` |
 | RMM AI → Exegol MCP (compose) | `RMM_EXEGOL_MCP_URL=http://exegol-mcp:8000/mcp` |
-| SOCKS proxy (operator) | `socks5://127.0.0.1:1080` on **host** with port publish |
+| SOCKS proxy (operator on host) | `socks5://127.0.0.1:1080` with port publish |
 
 Server subprocess AI (`mcp_rmm_server.py` over stdio) runs inside the RMM container — no extra service required.
+
+**SOCKS bind caveat:** `DEFAULT_BIND_HOST` is `127.0.0.1` (`rmm_socks.py`). Port publish works for the **host**; for **Exegol on `rmm-lab`**, validate `socks5://rmm:1080` in phase 2 — may require binding SOCKS on `0.0.0.0` (env or `bind_host` on `POST …/socks`) if inter-container connect fails.
 
 ### Secrets & volumes
 
 | Item | Handling |
 |------|----------|
 | `RMM_API_TOKEN`, `RMM_BEACON_SECRET` | `.env.example` + compose `env_file`; never commit real values |
-| `RMM_RCLONE_PROFILES_FILE` | Bind-mount JSON profile file or env inline |
-| `RMM_logs/` | Named volume or bind-mount for downloads, screenshots, keylogs |
-| Session archive | Optional mount for persisted `sessions.json` if/when server writes it to disk |
+| `RMM_RCLONE_PROFILES_FILE` | Bind-mount `tools/rclone/profiles.json` (gitignored secrets) |
+| `RMM_RCLONE_BIN` | Default `tools/rclone/rclone.exe`; bind-mount binary |
+| `RMM_logs/` | Bind-mount `./docker-data/RMM_logs` — includes `sessions.json`, `history/` (events + AI chat), artifacts |
+| `RMM_RCLONE_MAX_BYTES` | `0` = unlimited (lab); set in command or env |
+
+### Cross-platform (Windows / Mac / Linux)
+
+| Topic | Windows | Mac | Linux |
+|-------|---------|-----|-------|
+| Runtime | Docker Desktop (WSL2) | Docker Desktop | Docker Engine + compose plugin |
+| Volume paths | Relative `./docker-data/...` | Same | Same; watch uid/gid on `RMM_logs` writes |
+| `host.docker.internal` | Native (Desktop) | Native | Add `extra_hosts: host-gateway` on services that need it |
+| `rclone.exe` in Linux image | OK — HTTP serve to Windows agents | Same | Same |
+| Agent → RMM | Host LAN IP, not `localhost` | Same | Same |
 
 ### Docker deploy — out of scope (v1)
 
@@ -866,25 +928,40 @@ Server subprocess AI (`mcp_rmm_server.py` over stdio) runs inside the RMM contai
 - Production hardening (TLS termination, non-root user, image signing) beyond lab README warnings
 - Bundling the full Exegol pentest image — only MCP sidecar or external Exegol docs
 - Kubernetes / Helm
+- Cloudflared in compose (document port mapping only)
 
-### Implementation order
+### Implementation order (phased — reduce delivery risk)
 
-1. `Dockerfile` — minimal server image, `requirements.txt`, static `web/`
-2. `.env.example` — tokens, optional rclone and Exegol MCP vars
-3. `docker-compose.yml` — option A (RMM only) first
-4. `docs/docker-deploy.md` — agent URL, SOCKS port map, Exegol MCP options A/B/C
-5. Option B — add `exegol-mcp` service once Exegol MCP image/command is pinned in docs
-6. README link to `docs/docker-deploy.md`
-7. Optional CI: `docker build` smoke test (no push)
+**Phase 1 — RMM only (MVP):** `Dockerfile`, `docker-compose.yml` (single service), `.env.example`, `docs/docker-deploy.md`, volumes for `RMM_logs` + rclone; smoke test UI + health.
+
+**Phase 2 — Exegol + SOCKS:** explicit `rmm-lab` network; doc `docker network connect`; validate SOCKS from Exegol; patch SOCKS bind if needed.
+
+**Phase 3 — Exegol MCP:** compose profile `exegol` + `exegol-mcp` service; pin image in docs; test web AI merged tools.
+
+**Phase 4 — Polish:** `Makefile` targets (`docker-build`, `docker-up`), README link, optional CI `docker build`.
 
 ### Docker deploy — acceptance criteria
 
 - `docker compose up` starts RMM server; web UI loads at mapped port with API token auth
+- `RMM_logs/` and rclone profiles survive container restart via volumes
 - Windows agent on LAN registers when `$env:RMM_BASE_URL` points at host IP and beacon secret matches
 - SOCKS: `socks5://127.0.0.1:1080` on host relays through mapped container port
-- AI chat works in container (MCP stdio spawn); with Exegol MCP service, merged tools visible when enabled
-- `RMM_logs/` and rclone profiles survive container restart via volumes
-- Documented clearly that agents stay outside Docker
+- From Exegol on `rmm-lab`: API and SOCKS reach `rmm` by service name
+- AI chat works in container (MCP stdio spawn); with Exegol MCP profile, merged tools visible when enabled
+- Documented clearly that agents stay outside Docker; Win / Mac / Linux notes included
+
+### Interim deploy (until Docker ships)
+
+No repo change required — operators continue with:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export RMM_API_TOKEN=… RMM_BEACON_SECRET=…
+python server_rmm.py --rclone-profiles tools/rclone/profiles.json --rclone-max-bytes 0 8081
+```
+
+Or the same command inside an Exegol container (current workflow).
 
 ---
 

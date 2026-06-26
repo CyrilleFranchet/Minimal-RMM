@@ -224,7 +224,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [ ] **Tests:** SOCKS task ordering, chunked download reassembly, API auth, WS handshake
 - [ ] **EDR/AV compatibility (commercial gate)** — see [PRD](prd.md#non-negotiable-edr-and-antivirus-compatibility): signing, lab matrix, review persistence/SOCKS/keylog detections
 - [ ] **Docs:** fix README security line (still says 10 MB cap)
-- [ ] **LICENSE** file (README notes absence)
+- [ ] **Docker operator deploy** — deferred; full spec in [tech plan §12](tech-plan.md#12-docker-deployment-rmm-server--exegol-mcp) (phased: RMM-only compose first, then Exegol network + SOCKS, then Exegol MCP). Interim: venv + `python server_rmm.py` (host or Exegol container).
 
 ---
 
@@ -242,6 +242,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Register sync | First `/register` sends `s`, `j`, `sync=1` so server adopts client script timing |
 | Operator surfaces | New features should land REST → CLI → MCP together (`rmm_tools.py`) |
 | AI | OpenAI key from browser; server spawns MCP locally; Exegol optional |
+| Docker deploy | **Deferred** — spec in `docs/tech-plan.md` §12; no image/compose in repo yet; interim venv workflow unchanged |
 | Security default | Dual secrets; localhost bind; no `--insecure` in production |
 
 ---
