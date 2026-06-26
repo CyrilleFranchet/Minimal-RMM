@@ -989,6 +989,42 @@ body.sidebar-resizing iframe {
   background: var(--overlay);
 }
 
+.server-unreachable-dialog {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+  background: var(--surface);
+  color: var(--text);
+  max-width: 24rem;
+  box-shadow: var(--shadow-modal);
+}
+
+.server-unreachable-dialog::backdrop {
+  background: var(--overlay);
+}
+
+.server-unreachable-inner {
+  padding: 1.15rem 1.25rem 1.2rem;
+}
+
+.server-unreachable-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.server-unreachable-detail {
+  margin: 0 0 1rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.server-unreachable-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
 .beacon-config-form {
   padding: 1rem 1.15rem 1.1rem;
   margin: 0;
