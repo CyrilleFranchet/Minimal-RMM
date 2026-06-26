@@ -27,6 +27,7 @@ const state = {
   sessionPollTimer: null,
   statusTickTimer: null,
   connectivityProbeTimer: null,
+  wsReconnectTimer: null,
   sessionDownloads: [],
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
@@ -78,10 +79,40 @@ function hideServerUnreachableDialog() {
 
 function noteServerReachable() {
   hideServerUnreachableDialog();
+  ensureWebSocketConnected();
 }
 
 function noteServerUnreachable(message) {
   showServerUnreachableDialog(message);
+}
+
+function wsIsConnectedOrConnecting() {
+  const ws = state.ws;
+  return Boolean(
+    ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+  );
+}
+
+function clearWebSocketReconnectTimer() {
+  if (state.wsReconnectTimer) {
+    clearTimeout(state.wsReconnectTimer);
+    state.wsReconnectTimer = null;
+  }
+}
+
+function scheduleWebSocketReconnect(delayMs = 3000) {
+  if (!isAppActive()) return;
+  clearWebSocketReconnectTimer();
+  state.wsReconnectTimer = setTimeout(() => {
+    state.wsReconnectTimer = null;
+    ensureWebSocketConnected();
+  }, delayMs);
+}
+
+function ensureWebSocketConnected() {
+  if (!isAppActive()) return;
+  if (wsIsConnectedOrConnecting()) return;
+  connectWebSocket();
 }
 
 async function api(path, options = {}) {
@@ -138,7 +169,7 @@ async function retryServerConnection() {
   try {
     const ok = await probeServerHealth();
     if (!ok) return;
-    connectWebSocket();
+    ensureWebSocketConnected();
     await refreshSessions();
     await fetchSessionHistory();
     pollSessionEvents().catch(() => {});
@@ -711,9 +742,7 @@ function connectWebSocket() {
     setWsStatus(false);
     if (isAppActive()) {
       probeServerHealth().catch(() => {});
-      if (!isServerUnreachableDialogOpen()) {
-        setTimeout(connectWebSocket, 3000);
-      }
+      scheduleWebSocketReconnect(3000);
     }
   };
 
@@ -744,6 +773,7 @@ function connectWebSocket() {
 }
 
 function disconnectWebSocket() {
+  clearWebSocketReconnectTimer();
   if (state.ws) {
     state.ws.onclose = null;
     state.ws.close();
@@ -2595,7 +2625,7 @@ document.addEventListener("DOMContentLoaded", () => {
       probeServerHealth()
         .then((ok) => {
           if (ok) {
-            connectWebSocket();
+            ensureWebSocketConnected();
             refreshSessions().catch(() => {});
             fetchSessionHistory().catch(() => {});
           }
