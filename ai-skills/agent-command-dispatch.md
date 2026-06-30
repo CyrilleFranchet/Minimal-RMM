@@ -68,6 +68,7 @@ CMD tips:
 
 - `ls` is mapped to `dir` on the agent.
 - Simple `'single-quoted'` segments are converted to CMD double quotes.
+- **`net group`:** name before `/domain` — `net group "Domain Admins" /domain` (not `net group /domain …`).
 - Paths with spaces may need CMD quoting; for complex logic, use `PS:` instead.
 
 ## Working directory
