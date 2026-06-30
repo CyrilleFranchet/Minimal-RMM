@@ -2198,6 +2198,49 @@ function Apply-RmmCwdFromCmdOutput {
     return ($kept -join [Environment]::NewLine).TrimEnd()
 }
 
+function Quote-RmmWindowsProcessArgument {
+    param([AllowNull()][string]$Argument)
+    if ($null -eq $Argument) { return '""' }
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"\\]') {
+        return $Argument
+    }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    $backslashes = 0
+    foreach ($ch in $Argument.ToCharArray()) {
+        if ($ch -eq '\') {
+            $backslashes++
+            continue
+        }
+        if ($ch -eq '"') {
+            [void]$sb.Append('\', ($backslashes * 2 + 1))
+            $backslashes = 0
+            [void]$sb.Append('"')
+        } else {
+            if ($backslashes -gt 0) {
+                [void]$sb.Append('\', $backslashes)
+                $backslashes = 0
+            }
+            [void]$sb.Append($ch)
+        }
+    }
+    if ($backslashes -gt 0) {
+        [void]$sb.Append('\', ($backslashes * 2))
+    }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
+
+function Join-RmmWindowsProcessArguments {
+    param([Parameter(Mandatory = $true)][string[]]$ArgumentList)
+    $parts = foreach ($arg in $ArgumentList) {
+        if ($null -eq $arg) { Quote-RmmWindowsProcessArgument -Argument $null }
+        elseif ($arg -eq '') { '""' }
+        else { Quote-RmmWindowsProcessArgument -Argument $arg }
+    }
+    return ($parts -join ' ')
+}
+
 function Invoke-RmmHiddenProcessWait {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -2277,12 +2320,6 @@ function Invoke-RmmHiddenEncodedPowerShell {
     return (Remove-RmmClixmlProgressOutput -Text $text)
 }
 
-function Format-RmmCmdProcessArguments {
-    param([Parameter(Mandatory = $true)][string]$CommandLine)
-    # CMD /c needs doubled quotes inside the command string, not backslash escapes.
-    '/d /c "' + ($CommandLine -replace '"', '""') + '"'
-}
-
 function Get-RmmPlainCmdOutput {
     param([Parameter(Mandatory)][string]$InnerCommand)
     $base = $script:RmmShellCwd
@@ -2292,7 +2329,9 @@ function Get-RmmPlainCmdOutput {
     }
     $baseQ = '"' + ($base.Trim() -replace '"', '""') + '"'
     $combined = 'cd /d ' + $baseQ + ' & ' + $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
-    $cmdArgs = Format-RmmCmdProcessArguments -CommandLine $combined
+    # Pass /d, /c, and the script as separate argv tokens (Start-Process-style CreateProcess quoting).
+    # Do not wrap the whole script in CMD "" doubling — that breaks net group "Domain Admins" /domain.
+    $cmdArgs = Join-RmmWindowsProcessArguments -ArgumentList @('/d', '/c', $combined)
     $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -Arguments $cmdArgs
     $text = Join-RmmProcessOutputText -Result $result -EmptyExitLabel 'cmd'
     return (Apply-RmmCwdFromCmdOutput -Text $text)

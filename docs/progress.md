@@ -115,6 +115,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Fast poll after reconnect or config change (`RmmFastPoll`) — skip one sleep cycle for timely `/cmd`
 - [x] HTTP transport: IPv4-only tunnel resolution, `Host` header, optional corporate proxy + default credentials
 - [x] User commands: bare `cmd.exe`, `cmd:`, `PS:` / `powershell:`, `pwsh:`; cwd tracking via `RMM_CWD_SIG`; **hidden child processes** (no console flash) — see `docs/client-command-execution.md`
+- [x] CMD `/c` quoting — `Join-RmmWindowsProcessArguments` passes `/d`, `/c`, and script as separate CreateProcess argv tokens (fixes `net group "Domain Admins" /domain` regression)
 - [x] Internal commands: `__DOWNLOAD__`, `__EXFIL__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
 - [x] `__EXFIL__` — bootstrap rclone from server, ephemeral `RCLONE_CONFIG_*` env, `rclone copyto` / `rclone copy` (folders) + optional `link`; live `exfil_progress` POSTs during upload
 - [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload` with `remote_path` metadata; live `download_progress` POSTs; **paced by default** like beacon — `$downloadBurst` / `RMM_DOWNLOAD_BURST` for burst mode)
@@ -272,6 +273,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | ~~Web UI queued results~~ | **Fixed:** command blocks + `pendingCommandBlocks` map in `web/app.js`; results match via `ev.command` / tool kind (download, exfil, screenshot, upload); history replay uses same pairing. |
 | ~~Download > 2 GB Int32~~ | **Fixed:** `Send-RmmFileDownload` uses `[long]` for file size, offset, and `[Math]::Max([long]0, …)` (PowerShell `[Math]::Max(0, …)` picked the Int32 overload). |
 | ~~Server restart vs beacon config~~ | **Fixed:** load `sessions.json` on startup; defer idle `__CONFIG__` until `config_synced`; `config_pending` priority after PATCH; agent `-Reconnect` sends `sync=1`; fast poll after reconnect/config change. |
+| ~~CMD nested quotes~~ | **Fixed:** `Format-RmmCmdProcessArguments` wrapped the whole `/c` script in CMD `""` doubling; broke `net group "Domain Admins" /domain`. Now `Join-RmmWindowsProcessArguments` (CreateProcess rules, same as legacy `Start-Process -ArgumentList`). |
 | Web UI archived commands | History sidebar replays events without the operator-entered command line (`rmm> …`) — shows output only, internal tokens (`__DOWNLOAD__`), or `result » cmd` meta; see [tech plan §11](tech-plan.md#11-web-ui--archived-sessions-missing-entered-commands-bug). |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
 | Web ↔ CLI parity | No SOCKS or keylog in web UI; no interactive cmd/PS mode or traffic/beacon charts yet. |
