@@ -2324,6 +2324,13 @@ function Invoke-RmmHiddenEncodedPowerShell {
     return (Remove-RmmClixmlProgressOutput -Text $text)
 }
 
+function Format-RmmCmdSlashSProcessArguments {
+    param([Parameter(Mandatory = $true)][string]$ScriptLine)
+    # cmd.exe /S /C ""…"" — required so nested CMD quotes (net group "Domain Admins") survive
+    # ProcessStartInfo.Arguments. /S without doubled outer quotes breaks 5fd7a08-style wrapping too.
+    '/d /s /c ""' + ($ScriptLine -replace '"', '""') + '""'
+}
+
 function Get-RmmPlainCmdOutput {
     param([Parameter(Mandatory)][string]$InnerCommand)
     $base = $script:RmmShellCwd
@@ -2332,10 +2339,9 @@ function Get-RmmPlainCmdOutput {
         $script:RmmShellCwd = $base
     }
     $workDir = (New-Object System.IO.DirectoryInfo -ArgumentList $base).FullName
-    # Set cwd via ProcessStartInfo.WorkingDirectory — not cd /d in the script — so paths with
-    # spaces or trailing backslashes do not fight CreateProcess quoting or inner CMD quotes.
+    # Cwd via WorkingDirectory — not cd /d in the script (paths with spaces or trailing \).
     $combined = $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
-    $cmdArgs = Join-RmmWindowsProcessArguments -ArgumentList @('/d', '/c', $combined)
+    $cmdArgs = Format-RmmCmdSlashSProcessArguments -ScriptLine $combined
     $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -Arguments $cmdArgs -WorkingDirectory $workDir
     $text = Join-RmmProcessOutputText -Result $result -EmptyExitLabel 'cmd'
     return (Apply-RmmCwdFromCmdOutput -Text $text)
@@ -2372,12 +2378,26 @@ function Convert-RmmCmdSingleQuotesForCmd {
     return $sb.ToString()
 }
 
+function Normalize-RmmNetGroupCommand {
+    param([string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Line)) { return $Line }
+    # net group /domain <name> is invalid for net.exe; group name must precede /domain.
+    if ($Line -match '^(?i)(net\s+group)\s+/domain(?:\s+|$)(.*)$') {
+        $rest = $Matches[2].Trim()
+        if ($rest.Length -gt 0) {
+            return ($Matches[1] + ' ' + $rest + ' /domain')
+        }
+    }
+    return $Line
+}
+
 function Normalize-RmmCmdExeLine {
     param([string]$Line)
     $t = $Line.Trim()
     # CMD has no `ls`; map common Unix habit so operators are not punished.
     if ($t -match '^(?i)ls$') { return 'dir' }
-    return (Convert-RmmCmdSingleQuotesForCmd -Line $Line)
+    $line = Normalize-RmmNetGroupCommand -Line $Line
+    return (Convert-RmmCmdSingleQuotesForCmd -Line $line)
 }
 
 function Invoke-RmmUserCommand {
