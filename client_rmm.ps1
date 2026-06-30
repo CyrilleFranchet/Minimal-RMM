@@ -2326,9 +2326,15 @@ function Invoke-RmmHiddenEncodedPowerShell {
 
 function Format-RmmCmdSlashSProcessArguments {
     param([Parameter(Mandatory = $true)][string]$ScriptLine)
-    # cmd.exe /S /C ""…"" — required so nested CMD quotes (net group "Domain Admins") survive
-    # ProcessStartInfo.Arguments. /S without doubled outer quotes breaks 5fd7a08-style wrapping too.
-    '/d /s /c ""' + ($ScriptLine -replace '"', '""') + '""'
+    # cmd /S /C ""…"" for nested CMD quotes. Requires /v:on and !CD! in ScriptLine — not %CD%:
+    # %CD% expands when the /c line is first read; H:\ ends with \ before the closing "" and breaks /S parsing.
+    '/d /v:on /s /c ""' + ($ScriptLine -replace '"', '""') + '""'
+}
+
+function Test-RmmCmdInnerNeedsSlashSQuoteWrapper {
+    param([string]$InnerCommand)
+    # Only inner " requires /S /C ""…"". Simple lines use CreateProcess argv quoting instead.
+    return ($InnerCommand -match '"')
 }
 
 function Get-RmmPlainCmdOutput {
@@ -2339,9 +2345,14 @@ function Get-RmmPlainCmdOutput {
         $script:RmmShellCwd = $base
     }
     $workDir = (New-Object System.IO.DirectoryInfo -ArgumentList $base).FullName
-    # Cwd via WorkingDirectory — not cd /d in the script (paths with spaces or trailing \).
-    $combined = $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
-    $cmdArgs = Format-RmmCmdSlashSProcessArguments -ScriptLine $combined
+    if (Test-RmmCmdInnerNeedsSlashSQuoteWrapper -InnerCommand $InnerCommand) {
+        # Delayed !CD! — expanded when echo runs, not when /S /c "" is parsed (avoids H:\ vs "" clash).
+        $combined = $InnerCommand + ' & echo RMM_CWD_SIG:!CD!'
+        $cmdArgs = Format-RmmCmdSlashSProcessArguments -ScriptLine $combined
+    } else {
+        $combined = $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
+        $cmdArgs = Join-RmmWindowsProcessArguments -ArgumentList @('/d', '/c', $combined)
+    }
     $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -Arguments $cmdArgs -WorkingDirectory $workDir
     $text = Join-RmmProcessOutputText -Result $result -EmptyExitLabel 'cmd'
     return (Apply-RmmCwdFromCmdOutput -Text $text)
