@@ -2245,7 +2245,8 @@ function Invoke-RmmHiddenProcessWait {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList,
-        [string]$Arguments
+        [string]$Arguments,
+        [string]$WorkingDirectory
     )
     if (-not $Arguments) {
         if (-not $ArgumentList) {
@@ -2256,6 +2257,9 @@ function Invoke-RmmHiddenProcessWait {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $FilePath
     $psi.Arguments = $Arguments
+    if ($WorkingDirectory) {
+        $psi.WorkingDirectory = $WorkingDirectory
+    }
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
@@ -2327,12 +2331,12 @@ function Get-RmmPlainCmdOutput {
         $base = $env:USERPROFILE
         $script:RmmShellCwd = $base
     }
-    $baseQ = '"' + ($base.Trim() -replace '"', '""') + '"'
-    $combined = 'cd /d ' + $baseQ + ' & ' + $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
-    # Pass /d, /c, and the script as separate argv tokens (Start-Process-style CreateProcess quoting).
-    # Do not wrap the whole script in CMD "" doubling — that breaks net group "Domain Admins" /domain.
+    $workDir = (New-Object System.IO.DirectoryInfo -ArgumentList $base).FullName
+    # Set cwd via ProcessStartInfo.WorkingDirectory — not cd /d in the script — so paths with
+    # spaces or trailing backslashes do not fight CreateProcess quoting or inner CMD quotes.
+    $combined = $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
     $cmdArgs = Join-RmmWindowsProcessArguments -ArgumentList @('/d', '/c', $combined)
-    $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -Arguments $cmdArgs
+    $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -Arguments $cmdArgs -WorkingDirectory $workDir
     $text = Join-RmmProcessOutputText -Result $result -EmptyExitLabel 'cmd'
     return (Apply-RmmCwdFromCmdOutput -Text $text)
 }
