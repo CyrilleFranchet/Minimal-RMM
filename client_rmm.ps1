@@ -2324,19 +2324,6 @@ function Invoke-RmmHiddenEncodedPowerShell {
     return (Remove-RmmClixmlProgressOutput -Text $text)
 }
 
-function Format-RmmCmdSlashSProcessArguments {
-    param([Parameter(Mandatory = $true)][string]$ScriptLine)
-    # cmd /S /C ""…"" for nested CMD quotes. Requires /v:on and !CD! in ScriptLine — not %CD%:
-    # %CD% expands when the /c line is first read; H:\ ends with \ before the closing "" and breaks /S parsing.
-    '/d /v:on /s /c ""' + ($ScriptLine -replace '"', '""') + '""'
-}
-
-function Test-RmmCmdInnerNeedsSlashSQuoteWrapper {
-    param([string]$InnerCommand)
-    # Only inner " requires /S /C ""…"". Simple lines use CreateProcess argv quoting instead.
-    return ($InnerCommand -match '"')
-}
-
 function Get-RmmPlainCmdOutput {
     param([Parameter(Mandatory)][string]$InnerCommand)
     $base = $script:RmmShellCwd
@@ -2345,17 +2332,29 @@ function Get-RmmPlainCmdOutput {
         $script:RmmShellCwd = $base
     }
     $workDir = (New-Object System.IO.DirectoryInfo -ArgumentList $base).FullName
-    if (Test-RmmCmdInnerNeedsSlashSQuoteWrapper -InnerCommand $InnerCommand) {
-        # Delayed !CD! — expanded when echo runs, not when /S /c "" is parsed (avoids H:\ vs "" clash).
-        $combined = $InnerCommand + ' & echo RMM_CWD_SIG:!CD!'
-        $cmdArgs = Format-RmmCmdSlashSProcessArguments -ScriptLine $combined
-    } else {
-        $combined = $InnerCommand + ' & echo RMM_CWD_SIG:%CD%'
-        $cmdArgs = Join-RmmWindowsProcessArguments -ArgumentList @('/d', '/c', $combined)
+    # Run via a temp .cmd file so inner quotes, %CD%, and H:\ never pass through /S /c "" or CreateProcess
+    # quoting of the operator line itself (net group "Domain Admins" /domain, whoami on H:\, etc.).
+    $scriptFile = [System.IO.Path]::Combine(
+        [System.IO.Path]::GetTempPath(),
+        ('rmm-' + [Guid]::NewGuid().ToString('N') + '.cmd')
+    )
+    try {
+        $batch = (@(
+            '@echo off'
+            'setlocal EnableExtensions'
+            $InnerCommand
+            'echo RMM_CWD_SIG:%CD%'
+        ) -join "`r`n") + "`r`n"
+        [System.IO.File]::WriteAllText($scriptFile, $batch, [System.Text.Encoding]::ASCII)
+        $cmdArgs = Join-RmmWindowsProcessArguments -ArgumentList @('/d', '/c', $scriptFile)
+        $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -Arguments $cmdArgs -WorkingDirectory $workDir
+        $text = Join-RmmProcessOutputText -Result $result -EmptyExitLabel 'cmd'
+        return (Apply-RmmCwdFromCmdOutput -Text $text)
+    } finally {
+        if (Test-Path -LiteralPath $scriptFile) {
+            Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue
+        }
     }
-    $result = Invoke-RmmHiddenProcessWait -FilePath 'cmd.exe' -Arguments $cmdArgs -WorkingDirectory $workDir
-    $text = Join-RmmProcessOutputText -Result $result -EmptyExitLabel 'cmd'
-    return (Apply-RmmCwdFromCmdOutput -Text $text)
 }
 
 # Default: cmd.exe. Prefix PS: or powershell: for Windows PowerShell; pwsh: for PS 7 if installed.
