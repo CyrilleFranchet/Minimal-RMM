@@ -12,43 +12,33 @@ CMD and PowerShell child processes are launched with `System.Diagnostics.Process
 
 This avoids the brief **cmd.exe console flash** that could occur with `Start-Process -NoNewWindow`. PowerShell launches also pass `-WindowStyle Hidden` for belt-and-suspenders suppression.
 
-The same argument-quoting helper used for rclone (`Format-RmmRcloneProcessArgs`) builds PowerShell command lines. **CMD** uses two launch paths (both with `ProcessStartInfo.WorkingDirectory`, never `cd /d "…"` in the script):
+The same argument-quoting helper used for rclone (`Format-RmmRcloneProcessArgs`) builds PowerShell command lines. **CMD** runs each operator line via a **temp `.cmd` batch file** under `%TEMP%`: the inner command and `echo RMM_CWD_SIG:%CD%` are written literally to disk; `cmd.exe /d /c` receives only the script path (CreateProcess quoting via `Join-RmmWindowsProcessArguments`). Cwd is set with `ProcessStartInfo.WorkingDirectory`.
 
-| Inner command | Launch | Cwd marker |
-|---------------|--------|------------|
-| No `"` in the line (e.g. `whoami`, `net localgroup Administrators`) | `Join-RmmWindowsProcessArguments` → `/d /c …` (CreateProcess argv) | `%CD%` |
-| Contains `"` (e.g. `net group "Domain Admins" /domain`) | `Format-RmmCmdSlashSProcessArguments` → `/d /v:on /s /c ""…""` | **`!CD!`** (delayed expansion) |
-
-**Why two paths:** `/S /C ""…""` is required for nested CMD quotes, but **`%CD%` must not appear inside that wrapper** — CMD expands `%CD%` when the `/c` line is first read. On a root drive cwd (`H:\`), that inserts a trailing `\` before the closing `""`, so cmd tries to run the whole quoted string as a program name (`'"whoami & echo RMM_CWD_SIG:H:\"'`). Use **`!CD!`** with `/v:on` in the `/S` path only; it expands when `echo` runs, after parsing.
+**Why a batch file:** quoting nested `"` through `/S /C ""…""` or a single `/c "…"` string breaks in multiple ways — especially `%CD%` expanding to `H:\` before the closing `""`, which makes cmd treat the whole string as a program name. A `.cmd` file avoids passing the operator line through CreateProcess or `/S` parsing; `%CD%` expands on the `echo` batch line after the user command runs.
 
 **Quoting history (avoid regressions):**
 
-| Commit | Approach | Issue |
-|--------|----------|-------|
-| pre-`590d3c3` | `Start-Process -ArgumentList` + `cd /d` in script | Baseline when quoting was correct |
-| `590d3c3` | `Format-RmmRcloneProcessArgs` | Naive `\"` breaks `cd /d` paths |
-| `5fd7a08` | `/d /c "…"` + `""` **without `/S`** | Partial cwd fix; nested quotes broke |
-| `315df1d` | `Join-RmmWindowsProcessArguments` + **`WorkingDirectory`** | Simple CMD OK on `H:\`; nested `"` still broke |
-| `86ace8d` | **`/S /c ""…""` + `%CD%` for all commands** | Broke **every** command on root-drive cwd (`H:\`) |
-| current | **Hybrid** + **`WorkingDirectory`** | Simple → Join + `%CD%`; quoted → `/S` + `!CD!` |
+| Approach | Issue |
+|----------|-------|
+| `cd /d "…"` inside `/c` script | Quoting fights with nested `"` and paths with spaces |
+| `/d /c "…"` with `""` doubling, no `/S` | Nested `"` still broke |
+| CreateProcess `/d /c` + inner `"` only | Worked on some hosts; fragile across cmd parse rules |
+| `/S /C ""…""` + `%CD%` or `!CD!` | **`H:\` root cwd** breaks `/S` parse (`'"whoami & echo …H:\"'`) |
+| **Temp `.cmd` + `WorkingDirectory`** | Current — operator line never embedded in `/c` argv |
 
-Do not use `/S /C ""…""` with **`%CD%`** inside the script. Do not embed `cd /d "…"` in the `/c` script.
-
-**`net group` syntax:** group name before `/domain` — `net group "Domain Admins" /domain`. Single-quoted segments (`'Domain Admins'`) are converted to CMD `"…"`.
+**`net group` syntax:** group name before `/domain` — `net group "Domain Admins" /domain`. Wrong: `net group /domain "Domain Admins"`. Single-quoted segments (`'Domain Admins'`) are converted to CMD `"…"`.
 
 ## Working directory
 
-After each command, the agent appends `RMM_CWD_SIG:<path>` (CMD via `%CD%` or delayed `!CD!` on the `/S` path, PowerShell via `Get-Location`) and `Apply-RmmCwdFromCmdOutput` updates `$script:RmmShellCwd` for the next command.
+After each command, the agent appends `RMM_CWD_SIG:<path>` (CMD via `%CD%` in the temp batch file, PowerShell via `Get-Location`) and `Apply-RmmCwdFromCmdOutput` updates `$script:RmmShellCwd` for the next command.
 
 ## Functions
 
 | Function | Role |
 |----------|------|
 | `Invoke-RmmUserCommand` | Route operator line to CMD or PowerShell; normalize `ls` → `dir`, single-quote → CMD double-quote |
-| `Get-RmmPlainCmdOutput` | Run inner CMD line in current `$script:RmmShellCwd`; apply cwd sig |
-| `Format-RmmCmdSlashSProcessArguments` | Build `/d /v:on /s /c ""…""` when inner command contains `"` |
-| `Test-RmmCmdInnerNeedsSlashSQuoteWrapper` | True when inner CMD line contains `"` (selects `/S` vs CreateProcess path) |
-| `Join-RmmWindowsProcessArguments` | CreateProcess quoting for simple `/d /c` lines (no inner `"`) |
+| `Get-RmmPlainCmdOutput` | Write temp `.cmd`, run via `/d /c` + `WorkingDirectory`; apply cwd sig |
+| `Join-RmmWindowsProcessArguments` | CreateProcess quoting for `/d /c` script path only |
 | `Normalize-RmmNetGroupCommand` | Rewrite `net group /domain <name>` → `net group <name> /domain` |
 | `Invoke-RmmHiddenProcessWait` | Start hidden child process; optional `WorkingDirectory`; async read stdout/stderr; return exit code + streams |
 | `Join-RmmProcessOutputText` | Merge stdout/stderr; optional empty-output exit-code message (CMD only) |
