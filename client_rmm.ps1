@@ -422,9 +422,14 @@ function Invoke-RmmRestMethod {
     $req.AllowAutoRedirect = $true
     $req.Timeout = 300000
     $req.ReadWriteTimeout = 120000
-    # Default: HTTP keep-alive off so each request tends to close the TCP flow after the exchange (Wireshark-friendly).
-    # Persistent mode: keep-alive on so one TCP can carry multiple requests.
-    $req.KeepAlive = [bool]$script:UsePersistentHttp
+    # Always send Connection: keep-alive in the request so .NET's connection-pool path is
+    # taken on close.  With KeepAlive=false .NET skips the drain step in ConnectStream and
+    # calls Socket.Close() while the TLS close_notify alert bytes are still in the kernel
+    # receive buffer, which produces TCP RST instead of FIN.  With KeepAlive=true the pool
+    # drain reads those bytes before closing even when the server replies Connection: close
+    # (which it always does here), so the socket closes with FIN.
+    # $UsePersistentHttp still controls the CookieContainer (session tracking).
+    $req.KeepAlive = $true
     if ($script:RmmWebProxy) {
         $req.Proxy = $script:RmmWebProxy
     }
