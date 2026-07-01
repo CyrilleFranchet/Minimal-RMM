@@ -9,8 +9,8 @@ Keyboard ergonomics for the web console shell input (`#shell-input`).
 | **↑ / ↓** | Navigate command history for the selected session (newest at ↑ from empty line) |
 | **Tab** | Complete from history + dispatch prefixes; longest shared prefix first, then cycle matches |
 | **Shift+Tab** | Cycle completion matches backward |
-| **Enter** | Run and wait (`/exec`) |
-| **Ctrl+Enter** | Queue for next beacon |
+| **Enter** | Queue for next beacon |
+| **Ctrl+Enter** | Run and wait (`/exec`) |
 
 A hint line under the input shows the top completion match or match count.
 
