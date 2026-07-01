@@ -28,11 +28,15 @@ const state = {
   statusTickTimer: null,
   connectivityProbeTimer: null,
   wsReconnectTimer: null,
+  /** Serialize live event rendering so REST hydration preserves WS event order. */
+  liveEventQueue: Promise.resolve(),
   sessionDownloads: [],
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
   /** Pending command blocks for queued result placement (tech plan §6). */
   pendingCommandBlocks: [],
+  /** Rendered server event ids for the selected live/archive transcript. */
+  renderedEventIds: new Set(),
   commandBlockSeq: 0,
   /** Per-session command history for ↑/↓ and Tab (session id → string[]). */
   shellHistoryBySession: {},
@@ -633,6 +637,7 @@ async function selectHistorySession(id) {
   state.lastEventId = 0;
   state.echoedCommands.clear();
   state.pendingCommandBlocks = [];
+  state.renderedEventIds.clear();
   stopEventPolling();
   renderSessionList();
   renderHistoryList();
@@ -762,7 +767,7 @@ function connectWebSocket() {
     if (msg.op === "event") {
       if (state.viewMode !== "live") return;
       if (!state.selectedId || msg.session_id === state.selectedId) {
-        appendEvent(msg.event);
+        enqueueLiveEvent(msg.event, msg.session_id);
       }
       return;
     }
@@ -770,6 +775,37 @@ function connectWebSocket() {
       ws.send(JSON.stringify({ op: "pong" }));
     }
   };
+}
+
+function enqueueLiveEvent(ev, sessionId) {
+  state.liveEventQueue = state.liveEventQueue
+    .then(() => handleLiveEvent(ev, sessionId))
+    .catch(() => {
+      if (state.viewMode !== "live" || state.selectedId !== sessionId) return;
+      appendEvent(ev);
+    });
+}
+
+async function fetchFullLiveEvent(ev, sessionId) {
+  if (!sessionId || typeof ev?.id !== "number") return null;
+  const since = Math.max(0, ev.id - 1);
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(sessionId)}/events?since=${since}&limit=25`
+  );
+  if (status !== 200) return null;
+  return (data.events || []).find((candidate) => candidate.id === ev.id) || null;
+}
+
+async function handleLiveEvent(ev, sessionId) {
+  if (!ev) return;
+  if (state.viewMode !== "live" || state.selectedId !== sessionId) return;
+  if (ev.body_truncated && typeof ev.id === "number") {
+    const fullEvent = await fetchFullLiveEvent(ev, sessionId);
+    if (state.viewMode !== "live" || state.selectedId !== sessionId) return;
+    appendEvent(fullEvent || ev, { allowPast: true });
+    return;
+  }
+  appendEvent(ev);
 }
 
 function disconnectWebSocket() {
@@ -1611,7 +1647,7 @@ function updateShellCompletionHint() {
 function handleShellInputKeydown(e) {
   if (e.key === "Enter" && e.ctrlKey) {
     e.preventDefault();
-    runCommand(false);
+    runCommand(true);
     return;
   }
   if (e.key === "ArrowUp") {
@@ -1910,6 +1946,7 @@ async function selectSession(id) {
   state.lastEventId = 0;
   state.echoedCommands.clear();
   state.pendingCommandBlocks = [];
+  state.renderedEventIds.clear();
   renderSessionList();
   const s = state.sessions.find((x) => x.id === id);
   if (!s) return;
@@ -1921,7 +1958,7 @@ async function selectSession(id) {
   $("#console-detail").textContent = `${s.id} · last seen ${formatTime(s.last_seen)}`;
   shellOutputEl().innerHTML = "";
   updateShellPrompt();
-  appendShellMeta(`Session ${id.slice(0, 8)} — Enter wait · Ctrl+Enter queue · ↑↓ history · Tab complete`);
+  appendShellMeta(`Session ${id.slice(0, 8)} — Enter queue · Ctrl+Enter exec · ↑↓ history · Tab complete`);
 
   const input = $("#shell-input");
   input.value = "";
@@ -1954,6 +1991,7 @@ function showEmptyConsole() {
   state.selectedId = null;
   state.selectedHistoryId = null;
   state.viewMode = "live";
+  state.renderedEventIds.clear();
   if (typeof window.syncAiChatWithSession === "function") {
     window.syncAiChatWithSession(null);
   }
@@ -1990,10 +2028,13 @@ function saveEventCursor(sessionId, eventId) {
   sessionStorage.setItem(EVENT_CURSORS_KEY, JSON.stringify(cursors));
 }
 
-function appendEvent(ev, { local = false, history = false } = {}) {
+function appendEvent(ev, { local = false, history = false, allowPast = false } = {}) {
+  if (!ev) return;
   if (!local) {
-    if (typeof ev.id === "number" && ev.id <= state.lastEventId) return;
     if (typeof ev.id === "number") {
+      if (state.renderedEventIds.has(ev.id)) return;
+      if (!allowPast && ev.id <= state.lastEventId) return;
+      state.renderedEventIds.add(ev.id);
       state.lastEventId = Math.max(state.lastEventId, ev.id);
       if (state.selectedId) {
         saveEventCursor(state.selectedId, state.lastEventId);
@@ -2280,7 +2321,7 @@ async function runCommand(wait) {
       );
       if (status === 408) {
         appendShellError(
-          "Timed out — beacon interval may be long; try Ctrl+Enter to queue instead"
+          "Timed out — beacon interval may be long; try Enter to queue instead"
         );
       } else if (status === 200 && data.event) {
         appendEvent(data.event);
@@ -2603,7 +2644,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#shell-form").addEventListener("submit", (e) => {
     e.preventDefault();
-    runCommand(true);
+    runCommand(false);
   });
 
   bindShellInputCompletion();

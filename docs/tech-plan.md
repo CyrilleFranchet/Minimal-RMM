@@ -244,7 +244,7 @@ Artifact URLs continue to require token.
 
 ### Command completion — problem
 
-The web console (`web/app.js`) has a single-line shell input. Operators can **Enter** (exec + wait) or **Ctrl+Enter** (queue), but there is no:
+The web console (`web/app.js`) has a single-line shell input. Operators can **Enter** (queue) or **Ctrl+Enter** (exec + wait), but there is no:
 
 - **Tab completion** for prior commands, common prefixes, or shell mode hints
 - **Up/Down history** through commands already run in this session (browser tab)
@@ -267,7 +267,7 @@ Enhance `#shell-input` in the console panel:
 ┌─ Shell ────────────────────────────────────────────────┐
 │  C:\Users\x> dir Doc█                                    │
 │              dir Documents/   ← ghost / dropdown hint    │
-│  [cmd ▾]  Enter = wait · Ctrl+Enter = queue · Tab hint │
+│  [cmd ▾]  Enter = queue · Ctrl+Enter = /exec · Tab hint │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -304,7 +304,7 @@ Optional later:
 - Up/Down recalls prior commands for the selected session in order
 - Tab completes the longest shared prefix from history or inserts a known dispatch prefix
 - Completion works after page refresh when events are reloaded
-- No regression to Enter / Ctrl+Enter behavior
+- Enter queues commands; Ctrl+Enter runs `/exec` and waits for output
 
 ---
 
@@ -393,7 +393,7 @@ No new internal agent commands required for v1 — reuse `Invoke-RmmUserCommand`
 - After `cd`, prompt updates to the new path when the agent emits `RMM_CWD_SIG`
 - CMD mode behavior matches today’s bare-line dispatch
 - UI states beacon latency limitation clearly
-- Enter still exec-waits; Ctrl+Enter still queues
+- Enter queues commands; Ctrl+Enter runs `/exec` and waits
 
 ---
 
@@ -403,11 +403,11 @@ No new internal agent commands required for v1 — reuse `Invoke-RmmUserCommand`
 
 ### Queued results — problem
 
-Today the web console appends every incoming event to the **tail** of `#shell-output` (`appendShellOutput`, `appendShellLine`, artifact blocks). That works for **Enter** (exec + wait) because only one command is in flight and the user waits before typing again.
+Today the web console appends every incoming event to the **tail** of `#shell-output` (`appendShellOutput`, `appendShellLine`, artifact blocks). That works for **Ctrl+Enter** (exec + wait) because only one command is in flight and the user waits before typing again.
 
 It breaks for **queued** work:
 
-1. Operator queues `whoami` (Ctrl+Enter) — echo + “(queued — waiting for next beacon)” appear.
+1. Operator queues `whoami` (Enter) — echo + “(queued — waiting for next beacon)” appear.
 2. Operator queues `hostname` before the first result returns.
 3. `whoami` output arrives on the next beacon but is rendered **at the tail**, below the second command echo — not under `whoami`.
 
@@ -482,8 +482,8 @@ Optional later: explicit `command_id` on queue API responses for unambiguous pai
 ### Acceptance criteria
 
 - Queue two commands quickly; each result appears under its own echo, not at transcript tail
-- Ctrl+Enter queue + later WS/poll delivery preserves pairing after tab refresh (events reload)
-- Exec (Enter) behavior unchanged
+- Enter queue + later WS/poll delivery preserves pairing after tab refresh (events reload)
+- Exec (Ctrl+Enter) behavior unchanged
 - Unmatched results (CLI-queued) still appear at tail with command label
 
 ---
@@ -677,7 +677,7 @@ Today the archive view often **does not show what the operator entered**:
 
 1. **Tool actions** — server logs operator events with internal payloads (`download: __DOWNLOAD__ C:\path`, `screenshot: __SCREENSHOT__`, `upload: __UPLOAD__ …`) while the web UI echoed user-facing text (`download C:\path`, `screenshot`, `upload file.txt → C:\dest`). History replay uses `operatorCommandFromBody()` and renders the **internal** string, or fails to match tool results to the label the operator saw.
 2. **Output-only rows** — when no operator event precedes a result (CLI-only queue, older transcripts, or missing `record_operator_action`), `appendUnmatchedEvent()` shows a small `result » command` meta line instead of a full prompt echo (`rmm> …`).
-3. **Exec (Enter) mode** — relies on an `exec: …` operator event in the archive; if absent, only stdout appears with no command line above it.
+3. **Exec (Ctrl+Enter) mode** — relies on an `exec: …` operator event in the archive; if absent, only stdout appears with no command line above it.
 4. **§6 command blocks** — history replay builds blocks from `operator` events only (`createCommandBlock(opCmd, …)`). There is no fallback to synthesize an echo from `ev.command` on the next `output` / artifact event when the operator row is missing or uses a different string than the live echo.
 
 ```text
