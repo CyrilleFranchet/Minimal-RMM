@@ -90,7 +90,9 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `GET /api/v1/socks` — list active relays with hostname, WS channel, tunnel count
 - [x] Embedded `--cli` (readline / prompt_toolkit): full command set including keylog, persist, socks list
 - [x] Security: `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, `--insecure` lab flag; `MAX_BODY_BYTES` via `RMM_MAX_BODY_BYTES` (default 32 MB); path traversal guards on artifacts
-- [x] Beacon/API responses include explicit `Content-Length` and `Connection: close` so short HTTP exchanges are framed before TCP/TLS close
+- [x] Beacon/API responses include explicit `Connection: close` and `close_connection = True` so HTTP/1.1 exchanges are terminated after each request/response (no `Content-Length` — see below)
+- [x] Agent `HttpWebResponse` always closed via `try/finally` in `Invoke-RmmRestMethod` and `Save-RmmBeaconFile`; `Get-RmmHttpErrorBody` always closes response in its own `finally` — prevents TCP RST caused by unread data in the receive buffer when GC finalizes an unclosed response
+- [x] **TCP RST fix**: removed `Content-Length` from `_respond()`. With a TLS tunnel (Cloudflare), the server sends a TLS `close_notify` alert after the response body; if the client stops reading at exactly Content-Length bytes, the 85-byte `close_notify` sits unread in the TCP receive buffer and `Socket.Close()` fires RST instead of FIN. Without Content-Length, `ReadToEnd()` reads until TLS EOF (the `close_notify` IS consumed as the EOF signal) — buffer is empty — graceful FIN.
 - [x] Chunked download reassembly (`_save_file_upload`: `.part` staging, `upload_id` / `offset` / `eof`)
 - [x] `GET /api/v1/sessions/{id}/downloads` — per-session download artifact index (`download_artifacts`, disk backfill)
 - [x] `queue_agent_download` / `register_download_artifact` — track remote path from queue + agent `remote_path` field
