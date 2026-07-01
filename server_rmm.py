@@ -1745,12 +1745,17 @@ class RMMHandler(BaseHTTPRequestHandler):
     
     def _respond(self, code, body="", content_type="text/plain"):
         try:
+            payload = body.encode() if isinstance(body, str) else body
+            if payload is None:
+                payload = b""
             self.send_response(code)
             self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
             self.end_headers()
-            if body:
-                payload = body.encode() if isinstance(body, str) else body
+            if payload:
                 self._safe_write(payload)
+            self.close_connection = True
         except (BrokenPipeError, ConnectionResetError):
             pass
 
