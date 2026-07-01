@@ -90,6 +90,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `GET /api/v1/socks` — list active relays with hostname, WS channel, tunnel count
 - [x] Embedded `--cli` (readline / prompt_toolkit): full command set including keylog, persist, socks list
 - [x] Security: `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, `--insecure` lab flag; `MAX_BODY_BYTES` via `RMM_MAX_BODY_BYTES` (default 32 MB); path traversal guards on artifacts
+- [x] Beacon/API responses include explicit `Content-Length` and `Connection: close` so short HTTP exchanges are framed before TCP/TLS close
 - [x] Chunked download reassembly (`_save_file_upload`: `.part` staging, `upload_id` / `offset` / `eof`)
 - [x] `GET /api/v1/sessions/{id}/downloads` — per-session download artifact index (`download_artifacts`, disk backfill)
 - [x] `queue_agent_download` / `register_download_artifact` — track remote path from queue + agent `remote_path` field
