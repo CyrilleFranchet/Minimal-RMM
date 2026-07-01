@@ -34,6 +34,18 @@ Environment override: `RMM_DOWNLOAD_BURST=1` enables burst mode.
 
 Configure in `client_rmm.ps1` or the generated agent script config block. Paced mode uses `Wait-RmmDownloadChunkPace` → `Get-JitteredSleep -Quiet` between chunks (same HTTP stack as beacon: `Invoke-RmmRestMethod`, same `$persistentHttp` / TCP profile).
 
+### Chunk sizes (NDR lab profile)
+
+Each `file_upload` chunk uses a **random raw read size** from **2 / 5 / 10 / 20 MB** (`Get-RmmDownloadChunkBytes`), still posted to the same endpoint:
+
+```http
+POST /result?id=<session>&type=file_upload
+```
+
+This shapes **`sendBytes[]`** on the HTTPS tunnel like mixed small/large outbound POSTs (e.g. Vectra `hidden_https_tunnel_exfil` vs steady C2). **Small** entries in the array come from normal beacons and **`download_progress`** POSTs between chunks — no extra GET padding or alternate upload URL.
+
+Wire size per chunk is ~33% larger (base64 + JSON). A 20 MB raw chunk stays under the default **32 MB** `RMM_MAX_BODY_BYTES` cap.
+
 ### Progress (live only)
 
 ```http
