@@ -422,14 +422,18 @@ function Invoke-RmmRestMethod {
     $req.AllowAutoRedirect = $true
     $req.Timeout = 300000
     $req.ReadWriteTimeout = 120000
-    # Always send Connection: keep-alive in the request so .NET's connection-pool path is
-    # taken on close.  With KeepAlive=false .NET skips the drain step in ConnectStream and
-    # calls Socket.Close() while the TLS close_notify alert bytes are still in the kernel
-    # receive buffer, which produces TCP RST instead of FIN.  With KeepAlive=true the pool
-    # drain reads those bytes before closing even when the server replies Connection: close
-    # (which it always does here), so the socket closes with FIN.
-    # $UsePersistentHttp still controls the CookieContainer (session tracking).
+    # KeepAlive=true so .NET's connection-pool drain path runs on close: the pool drain
+    # reads any trailing TLS close_notify bytes before Socket.Close(), ensuring the socket
+    # ends with FIN not RST.  KeepAlive=false skips the drain → RST when the TLS alert
+    # bytes from Cloudflare are in the kernel receive buffer.
+    #
+    # A unique ConnectionGroupName per request prevents .NET from reusing the connection
+    # for the next call (which KeepAlive=true would otherwise allow).  Combined, each
+    # beacon exchange still gets its own TCP flow, just with a proper FIN close.
     $req.KeepAlive = $true
+    if (-not $script:UsePersistentHttp) {
+        $req.ConnectionGroupName = [System.Guid]::NewGuid().ToString()
+    }
     if ($script:RmmWebProxy) {
         $req.Proxy = $script:RmmWebProxy
     }
