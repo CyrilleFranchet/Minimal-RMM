@@ -172,17 +172,24 @@ function Write-RmmLog {
 function Get-RmmHttpErrorBody {
     param([System.Net.HttpWebResponse]$Response)
     if (-not $Response) { return '' }
+    $text = ''
     try {
         $stream = $Response.GetResponseStream()
-        if (-not $stream) { return '' }
-        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
-        $text = $reader.ReadToEnd()
-        $reader.Close()
-        try { $Response.Close() } catch {}
-        return ([string]$text).Trim()
+        if ($stream) {
+            $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+            try {
+                $text = $reader.ReadToEnd()
+            } finally {
+                $reader.Close()
+            }
+        }
     } catch {
-        return ''
+        # ignore read errors; response is always closed in the finally below
+    } finally {
+        # Always drain + close so the TCP socket finishes with FIN, not RST.
+        try { $Response.Close() } catch {}
     }
+    return ([string]$text).Trim()
 }
 
 function Get-RmmHttpResponseHeader {
@@ -463,6 +470,7 @@ function Invoke-RmmRestMethod {
         }
     }
 
+    $http = $null
     try {
         $response = $req.GetResponse()
         $http = [System.Net.HttpWebResponse]$response
@@ -490,7 +498,6 @@ function Invoke-RmmRestMethod {
         $raw = $reader.ReadToEnd()
         $reader.Close()
         $ctOut = $http.ContentType
-        $http.Close()
         Write-RmmLog "HTTP $statusNum $Method $origUri ($($raw.Length) bytes)" -Level DEBUG
         return (Convert-RmmHttpResponseContent -Raw $raw -ContentType $ctOut)
     } catch [System.Net.WebException] {
@@ -530,6 +537,10 @@ function Invoke-RmmRestMethod {
             return $null
         }
         throw
+    } finally {
+        # Guarantee the response is closed in every code path (success, WebException, or
+        # mid-read IO error) so the TCP connection ends with FIN rather than RST.
+        if ($null -ne $http) { try { $http.Close() } catch {} }
     }
 }
 
@@ -892,9 +903,10 @@ function Save-RmmBeaconFile {
         }
     }
 
-    $response = $req.GetResponse()
-    $http = [System.Net.HttpWebResponse]$response
+    $http = $null
     try {
+        $response = $req.GetResponse()
+        $http = [System.Net.HttpWebResponse]$response
         if ([int]$http.StatusCode -ge 400) {
             throw "HTTP $([int]$http.StatusCode) downloading $RelativeUrl"
         }
@@ -910,8 +922,15 @@ function Save-RmmBeaconFile {
             $fs.Close()
             $rs.Close()
         }
+    } catch [System.Net.WebException] {
+        # Drain and close the error response so the TCP socket ends with FIN, not RST.
+        $webEx = $_.Exception
+        if ($webEx.Response -and ($null -eq $http -or [object]::ReferenceEquals($webEx.Response, $http))) {
+            try { $webEx.Response.Close() } catch {}
+        }
+        throw
     } finally {
-        $http.Close()
+        if ($null -ne $http) { try { $http.Close() } catch {} }
     }
 }
 

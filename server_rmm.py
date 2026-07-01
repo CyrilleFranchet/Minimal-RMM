@@ -1750,7 +1750,13 @@ class RMMHandler(BaseHTTPRequestHandler):
                 payload = b""
             self.send_response(code)
             self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(payload)))
+            # Do NOT send Content-Length here.  With a TLS tunnel (e.g. Cloudflare),
+            # the server sends a TLS close_notify alert after the FIN.  If the client
+            # has already stopped reading at exactly Content-Length bytes, those alert
+            # bytes sit in the TCP receive buffer.  Socket.Close() with unread receive-
+            # buffer data sends RST instead of FIN.  Without Content-Length the client's
+            # ReadToEnd() reads until TLS EOF (the close_notify IS the EOF signal), the
+            # buffer is empty, and the client closes gracefully with FIN.
             self.send_header("Connection", "close")
             self.end_headers()
             if payload:
