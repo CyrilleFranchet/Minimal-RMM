@@ -1240,7 +1240,7 @@ function fillCommandBlock(block, ev) {
     line.innerHTML = renderEventResultHtml(ev);
     resultEl.appendChild(line);
   }
-  scrollBlockIntoView(block.blockEl);
+  scrollShellToBottom();
   return true;
 }
 
