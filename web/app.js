@@ -1232,7 +1232,7 @@ function fillCommandBlock(block, ev) {
     line.innerHTML = renderEventResultHtml(ev);
     resultEl.appendChild(line);
   }
-  scrollShellIfNearBottom();
+  scrollShellToBottom();
   return true;
 }
 
@@ -1259,7 +1259,7 @@ function createCommandBlock(cmd, { meta = null, kind = null, remotePath = null, 
   blockEl.appendChild(resultEl);
 
   log.appendChild(blockEl);
-  scrollShellIfNearBottom();
+  scrollShellToBottom();
 
   const keys = matchKeys ? matchKeys.map(normalizeCmdKey) : [normalizeCmdKey(cmd)];
   const block = {
