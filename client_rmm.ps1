@@ -2636,6 +2636,9 @@ while ($true) {
         $cmdData = Parse-CmdResponse -response $response
         $command = ([string]$cmdData.command).Trim()
         $cmdType = [string]$cmdData.type
+        # DEBUG — remove after diagnosing command delivery
+        $dbgRaw = if ($null -eq $response) { '(null)' } elseif ($response -is [string]) { $response } else { try { $response | ConvertTo-Json -Compress -Depth 3 } catch { $response.ToString() } }
+        Write-Host "[DBG] /cmd raw: $dbgRaw" -ForegroundColor Magenta
         Sync-RmmSocksChannelFromServer -CmdData $cmdData
 
         if ($command -eq "__EXIT__") {
