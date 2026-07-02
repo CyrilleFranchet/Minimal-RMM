@@ -550,6 +550,18 @@ function Invoke-RmmRestMethod {
         # Guarantee the response is closed in every code path (success, WebException, or
         # mid-read IO error) so the TCP connection ends with FIN rather than RST.
         if ($null -ne $http) { try { $http.Close() } catch {} }
+        # Force-close the connection group so the underlying TCP socket is torn down
+        # immediately after each request.  With KeepAlive=true the pool-drain path is
+        # used (reads any trailing TLS close_notify bytes → FIN not RST), but when an
+        # intermediate proxy such as Cloudflare keeps the TLS session alive the drained
+        # socket would otherwise sit in the pool until the 100-second MaxIdleTime.
+        # CloseConnectionGroup disposes that idle socket right away; if the connection
+        # was already closed (server sent Connection: close) this is a no-op.
+        if (-not $script:UsePersistentHttp) {
+            try {
+                [System.Net.ServicePointManager]::FindServicePoint($wireUri).CloseConnectionGroup($req.ConnectionGroupName)
+            } catch {}
+        }
     }
 }
 
