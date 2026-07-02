@@ -42,6 +42,8 @@
 #
 # Diagnostics
 #   $verboseHttp         $true = log each request URL, wire IPv4, status, and error bodies.
+#   $debugCmdResponse    $true = print the raw /cmd JSON on every beacon poll (useful for
+#                        diagnosing command delivery issues like pipeline-pollution regressions).
 #
 # HTTP notes (not separate settings):
 #   - Tunnel host is always reached over IPv4 (A records only; no IPv6-only DNS).
@@ -61,6 +63,7 @@ $httpProxy = ''
 $httpProxyUseDefaultCredentials = $false
 
 $verboseHttp = $false
+$debugCmdResponse = $false
 
 $script:RmmRegisterConfigSynced = $false
 $script:RmmFastPoll = $false
@@ -2636,6 +2639,10 @@ while ($true) {
         $cmdData = Parse-CmdResponse -response $response
         $command = ([string]$cmdData.command).Trim()
         $cmdType = [string]$cmdData.type
+        if ($debugCmdResponse) {
+            $dbgRaw = if ($null -eq $response) { '(null)' } elseif ($response -is [string]) { $response } else { try { $response | ConvertTo-Json -Compress -Depth 3 } catch { $response.ToString() } }
+            Write-Host "[DBG] /cmd raw: $dbgRaw" -ForegroundColor Magenta
+        }
         Sync-RmmSocksChannelFromServer -CmdData $cmdData
 
         if ($command -eq "__EXIT__") {
