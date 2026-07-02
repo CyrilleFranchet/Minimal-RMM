@@ -9,8 +9,8 @@
 |-------|--------|
 | **Phase** | §6 queued result placement + §7 restart/config bugs shipped |
 | **Branch** | `main` |
-| **Last updated** | 2026-06-17 |
-| **HEAD** | `3bdb2ac` — sun/moon theme toggle |
+| **Last updated** | 2026-07-02 |
+| **HEAD** | `843d6fe` — one TCP per beacon exchange, FIN not RST |
 | **Commits** | ~60 since initial import |
 | **Tests** | None in-repo (manual lab validation only) |
 
@@ -92,7 +92,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Security: `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, `--insecure` lab flag; `MAX_BODY_BYTES` via `RMM_MAX_BODY_BYTES` (default 32 MB); path traversal guards on artifacts
 - [x] Beacon/API responses include explicit `Connection: close` and `close_connection = True` so HTTP/1.1 exchanges are terminated after each request/response (no `Content-Length` — see below)
 - [x] Agent `HttpWebResponse` always closed via `try/finally` in `Invoke-RmmRestMethod` and `Save-RmmBeaconFile`; `Get-RmmHttpErrorBody` always closes response in its own `finally` — prevents TCP RST caused by unread data in the receive buffer when GC finalizes an unclosed response
-- [x] **TCP RST fix**: removed `Content-Length` from `_respond()`. With a TLS tunnel (Cloudflare), the server sends a TLS `close_notify` alert after the response body; if the client stops reading at exactly Content-Length bytes, the 85-byte `close_notify` sits unread in the TCP receive buffer and `Socket.Close()` fires RST instead of FIN. Without Content-Length, `ReadToEnd()` reads until TLS EOF (the `close_notify` IS consumed as the EOF signal) — buffer is empty — graceful FIN.
+- [x] **TCP RST fix** (`c9702d9` → `54b8d0d` → `f28a0b4` → `843d6fe`): `c9702d9` added `Content-Length` to fix HTTP framing; this caused `ReadToEnd()` to stop early, leaving the 85-byte Cloudflare `TLS close_notify` in the TCP receive buffer — `Socket.Close()` fires RST on unread data. `54b8d0d` removed `Content-Length` (server fix). `f28a0b4` forced `KeepAlive=true` on every `HttpWebRequest`: with `KeepAlive=false` .NET skips the pool-drain step and `Socket.Close()` races against the buffered alert; with `KeepAlive=true` the pool-drain reads those bytes first → FIN. To prevent `KeepAlive=true` from letting Cloudflare multiplex all beacons over one persistent TLS session: `be68622` assigns a random `ConnectionGroupName` per request (no pool sharing between requests) and `843d6fe` calls `ServicePointManager.FindServicePoint(...).CloseConnectionGroup(guid)` in the `finally` block to tear down the idle socket immediately. Net result: one TCP flow per beacon exchange, always closed with FIN.
 - [x] Chunked download reassembly (`_save_file_upload`: `.part` staging, `upload_id` / `offset` / `eof`)
 - [x] `GET /api/v1/sessions/{id}/downloads` — per-session download artifact index (`download_artifacts`, disk backfill)
 - [x] `queue_agent_download` / `register_download_artifact` — track remote path from queue + agent `remote_path` field
