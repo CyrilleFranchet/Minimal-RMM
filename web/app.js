@@ -874,7 +874,15 @@ function shellOutputEl() {
 
 function scrollShellToBottom() {
   const log = shellOutputEl();
-  log.scrollTop = log.scrollHeight;
+  requestAnimationFrame(() => {
+    log.scrollTop = log.scrollHeight;
+  });
+}
+
+function scrollBlockIntoView(el) {
+  requestAnimationFrame(() => {
+    el.scrollIntoView({ behavior: "instant", block: "end" });
+  });
 }
 
 function scrollShellIfNearBottom() {
@@ -1232,7 +1240,7 @@ function fillCommandBlock(block, ev) {
     line.innerHTML = renderEventResultHtml(ev);
     resultEl.appendChild(line);
   }
-  scrollShellToBottom();
+  scrollBlockIntoView(block.blockEl);
   return true;
 }
 
@@ -1259,7 +1267,7 @@ function createCommandBlock(cmd, { meta = null, kind = null, remotePath = null, 
   blockEl.appendChild(resultEl);
 
   log.appendChild(blockEl);
-  scrollShellToBottom();
+  scrollBlockIntoView(blockEl);
 
   const keys = matchKeys ? matchKeys.map(normalizeCmdKey) : [normalizeCmdKey(cmd)];
   const block = {
