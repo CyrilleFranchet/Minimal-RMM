@@ -2185,7 +2185,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "missing_content_b64_or_remote_path"})
                 return True
             data = json.dumps({
-                "filename": os.path.basename(remote_file.replace("\\", "/").rstrip("/")),
+                "filename": os.path.basename(remote_file),
                 "src_filename": "",
                 "content": local_b64,
             })
@@ -2911,7 +2911,7 @@ class CommandInterface:
                         with open(local_file, 'rb') as f:
                             content = base64.b64encode(f.read()).decode()
                         data = json.dumps({
-                            "filename": os.path.basename(remote_file.replace("\\", "/").rstrip("/")),
+                            "filename": os.path.basename(remote_file),
                             "src_filename": os.path.basename(local_file),
                             "content": content
                         })
