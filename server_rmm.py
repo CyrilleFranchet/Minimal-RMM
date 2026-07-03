@@ -2186,7 +2186,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             data = json.dumps({
                 "filename": os.path.basename(remote_file.replace("\\", "/")),
-                "src_filename": "",
+                "src_filename": body.get("src_filename", ""),
                 "content": local_b64,
             })
             cmd = f"__UPLOAD__ {remote_file}"

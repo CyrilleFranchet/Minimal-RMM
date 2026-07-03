@@ -2518,7 +2518,7 @@ async function queueUpload() {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remote_path: remote, content_b64 }),
+      body: JSON.stringify({ remote_path: remote, content_b64, src_filename: file.name }),
     }
   );
   fileInput.value = "";
