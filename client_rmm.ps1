@@ -2713,14 +2713,39 @@ while ($true) {
                 if ($parts.Count -eq 2) {
                     $uploadCmd = $parts[0]
                     $jsonData = $parts[1]
-                    $filePath = $uploadCmd.Substring(10).Trim()
-                    
-                    $fileData = $jsonData | ConvertFrom-Json
-                    $fileBytes = [Convert]::FromBase64String($fileData.content)
-                    [System.IO.File]::WriteAllBytes($filePath, $fileBytes)
-                    
-                    Send-RmmTextResult -CommandLine $command -Text "File uploaded successfully: $filePath" -Headers $headers
-                    Write-Host "[+] File uploaded: $filePath" -ForegroundColor Green
+                    $destPath = $uploadCmd.Substring(10).Trim()
+                    try {
+                        $fileData = $jsonData | ConvertFrom-Json
+                        $fileBytes = [Convert]::FromBase64String($fileData.content)
+
+                        # Resolve the final write path: if the destination looks like a
+                        # directory (trailing slash, or already exists as a container),
+                        # append the filename that the server embedded in the payload.
+                        $resolvedPath = $destPath
+                        if (($destPath -match '[/\\]$') -or (Test-Path $destPath -PathType Container)) {
+                            $srcName = if ($fileData.PSObject.Properties['src_filename'] -and $fileData.src_filename) {
+                                $fileData.src_filename
+                            } else { $fileData.filename }
+                            if (-not $srcName) {
+                                throw "Destination is a directory but no source filename was provided"
+                            }
+                            $resolvedPath = Join-Path $destPath.TrimEnd('/\') $srcName
+                        }
+
+                        # Create parent directory if it does not exist.
+                        $parentDir = Split-Path $resolvedPath -Parent
+                        if ($parentDir -and -not (Test-Path $parentDir -PathType Container)) {
+                            New-Item -ItemType Directory -Force -Path $parentDir | Out-Null
+                        }
+
+                        [System.IO.File]::WriteAllBytes($resolvedPath, $fileBytes)
+                        Send-RmmTextResult -CommandLine $command -Text "File uploaded successfully: $resolvedPath" -Headers $headers
+                        Write-Host "[+] File uploaded: $resolvedPath" -ForegroundColor Green
+                    } catch {
+                        $err = "Upload failed: $($_.Exception.Message)"
+                        Send-RmmTextResult -CommandLine $command -Text $err -Headers $headers
+                        Write-Host "[-] $err" -ForegroundColor Red
+                    }
                 }
             }
             elseif ($command -eq "__SCREENSHOT__") {

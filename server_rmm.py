@@ -2185,7 +2185,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "missing_content_b64_or_remote_path"})
                 return True
             data = json.dumps({
-                "filename": os.path.basename(remote_file),
+                "filename": os.path.basename(remote_file.replace("\\", "/").rstrip("/")),
+                "src_filename": "",
                 "content": local_b64,
             })
             cmd = f"__UPLOAD__ {remote_file}"
@@ -2910,7 +2911,8 @@ class CommandInterface:
                         with open(local_file, 'rb') as f:
                             content = base64.b64encode(f.read()).decode()
                         data = json.dumps({
-                            "filename": os.path.basename(remote_file),
+                            "filename": os.path.basename(remote_file.replace("\\", "/").rstrip("/")),
+                            "src_filename": os.path.basename(local_file),
                             "content": content
                         })
                         self.server.set_command(self.server.current_session, f"__UPLOAD__ {remote_file}\n{data}", "oneshot")
