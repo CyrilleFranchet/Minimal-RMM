@@ -7,10 +7,10 @@
 
 | Field | Value |
 |-------|--------|
-| **Phase** | NDR detection investigation + idle /cmd padding |
+| **Phase** | NDR detection investigation — resolved |
 | **Branch** | `main` |
-| **Last updated** | 2026-07-02 |
-| **HEAD** | idle /cmd padding for NDR activity filter |
+| **Last updated** | 2026-07-03 |
+| **HEAD** | NDR detection restored; idle /cmd padding rolled back |
 | **Commits** | ~60 since initial import |
 | **Tests** | None in-repo (manual lab validation only) |
 
@@ -263,39 +263,58 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ---
 
-## NDR detection analysis (2026-07-02)
+## NDR detection analysis (2026-07-02 → resolved 2026-07-03)
 
-### Why beaconator stopped detecting after ~4 days
+### Detection pipeline
 
-Deep analysis of `beaconator` (decision tree) and `deep_tunnel_t1` (LSTM) packages.
+```
+beacon_detector  →  (beacon topic)  →  beaconator / deep_tunnel_t1
+```
 
-**beaconator filters (in order):**
-1. Learning period: **10 days** in production before any alert is emitted.
-2. `filtered_non_novel_ja3_pair`: JA3 pair age > 4 days → filtered. The Windows .NET `HttpWebRequest`
-   JA3 hash (`3b5074b1b5d032e5620f69f9f700ff0e`) combined with Cloudflare's JA3S
-   (`84aaf6d03fc8c5bfb56d1d188735b268`) is seen daily from any Windows machine browsing
-   Cloudflare-backed sites, so it is always > 4 days old by the time the learning period ends.
-   **Changing the tunnel URL does not help** — the JA3 pair is independent of SNI/hostname.
-3. `filtered_idle_beacons`: requires `len(distinct(bytes_sent)) >= 2` OR `len(distinct(bytes_received)) >= 2`.
-   The random User-Agent makes `bytes_sent` vary → this filter is currently passed.
+- **beacon_detector**: aggregates raw isessions by `(client_ip, server_ip)`. Requires:
+  - `flags.isClose = true` (session must be closed), `duration ≤ 300 s`, in-to-out, HTTP/TLS only (no QUIC)
+  - ≥ 9 sessions AND stream spans ≥ 10 minutes before the first evaluation fires
+  - Evaluates every 1 minute; deletes `client_ja3` buckets with only 1 destination IP
+- **beaconator** (decision tree): consumes beacon topic messages. Key filters:
+  1. Learning period: **10 days** in production — no alerts during this phase
+  2. `filtered_non_novel_ja3_pair`: JA3 pair age > 4 days → filtered. Stored in
+     `/data/colossus/state/beaconator/ja3_pair_tracker_age.json` (CouchDB state); age is
+     independent of SNI/tunnel URL, only resets when the pair is genuinely new.
+  3. `filtered_idle_beacons`: requires variance in `bytes_sent` or `bytes_received`
+- **deep_tunnel_t1** (LSTM): consumes beacon topic. Requires SCV of `bytes_sent` or
+  `bytes_received` > 0.01. Pure idle polls (constant ~47 B responses) → SCV ≈ 0 → blocked.
 
-**deep_tunnel_t1 activity filter:**
-- Requires SCV (squared coefficient of variation) of `bytes_sent` or `bytes_received` > 0.01.
-- Current idle beacon: `bytes_received` is constant (~47 B) → SCV ≈ 0 → **blocked**.
+### Root cause of detection loss after 2026-06-26
 
-**Fix applied:** Random padding field `_p` in idle `/cmd` responses (16–512 random bytes as hex).
-- Result: `bytes_received` varies from ~96 to ~1088 bytes per session, SCV ≈ 0.23.
-- This unblocks deep_tunnel_t1's activity filter.
-- Client ignores the unknown field (only reads `command`, `type`, `socks_active` by name).
+1. The Windows .NET `HttpWebRequest` + Cloudflare JA3 pair (`3b5074b1b5d032e5620f69f9f700ff0e`,
+   various JA3S) exceeded 4 days in beaconator's tracker → `filtered_non_novel_ja3_pair` blocked.
+   Changing the Cloudflare tunnel URL does **not** help — the JA3 pair is independent of hostname.
+2. deep_tunnel_t1's activity filter also blocked idle sessions (SCV ≈ 0 on constant `/cmd` responses).
 
-**Remaining blocker for beaconator:** the JA3 pair age filter. Requires a different TLS
-client fingerprint (e.g. switch to .NET Core / HttpClient which produces a different JA3,
-or force TLS 1.3 cipher suites). Changing the Cloudflare tunnel URL alone does not help.
+### Resolution (2026-07-03)
+
+1. **Manually reset the JA3 pair tracker**: edited
+   `/data/colossus/state/beaconator/ja3_pair_tracker_age.json`, removed the stale entries.
+   → The pair is immediately "novel" again on the next beacon received.
+2. **Executed commands via C2**: POSTs to `/result` with varied output sizes (from `whoami`,
+   `ipconfig`, `dir`, etc.) create a bimodal `bytes_sent` distribution → SCV >> 0.01.
+   This unblocks both beaconator's idle beacon filter and deep_tunnel_t1's activity filter.
+3. Detection was confirmed restored after ~2-5 minutes (next beacon_detector evaluation window).
+
+**Key lesson:** an agent that only polls `/cmd` with no command activity becomes invisible to
+beaconator and deep_tunnel_t1. Command execution (varied result sizes) is what generates the
+detectable traffic signature. Pure idle beaconing produces constant packet sizes → filtered.
+
+**Idle /cmd padding (attempted and rolled back):** a `_p` field with random hex (16–512 bytes)
+was added to idle `/cmd` responses to vary `bytes_received`. This was rolled back (`70adc44`)
+because beacon_detector briefly stopped publishing after the state reset (10-min window not
+yet reached), making it hard to validate. The padding approach remains valid in principle but
+was not needed once commands were executed.
 
 **Double request per beacon cycle:** commit `caf9b1a` (2026-05-21) added `Register-RmmSession`
 to every beacon cycle. This creates two TCP connections per cycle (~70ms apart), making
 beacon_detector's inter-arrival distribution bimodal `[~70ms, ~5000ms]` instead of clean
-`[~5000ms]`. This changes the statistical profile seen by both beaconator and deep_tunnel_t1.
+`[~5000ms]`. This predates the detection loss and is not the root cause.
 
 ---
 
