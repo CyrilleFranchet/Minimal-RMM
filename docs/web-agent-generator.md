@@ -46,7 +46,8 @@ Form values are stored in `sessionStorage` for this browser tab only. The genera
 
 ## Go agent build
 
-The same sidebar contains a **Build Go agent** section. It uses
+The sidebar has a separate **Deploy agent (Go)** section below the PowerShell
+section. It uses
 `GET /api/v1/agent/go` to display the checked-in source and
 `POST /api/v1/agent/go/build` to compile a fixed target on the server. See
 `docs/go-agent.md` for the supported targets and current feature parity.
