@@ -130,6 +130,35 @@ class AiProviderTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[0], rmm_ai.MISTRAL_CHAT_URL)
         self.assertEqual(request.call_args.args[2]["tool_choice"], "auto")
 
+    def test_mistral_multi_message_completion_returns_text(self):
+        response = {
+            "choices": [
+                {
+                    "messages": [
+                        {"content": [{"type": "text", "text": "First "}]},
+                        {"content": [{"type": "text", "text": "response."}]},
+                    ]
+                }
+            ]
+        }
+        with patch("rmm_ai._json_request", return_value=response):
+            result = asyncio.run(
+                rmm_ai._run_provider_loop(
+                    provider="mistral",
+                    api_key="test-key",
+                    messages=[{"role": "user", "content": "Hello"}],
+                    model="mistral-test",
+                    system="Use RMM tools.",
+                    tools=[],
+                    call_tool=lambda _name, _arguments: None,
+                    max_rounds=1,
+                    via="direct",
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["message"], "First response.")
+
     def test_openai_tool_loop_continues_after_a_function_call(self):
         responses = [
             {
@@ -213,6 +242,51 @@ class AiProviderTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(request.call_args_list[1].args[2]["messages"][-1]["tool_call_id"], "call-2")
+
+    def test_mistral_multi_message_completion_continues_after_a_function_call(self):
+        responses = [
+            {
+                "choices": [
+                    {
+                        "messages": [
+                            {
+                                "tool_calls": [
+                                    {
+                                        "id": "call-3",
+                                        "function": {
+                                            "name": "list_sessions",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            },
+            {"choices": [{"message": {"content": "Ready."}}]},
+        ]
+
+        async def tool(_name, _arguments):
+            return "[{}]"
+
+        with patch("rmm_ai._json_request", side_effect=responses) as request:
+            result = asyncio.run(
+                rmm_ai._run_provider_loop(
+                    provider="mistral",
+                    api_key="test-key",
+                    messages=[{"role": "user", "content": "List sessions"}],
+                    model="mistral-test",
+                    system="Use RMM tools.",
+                    tools=rmm_ai.OPENAI_TOOLS,
+                    call_tool=tool,
+                    max_rounds=2,
+                    via="direct",
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(request.call_args_list[1].args[2]["messages"][-1]["tool_call_id"], "call-3")
 
 
 if __name__ == "__main__":
