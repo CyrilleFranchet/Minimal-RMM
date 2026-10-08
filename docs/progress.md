@@ -12,6 +12,7 @@
 - Added `docs/go-agent.md`; the Go HTTP-poll SOCKS path is portable and the PowerShell WebSocket path remains an optional optimization.
 - Go Windows child commands now use hidden process creation, including PowerShell screenshot capture and explicit PowerShell commands.
 - Go Windows screenshot capture now uses native GDI APIs and Go PNG encoding without launching PowerShell.
+- Fixed native screenshot extraction by deselecting the GDI bitmap before calling `GetDIBits`.
 
 ### 2026-10-08 — AI tool-round diagnostics
 
