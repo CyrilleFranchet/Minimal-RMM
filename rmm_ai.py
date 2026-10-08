@@ -146,6 +146,51 @@ def _anthropic_tools(tools: list[dict]) -> list[dict]:
     ]
 
 
+def _message_text(content: object) -> str:
+    """Convert a provider message's string or text blocks into displayable text."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "".join(parts)
+
+
+def _chat_completion_message(provider: str, response: dict) -> dict:
+    """Normalize a provider chat-completion choice to one message dictionary."""
+    choices = response.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else {}
+    if not isinstance(choice, dict):
+        return {}
+    message = choice.get("message")
+    if isinstance(message, dict):
+        return message
+
+    # Mistral connector completions may return multiple output messages instead
+    # of the standard single `message` object used by custom function calls.
+    messages = choice.get("messages") if provider == "mistral" else None
+    if not isinstance(messages, list):
+        return {}
+    content_parts: list[str] = []
+    tool_calls: list[dict] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        text = _message_text(item.get("content"))
+        if text:
+            content_parts.append(text)
+        calls = item.get("tool_calls")
+        if isinstance(calls, list):
+            tool_calls.extend(call for call in calls if isinstance(call, dict))
+    return {"content": "".join(content_parts), "tool_calls": tool_calls}
+
+
 async def _run_provider_loop(
     *,
     provider: str,
@@ -174,12 +219,12 @@ async def _run_provider_loop(
                     "tool_choice": "auto",
                 },
             )
-            message = ((response.get("choices") or [{}])[0]).get("message") or {}
+            message = _chat_completion_message(provider, response)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 return {
                     "ok": True,
-                    "message": message.get("content") or "",
+                    "message": _message_text(message.get("content")),
                     "tool_calls_made": tool_log,
                     "usage": response.get("usage"),
                     "via": via,
@@ -188,7 +233,7 @@ async def _run_provider_loop(
             convo.append(
                 {
                     "role": "assistant",
-                    "content": message.get("content"),
+                    "content": _message_text(message.get("content")) or None,
                     "tool_calls": tool_calls,
                 }
             )
