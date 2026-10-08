@@ -121,7 +121,9 @@ func loadConfig() (*config, error) {
 		return nil, errors.New("RMM_BASE_URL and RMM_BEACON_SECRET are required")
 	}
 	if cfg.SessionID == "" {
-		cfg.SessionID = fmt.Sprintf("%s-%d", hostname(), time.Now().UnixNano())
+		// The server accepts only token-safe session IDs. Hostnames may contain
+		// dots, so do not use the raw hostname as the identifier.
+		cfg.SessionID = fmt.Sprintf("go-%d", time.Now().UnixNano())
 	}
 	if cfg.SleepSeconds < 1 {
 		cfg.SleepSeconds = 1

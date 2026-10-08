@@ -56,6 +56,14 @@
     }
     const goos = $("#agent-goos")?.value || "windows";
     const goarch = $("#agent-goarch")?.value || "amd64";
+    const serverUrl =
+      $("#agent-go-server-url")?.value.trim() || $("#agent-server-url")?.value.trim() || "";
+    const beaconSecret =
+      $("#agent-go-beacon-secret")?.value || $("#agent-beacon-secret")?.value || "";
+    if (!serverUrl || !beaconSecret) {
+      status("Set the Go server URL and beacon secret before compiling.", true);
+      return;
+    }
     const button = $("#agent-go-build");
     button.disabled = true;
     $("#agent-go-download")?.classList.add("hidden");
@@ -64,7 +72,18 @@
       const response = await fetch("/api/v1/agent/go/build", {
         method: "POST",
         headers: headers(true),
-        body: JSON.stringify({ goos, goarch }),
+        body: JSON.stringify({
+          goos,
+          goarch,
+          config: {
+            base_url: serverUrl.replace(/\/$/, ""),
+            beacon_secret: beaconSecret,
+            session_id: $("#agent-go-session-id")?.value.trim() || "",
+            sleep_seconds: Math.min(3600, Math.max(1, Number($("#agent-go-sleep")?.value) || 60)),
+            jitter_percent: Math.min(100, Math.max(0, Number($("#agent-go-jitter")?.value) || 30)),
+            http_proxy: $("#agent-go-proxy")?.value.trim() || "",
+          },
+        }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
@@ -86,6 +105,10 @@
     $("#agent-go-file")?.addEventListener("change", renderSource);
     $("#agent-go-refresh")?.addEventListener("click", loadSource);
     $("#agent-go-build")?.addEventListener("click", build);
+    $("#agent-go-use-origin")?.addEventListener("click", () => {
+      const input = $("#agent-go-server-url");
+      if (input) input.value = window.location.origin.replace(/\/$/, "");
+    });
     $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
       const url = event.currentTarget.dataset.downloadUrl;

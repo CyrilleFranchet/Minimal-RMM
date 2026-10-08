@@ -34,6 +34,7 @@ import readline
 import glob
 import shutil
 import subprocess
+import shlex
 import zipfile
 
 try:
@@ -181,7 +182,7 @@ def go_agent_source_files() -> list[dict[str, str]]:
     return files
 
 
-def build_go_agent(goos: str, goarch: str) -> dict:
+def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None) -> dict:
     """Build a fixed repository Go agent for one allowlisted OS and architecture."""
     goos = str(goos or "").strip().lower()
     goarch = str(goarch or "").strip().lower()
@@ -193,6 +194,22 @@ def build_go_agent(goos: str, goarch: str) -> dict:
     go_bin = shutil.which("go")
     if not go_bin:
         raise RuntimeError("Go toolchain is not installed on the RMM server")
+    agent_config = agent_config if isinstance(agent_config, dict) else {}
+    config_values = {}
+    for key in ("base_url", "beacon_secret", "session_id", "http_proxy"):
+        value = str(agent_config.get(key) or "").strip()
+        if "\r" in value or "\n" in value:
+            raise ValueError(f"invalid {key}")
+        config_values[key] = value[:4096]
+    if config_values["session_id"] and not validate_beacon_session_id(config_values["session_id"]):
+        raise ValueError("invalid session id")
+    try:
+        sleep_seconds = int(agent_config.get("sleep_seconds", 60))
+        jitter_percent = int(agent_config.get("jitter_percent", 30))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid Go beacon timing") from exc
+    if not 1 <= sleep_seconds <= 3600 or not 0 <= jitter_percent <= 100:
+        raise ValueError("Go beacon timing is outside the allowed range")
     suffix = ".exe" if goos == "windows" else ""
     binary_filename = f"minimal-rmm-agent-{goos}-{goarch}{suffix}"
     binary_path = safe_join_under(GO_AGENT_BUILD_DIR, binary_filename)
@@ -226,23 +243,43 @@ def build_go_agent(goos: str, goarch: str) -> dict:
         detail = (completed.stderr or completed.stdout or "build failed").strip()
         raise RuntimeError(detail[-4000:])
     launcher_name = "run-agent.ps1" if goos == "windows" else "run-agent.sh"
+    configured = {
+        "RMM_BASE_URL": config_values["base_url"],
+        "RMM_BEACON_SECRET": config_values["beacon_secret"],
+        "RMM_SESSION_ID": config_values["session_id"],
+        "RMM_SLEEP_SECONDS": str(sleep_seconds),
+        "RMM_JITTER_PERCENT": str(jitter_percent),
+        "RMM_HTTP_PROXY": config_values["http_proxy"],
+    }
     if goos == "windows":
+        launcher_config = "".join(
+            f"$env:{name} = '{value.replace(chr(39), chr(39) * 2)}'\n"
+            for name, value in configured.items()
+            if value
+        )
         launcher = (
             "$ErrorActionPreference = 'Stop'\n"
-            "$binary = Join-Path $PSScriptRoot '" + binary_filename + "'\n"
-            "if (-not $env:RMM_BASE_URL -or -not $env:RMM_BEACON_SECRET) {\n"
-            "  throw 'Set RMM_BASE_URL and RMM_BEACON_SECRET before starting the agent.'\n"
-            "}\n"
-            "& $binary\n"
+            + launcher_config
+            + "$binary = Join-Path $PSScriptRoot '" + binary_filename + "'\n"
+            + "if (-not $env:RMM_BASE_URL -or -not $env:RMM_BEACON_SECRET) {\n"
+            + "  throw 'Set RMM_BASE_URL and RMM_BEACON_SECRET before starting the agent.'\n"
+            + "}\n"
+            + "& $binary\n"
         )
     else:
+        launcher_config = "".join(
+            f"export {name}={shlex.quote(value)}\n"
+            for name, value in configured.items()
+            if value
+        )
         launcher = (
             "#!/bin/sh\n"
             "set -eu\n"
-            "SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\n"
-            ": \"${RMM_BASE_URL:?Set RMM_BASE_URL before starting the agent.}\"\n"
-            ": \"${RMM_BEACON_SECRET:?Set RMM_BEACON_SECRET before starting the agent.}\"\n"
-            "exec \"$SCRIPT_DIR/" + binary_filename + "\"\n"
+            + launcher_config
+            + "SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\n"
+            + ": \"${RMM_BASE_URL:?Set RMM_BASE_URL before starting the agent.}\"\n"
+            + ": \"${RMM_BEACON_SECRET:?Set RMM_BEACON_SECRET before starting the agent.}\"\n"
+            + "exec \"$SCRIPT_DIR/" + binary_filename + "\"\n"
         )
     readme = f"""Minimal-RMM Go agent ({goos}/{goarch})
 
@@ -2300,7 +2337,11 @@ class RMMHandler(BaseHTTPRequestHandler):
 
         if parts == ["agent", "go", "build"]:
             try:
-                result = build_go_agent(body.get("goos"), body.get("goarch"))
+                result = build_go_agent(
+                    body.get("goos"),
+                    body.get("goarch"),
+                    agent_config=body.get("config"),
+                )
             except ValueError as exc:
                 self._json(400, {"error": "invalid_target", "detail": str(exc)})
                 return True
