@@ -151,15 +151,18 @@
           <summary>Deploy agent (Go)</summary>
           <div class="agent-gen-inner">
             <p class="agent-gen-intro">Inspect the checked-in Go source, compile it on this RMM server, then download the binary.</p>
-            <div class="agent-gen-row">
+            <div class="agent-go-options">
+              <label for="agent-go-file">Source file</label>
               <select id="agent-go-file" aria-label="Go source file"></select>
+              <label for="agent-goos">Operating system</label>
               <select id="agent-goos" aria-label="Go operating system">
-                <option value="windows">Windows</option>
-                <option value="linux">Linux</option>
+                  <option value="windows">Windows</option>
+                  <option value="linux">Linux</option>
               </select>
+              <label for="agent-goarch">Architecture</label>
               <select id="agent-goarch" aria-label="Go architecture">
-                <option value="amd64">amd64</option>
-                <option value="arm64">arm64</option>
+                  <option value="amd64">amd64</option>
+                  <option value="arm64">arm64</option>
               </select>
             </div>
             <textarea id="agent-go-source" class="agent-gen-output" readonly rows="12" spellcheck="false" aria-label="Go source"></textarea>

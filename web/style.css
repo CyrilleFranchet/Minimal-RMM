@@ -458,6 +458,26 @@ body.sidebar-resizing iframe {
   min-width: 0;
 }
 
+.agent-go-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.agent-go-options label {
+  margin-top: 0.25rem;
+}
+
+.agent-go-options select {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
 .agent-gen-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
