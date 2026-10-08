@@ -1,5 +1,6 @@
 /** Authenticated Go agent source viewer and fixed-target server build UI. */
 (function () {
+  const PREFS_KEY = "rmm_go_agent_prefs";
   const TOKEN_KEY = "rmm_api_token";
   const $ = (selector) => document.querySelector(selector);
   let files = [];
@@ -12,6 +13,56 @@
     const value = { Authorization: `Bearer ${token()}` };
     if (json) value["Content-Type"] = "application/json";
     return value;
+  }
+
+  function loadPrefs() {
+    try {
+      return JSON.parse(sessionStorage.getItem(PREFS_KEY) || "{}");
+    } catch {
+      return {};
+    }
+  }
+
+  function readForm() {
+    return {
+      serverUrl: $("#agent-go-server-url")?.value.trim() || "",
+      beaconSecret: $("#agent-go-beacon-secret")?.value || "",
+      sessionId: $("#agent-go-session-id")?.value.trim() || "",
+      sleepSeconds: Math.min(3600, Math.max(1, Number($("#agent-go-sleep")?.value) || 60)),
+      jitterPercent: Math.min(100, Math.max(0, Number($("#agent-go-jitter")?.value) || 30)),
+      httpProxy: $("#agent-go-proxy")?.value.trim() || "",
+      goos: $("#agent-goos")?.value || "windows",
+      goarch: $("#agent-goarch")?.value || "amd64",
+      sourceFile: $("#agent-go-file")?.value || "",
+    };
+  }
+
+  function savePrefs() {
+    try {
+      sessionStorage.setItem(PREFS_KEY, JSON.stringify(readForm()));
+    } catch {
+      /* quota */
+    }
+  }
+
+  function applyPrefs() {
+    const prefs = loadPrefs();
+    const values = {
+      "#agent-go-server-url": prefs.serverUrl,
+      "#agent-go-beacon-secret": prefs.beaconSecret,
+      "#agent-go-session-id": prefs.sessionId,
+      "#agent-go-sleep": prefs.sleepSeconds,
+      "#agent-go-jitter": prefs.jitterPercent,
+      "#agent-go-proxy": prefs.httpProxy,
+      "#agent-goos": prefs.goos,
+      "#agent-goarch": prefs.goarch,
+    };
+    for (const [selector, value] of Object.entries(values)) {
+      const input = $(selector);
+      if (input && value !== undefined && value !== null) input.value = value;
+    }
+    const file = $("#agent-go-file");
+    if (file && prefs.sourceFile !== undefined && prefs.sourceFile !== null) file.value = prefs.sourceFile;
   }
 
   function status(message, error = false) {
@@ -42,6 +93,8 @@
       files = data.files || [];
       const select = $("#agent-go-file");
       select.replaceChildren(...files.map((file, index) => new Option(file.filename, String(index))));
+      const savedFile = loadPrefs().sourceFile;
+      if (savedFile && files.some((file, index) => String(index) === savedFile)) select.value = savedFile;
       renderSource();
       status(`${files.length} source files loaded. Choose a target and compile on the server.`);
     } catch (error) {
@@ -60,6 +113,13 @@
       $("#agent-go-server-url")?.value.trim() || $("#agent-server-url")?.value.trim() || "";
     const beaconSecret =
       $("#agent-go-beacon-secret")?.value || $("#agent-beacon-secret")?.value || "";
+    if (!($("#agent-go-server-url")?.value || "").trim() && serverUrl) {
+      $("#agent-go-server-url").value = serverUrl;
+    }
+    if (!$("#agent-go-beacon-secret")?.value && beaconSecret) {
+      $("#agent-go-beacon-secret").value = beaconSecret;
+    }
+    savePrefs();
     if (!serverUrl || !beaconSecret) {
       status("Set the Go server URL and beacon secret before compiling.", true);
       return;
@@ -102,13 +162,30 @@
 
   function bind() {
     if (!$("#agent-go-panel")) return;
+    applyPrefs();
     $("#agent-go-file")?.addEventListener("change", renderSource);
     $("#agent-go-refresh")?.addEventListener("click", loadSource);
     $("#agent-go-build")?.addEventListener("click", build);
     $("#agent-go-use-origin")?.addEventListener("click", () => {
       const input = $("#agent-go-server-url");
-      if (input) input.value = window.location.origin.replace(/\/$/, "");
+      if (input) {
+        input.value = window.location.origin.replace(/\/$/, "");
+        savePrefs();
+      }
     });
+    [
+      "#agent-go-server-url",
+      "#agent-go-beacon-secret",
+      "#agent-go-session-id",
+      "#agent-go-sleep",
+      "#agent-go-jitter",
+      "#agent-go-proxy",
+      "#agent-goos",
+      "#agent-goarch",
+    ].forEach((selector) => $(selector)?.addEventListener("input", savePrefs));
+    ["#agent-go-file", "#agent-goos", "#agent-goarch"].forEach((selector) =>
+      $(selector)?.addEventListener("change", savePrefs),
+    );
     $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
       const url = event.currentTarget.dataset.downloadUrl;
@@ -134,6 +211,7 @@
     $("#agent-go-panel")?.addEventListener("toggle", (event) => {
       if (event.target.open && !files.length) loadSource();
     });
+    window.addEventListener("rmm-config-imported", applyPrefs);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bind);

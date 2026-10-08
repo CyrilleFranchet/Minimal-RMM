@@ -18,7 +18,7 @@ Unknown fields are ignored. Imports are accepted only for the known schema name 
 
 ## Secret handling
 
-Exports omit secrets by default. The explicit **Include API keys and other secrets** checkbox includes the RMM API token, provider keys, Exegol token, and agent beacon secret. Secret-bearing files must be protected like passwords.
+Exports omit secrets by default. The explicit **Include API keys and other secrets** checkbox includes the RMM API token, provider keys, Exegol token, PowerShell agent beacon secret, and Go agent beacon secret. Secret-bearing files must be protected like passwords.
 
 When importing a file without secrets, existing secrets in the current tab are left unchanged and missing secrets remain missing. Imported provider validation state is marked stale, so each provider must be validated again before it becomes available.
 
@@ -28,7 +28,7 @@ The allowlists and schema version live in `web/config.js`. When adding a new set
 
 1. Decide whether it is a normal setting or a secret.
 2. Add its storage key to `SESSION_KEYS` or `SECRET_KEYS`.
-3. For nested secrets, remove them from the normal export and add an explicit secret field, following `rmm_agent_gen_prefs.beaconSecret`.
+3. For nested secrets, remove them from the normal export and add an explicit secret field, following `rmm_agent_gen_prefs.beaconSecret` and `rmm_go_agent_prefs.beaconSecret`.
 4. Update this document and add an import/export test or manual checklist item.
 5. Bump `VERSION` only when the format meaning changes; keep old migration code when practical.
 

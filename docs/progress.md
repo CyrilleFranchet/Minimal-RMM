@@ -178,6 +178,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] **Full live results after WS truncation** — large WebSocket event bodies remain bounded, and the web UI fetches the full event body from REST when `body_truncated` is set; see `docs/web-live-full-results.md`
 - [x] **AI chat memory** — per-session history on server (`RMM_logs/history/{id}/ai_chat.json`); **Reset chat**; purge on kill/delete — see `docs/web-ai-chat-memory.md`
 - [x] **UI configuration export/import** — versioned JSON restore for allowlisted browser settings; secrets excluded by default — see `docs/web-ui-configuration.md`
+- [x] Go deployment parameters persist in tab-scoped `sessionStorage` and participate in UI configuration export/import.
 - [x] **Server unreachable modal** — gray backdrop + Retry / Disconnect when REST health or API fetch fails (network); periodic health probe while connected
 
 ### MCP & AI (`mcp_rmm_server.py`, `rmm_tools.py`, `rmm_ai.py`)
