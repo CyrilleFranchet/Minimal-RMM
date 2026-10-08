@@ -521,7 +521,8 @@
       if (status !== 200 || !data.ok) {
         const err =
           data.detail || data.error || (typeof data.message === "string" ? data.message : `HTTP ${status}`);
-        appendChatMessage("error", String(err));
+        const failedTools = Array.isArray(data.tool_calls_made) ? data.tool_calls_made : [];
+        appendChatMessage("error", String(err), renderToolCalls(failedTools));
         chatHistory.pop();
         return;
       }

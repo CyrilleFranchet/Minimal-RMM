@@ -5,6 +5,13 @@
 
 ## Current Status
 
+### 2026-10-08 — AI tool-round diagnostics
+
+- Increased the default web AI tool-round checkpoint from 12 to 32.
+- Added automatic continuation across four checkpoints, with an emergency ceiling of 160 rounds.
+- Added `RMM_AI_MAX_TOOL_ROUNDS` for server-side checkpoint configuration.
+- The web UI now displays the failed request's tool-call trace when the emergency ceiling is reached.
+
 | Field | Value |
 |-------|--------|
 | **Phase** | NDR detection investigation — resolved |

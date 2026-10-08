@@ -11,6 +11,16 @@ import rmm_ai
 class AiProviderTests(unittest.TestCase):
     """Validate provider-specific HTTP shapes without live provider credentials."""
 
+    def test_max_tool_rounds_reads_positive_environment_value(self):
+        with patch.dict("os.environ", {"RMM_AI_MAX_TOOL_ROUNDS": "48"}):
+            self.assertEqual(rmm_ai._max_tool_rounds(), 48)
+
+    def test_max_tool_rounds_rejects_invalid_or_non_positive_values(self):
+        with patch.dict("os.environ", {"RMM_AI_MAX_TOOL_ROUNDS": "invalid"}):
+            self.assertEqual(rmm_ai._max_tool_rounds(), 32)
+        with patch.dict("os.environ", {"RMM_AI_MAX_TOOL_ROUNDS": "0"}):
+            self.assertEqual(rmm_ai._max_tool_rounds(), 1)
+
     def test_validate_anthropic_provider_returns_model_ids(self):
         with patch(
             "rmm_ai._json_request",
@@ -228,6 +238,47 @@ class AiProviderTests(unittest.TestCase):
         second_body = request.call_args_list[1].args[2]
         self.assertEqual(second_body["messages"][-1]["tool_call_id"], "call-1")
         self.assertEqual(second_body["messages"][-1]["content"], "[{}]")
+
+    def test_tool_loop_auto_continues_after_round_checkpoint(self):
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "call-checkpoint",
+                                    "function": {"name": "list_sessions", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"message": {"content": "Task completed."}}]},
+        ]
+
+        async def tool(_name, _arguments):
+            return "[{}]"
+
+        with patch("rmm_ai._json_request", side_effect=responses) as request:
+            result = asyncio.run(
+                rmm_ai._run_provider_loop(
+                    provider="openai",
+                    api_key="test-key",
+                    messages=[{"role": "user", "content": "Complete the task"}],
+                    model="gpt-test",
+                    system="Use RMM tools.",
+                    tools=rmm_ai.OPENAI_TOOLS,
+                    call_tool=tool,
+                    max_rounds=1,
+                    via="direct",
+                )
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(request.call_args_list), 2)
+        self.assertIn("Continue the original task", request.call_args_list[1].args[2]["messages"][-1]["content"])
 
     def test_mistral_tool_loop_continues_after_a_function_call(self):
         responses = [
