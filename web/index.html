@@ -143,6 +143,29 @@
               <button type="button" class="secondary" id="agent-gen-copy-run">Copy</button>
             </div>
             <p class="agent-gen-hint" id="agent-gen-hint">Save as client_rmm.ps1 on the target host, then run the command below.</p>
+
+            <details class="agent-go-panel" id="agent-go-panel">
+              <summary>Build Go agent</summary>
+              <p class="agent-gen-intro">Inspect the checked-in Go source, compile it on this RMM server, then download the binary.</p>
+              <div class="agent-gen-row">
+                <select id="agent-go-file" aria-label="Go source file"></select>
+                <select id="agent-goos" aria-label="Go operating system">
+                  <option value="windows">Windows</option>
+                  <option value="linux">Linux</option>
+                </select>
+                <select id="agent-goarch" aria-label="Go architecture">
+                  <option value="amd64">amd64</option>
+                  <option value="arm64">arm64</option>
+                </select>
+              </div>
+              <textarea id="agent-go-source" class="agent-gen-output" readonly rows="12" spellcheck="false" aria-label="Go source"></textarea>
+              <div class="agent-gen-actions">
+                <button type="button" class="secondary" id="agent-go-refresh">Load source</button>
+                <button type="button" id="agent-go-build">Compile on server</button>
+              </div>
+              <p class="agent-gen-hint" id="agent-go-status">The server must have the Go toolchain installed.</p>
+              <a id="agent-go-download" class="hidden" download>Download compiled agent</a>
+            </details>
           </div>
         </details>
       </aside>
@@ -348,6 +371,7 @@
   <script src="config.js"></script>
   <script src="app.js"></script>
   <script src="agent-gen.js"></script>
+  <script src="go-agent.js"></script>
   <script src="ai.js"></script>
 </body>
 </html>

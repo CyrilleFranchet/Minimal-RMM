@@ -321,9 +321,18 @@ class SessionSocksBridge:
                 self._enqueue_task({"op": "close", "id": cid})
 
     def _wait_connect(self, conn_id: str) -> bool:
-        ev = threading.Event()
         with self.lock:
-            self.connect_events[conn_id] = ev
+            if conn_id in self.tunnels:
+                return True
+            err = self.connect_errors.get(conn_id)
+            if err:
+                self.connect_errors.pop(conn_id, None)
+                self.log(f"SOCKS tunnel {conn_id[:8]} failed: {err}", "WARNING")
+                return False
+            ev = self.connect_events.get(conn_id)
+            if ev is None:
+                ev = threading.Event()
+                self.connect_events[conn_id] = ev
         ok = ev.wait(timeout=CONNECT_TIMEOUT)
         with self.lock:
             self.connect_events.pop(conn_id, None)

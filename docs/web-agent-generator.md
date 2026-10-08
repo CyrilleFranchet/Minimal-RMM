@@ -44,6 +44,13 @@ The Web UI uses this endpoint; operators can also fetch the template with curl f
 
 Form values are stored in `sessionStorage` for this browser tab only. The generated script is built in the browser; only the template fetch hits the server.
 
+## Go agent build
+
+The same sidebar contains a **Build Go agent** section. It uses
+`GET /api/v1/agent/go` to display the checked-in source and
+`POST /api/v1/agent/go/build` to compile a fixed target on the server. See
+`docs/go-agent.md` for the supported targets and current feature parity.
+
 ## Related
 
 - Agent config block: `client_rmm.ps1` (lines 45–83)

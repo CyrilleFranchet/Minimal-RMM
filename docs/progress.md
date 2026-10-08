@@ -5,12 +5,23 @@
 
 ## Current Status
 
+### 2026-10-08 — Go agent build workflow
+
+- Added the dependency-free `agent-go/` protocol-compatible beacon with command execution, runtime config acknowledgement, chunked file transfer, HTTP proxy support, HTTP-poll SOCKS, rclone bootstrap/exfiltration, and Windows-specific screenshot/keylog/persistence adapters.
+- Added authenticated WebUI source inspection and server-side cross-compilation for Windows/Linux amd64/arm64.
+- Added `docs/go-agent.md`; the Go HTTP-poll SOCKS path is portable and the PowerShell WebSocket path remains an optional optimization.
+
 ### 2026-10-08 — AI tool-round diagnostics
 
 - Increased the default web AI tool-round checkpoint from 12 to 32.
 - Added automatic continuation across four checkpoints, with an emergency ceiling of 160 rounds.
 - Added `RMM_AI_MAX_TOOL_ROUNDS` for server-side checkpoint configuration.
 - The web UI now displays the failed request's tool-call trace when the emergency ceiling is reached.
+
+### 2026-10-08 — SOCKS connect race
+
+- Fixed a race where a fast agent response could arrive before the server registered the tunnel wait event, causing a false 45-second connect timeout.
+- Added regression coverage for early success and error responses.
 
 | Field | Value |
 |-------|--------|
