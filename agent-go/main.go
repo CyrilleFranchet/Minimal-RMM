@@ -410,7 +410,7 @@ func runCommand(command string) (string, string) {
 			name, args = "/bin/sh", []string{"-c", command}
 		}
 	}
-	out, err := exec.Command(name, args...).CombinedOutput()
+	out, err := newCommand(name, args...).CombinedOutput()
 	if err != nil {
 		return string(out) + "\n" + err.Error(), "output"
 	}

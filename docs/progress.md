@@ -10,6 +10,8 @@
 - Added the dependency-free `agent-go/` protocol-compatible beacon with command execution, runtime config acknowledgement, chunked file transfer, HTTP proxy support, HTTP-poll SOCKS, rclone bootstrap/exfiltration, and Windows-specific screenshot/keylog/persistence adapters.
 - Added authenticated WebUI source inspection and server-side cross-compilation for Windows/Linux amd64/arm64.
 - Added `docs/go-agent.md`; the Go HTTP-poll SOCKS path is portable and the PowerShell WebSocket path remains an optional optimization.
+- Go Windows child commands now use hidden process creation, including PowerShell screenshot capture and explicit PowerShell commands.
+- Go Windows screenshot capture now uses native GDI APIs and Go PNG encoding without launching PowerShell.
 
 ### 2026-10-08 — AI tool-round diagnostics
 

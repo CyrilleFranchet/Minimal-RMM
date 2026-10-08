@@ -63,5 +63,7 @@ selected by Go build tags. They should be tested on representative Windows
 versions before production use.
 
 Windows builds use the GUI subsystem, so launching the executable does not
-open a console window. Startup and connection errors are written to
+open a console window. Child command windows are also hidden, including
+PowerShell commands. Screenshot capture uses native Windows GDI APIs and does
+not invoke PowerShell. Startup and connection errors are written to
 `%TEMP%\minimal-rmm-agent.log`; set `RMM_LOG_FILE` to choose another path.
