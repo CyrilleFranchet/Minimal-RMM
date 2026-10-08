@@ -144,28 +144,31 @@
             </div>
             <p class="agent-gen-hint" id="agent-gen-hint">Save as client_rmm.ps1 on the target host, then run the command below.</p>
 
-            <details class="agent-go-panel" id="agent-go-panel">
-              <summary>Build Go agent</summary>
-              <p class="agent-gen-intro">Inspect the checked-in Go source, compile it on this RMM server, then download the binary.</p>
-              <div class="agent-gen-row">
-                <select id="agent-go-file" aria-label="Go source file"></select>
-                <select id="agent-goos" aria-label="Go operating system">
-                  <option value="windows">Windows</option>
-                  <option value="linux">Linux</option>
-                </select>
-                <select id="agent-goarch" aria-label="Go architecture">
-                  <option value="amd64">amd64</option>
-                  <option value="arm64">arm64</option>
-                </select>
-              </div>
-              <textarea id="agent-go-source" class="agent-gen-output" readonly rows="12" spellcheck="false" aria-label="Go source"></textarea>
-              <div class="agent-gen-actions">
-                <button type="button" class="secondary" id="agent-go-refresh">Load source</button>
-                <button type="button" id="agent-go-build">Compile on server</button>
-              </div>
-              <p class="agent-gen-hint" id="agent-go-status">The server must have the Go toolchain installed.</p>
-              <a id="agent-go-download" class="hidden" download>Download compiled agent</a>
-            </details>
+          </div>
+        </details>
+
+        <details class="agent-gen-panel agent-go-panel sidebar-footer" id="agent-go-panel">
+          <summary>Deploy agent (Go)</summary>
+          <div class="agent-gen-inner">
+            <p class="agent-gen-intro">Inspect the checked-in Go source, compile it on this RMM server, then download the binary.</p>
+            <div class="agent-gen-row">
+              <select id="agent-go-file" aria-label="Go source file"></select>
+              <select id="agent-goos" aria-label="Go operating system">
+                <option value="windows">Windows</option>
+                <option value="linux">Linux</option>
+              </select>
+              <select id="agent-goarch" aria-label="Go architecture">
+                <option value="amd64">amd64</option>
+                <option value="arm64">arm64</option>
+              </select>
+            </div>
+            <textarea id="agent-go-source" class="agent-gen-output" readonly rows="12" spellcheck="false" aria-label="Go source"></textarea>
+            <div class="agent-gen-actions">
+              <button type="button" class="secondary" id="agent-go-refresh">Load source</button>
+              <button type="button" id="agent-go-build">Compile on server</button>
+            </div>
+            <p class="agent-gen-hint" id="agent-go-status">The server must have the Go toolchain installed.</p>
+            <a id="agent-go-download" class="hidden" download>Download compiled agent</a>
           </div>
         </details>
       </aside>
@@ -262,53 +265,55 @@
             <button type="button" class="secondary ai-panel-close" id="ai-panel-close" title="Hide panel">×</button>
           </div>
         </div>
-        <details class="ai-settings" open>
-          <summary>AI provider settings</summary>
-          <p class="ai-hint">Keys stay in this browser tab. Test each key to enable its provider and load the models available to that key.</p>
-          <div class="ai-provider-config" data-provider="openai">
-            <label for="openai-key-input">OpenAI API key</label>
-            <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off">
-            <button type="button" class="secondary ai-provider-validate" data-provider="openai">Validate OpenAI key</button>
-            <p class="ai-provider-status" id="openai-provider-status" aria-live="polite">Not configured.</p>
-          </div>
-          <div class="ai-provider-config" data-provider="anthropic">
-            <label for="anthropic-key-input">Anthropic API key</label>
-            <input type="password" id="anthropic-key-input" placeholder="sk-ant-…" autocomplete="off">
-            <button type="button" class="secondary ai-provider-validate" data-provider="anthropic">Validate Anthropic key</button>
-            <p class="ai-provider-status" id="anthropic-provider-status" aria-live="polite">Not configured.</p>
-          </div>
-          <div class="ai-provider-config" data-provider="mistral">
-            <label for="mistral-key-input">Mistral API key</label>
-            <input type="password" id="mistral-key-input" placeholder="…" autocomplete="off">
-            <button type="button" class="secondary ai-provider-validate" data-provider="mistral">Validate Mistral key</button>
-            <p class="ai-provider-status" id="mistral-provider-status" aria-live="polite">Not configured.</p>
-          </div>
-          <label for="ai-provider-select">Provider</label>
-          <select id="ai-provider-select" disabled title="Validated AI provider"></select>
-          <label for="ai-model-select">Model</label>
-          <select id="ai-model-select" disabled title="Model available to the selected provider"></select>
-          <input type="text" id="ai-model-custom" class="hidden" placeholder="Custom model ID" autocomplete="off" spellcheck="false">
-          <p class="ai-hint">Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
-        </details>
-        <details class="ai-settings">
-          <summary>Skills</summary>
-          <p class="ai-hint">Markdown files in the server <code>ai-skills/</code> directory (override with <code>RMM_AI_SKILLS_DIR</code>). Checked skills are injected into the system prompt.</p>
-          <div id="ai-skills-list" class="ai-skills-list">
-            <p class="ai-skills-empty">Connect to load skills.</p>
-          </div>
-        </details>
-        <details class="ai-settings">
-          <summary>Exegol MCP (optional)</summary>
-          <label class="ai-checkbox">
-            <input type="checkbox" id="exegol-mcp-enabled">
-            Connect to Exegol MCP
-          </label>
-          <label for="exegol-mcp-url-input">Server URL</label>
-          <input type="url" id="exegol-mcp-url-input" placeholder="http://127.0.0.1:8000/mcp" autocomplete="off">
-          <label for="exegol-mcp-token-input">Bearer token</label>
-          <input type="password" id="exegol-mcp-token-input" placeholder="from exegol-mcp startup log" autocomplete="off">
-          <p class="ai-hint">Run <code>pipx install exegol-mcp</code> then <code>exegol-mcp</code> on the RMM server host. Token is printed at startup. Or set <code>RMM_EXEGOL_MCP_URL</code> / <code>RMM_EXEGOL_MCP_TOKEN</code> on the server.</p>
-        </details>
+        <div class="ai-settings-scroll">
+          <details class="ai-settings" open>
+            <summary>AI provider settings</summary>
+            <p class="ai-hint">Keys stay in this browser tab. Test each key to enable its provider and load the models available to that key.</p>
+            <div class="ai-provider-config" data-provider="openai">
+              <label for="openai-key-input">OpenAI API key</label>
+              <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off">
+              <button type="button" class="secondary ai-provider-validate" data-provider="openai">Validate OpenAI key</button>
+              <p class="ai-provider-status" id="openai-provider-status" aria-live="polite">Not configured.</p>
+            </div>
+            <div class="ai-provider-config" data-provider="anthropic">
+              <label for="anthropic-key-input">Anthropic API key</label>
+              <input type="password" id="anthropic-key-input" placeholder="sk-ant-…" autocomplete="off">
+              <button type="button" class="secondary ai-provider-validate" data-provider="anthropic">Validate Anthropic key</button>
+              <p class="ai-provider-status" id="anthropic-provider-status" aria-live="polite">Not configured.</p>
+            </div>
+            <div class="ai-provider-config" data-provider="mistral">
+              <label for="mistral-key-input">Mistral API key</label>
+              <input type="password" id="mistral-key-input" placeholder="…" autocomplete="off">
+              <button type="button" class="secondary ai-provider-validate" data-provider="mistral">Validate Mistral key</button>
+              <p class="ai-provider-status" id="mistral-provider-status" aria-live="polite">Not configured.</p>
+            </div>
+            <label for="ai-provider-select">Provider</label>
+            <select id="ai-provider-select" disabled title="Validated AI provider"></select>
+            <label for="ai-model-select">Model</label>
+            <select id="ai-model-select" disabled title="Model available to the selected provider"></select>
+            <input type="text" id="ai-model-custom" class="hidden" placeholder="Custom model ID" autocomplete="off" spellcheck="false">
+            <p class="ai-hint">Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
+          </details>
+          <details class="ai-settings">
+            <summary>Skills</summary>
+            <p class="ai-hint">Markdown files in the server <code>ai-skills/</code> directory (override with <code>RMM_AI_SKILLS_DIR</code>). Checked skills are injected into the system prompt.</p>
+            <div id="ai-skills-list" class="ai-skills-list">
+              <p class="ai-skills-empty">Connect to load skills.</p>
+            </div>
+          </details>
+          <details class="ai-settings">
+            <summary>Exegol MCP (optional)</summary>
+            <label class="ai-checkbox">
+              <input type="checkbox" id="exegol-mcp-enabled">
+              Connect to Exegol MCP
+            </label>
+            <label for="exegol-mcp-url-input">Server URL</label>
+            <input type="url" id="exegol-mcp-url-input" placeholder="http://127.0.0.1:8000/mcp" autocomplete="off">
+            <label for="exegol-mcp-token-input">Bearer token</label>
+            <input type="password" id="exegol-mcp-token-input" placeholder="from exegol-mcp startup log" autocomplete="off">
+            <p class="ai-hint">Run <code>pipx install exegol-mcp</code> then <code>exegol-mcp</code> on the RMM server host. Token is printed at startup. Or set <code>RMM_EXEGOL_MCP_URL</code> / <code>RMM_EXEGOL_MCP_TOKEN</code> on the server.</p>
+          </details>
+        </div>
         <div id="ai-chat-log" class="ai-chat-log"></div>
         <form id="ai-chat-form" class="ai-chat-form" autocomplete="off">
           <textarea id="ai-chat-input" rows="2" placeholder="Ask to list sessions, run whoami, change sleep…"></textarea>
