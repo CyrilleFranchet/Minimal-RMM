@@ -154,6 +154,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Beacon config apply (PATCH sleep/jitter) — per-session **Beacon** button opens modal dialog
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
 - [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); tab-scoped OpenAI, Anthropic, and Mistral keys with live validation and provider-specific model lists; Mistral standard and multi-message completion responses normalize to displayable text, and Mistral tool results include the function name required to end a tool loop; optional Exegol MCP settings; **server skills** (`ai-skills/*.md`, `GET /api/v1/ai/skills`) — see `docs/ai-providers.md` and `docs/web-ai-skills.md`
+- [x] **AI task completion reports** — default `task-completion-report` skill requires a concise work summary; successful responses include server-generated UTC task start and completion timestamps
 - [x] **Full live results after WS truncation** — large WebSocket event bodies remain bounded, and the web UI fetches the full event body from REST when `body_truncated` is set; see `docs/web-live-full-results.md`
 - [x] **AI chat memory** — per-session history on server (`RMM_logs/history/{id}/ai_chat.json`); **Reset chat**; purge on kill/delete — see `docs/web-ai-chat-memory.md`
 - [x] **UI configuration export/import** — versioned JSON restore for allowlisted browser settings; secrets excluded by default — see `docs/web-ui-configuration.md`

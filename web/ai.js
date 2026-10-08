@@ -284,7 +284,9 @@
 
   function getEnabledSkillIds() {
     const known = new Set(aiSkills.map((s) => s.id));
-    return loadEnabledSkillIds().filter((id) => known.has(id));
+    const selected = loadEnabledSkillIds().filter((id) => known.has(id));
+    const always = aiSkills.filter((skill) => skill.always).map((skill) => skill.id);
+    return [...new Set([...always, ...selected])];
   }
 
   function renderAiSkillsList() {
@@ -303,6 +305,7 @@
       input.type = "checkbox";
       input.value = skill.id;
       input.checked = enabled.has(skill.id);
+      input.disabled = Boolean(skill.always);
       input.addEventListener("change", () => {
         const next = [];
         for (const el of container.querySelectorAll('input[type="checkbox"]')) {

@@ -35,6 +35,7 @@ Markdown instructions for the model…
 | `title` | No | Shown in the AI panel checkbox list. |
 | `description` | No | Tooltip in the web UI. |
 | `default` | No | `true` / `false` — checked by default when the operator has no saved selection. |
+| `always` | No | `true` / `false` — always injected, even if the request supplies a specific skill list. The UI renders it checked and locked. |
 
 The body (after frontmatter) is appended under `## Operator skills` in the system prompt.
 
@@ -44,7 +45,7 @@ The body (after frontmatter) is appended under `## Operator skills` in the syste
 GET /api/v1/ai/skills
 ```
 
-Returns `{ "skills": [ { "id", "title", "description", "default", "filename" } ], "count", "directory" }` (no body text).
+Returns `{ "skills": [ { "id", "title", "description", "default", "always", "filename" } ], "count", "directory" }` (no body text).
 
 ```http
 POST /api/v1/ai/chat
@@ -58,7 +59,7 @@ Add optional JSON field:
 
 - **Omitted** or **`null`**: skills with `default: true` in frontmatter.
 - **Empty array `[]`**: no skills (base prompt only).
-- **Non-empty array**: exactly those skill ids.
+- **Non-empty array**: those skill ids plus every `always: true` skill.
 
 ## Web UI
 
@@ -74,6 +75,7 @@ On connect, the UI calls `GET /api/v1/ai/skills` and renders the list.
 | `ai-skills/windows-identity-and-groups.md` | **Default.** Identity and groups via `whoami` / token; do not use `net user %USERNAME%` on domain accounts. |
 | `ai-skills/windows-ad-recon-stealth.md` | **Default.** Prefer **ADWS** (`Get-AD*`) over direct LDAP and `net.exe` RPC recon. |
 | `ai-skills/windows-user-profile-path.md` | Do not assume `C:\Users\<username>`; resolve profile path on the agent before file ops. |
+| `ai-skills/task-completion-report.md` | **Always enabled.** End every task with a concise work report; the server appends authoritative UTC start and completion timestamps. |
 
 ### Why `PS:` matters for the AI
 
@@ -84,7 +86,7 @@ The agent default shell is **cmd.exe**. Lines sent as `powershell -Command "scri
 | Module | Role |
 |--------|------|
 | `rmm_ai_skills.py` | Load skills, `compose_system_prompt()` |
-| `rmm_ai.py` | Passes `skill_ids` into MCP and direct chat loops |
+| `rmm_ai.py` | Passes `skill_ids` into MCP and direct chat loops; `_append_task_timing()` appends server-generated UTC task timing to successful responses |
 | `server_rmm.py` | `GET …/ai/skills`, `skill_ids` on `POST …/ai/chat` |
 | `web/ai.js` | Skill list UI, persistence, chat payload |
 
