@@ -242,6 +242,7 @@ class AiProviderTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(request.call_args_list[1].args[2]["messages"][-1]["tool_call_id"], "call-2")
+        self.assertEqual(request.call_args_list[1].args[2]["messages"][-1]["name"], "list_sessions")
 
     def test_mistral_multi_message_completion_continues_after_a_function_call(self):
         responses = [
@@ -287,6 +288,7 @@ class AiProviderTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(request.call_args_list[1].args[2]["messages"][-1]["tool_call_id"], "call-3")
+        self.assertEqual(request.call_args_list[1].args[2]["messages"][-1]["name"], "list_sessions")
 
 
 if __name__ == "__main__":
