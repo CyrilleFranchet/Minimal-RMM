@@ -1234,11 +1234,36 @@ body.sidebar-resizing iframe {
   font-size: 0.85rem;
 }
 
-#openai-model-custom {
+#ai-model-custom {
   width: 100%;
   margin-top: 0.25rem;
   margin-bottom: 0.5rem;
   font-size: 0.85rem;
+}
+
+.ai-provider-config {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.65rem;
+  padding-bottom: 0.55rem;
+}
+
+.ai-provider-config .secondary {
+  font-size: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.ai-provider-status {
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin: 0;
+}
+
+.ai-provider-status.ai-provider-valid {
+  color: var(--success);
+}
+
+.ai-provider-status.ai-provider-invalid {
+  color: var(--danger);
 }
 
 .ai-hint {
@@ -1246,6 +1271,45 @@ body.sidebar-resizing iframe {
   color: var(--muted);
   font-size: 0.72rem;
   line-height: 1.35;
+}
+
+.ui-config-dialog {
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  color: var(--text);
+  background: var(--panel);
+  max-width: 32rem;
+  width: calc(100% - 2rem);
+}
+
+.ui-config-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.ui-config-card {
+  padding: 1rem;
+}
+
+.ui-config-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.ui-config-header h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.ui-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ui-config-status {
+  font-size: 0.78rem;
+  min-height: 1.1rem;
 }
 
 .ai-chat-log {
