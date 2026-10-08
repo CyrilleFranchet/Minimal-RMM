@@ -33,6 +33,7 @@ import os
 import readline
 import glob
 import shutil
+import subprocess
 
 try:
     from prompt_toolkit.completion import Completer as _PTCompleterBase
@@ -58,6 +59,8 @@ PORT = 8080
 LOG_DIR = "RMM_logs"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 CLIENT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "client_rmm.ps1")
+GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-go")
+GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
 WEB_MIME = {
@@ -153,6 +156,86 @@ def safe_join_under(base_dir: str, *parts: str) -> str:
     return path
 
 
+GO_AGENT_TARGETS = {
+    ("windows", "amd64"),
+    ("windows", "arm64"),
+    ("linux", "amd64"),
+    ("linux", "arm64"),
+}
+
+
+def go_agent_source_files() -> list[dict[str, str]]:
+    """Return the checked-in Go agent source exposed by the authenticated API."""
+    root = os.path.realpath(GO_AGENT_DIR)
+    files = []
+    for current, _dirs, names in os.walk(root):
+        for name in sorted(names):
+            if not (name.endswith(".go") or name in ("go.mod", "go.sum")):
+                continue
+            path = os.path.realpath(os.path.join(current, name))
+            if not path.startswith(root + os.sep):
+                continue
+            with open(path, "r", encoding="utf-8") as handle:
+                files.append({"filename": os.path.relpath(path, root), "content": handle.read()})
+    return files
+
+
+def build_go_agent(goos: str, goarch: str) -> dict:
+    """Build a fixed repository Go agent for one allowlisted OS and architecture."""
+    goos = str(goos or "").strip().lower()
+    goarch = str(goarch or "").strip().lower()
+    if (goos, goarch) not in GO_AGENT_TARGETS:
+        raise ValueError("unsupported Go target")
+    root = os.path.realpath(GO_AGENT_DIR)
+    if not os.path.isdir(root) or not os.path.isfile(os.path.join(root, "go.mod")):
+        raise FileNotFoundError("Go agent source is not installed")
+    go_bin = shutil.which("go")
+    if not go_bin:
+        raise RuntimeError("Go toolchain is not installed on the RMM server")
+    suffix = ".exe" if goos == "windows" else ""
+    filename = f"minimal-rmm-agent-{goos}-{goarch}{suffix}"
+    output_path = safe_join_under(GO_AGENT_BUILD_DIR, filename)
+    go_cache = safe_join_under(LOG_DIR, "go-cache")
+    os.makedirs(go_cache, exist_ok=True)
+    env = os.environ.copy()
+    env.update(
+        {
+            "CGO_ENABLED": "0",
+            "GOOS": goos,
+            "GOARCH": goarch,
+            "GO111MODULE": "on",
+            "GOCACHE": go_cache,
+        }
+    )
+    try:
+        completed = subprocess.run(
+            [go_bin, "build", "-trimpath", "-ldflags", "-s -w", "-o", output_path, "."],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Go build timed out after 120 seconds") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "build failed").strip()
+        raise RuntimeError(detail[-4000:])
+    digest = hashlib.sha256()
+    with open(output_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "filename": filename,
+        "goos": goos,
+        "goarch": goarch,
+        "sha256": digest.hexdigest(),
+        "size": os.path.getsize(output_path),
+        "download_url": f"{API_PREFIX}/artifacts/agent-builds/{filename}",
+    }
+
+
 def _history_session_dir(session_id: str) -> str:
     sid = validate_beacon_session_id(session_id)
     if not sid:
@@ -180,6 +263,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(os.path.join(LOG_DIR, "downloads"), exist_ok=True)
 os.makedirs(os.path.join(LOG_DIR, "screenshots"), exist_ok=True)
 os.makedirs(os.path.join(LOG_DIR, "keylogs"), exist_ok=True)
+os.makedirs(GO_AGENT_BUILD_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
 # ANSI Colors
@@ -1896,7 +1980,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         return True
 
     def _serve_artifact(self, kind: str, filename: str, qs=None):
-        if kind not in ("downloads", "screenshots"):
+        if kind not in ("downloads", "screenshots", "agent-builds"):
             self._json(404, {"error": "not_found"})
             return True
         safe = safe_storage_filename(filename, "")
@@ -2041,6 +2125,25 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"filename": "client_rmm.ps1", "content": content})
             return True
 
+        if parts == ["agent", "go"]:
+            try:
+                files = go_agent_source_files()
+            except (OSError, UnicodeError) as exc:
+                self._json(500, {"error": "go_source_unavailable", "detail": str(exc)})
+                return True
+            self._json(
+                200,
+                {
+                    "files": files,
+                    "targets": [
+                        {"goos": goos, "goarch": goarch}
+                        for goos, goarch in sorted(GO_AGENT_TARGETS)
+                    ],
+                    "build_endpoint": f"{API_PREFIX}/agent/go/build",
+                },
+            )
+            return True
+
         if parts == ["sessions"]:
             self._json(200, {"sessions": srv.sessions_to_json()})
             return True
@@ -2136,6 +2239,21 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts is None:
             return False
         srv = self.server_instance
+
+        if parts == ["agent", "go", "build"]:
+            try:
+                result = build_go_agent(body.get("goos"), body.get("goarch"))
+            except ValueError as exc:
+                self._json(400, {"error": "invalid_target", "detail": str(exc)})
+                return True
+            except FileNotFoundError as exc:
+                self._json(404, {"error": "go_source_unavailable", "detail": str(exc)})
+                return True
+            except RuntimeError as exc:
+                self._json(503, {"error": "go_build_failed", "detail": str(exc)})
+                return True
+            self._json(200, result)
+            return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "commands":
             session = srv.resolve_session(parts[1])
