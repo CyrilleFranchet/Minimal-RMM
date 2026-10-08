@@ -7,9 +7,9 @@ second registration or command path.
 ## Web UI workflow
 
 1. Sign in to `/ui/` with the operator API token.
-2. Open **Deploy agent (PowerShell)**, then expand **Build Go agent**.
+2. Open the separate **Deploy agent (Go)** section.
 3. Load and inspect the checked-in source.
-4. Select `windows` or `linux` and `amd64` or `arm64`.
+4. Set the server URL and beacon secret, then choose the target and timing.
 5. Click **Compile on server** and download the returned ZIP archive.
 
 The archive contains the target binary, `README.txt`, and a launcher script:
