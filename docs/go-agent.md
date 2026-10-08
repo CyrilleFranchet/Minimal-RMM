@@ -61,3 +61,7 @@ optimization rather than a requirement.
 The Windows-specific adapters are isolated in `platform_windows.go` and are
 selected by Go build tags. They should be tested on representative Windows
 versions before production use.
+
+Windows builds use the GUI subsystem, so launching the executable does not
+open a console window. Startup and connection errors are written to
+`%TEMP%\minimal-rmm-agent.log`; set `RMM_LOG_FILE` to choose another path.
