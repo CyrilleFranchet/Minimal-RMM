@@ -2,7 +2,14 @@
 
 package main
 
-import "errors"
+import (
+	"errors"
+	"os/exec"
+)
+
+func newCommand(name string, args ...string) *exec.Cmd {
+	return exec.Command(name, args...)
+}
 
 func captureScreenshot() (string, error) { return "", errors.New("screenshots require Windows") }
 
