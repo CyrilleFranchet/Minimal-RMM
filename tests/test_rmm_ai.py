@@ -2,6 +2,7 @@
 
 import asyncio
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import rmm_ai
@@ -61,6 +62,31 @@ class AiProviderTests(unittest.TestCase):
             rmm_ai.validate_ai_provider("unknown", "key")
         with self.assertRaisesRegex(ValueError, "missing_api_key"):
             rmm_ai.validate_ai_provider("openai", "")
+
+    def test_task_timing_is_appended_to_successful_response(self):
+        result = rmm_ai._append_task_timing(
+            {"ok": True, "message": "Completed task."},
+            datetime(2026, 10, 8, 9, 30, tzinfo=timezone.utc),
+            datetime(2026, 10, 8, 9, 31, 2, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(
+            result["message"],
+            "Completed task.\n\n## Task timing\n"
+            "- Started (UTC): 2026-10-08T09:30:00Z\n"
+            "- Completed (UTC): 2026-10-08T09:31:02Z",
+        )
+
+    def test_task_timing_does_not_change_unsuccessful_response(self):
+        result = {"ok": False, "error": "provider_error"}
+        self.assertIs(
+            rmm_ai._append_task_timing(
+                result,
+                datetime(2026, 10, 8, tzinfo=timezone.utc),
+                datetime(2026, 10, 8, tzinfo=timezone.utc),
+            ),
+            result,
+        )
 
     def test_anthropic_tool_loop_returns_tool_result_block(self):
         responses = [

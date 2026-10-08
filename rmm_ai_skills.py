@@ -67,6 +67,7 @@ def load_skill_file(path: str) -> dict | None:
         "title": title,
         "description": description,
         "default": _truthy(meta.get("default")),
+        "always": _truthy(meta.get("always")),
         "body": body.strip(),
         "filename": filename,
     }
@@ -94,6 +95,7 @@ def list_ai_skills() -> list[dict]:
             "title": skill["title"],
             "description": skill["description"],
             "default": skill["default"],
+            "always": skill["always"],
             "filename": skill["filename"],
         })
     return rows
@@ -103,17 +105,27 @@ def resolve_ai_skills(skill_ids: list[str] | None) -> list[dict]:
     """
     Load full skill bodies.
 
-    - skill_ids is None: skills marked default: true in frontmatter
-    - skill_ids is a list: exactly those ids (empty list = no skills)
+    - skill_ids is None: skills marked default: true or always: true in frontmatter
+    - skill_ids is a list: those ids plus all always: true skills
     """
     available = {row["id"]: row for row in (_load_all_skills_full())}
+    always = [skill for skill in available.values() if skill.get("always")]
     if skill_ids is None:
-        return [available[sid] for sid in available if available[sid].get("default")]
+        return [
+            skill
+            for skill in available.values()
+            if skill.get("default") or skill.get("always")
+        ]
     chosen: list[dict] = []
+    included = set()
+    for skill in always:
+        chosen.append(skill)
+        included.add(skill["id"])
     for raw in skill_ids:
         sid = (raw or "").strip().lower()
-        if sid and sid in available:
+        if sid and sid in available and sid not in included:
             chosen.append(available[sid])
+            included.add(sid)
     return chosen
 
 

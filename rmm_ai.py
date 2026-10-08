@@ -7,6 +7,7 @@ import json
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 
 from rmm_ai_skills import compose_system_prompt
 from rmm_tools import OPENAI_TOOLS, SYSTEM_PROMPT, execute_tool, make_client
@@ -189,6 +190,32 @@ def _chat_completion_message(provider: str, response: dict) -> dict:
         if isinstance(calls, list):
             tool_calls.extend(call for call in calls if isinstance(call, dict))
     return {"content": "".join(content_parts), "tool_calls": tool_calls}
+
+
+def _append_task_timing(result: dict, started_at: datetime, completed_at: datetime) -> dict:
+    """Append server-generated UTC task timing to a successful AI response."""
+    message = result.get("message")
+    if not result.get("ok") or not isinstance(message, str):
+        return result
+    started = (
+        started_at.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    completed = (
+        completed_at.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    enriched = dict(result)
+    enriched["message"] = (
+        f"{message.rstrip()}\n\n## Task timing\n"
+        f"- Started (UTC): {started}\n"
+        f"- Completed (UTC): {completed}"
+    )
+    return enriched
 
 
 async def _run_provider_loop(
@@ -416,6 +443,7 @@ def run_ai_chat(
     skill_ids: list[str] | None = None,
 ) -> dict:
     """Run an AI provider agent loop and return its final response and tool activity."""
+    started_at = datetime.now(timezone.utc)
     provider = (provider or "").strip().lower()
     api_key = (api_key or "").strip()
     if provider not in SUPPORTED_PROVIDERS:
@@ -443,10 +471,12 @@ def run_ai_chat(
         "skill_ids": skill_ids,
     }
     if use_mcp_for_ai() and mcp_available():
-        return _run_ai_chat_mcp(
+        result = _run_ai_chat_mcp(
             **common,
             exegol_mcp_enabled=exegol_mcp_enabled,
             exegol_mcp_url=exegol_mcp_url,
             exegol_mcp_token=exegol_mcp_token,
         )
-    return _run_ai_chat_direct(**common)
+    else:
+        result = _run_ai_chat_direct(**common)
+    return _append_task_timing(result, started_at, datetime.now(timezone.utc))
