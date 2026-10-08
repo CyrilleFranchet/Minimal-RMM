@@ -34,6 +34,7 @@ import readline
 import glob
 import shutil
 import subprocess
+import zipfile
 
 try:
     from prompt_toolkit.completion import Completer as _PTCompleterBase
@@ -193,7 +194,9 @@ def build_go_agent(goos: str, goarch: str) -> dict:
     if not go_bin:
         raise RuntimeError("Go toolchain is not installed on the RMM server")
     suffix = ".exe" if goos == "windows" else ""
-    filename = f"minimal-rmm-agent-{goos}-{goarch}{suffix}"
+    binary_filename = f"minimal-rmm-agent-{goos}-{goarch}{suffix}"
+    binary_path = safe_join_under(GO_AGENT_BUILD_DIR, binary_filename)
+    filename = f"minimal-rmm-agent-{goos}-{goarch}.zip"
     output_path = safe_join_under(GO_AGENT_BUILD_DIR, filename)
     go_cache = safe_join_under(LOG_DIR, "go-cache")
     os.makedirs(go_cache, exist_ok=True)
@@ -209,7 +212,7 @@ def build_go_agent(goos: str, goarch: str) -> dict:
     )
     try:
         completed = subprocess.run(
-            [go_bin, "build", "-trimpath", "-ldflags", "-s -w", "-o", output_path, "."],
+            [go_bin, "build", "-trimpath", "-ldflags", "-s -w", "-o", binary_path, "."],
             cwd=root,
             env=env,
             capture_output=True,
@@ -222,12 +225,62 @@ def build_go_agent(goos: str, goarch: str) -> dict:
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "build failed").strip()
         raise RuntimeError(detail[-4000:])
+    launcher_name = "run-agent.ps1" if goos == "windows" else "run-agent.sh"
+    if goos == "windows":
+        launcher = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "$binary = Join-Path $PSScriptRoot '" + binary_filename + "'\n"
+            "if (-not $env:RMM_BASE_URL -or -not $env:RMM_BEACON_SECRET) {\n"
+            "  throw 'Set RMM_BASE_URL and RMM_BEACON_SECRET before starting the agent.'\n"
+            "}\n"
+            "& $binary\n"
+        )
+    else:
+        launcher = (
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\n"
+            ": \"${RMM_BASE_URL:?Set RMM_BASE_URL before starting the agent.}\"\n"
+            ": \"${RMM_BEACON_SECRET:?Set RMM_BEACON_SECRET before starting the agent.}\"\n"
+            "exec \"$SCRIPT_DIR/" + binary_filename + "\"\n"
+        )
+    readme = f"""Minimal-RMM Go agent ({goos}/{goarch})
+
+Files:
+- {binary_filename}: compiled agent
+- {launcher_name}: launcher that checks required environment variables
+
+Required environment variables:
+- RMM_BASE_URL
+- RMM_BEACON_SECRET
+
+Optional variables include RMM_SESSION_ID, RMM_SLEEP_SECONDS,
+RMM_JITTER_PERCENT, and RMM_HTTP_PROXY.
+
+Windows PowerShell:
+  $env:RMM_BASE_URL = 'https://your-rmm-server'
+  $env:RMM_BEACON_SECRET = 'your-beacon-secret'
+  .\\run-agent.ps1
+
+Linux/macOS shell:
+  export RMM_BASE_URL='https://your-rmm-server'
+  export RMM_BEACON_SECRET='your-beacon-secret'
+  chmod +x run-agent.sh
+  ./run-agent.sh
+
+Authorized lab use only.
+"""
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(binary_path, arcname=binary_filename)
+        archive.writestr(launcher_name, launcher)
+        archive.writestr("README.txt", readme)
     digest = hashlib.sha256()
     with open(output_path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return {
         "filename": filename,
+        "binary_filename": binary_filename,
         "goos": goos,
         "goarch": goarch,
         "sha256": digest.hexdigest(),
@@ -1995,7 +2048,12 @@ class RMMHandler(BaseHTTPRequestHandler):
         if not os.path.isfile(path):
             self._json(404, {"error": "not_found"})
             return True
-        mime = "image/png" if kind == "screenshots" else "application/octet-stream"
+        if kind == "screenshots":
+            mime = "image/png"
+        elif safe.lower().endswith(".zip"):
+            mime = "application/zip"
+        else:
+            mime = "application/octet-stream"
         download_name = safe
         if qs:
             as_name = (qs.get("as", [""])[0] or "").strip()

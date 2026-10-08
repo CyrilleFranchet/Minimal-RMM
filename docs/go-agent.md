@@ -10,12 +10,18 @@ second registration or command path.
 2. Open **Deploy agent (PowerShell)**, then expand **Build Go agent**.
 3. Load and inspect the checked-in source.
 4. Select `windows` or `linux` and `amd64` or `arm64`.
-5. Click **Compile on server** and download the returned artifact.
+5. Click **Compile on server** and download the returned ZIP archive.
+
+The archive contains the target binary, `README.txt`, and a launcher script:
+`run-agent.ps1` for Windows or `run-agent.sh` for Linux. Set
+`RMM_BASE_URL` and `RMM_BEACON_SECRET`, then run the launcher. Windows does
+not need `screen`; use the PowerShell launcher in a console, Task Scheduler,
+or a service wrapper when the agent must remain running after logout.
 
 The source and build endpoints require the operator API token. Builds use the
-repository source only, disable CGO, apply `-trimpath`, and write artifacts to
-`RMM_logs/agent-builds/`. The server accepts only the four target pairs listed
-above. Each successful build returns its byte count and SHA-256 digest.
+repository source only, disable CGO, apply `-trimpath`, and write ZIP artifacts
+to `RMM_logs/agent-builds/`. The server accepts only the four target pairs
+listed above. Each successful build returns its byte count and SHA-256 digest.
 
 The server must have the Go toolchain installed and available as `go`. The
 build request has a 120-second timeout and does not execute shell text supplied

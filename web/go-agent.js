@@ -70,9 +70,10 @@
       if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
       const link = $("#agent-go-download");
       link.href = data.download_url;
-      link.textContent = `Download ${data.filename} (${data.size} bytes, SHA-256 ${data.sha256})`;
+      link.textContent = `Download ZIP ${data.filename} (${data.size} bytes, SHA-256 ${data.sha256})`;
+      link.dataset.downloadUrl = data.download_url;
       link.classList.remove("hidden");
-      status("Build complete. Verify the hash before transferring the binary.");
+      status("Build complete. Download the ZIP and set the required environment variables before starting the agent.");
     } catch (error) {
       status(error.message, true);
     } finally {
@@ -85,6 +86,28 @@
     $("#agent-go-file")?.addEventListener("change", renderSource);
     $("#agent-go-refresh")?.addEventListener("click", loadSource);
     $("#agent-go-build")?.addEventListener("click", build);
+    $("#agent-go-download")?.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const url = event.currentTarget.dataset.downloadUrl;
+      if (!url) return;
+      try {
+        status("Downloading ZIP…");
+        const response = await fetch(url, { headers: headers(false) });
+        if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = url.split("/").pop() || "minimal-rmm-agent.zip";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(objectUrl);
+        status("ZIP downloaded.");
+      } catch (error) {
+        status(error.message, true);
+      }
+    });
     $("#agent-go-panel")?.addEventListener("toggle", (event) => {
       if (event.target.open && !files.length) loadSource();
     });
