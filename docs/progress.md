@@ -28,7 +28,7 @@
 | `rmm_tools.py` | ~430 | Shared operator tools (MCP + web AI fallback) |
 | `mcp_rmm_server.py` | ~170 | FastMCP server (16 tools) |
 | `rmm_mcp_client.py` | ~290 | Spawns MCP over stdio; optional Exegol MCP merge |
-| `rmm_ai.py` | ~280 | OpenAI chat loop with RMM (+ Exegol) tools |
+| `rmm_ai.py` | ~350 | OpenAI, Anthropic, and Mistral chat loop with RMM (+ Exegol) tools |
 | `web/` | static | Operator UI (`/ui/`), WebSocket events, AI panel (`ai.js`) |
 | `rmm_run_on_host.py` | ~215 | Batch recon by hostname (API automation example) |
 | `rmm_kill_host_sessions.py` | ~115 | Kill all sessions matching hostname |
@@ -153,9 +153,10 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`); hover **Delete** removes one archive; **Clear all** removes every ended archive (`DELETE /api/v1/history`)
 - [x] Beacon config apply (PATCH sleep/jitter) — per-session **Beacon** button opens modal dialog
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
-- [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); OpenAI key in tab; optional Exegol MCP settings; **server skills** (`ai-skills/*.md`, `GET /api/v1/ai/skills`) — see `docs/web-ai-skills.md`
+- [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); tab-scoped OpenAI, Anthropic, and Mistral keys with live validation and provider-specific model lists; optional Exegol MCP settings; **server skills** (`ai-skills/*.md`, `GET /api/v1/ai/skills`) — see `docs/ai-providers.md` and `docs/web-ai-skills.md`
 - [x] **Full live results after WS truncation** — large WebSocket event bodies remain bounded, and the web UI fetches the full event body from REST when `body_truncated` is set; see `docs/web-live-full-results.md`
 - [x] **AI chat memory** — per-session history on server (`RMM_logs/history/{id}/ai_chat.json`); **Reset chat**; purge on kill/delete — see `docs/web-ai-chat-memory.md`
+- [x] **UI configuration export/import** — versioned JSON restore for allowlisted browser settings; secrets excluded by default — see `docs/web-ui-configuration.md`
 - [x] **Server unreachable modal** — gray backdrop + Retry / Disconnect when REST health or API fetch fails (network); periodic health probe while connected
 
 ### MCP & AI (`mcp_rmm_server.py`, `rmm_tools.py`, `rmm_ai.py`)
@@ -267,7 +268,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ### Detection pipeline
 
-```
+```text
 beacon_detector  →  (beacon topic)  →  beaconator / deep_tunnel_t1
 ```
 

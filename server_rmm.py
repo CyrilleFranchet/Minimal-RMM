@@ -2277,16 +2277,34 @@ class RMMHandler(BaseHTTPRequestHandler):
             )
             return True
 
+        if parts == ["ai", "providers", "validate"]:
+            provider = str(body.get("provider") or "").strip().lower()
+            api_key = str(body.get("api_key") or "").strip()
+            try:
+                from rmm_ai import validate_ai_provider
+
+                self._json(200, validate_ai_provider(provider, api_key))
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+            except RuntimeError as e:
+                self._json(502, {"error": "provider_validation_failed", "detail": str(e)})
+            return True
+
         if parts == ["ai", "chat"]:
-            openai_key = (body.get("openai_api_key") or os.environ.get("OPENAI_API_KEY", "")).strip()
-            if not openai_key:
-                self._json(400, {"error": "missing_openai_api_key"})
+            provider = str(body.get("provider") or "openai").strip().lower()
+            api_key = str(
+                body.get("api_key")
+                or body.get("openai_api_key")
+                or (os.environ.get("OPENAI_API_KEY", "") if provider == "openai" else "")
+            ).strip()
+            if not api_key:
+                self._json(400, {"error": "missing_api_key"})
                 return True
             messages = body.get("messages") or []
             if not messages:
                 self._json(400, {"error": "missing_messages"})
                 return True
-            model = str(body.get("model") or "gpt-5.2")
+            model = str(body.get("model") or "")
             selected = body.get("selected_session_id")
             skill_ids = body.get("skill_ids")
             if skill_ids is not None and not isinstance(skill_ids, list):
@@ -2305,7 +2323,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                 result = run_ai_chat(
                     rmm_base_url=self._operator_api_base_url(),
                     rmm_token=rmm_token,
-                    openai_api_key=openai_key,
+                    provider=provider,
+                    api_key=api_key,
                     messages=messages,
                     model=model,
                     selected_session_id=selected,
@@ -2329,7 +2348,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._json(400, {"error": str(e)})
             except RuntimeError as e:
-                self._json(502, {"error": "openai_error", "detail": str(e)})
+                self._json(502, {"error": "ai_provider_error", "detail": str(e)})
             except Exception as e:
                 self._json(500, {"error": "ai_chat_failed", "detail": str(e)})
             return True

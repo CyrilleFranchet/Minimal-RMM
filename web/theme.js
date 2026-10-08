@@ -41,5 +41,9 @@
     });
   }
 
+  window.addEventListener("rmm-config-imported", () => {
+    applyTheme(localStorage.getItem(STORAGE_KEY) || DEFAULT_THEME);
+  });
+
   document.addEventListener("DOMContentLoaded", initThemeToggle);
 })();

@@ -34,6 +34,7 @@
       <h1>Minimal RMM</h1>
       <span class="spacer"></span>
       <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
+      <button type="button" class="secondary" id="config-toggle-btn" title="Save or restore UI configuration">Config</button>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
       <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
     </header>
@@ -239,13 +240,32 @@
           </div>
         </div>
         <details class="ai-settings" open>
-          <summary>OpenAI settings</summary>
-          <label for="openai-key-input">API key</label>
-          <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off">
-          <label for="openai-model-select">Model</label>
-          <select id="openai-model-select" title="OpenAI Chat Completions model"></select>
-          <input type="text" id="openai-model-custom" class="hidden" placeholder="e.g. gpt-5.2-pro" autocomplete="off" spellcheck="false">
-          <p class="ai-hint">Stored in this browser tab only. Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
+          <summary>AI provider settings</summary>
+          <p class="ai-hint">Keys stay in this browser tab. Test each key to enable its provider and load the models available to that key.</p>
+          <div class="ai-provider-config" data-provider="openai">
+            <label for="openai-key-input">OpenAI API key</label>
+            <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off">
+            <button type="button" class="secondary ai-provider-validate" data-provider="openai">Validate OpenAI key</button>
+            <p class="ai-provider-status" id="openai-provider-status" aria-live="polite">Not configured.</p>
+          </div>
+          <div class="ai-provider-config" data-provider="anthropic">
+            <label for="anthropic-key-input">Anthropic API key</label>
+            <input type="password" id="anthropic-key-input" placeholder="sk-ant-…" autocomplete="off">
+            <button type="button" class="secondary ai-provider-validate" data-provider="anthropic">Validate Anthropic key</button>
+            <p class="ai-provider-status" id="anthropic-provider-status" aria-live="polite">Not configured.</p>
+          </div>
+          <div class="ai-provider-config" data-provider="mistral">
+            <label for="mistral-key-input">Mistral API key</label>
+            <input type="password" id="mistral-key-input" placeholder="…" autocomplete="off">
+            <button type="button" class="secondary ai-provider-validate" data-provider="mistral">Validate Mistral key</button>
+            <p class="ai-provider-status" id="mistral-provider-status" aria-live="polite">Not configured.</p>
+          </div>
+          <label for="ai-provider-select">Provider</label>
+          <select id="ai-provider-select" disabled title="Validated AI provider"></select>
+          <label for="ai-model-select">Model</label>
+          <select id="ai-model-select" disabled title="Model available to the selected provider"></select>
+          <input type="text" id="ai-model-custom" class="hidden" placeholder="Custom model ID" autocomplete="off" spellcheck="false">
+          <p class="ai-hint">Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
         </details>
         <details class="ai-settings">
           <summary>Skills</summary>
@@ -274,6 +294,27 @@
       </aside>
     </div>
   </div>
+
+  <dialog id="ui-config-dialog" class="ui-config-dialog">
+    <form method="dialog" class="ui-config-card">
+      <div class="ui-config-header">
+        <h2>UI configuration</h2>
+        <button type="submit" class="secondary" aria-label="Close configuration dialog">×</button>
+      </div>
+      <p class="ai-hint">Export a versioned JSON file or import one to restore supported browser settings.</p>
+      <label class="ai-checkbox">
+        <input type="checkbox" id="ui-config-include-secrets">
+        Include API keys and other secrets
+      </label>
+      <p class="ai-hint">Leave this unchecked for a portable file. Secret-bearing files must be protected like passwords.</p>
+      <div class="ui-config-actions">
+        <button type="button" id="ui-config-export">Export configuration</button>
+        <button type="button" class="secondary" id="ui-config-import">Import configuration</button>
+        <input type="file" id="ui-config-file" accept="application/json,.json" class="hidden">
+      </div>
+      <p id="ui-config-status" class="ui-config-status" role="status" aria-live="polite"></p>
+    </form>
+  </dialog>
 
   <dialog id="beacon-config-dialog" class="beacon-config-dialog">
     <form id="beacon-config-form" method="dialog" class="beacon-config-form">
@@ -304,9 +345,9 @@
   </dialog>
 
   <script src="theme.js"></script>
+  <script src="config.js"></script>
   <script src="app.js"></script>
   <script src="agent-gen.js"></script>
-  <script src="ai-models.js"></script>
   <script src="ai.js"></script>
 </body>
 </html>

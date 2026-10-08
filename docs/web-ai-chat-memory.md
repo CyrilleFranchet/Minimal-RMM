@@ -2,6 +2,8 @@
 
 The AI assistant panel keeps a **per-session conversation history** on the **RMM server** so operators do not lose context when reloading the page, switching browsers, or reconnecting from another machine.
 
+The providers do not own this history for the current integration. Each request sends the relevant message history from `RMM_logs/history/{session_id}/ai_chat.json` to the selected provider. An API key identifies authorization and billing; it is not a portable conversation-history lookup key. OpenAI Chat Completions, Anthropic Messages, and Mistral Chat Completions are used as stateless request/response APIs here. Provider products may offer separate conversation or workspace storage, but those objects are not the same as this RMM transcript and are not queried by this UI.
+
 ## Storage
 
 | File | Location | Content |
@@ -14,7 +16,7 @@ The file lives next to `meta.json` and `events.jsonl` for the same session. Up t
 
 When no RMM session is selected in the sidebar, chat stays **in-memory only** in the browser (welcome message only after reload).
 
-OpenAI API keys, model choice, Exegol MCP settings, and skill checkboxes remain in `sessionStorage` (tab-scoped).
+AI provider API keys, validation state, model choice, Exegol MCP settings, and skill checkboxes remain in `sessionStorage` (tab-scoped). Keys are never persisted in `RMM_logs/`.
 
 ## REST API
 

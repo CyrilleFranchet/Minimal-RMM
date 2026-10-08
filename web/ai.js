@@ -1,10 +1,11 @@
 /**
- * Web AI assistant — OpenAI chat via MCP (mcp_rmm_server.py) at POST /api/v1/ai/chat
+ * Web AI assistant — provider-neutral chat via MCP at POST /api/v1/ai/chat
  */
 (function () {
-  const OPENAI_KEY_STORAGE = "rmm_openai_api_key";
-  const OPENAI_MODEL_STORAGE = "rmm_openai_model";
-  const OPENAI_MODEL_CUSTOM_STORAGE = "rmm_openai_model_custom";
+  const PROVIDERS = ["openai", "anthropic", "mistral"];
+  const PROVIDER_LABELS = { openai: "OpenAI", anthropic: "Anthropic", mistral: "Mistral" };
+  const PROVIDER_STATE_STORAGE = "rmm_ai_provider_state";
+  const PROVIDER_STORAGE = "rmm_ai_provider";
   const AI_PANEL_OPEN_STORAGE = "rmm_ai_panel_open";
   const EXEGOL_ENABLED_STORAGE = "rmm_exegol_mcp_enabled";
   const EXEGOL_URL_STORAGE = "rmm_exegol_mcp_url";
@@ -13,8 +14,6 @@
   const LEGACY_AI_CHAT_STORAGE_KEY = "rmm_ai_chat_v1";
   const DEFAULT_EXEGOL_MCP_URL = "http://127.0.0.1:8000/mcp";
   const CUSTOM_MODEL_VALUE = "__custom__";
-  const DEFAULT_MODEL =
-    (typeof window !== "undefined" && window.RMM_OPENAI_DEFAULT_MODEL) || "gpt-5.2";
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -25,6 +24,7 @@
   let chatLoadToken = 0;
   let sending = false;
   let aiSkills = [];
+  const providerValidationTokens = {};
 
   function escapeHtml(s) {
     const d = document.createElement("div");
@@ -62,53 +62,74 @@
       : "RMM tools via MCP (list sessions, run commands, change beacon sleep, etc.). Enable Exegol MCP in settings to add container orchestration and offensive tools.";
   }
 
-  function getOpenAiKey() {
-    return ($("#openai-key-input")?.value || sessionStorage.getItem(OPENAI_KEY_STORAGE) || "").trim();
+  function getProviderState() {
+    try {
+      const state = JSON.parse(sessionStorage.getItem(PROVIDER_STATE_STORAGE) || "{}");
+      return state && typeof state === "object" ? state : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveProviderState(state) {
+    sessionStorage.setItem(PROVIDER_STATE_STORAGE, JSON.stringify(state));
+  }
+
+  function getProviderKey(provider) {
+    return ($(`#${provider}-key-input`)?.value || sessionStorage.getItem(`rmm_${provider}_api_key`) || "").trim();
+  }
+
+  function getActiveProvider() {
+    return $("#ai-provider-select")?.value || sessionStorage.getItem(PROVIDER_STORAGE) || "";
   }
 
   function getModel() {
-    const sel = $("#openai-model-select");
-    const custom = $("#openai-model-custom");
+    const sel = $("#ai-model-select");
+    const custom = $("#ai-model-custom");
+    const state = getProviderState();
+    const providerState = state[getActiveProvider()] || {};
     if (sel?.value === CUSTOM_MODEL_VALUE) {
-      return (custom?.value || sessionStorage.getItem(OPENAI_MODEL_CUSTOM_STORAGE) || "").trim();
+      return (custom?.value || providerState.customModel || "").trim();
     }
-    return sel ? sel.value : sessionStorage.getItem(OPENAI_MODEL_STORAGE) || DEFAULT_MODEL;
+    return sel ? sel.value : providerState.model || "";
   }
 
-  function syncCustomModelField() {
-    const sel = $("#openai-model-select");
-    const custom = $("#openai-model-custom");
+  function syncCustomModelField(focus = false) {
+    const sel = $("#ai-model-select");
+    const custom = $("#ai-model-custom");
     if (!sel || !custom) return;
     const show = sel.value === CUSTOM_MODEL_VALUE;
     custom.classList.toggle("hidden", !show);
-    if (show) custom.focus();
+    if (show && focus) custom.focus();
   }
 
   function populateModelSelect() {
-    const sel = $("#openai-model-select");
+    const sel = $("#ai-model-select");
     if (!sel) return;
-    const groups = window.RMM_OPENAI_MODEL_GROUPS || [];
+    const state = getProviderState();
+    const provider = getActiveProvider();
+    const models = state[provider]?.models || [];
     sel.replaceChildren();
-    for (const group of groups) {
-      const optgroup = document.createElement("optgroup");
-      optgroup.label = group.label;
-      for (const model of group.models || []) {
-        const opt = document.createElement("option");
-        opt.value = model.id;
-        opt.textContent = model.id === CUSTOM_MODEL_VALUE ? "Custom model ID…" : model.id;
-        opt.title = model.hint || model.id;
-        optgroup.appendChild(opt);
-      }
-      sel.appendChild(optgroup);
+    for (const model of models) {
+      const opt = document.createElement("option");
+      opt.value = model;
+      opt.textContent = model;
+      sel.appendChild(opt);
     }
+    const custom = document.createElement("option");
+    custom.value = CUSTOM_MODEL_VALUE;
+    custom.textContent = "Custom model ID…";
+    sel.appendChild(custom);
+    sel.disabled = !provider;
   }
 
   function restoreModelSelection() {
-    const sel = $("#openai-model-select");
-    const custom = $("#openai-model-custom");
+    const sel = $("#ai-model-select");
+    const custom = $("#ai-model-custom");
     if (!sel) return;
-    const saved = sessionStorage.getItem(OPENAI_MODEL_STORAGE) || DEFAULT_MODEL;
-    const savedCustom = sessionStorage.getItem(OPENAI_MODEL_CUSTOM_STORAGE) || "";
+    const providerState = getProviderState()[getActiveProvider()] || {};
+    const saved = providerState.model || "";
+    const savedCustom = providerState.customModel || "";
     const known = Array.from(sel.options).some((o) => o.value === saved);
     if (known) {
       sel.value = saved;
@@ -116,10 +137,116 @@
       sel.value = CUSTOM_MODEL_VALUE;
       if (custom) custom.value = saved;
     } else {
-      sel.value = DEFAULT_MODEL;
+      sel.value = sel.options[0]?.value || CUSTOM_MODEL_VALUE;
     }
     if (custom && savedCustom) custom.value = savedCustom;
     syncCustomModelField();
+  }
+
+  function renderProviderControls() {
+    const select = $("#ai-provider-select");
+    if (!select) return;
+    const state = getProviderState();
+    const selected = sessionStorage.getItem(PROVIDER_STORAGE) || "";
+    select.replaceChildren();
+    for (const provider of PROVIDERS) {
+      if (!state[provider]?.valid || !getProviderKey(provider)) continue;
+      const option = document.createElement("option");
+      option.value = provider;
+      option.textContent = PROVIDER_LABELS[provider];
+      select.appendChild(option);
+    }
+    select.disabled = !select.options.length;
+    if (Array.from(select.options).some((option) => option.value === selected)) {
+      select.value = selected;
+    }
+    if (!select.value && select.options.length) select.selectedIndex = 0;
+    sessionStorage.setItem(PROVIDER_STORAGE, select.value || "");
+    populateModelSelect();
+    restoreModelSelection();
+  }
+
+  function setProviderStatus(provider, text, valid) {
+    const status = $(`#${provider}-provider-status`);
+    if (!status) return;
+    status.textContent = text;
+    status.classList.toggle("ai-provider-valid", valid === true);
+    status.classList.toggle("ai-provider-invalid", valid === false);
+  }
+
+  async function validateProvider(provider) {
+    const apiFn = window.rmmApi;
+    const key = getProviderKey(provider);
+    const keyInput = $(`#${provider}-key-input`);
+    const button = $(`.ai-provider-validate[data-provider="${provider}"]`);
+    if (!apiFn || !window.rmmState?.token) {
+      setProviderStatus(provider, "Connect to RMM before validating a key.", false);
+      return;
+    }
+    if (!key) {
+      setProviderStatus(provider, "Enter an API key first.", false);
+      return;
+    }
+    const validationToken = (providerValidationTokens[provider] || 0) + 1;
+    providerValidationTokens[provider] = validationToken;
+    if (keyInput) keyInput.disabled = true;
+    if (button) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    }
+    setProviderStatus(provider, "Validating…");
+    try {
+      const { status, data } = await apiFn("/ai/providers/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, api_key: key }),
+      });
+      if (status !== 200 || !data.ok) {
+        throw new Error(data.detail || data.error || `HTTP ${status}`);
+      }
+      if (providerValidationTokens[provider] !== validationToken || getProviderKey(provider) !== key) {
+        return;
+      }
+      sessionStorage.setItem(`rmm_${provider}_api_key`, key);
+      const state = getProviderState();
+      state[provider] = { valid: true, models: Array.isArray(data.models) ? data.models : [] };
+      saveProviderState(state);
+      setProviderStatus(provider, `Validated. ${state[provider].models.length} models available.`, true);
+      renderProviderControls();
+    } catch (error) {
+      if (providerValidationTokens[provider] !== validationToken || getProviderKey(provider) !== key) {
+        return;
+      }
+      const state = getProviderState();
+      delete state[provider];
+      saveProviderState(state);
+      setProviderStatus(provider, `Validation failed: ${error.message || error}`, false);
+      renderProviderControls();
+    } finally {
+      if (providerValidationTokens[provider] === validationToken) {
+        if (keyInput) keyInput.disabled = false;
+        if (button) {
+          button.disabled = false;
+          button.removeAttribute("aria-busy");
+        }
+      }
+    }
+  }
+
+  function refreshProviderInputs() {
+    const state = getProviderState();
+    for (const provider of PROVIDERS) {
+      const input = $(`#${provider}-key-input`);
+      if (input) input.value = sessionStorage.getItem(`rmm_${provider}_api_key`) || "";
+      setProviderStatus(
+        provider,
+        state[provider]?.valid && getProviderKey(provider)
+          ? "Previously validated for this browser tab."
+          : "Not configured.",
+        Boolean(state[provider]?.valid && getProviderKey(provider))
+      );
+    }
+    renderProviderControls();
   }
 
   function getExegolMcpSettings() {
@@ -342,21 +469,17 @@
       appendChatMessage("error", "Connect to RMM first (API token required).");
       return;
     }
-    const openaiKey = getOpenAiKey();
-    if (!openaiKey) {
-      appendChatMessage("error", "Set your OpenAI API key in the panel settings.");
+    const provider = getActiveProvider();
+    const apiKey = getProviderKey(provider);
+    if (!provider || !apiKey) {
+      appendChatMessage("error", "Validate an AI provider key in the panel settings.");
       return;
     }
 
-    sessionStorage.setItem(OPENAI_KEY_STORAGE, openaiKey);
     const model = getModel();
     if (!model) {
       appendChatMessage("error", "Choose a model or enter a custom model ID.");
       return;
-    }
-    sessionStorage.setItem(OPENAI_MODEL_STORAGE, $("#openai-model-select")?.value || model);
-    if ($("#openai-model-select")?.value === CUSTOM_MODEL_VALUE) {
-      sessionStorage.setItem(OPENAI_MODEL_CUSTOM_STORAGE, model);
     }
     persistExegolMcpSettings();
     const exegol = getExegolMcpSettings();
@@ -380,7 +503,8 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          openai_api_key: openaiKey,
+          provider,
+          api_key: apiKey,
           model: getModel(),
           messages: chatHistory,
           selected_session_id: sessionId,
@@ -423,28 +547,54 @@
   }
 
   function initAiPanel() {
-    const keyInput = $("#openai-key-input");
-    const modelSelect = $("#openai-model-select");
-    const modelCustom = $("#openai-model-custom");
-    populateModelSelect();
-    if (keyInput) {
-      keyInput.value = sessionStorage.getItem(OPENAI_KEY_STORAGE) || "";
-      keyInput.addEventListener("change", () => {
-        sessionStorage.setItem(OPENAI_KEY_STORAGE, keyInput.value.trim());
-      });
+    const modelSelect = $("#ai-model-select");
+    const modelCustom = $("#ai-model-custom");
+    for (const provider of PROVIDERS) {
+      const keyInput = $(`#${provider}-key-input`);
+      if (keyInput) {
+        keyInput.value = sessionStorage.getItem(`rmm_${provider}_api_key`) || "";
+        keyInput.addEventListener("input", () => {
+          const state = getProviderState();
+          delete state[provider];
+          saveProviderState(state);
+          setProviderStatus(provider, "Key changed. Validate it to enable this provider.");
+          renderProviderControls();
+        });
+      }
+      const status = $(`#${provider}-provider-status`);
+      if (getProviderState()[provider]?.valid) {
+        setProviderStatus(provider, "Previously validated for this browser tab.", true);
+      } else if (status) {
+        setProviderStatus(provider, "Not configured.");
+      }
     }
-    if (modelSelect) {
+    for (const button of document.querySelectorAll(".ai-provider-validate")) {
+      button.addEventListener("click", () => validateProvider(button.dataset.provider));
+    }
+    $("#ai-provider-select")?.addEventListener("change", () => {
+      sessionStorage.setItem(PROVIDER_STORAGE, getActiveProvider());
+      populateModelSelect();
       restoreModelSelection();
+    });
+    renderProviderControls();
+    if (modelSelect) {
       modelSelect.addEventListener("change", () => {
-        sessionStorage.setItem(OPENAI_MODEL_STORAGE, modelSelect.value);
-        syncCustomModelField();
+        const state = getProviderState();
+        const provider = getActiveProvider();
+        if (state[provider]) state[provider].model = modelSelect.value;
+        saveProviderState(state);
+        syncCustomModelField(true);
       });
     }
     if (modelCustom) {
       modelCustom.addEventListener("change", () => {
-        sessionStorage.setItem(OPENAI_MODEL_CUSTOM_STORAGE, modelCustom.value.trim());
+        const state = getProviderState();
+        const provider = getActiveProvider();
+        if (state[provider]) state[provider].customModel = modelCustom.value.trim();
+        saveProviderState(state);
       });
     }
+    window.addEventListener("rmm-config-imported", refreshProviderInputs);
 
     const exegolEnabled = $("#exegol-mcp-enabled");
     const exegolUrl = $("#exegol-mcp-url-input");
