@@ -248,13 +248,16 @@ async def _run_provider_loop(
                 tool_log.append(
                     {"name": name, "arguments": arguments, "result_preview": result[:500]}
                 )
-                convo.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.get("id"),
-                        "content": result,
-                    }
-                )
+                tool_result = {
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id"),
+                    "content": result,
+                }
+                # Mistral requires the called function name with each tool
+                # result so it can associate the response with the invocation.
+                if provider == "mistral":
+                    tool_result["name"] = name
+                convo.append(tool_result)
     else:
         convo = _build_anthropic_messages(messages)
         for _ in range(max_rounds):
