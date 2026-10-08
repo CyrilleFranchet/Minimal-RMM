@@ -109,11 +109,21 @@ func captureScreenshot() (string, error) {
 	if previous == 0 {
 		return "", errors.New("SelectObject failed")
 	}
-	defer selectObject.Call(memoryDC, previous)
+	bitmapSelected := true
+	defer func() {
+		if bitmapSelected {
+			selectObject.Call(memoryDC, previous)
+		}
+	}()
 
 	if result, _, _ := bitBlt.Call(memoryDC, 0, 0, uintptr(width), uintptr(height), screenDC, 0, 0, srccopy|captureBlt); result == 0 {
 		return "", errors.New("BitBlt failed")
 	}
+	// GetDIBits requires the bitmap to be deselected from the device context.
+	if selected, _, _ := selectObject.Call(memoryDC, previous); selected == 0 {
+		return "", errors.New("restore device context failed")
+	}
+	bitmapSelected = false
 
 	pixels := make([]byte, width*height*4)
 	info := bitmapInfo{Header: bitmapInfoHeader{
