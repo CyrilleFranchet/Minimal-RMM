@@ -5,6 +5,7 @@
   const SESSION_KEYS = [
     "rmm_sidebar_width",
     "rmm_agent_gen_prefs",
+    "rmm_go_agent_prefs",
     "rmm_ai_panel_open",
     "rmm_ai_provider_state",
     "rmm_ai_provider",
@@ -52,6 +53,19 @@
       } catch {
         /* Keep malformed legacy preferences out of the export. */
         delete session.rmm_agent_gen_prefs;
+      }
+    }
+    const goPrefs = session.rmm_go_agent_prefs;
+    if (goPrefs) {
+      try {
+        const parsed = JSON.parse(goPrefs);
+        if (parsed && typeof parsed === "object" && parsed.beaconSecret) {
+          if (includeSecrets) secrets["rmm_go_agent_prefs.beaconSecret"] = parsed.beaconSecret;
+          delete parsed.beaconSecret;
+          session.rmm_go_agent_prefs = JSON.stringify(parsed);
+        }
+      } catch {
+        delete session.rmm_go_agent_prefs;
       }
     }
     if (includeSecrets) Object.assign(secrets, readStorage(SECRET_KEYS));
@@ -115,6 +129,19 @@
           continue;
         }
       }
+      if (key === "rmm_go_agent_prefs") {
+        try {
+          const importedPrefs = JSON.parse(value);
+          const currentPrefs = JSON.parse(sessionStorage.getItem(key) || "{}");
+          if (importedPrefs && currentPrefs?.beaconSecret && !config.secrets?.["rmm_go_agent_prefs.beaconSecret"]) {
+            importedPrefs.beaconSecret = currentPrefs.beaconSecret;
+            value = JSON.stringify(importedPrefs);
+          }
+        } catch {
+          /* Preserve the existing preference if the imported value is malformed. */
+          continue;
+        }
+      }
       sessionStorage.setItem(key, value);
     }
     if (local && (local.rmm_theme === "dark" || local.rmm_theme === "light")) {
@@ -130,6 +157,12 @@
         const prefs = JSON.parse(raw);
         prefs.beaconSecret = secrets["rmm_agent_gen_prefs.beaconSecret"];
         sessionStorage.setItem("rmm_agent_gen_prefs", JSON.stringify(prefs));
+      }
+      if (typeof secrets["rmm_go_agent_prefs.beaconSecret"] === "string") {
+        const raw = sessionStorage.getItem("rmm_go_agent_prefs") || "{}";
+        const prefs = JSON.parse(raw);
+        prefs.beaconSecret = secrets["rmm_go_agent_prefs.beaconSecret"];
+        sessionStorage.setItem("rmm_go_agent_prefs", JSON.stringify(prefs));
       }
     }
     window.dispatchEvent(new Event("rmm-config-imported"));
