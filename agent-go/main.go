@@ -109,6 +109,10 @@ func main() {
 
 	for {
 		if err := register(client, cfg); err != nil {
+			if isSessionTerminatedError(err) {
+				logf("session terminated by server")
+				return
+			}
 			logf("register failed: %v", err)
 			sleepWithJitter(cfg, rng)
 			continue
@@ -121,6 +125,10 @@ func main() {
 		}
 		sleepWithJitter(cfg, rng)
 	}
+}
+
+func isSessionTerminatedError(err error) bool {
+	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "TERMINATED")
 }
 
 func loadConfig() (*config, error) {

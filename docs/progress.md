@@ -13,6 +13,7 @@
 - Go Windows child commands now use hidden process creation, including PowerShell screenshot capture and explicit PowerShell commands.
 - Go Windows screenshot capture now uses native GDI APIs and Go PNG encoding without launching PowerShell.
 - Fixed native screenshot extraction by deselecting the GDI bitmap before calling `GetDIBits`.
+- Go agents now exit when registration returns the server's `TERMINATED` response after a session kill.
 
 ### 2026-10-08 — AI tool-round diagnostics
 
