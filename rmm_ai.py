@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
@@ -19,7 +20,19 @@ ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models?limit=100"
 MISTRAL_CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
 MISTRAL_MODELS_URL = "https://api.mistral.ai/v1/models"
 ANTHROPIC_VERSION = "2023-06-01"
-MAX_TOOL_ROUNDS = 12
+
+
+def _max_tool_rounds() -> int:
+    """Return the configured AI tool-round limit with a safe lower bound."""
+    raw = os.environ.get("RMM_AI_MAX_TOOL_ROUNDS", "32").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 32
+
+
+MAX_TOOL_ROUNDS = _max_tool_rounds()
+MAX_TOOL_CONTINUATIONS = 4
 
 SUPPORTED_PROVIDERS = ("openai", "anthropic", "mistral")
 DEFAULT_MODELS = {
@@ -232,10 +245,27 @@ async def _run_provider_loop(
 ) -> dict:
     """Run one provider's native chat and tool-calling protocol until a final reply."""
     tool_log: list[dict] = []
+    total_rounds = max_rounds * (MAX_TOOL_CONTINUATIONS + 1)
+
+    def add_continuation_prompt(convo: list[dict]) -> None:
+        """Tell the provider to continue a long task after an internal checkpoint."""
+        convo.append(
+            {
+                "role": "user",
+                "content": (
+                    "Continue the original task using the tool results already obtained. "
+                    "Avoid repeating successful calls and keep working until the task is "
+                    "complete. Do not provide a final summary while more work is needed."
+                ),
+            }
+        )
+
     if provider in ("openai", "mistral"):
         url = OPENAI_CHAT_URL if provider == "openai" else MISTRAL_CHAT_URL
         convo = _build_openai_convo(messages, system)
-        for _ in range(max_rounds):
+        for round_index in range(total_rounds):
+            if round_index and round_index % max_rounds == 0:
+                add_continuation_prompt(convo)
             response = _json_request(
                 url,
                 _provider_headers(provider, api_key),
@@ -287,7 +317,9 @@ async def _run_provider_loop(
                 convo.append(tool_result)
     else:
         convo = _build_anthropic_messages(messages)
-        for _ in range(max_rounds):
+        for round_index in range(total_rounds):
+            if round_index and round_index % max_rounds == 0:
+                add_continuation_prompt(convo)
             response = _json_request(
                 ANTHROPIC_MESSAGES_URL,
                 _provider_headers(provider, api_key),
@@ -332,6 +364,7 @@ async def _run_provider_loop(
         "ok": False,
         "error": "max_tool_rounds_exceeded",
         "tool_calls_made": tool_log,
+        "max_tool_rounds": total_rounds,
         "via": via,
         "provider": provider,
     }
