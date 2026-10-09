@@ -12,7 +12,7 @@
 - Added `docs/go-agent.md`; the Go HTTP-poll SOCKS path is portable and the PowerShell WebSocket path remains an optional optimization.
 - Go Windows child commands now use hidden process creation, including PowerShell screenshot capture and explicit PowerShell commands.
 - Go Windows screenshot capture now uses native GDI APIs and Go PNG encoding without launching PowerShell.
-- Fixed native screenshot extraction by deselecting the GDI bitmap before calling `GetDIBits`.
+- Replaced fragile `GetDIBits` screenshot readback with a native GDI DIB section whose pixel buffer is read directly.
 - Go agents now exit when registration returns the server's `TERMINATED` response after a session kill.
 
 ### 2026-10-08 — AI tool-round diagnostics
