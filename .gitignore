@@ -12,3 +12,12 @@ __pycache__/
 # Local OS / IDE files
 .DS_Store
 .idea/
+
+# Plugin build artifacts (agent-plugins/*)
+agent-plugins/**/*.dll
+agent-plugins/**/*.dylib
+agent-plugins/**/*.so
+agent-plugins/**/*.h
+
+# Local Go agent builds
+agent-go/minimal-rmm-agent*
