@@ -5,11 +5,19 @@
 
 ## Current Status
 
+### 2026-10-09 — WebUI command completion audit
+
+- Confirmed shell history navigation and Tab/Shift+Tab completion are wired to the selected session, persisted in `sessionStorage`, and rebuilt from session events after reload.
+- Documented the existing `pe` operator meta command in `docs/web-shell-completion.md`; the WebUI already includes it in completion candidates and routes it to `POST /api/v1/sessions/{id}/pe`.
+- Fixed Tab cycling so repeated Tab and Shift+Tab preserve the original candidate set instead of filtering to the first completed value; history candidates now retain most-recent-first ordering.
+- Added `scripts/check_web_contracts.py`, included in `make check`, to enforce completion/documentation alignment and WebUI configuration export/import wiring.
+
 ### 2026-10-09 — Server-side plugin builds and organized deploy UI
 
 - Added `POST /api/v1/plugins/build`: the server cross-compiles checked-in `agent-plugins/<name>/` sources (windows/amd64 CGO c-shared, `-trimpath -ldflags "-s -w"`) straight into the plugin directory. Free output DLL name, mingw-w64 compiler requirement (`RMM_PLUGIN_CC`), 600-second default timeout (`RMM_PLUGIN_BUILD_TIMEOUT`), Go caches under `RMM_logs/`. Only repository sources are ever built — no browser-supplied code.
 - `GET /api/v1/plugins` now also reports buildable `targets` and `toolchain` availability; the parity chain gained `build_plugin` (REST → CLI `pe build` → MCP) and the web shell gained the `pe` meta verb.
 - Deploy UI reorganized by language/OS: PowerShell panel unchanged (generate/download, not compiled), Go agent panel now compile-only (source viewer removed), new **Deploy plugins (Go)** panel (target selection, output naming, toolchain status, plugin inventory with sizes/SHA-256).
+- Exfil mode selection now supports `auto`, `plugin`, and `binary`. Go agents advertise `pe` and `rclone-plugin` capabilities; `auto` prefers an available `rclone-exfil*.dll`, while PowerShell agents and explicit `binary` mode retain the executable fallback.
 - Tests: `POST /plugins/build` validation, toolchain-missing mapping, unsafe output names; `GET /plugins` response shape. Docs updated (`go-agent-plugins.md`, `agent-plugin-exfil.md`, `mcp-parity.md`, `go-agent.md`, README, this log).
 
 ### 2026-10-09 — In-process rclone exfil plugin

@@ -151,9 +151,10 @@ def queue_exfil(
     remote_path: str,
     profile: str | None = None,
     dest: str | None = None,
+    mode: str = "auto",
 ) -> str:
     """Queue remote file or folder exfil via rclone from the agent (link in events when supported)."""
-    return tool_queue_exfil(_client(), session_ref, remote_path, profile, dest)
+    return tool_queue_exfil(_client(), session_ref, remote_path, profile, dest, mode)
 
 
 @mcp.tool()

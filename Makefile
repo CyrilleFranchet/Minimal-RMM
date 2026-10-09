@@ -7,7 +7,7 @@ PY_MODULES := server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tools.py rmm_r
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-parity check
+.PHONY: help install-lint lint-md lint-yaml lint test check-parity check-web-contracts check
 
 help:
 	@printf "Available targets:\n"
@@ -17,6 +17,7 @@ help:
 	@printf "  make lint          Run lint-md and lint-yaml\n"
 	@printf "  make test          Python syntax check (py_compile)\n"
 	@printf "  make check-parity  MCP / API client / web shell alignment\n"
+	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
 
 install-lint:
@@ -41,9 +42,12 @@ lint-yaml:
 lint: lint-md lint-yaml
 
 test:
-	@$(PYTHON) -m py_compile $(PY_MODULES) scripts/check_operator_parity.py
+	@$(PYTHON) -m py_compile $(PY_MODULES) scripts/check_operator_parity.py scripts/check_web_contracts.py
 
 check-parity:
 	@$(PYTHON) scripts/check_operator_parity.py
 
-check: test check-parity lint
+check-web-contracts:
+	@$(PYTHON) scripts/check_web_contracts.py
+
+check: test check-parity check-web-contracts lint

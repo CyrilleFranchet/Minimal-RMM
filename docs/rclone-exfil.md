@@ -1,6 +1,16 @@
 # rclone exfil
 
-Operators queue exfil of a **remote file or folder on the agent** to cloud storage (MEGA, S3, …) using **rclone on the agent host**. The server holds the rclone binary and named remote profiles; credentials are sent to the agent only inside the ephemeral `__EXFIL__` job payload.
+Operators queue exfil of a **remote file or folder on the agent** to cloud storage (MEGA, S3, …). Go agents can use the in-process `rclone-exfil` plugin; PowerShell agents and explicit binary mode use the existing rclone executable path. The server holds the profiles and deployment artifacts; credentials are sent to the agent only inside an ephemeral job payload.
+
+## Execution modes
+
+The REST, CLI, MCP, and Web AI surfaces accept `mode`:
+
+- `auto` (default): use the in-process plugin for a Go agent when a matching plugin DLL is available; otherwise use the binary path.
+- `plugin`: require the in-process plugin. The request fails if the agent does not advertise Go PE plugin support or the server has no `rclone-exfil*.dll` artifact.
+- `binary`: force the existing rclone executable path.
+
+The plugin artifact remains on the RMM server in the operator plugin directory. The binary fallback remains supported for PowerShell agents and compatibility testing.
 
 ## Flow
 
@@ -143,7 +153,7 @@ GET /api/v1/rclone/config
 
 - `rmm_cli.py exfil <remote_path> [--profile NAME] [--dest PATH]`
 - `rmm_cli.py rclone-config [--json]`
-- MCP: `queue_exfil`, `get_rclone_config`
+- MCP: `queue_exfil` (`mode`: `auto`, `plugin`, or `binary`), `get_rclone_config`
 - Web UI: profile dropdown populated from `GET /rclone/config` (type + folder label)
 
 ## Result event

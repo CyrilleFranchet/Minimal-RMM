@@ -22,9 +22,33 @@ Exports omit secrets by default. The explicit **Include API keys and other secre
 
 When importing a file without secrets, existing secrets in the current tab are left unchanged and missing secrets remain missing. Imported provider validation state is marked stale, so each provider must be validated again before it becomes available.
 
+## Current allowlists
+
+`web/config.js` currently exports these session settings:
+
+- `rmm_sidebar_width`
+- `rmm_agent_gen_prefs`
+- `rmm_go_agent_prefs`
+- `rmm_ai_panel_open`
+- `rmm_ai_provider_state`
+- `rmm_ai_provider`
+- `rmm_exegol_mcp_enabled`
+- `rmm_exegol_mcp_url`
+- `rmm_ai_skills_enabled`
+
+When secrets are explicitly included, it exports these direct secret keys:
+
+- `rmm_api_token`
+- `rmm_openai_api_key`
+- `rmm_anthropic_api_key`
+- `rmm_mistral_api_key`
+- `rmm_exegol_mcp_token`
+
+The PowerShell and Go Beacon secrets are nested in their respective agent preference objects and are exported under `rmm_agent_gen_prefs.beaconSecret` and `rmm_go_agent_prefs.beaconSecret`.
+
 ## Maintainer guide
 
-The allowlists and schema version live in `web/config.js`. When adding a new setting:
+The allowlists and schema version live in `web/config.js`. `make check-web-contracts` verifies that the allowlisted keys are documented and that the export/import controls remain wired into the page. When adding a new setting:
 
 1. Decide whether it is a normal setting or a secret.
 2. Add its storage key to `SESSION_KEYS` or `SECRET_KEYS`.
