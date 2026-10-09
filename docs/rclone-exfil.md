@@ -78,7 +78,7 @@ Example file (`tools/rclone/profiles.example.json`):
 
 Copy credentials into your lab config; do not commit real secrets.
 
-For MEGA (and other remotes using `pass`), put the **plain** password in JSON. The agent runs `rclone obscure` before upload. If you pre-obscured with `rclone obscure`, set `"pass_obscured": true` on that profile.
+For MEGA (and other remotes using `pass`), put the **plain** password in JSON. Both the PowerShell and Go agents run `rclone obscure` before upload. If you pre-obscured with `rclone obscure`, set `"pass_obscured": true` on that profile.
 
 **Large files:** default cap is 100 MB. For multi-GB exfil (e.g. a 6.6 GB ISO), raise the limit and restart the server:
 
