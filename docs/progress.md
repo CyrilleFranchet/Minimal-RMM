@@ -12,6 +12,14 @@
 - Deploy UI reorganized by language/OS: PowerShell panel unchanged (generate/download, not compiled), Go agent panel now compile-only (source viewer removed), new **Deploy plugins (Go)** panel (target selection, output naming, toolchain status, plugin inventory with sizes/SHA-256).
 - Tests: `POST /plugins/build` validation, toolchain-missing mapping, unsafe output names; `GET /plugins` response shape. Docs updated (`go-agent-plugins.md`, `agent-plugin-exfil.md`, `mcp-parity.md`, `go-agent.md`, README, this log).
 
+### 2026-10-09 — In-process rclone exfil plugin
+
+- Added `agent-plugins/rclone-exfil/`: a Go c-shared plugin that embeds the rclone engine (v1.75.x) as a library and exposes exfil through the Go agent plugin ABI (`Run(input, output, cap)`). No rclone child process, command line, config file, or on-disk binary; memory-only config; in-process `obscure.Reveal` for credentials (see `docs/agent-plugin-exfil.md`).
+- Own JSON option schema (`source`/`account`/`backend`/`target`/`settings`/`make_link`/`link_hours`/`max_minutes`) — deliberately not rclone CLI flag names. Output mirrors the existing cloud upload result shape and flows back as a normal output event.
+- Validated: `go test` covers file copy, directory sync, obscured settings, and validation against the `local` backend; the c-shared export ABI was smoke-tested end to end through `ctypes` (return 0, JSON result, file transferred).
+- Windows amd64 DLL build requires mingw-w64 (`build.sh`); Go allocates its TLS at runtime via `TlsAlloc`, so a Go DLL does not depend on OS-loader TLS processing — still flagged for live PE-loader validation on a lab VM.
+- No new operator surface: the exfil command is `pe load <dll> Run <json>` through the existing plugin parity chain.
+
 ### 2026-10-09 — Go agent diskless PE plugin system
 
 - Added the `__PE_LOAD__` command to the Go agent: plugins are fetched from the beacon-authenticated `/tools/plugins/<name>` endpoint on demand and manually mapped into the agent process with an NT section object. Nothing is written to the target disk; code pages are never RWX and the image is reported as `MEM_IMAGE` (see `docs/go-agent-plugins.md`).

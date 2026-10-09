@@ -211,3 +211,9 @@ New Python functions:
   (`agent-plugins/`); no browser- or API-supplied code is ever built.
 - Only Windows amd64 Go agents map plugins; every other agent build returns
   an explicit unsupported error.
+
+## Shipped plugins
+
+| Plugin | Role | Doc |
+|--------|------|-----|
+| `rclone-exfil` | In-process rclone engine for diskless exfil | `docs/agent-plugin-exfil.md` |
