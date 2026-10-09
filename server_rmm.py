@@ -65,7 +65,9 @@ HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 PORT = 8080
 LOG_DIR = "RMM_logs"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-CLIENT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "client_rmm.ps1")
+CLIENT_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "agent-powershell", "client_rmm.ps1"
+)
 GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-go")
 GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
 AGENT_PLUGINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-plugins")

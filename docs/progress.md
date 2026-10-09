@@ -11,6 +11,7 @@
 - Documented the existing `pe` operator meta command in `docs/web-shell-completion.md`; the WebUI already includes it in completion candidates and routes it to `POST /api/v1/sessions/{id}/pe`.
 - Fixed Tab cycling so repeated Tab and Shift+Tab preserve the original candidate set instead of filtering to the first completed value; history candidates now retain most-recent-first ordering.
 - Added `scripts/check_web_contracts.py`, included in `make check`, to enforce completion/documentation alignment and WebUI configuration export/import wiring.
+- Moved the PowerShell agent source to `agent-powershell/client_rmm.ps1` to match the Go agent layout; the server API and generated download filename remain `client_rmm.ps1` for compatibility.
 
 ### 2026-10-09 — Server-side plugin builds and organized deploy UI
 
@@ -75,7 +76,7 @@
 | Path | Lines (approx.) | Role |
 |------|-----------------|------|
 | `server_rmm.py` | ~2k | Threaded HTTP server: beacon + `/api/v1` operator API + embedded `--cli` |
-| `client_rmm.ps1` | ~2k | Windows PowerShell beacon, command execution, SOCKS worker |
+| `agent-powershell/client_rmm.ps1` | ~2k | Windows PowerShell beacon, command execution, SOCKS worker |
 | `rmm_cli.py` | ~1.3k | Operator CLI (`RmmApiClient`), interactive REPL + subcommands |
 | `rmm_socks.py` | ~570 | SOCKS5 listener on server; task queue; TCP relay via agent |
 | `rmm_ws.py` | ~210 | Stdlib WebSocket (operator event hub + agent SOCKS channel) |
@@ -108,7 +109,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
                                    │
          ┌─────────────────────────┼─────────────────────────┐
          ▼                         ▼                         ▼
-  client_rmm.ps1            rmm_cli.py / web/          mcp_rmm_server.py
+  agent-powershell/         rmm_cli.py / web/          mcp_rmm_server.py
   (main loop +              (REST)                     (FastMCP tools)
    SOCKS runspace)
 ```

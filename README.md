@@ -13,7 +13,7 @@ A minimal **remote monitoring and management (RMM)** proof of concept: a Python 
 | `server_rmm.py` | Threaded HTTP server: **beacon API** (`/register`, `/cmd`, `/result`) + **operator API** (`/api/v1/…`) in parallel |
 | `rmm_cli.py` | Operator CLI — calls the REST API (scriptable, `--json`) |
 | `web/` | Operator **web UI** — served at `/ui/` (same origin as API) |
-| `client_rmm.ps1` | Windows beacon — unchanged protocol |
+| `agent-powershell/client_rmm.ps1` | Windows PowerShell beacon — unchanged protocol |
 
 1. **Server** listens on HTTP. By default it runs **headless** (API only). Use `--cli` for the legacy embedded console.
 2. **Beacon client** registers, polls `/cmd`, posts results to `/result`.
@@ -359,7 +359,7 @@ All settings live in a **configuration block at the top of the script** (`$u`, `
 | `server_rmm.py` | HTTP server + operator API |
 | `rmm_cli.py` | Operator CLI |
 | `web/` | Static web operator UI (`index.html`, `app.js`, `agent-gen.js`, `style.css`) |
-| `client_rmm.ps1` | Windows beacon |
+| `agent-powershell/client_rmm.ps1` | Windows beacon source |
 | `requirements.txt` | `prompt_toolkit` (required for `rmm_cli.py` interactive) |
 | `RMM_logs/` | Runtime logs and artifacts |
 | `~/.rmm_cli_state.json` | CLI selected session |
