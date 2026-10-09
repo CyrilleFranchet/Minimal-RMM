@@ -51,7 +51,7 @@ protocol. On Windows it supports `cmd.exe`, `PS:`,
 The Go agent now implements the HTTP-poll SOCKS worker, chunked file transfer,
 HTTP proxy support, Windows screenshot capture, Windows keylogging, Windows
 startup/Run-key persistence, rclone exfiltration when `rclone` is already
-available on the target, and diskless PE plugin loading (`__PE_LOAD__`, see
+available on the target, and isolated PE plugin loading (`__PE_LOAD__`, see
 `docs/go-agent-plugins.md`). If rclone is absent, the agent bootstraps it
 through the authenticated `/tools/rclone.exe` endpoint. Linux returns
 explicit unsupported results for the Windows desktop features. HTTP polling

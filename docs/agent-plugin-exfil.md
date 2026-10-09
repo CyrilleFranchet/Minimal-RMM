@@ -1,8 +1,8 @@
-# Exfil plugin: in-process rclone
+# Exfil plugin: isolated rclone child
 
 `agent-plugins/rclone-exfil/` is a Go plugin (c-shared DLL) that embeds the
-rclone engine as a **library** and exposes it through the Go agent's diskless
-PE plugin ABI. It provides the agent's rclone exfil feature set — copy a file
+rclone engine as a **library** and exposes it through the Go agent's PE plugin
+ABI in a child process. It provides the agent's rclone exfil feature set — copy a file
 or directory to a cloud remote, share link for files, obscured or plain
 credentials — with none of the usual rclone process artifacts. Authorized lab
 use only.
@@ -11,18 +11,18 @@ use only.
 
 - The agent binary stays dependency-free and small; the rclone engine only
   exists on a target when the operator loads the plugin.
-- The plugin is served through the existing diskless plugin path: the agent
-  fetches `/tools/plugins/<name>` over the authenticated beacon channel and
-  manually maps it into memory (see `docs/go-agent-plugins.md`). No file is
-  written to the target disk.
+- The plugin is served through the existing authenticated plugin path. The
+  agent fetches `/tools/plugins/<name>`, sends the DLL bytes to the child over
+  stdin, and maps them there without creating a file.
 
 ## Detection surface
 
-Eliminated by running rclone in-process instead of spawning `rclone.exe`:
+Eliminated by running the rclone engine in-process inside the plugin child
+instead of spawning `rclone.exe`:
 
 | Artifact | Binary flow (previous) | Plugin flow |
 |----------|------------------------|------------|
-| Child process `rclone.exe` (process creation events) | yes | **no child process at all** |
+| Child process `rclone.exe` (process creation events) | yes | **no rclone.exe; one agent plugin child** |
 | Command line with rclone flags (`--config`, `copyto`, `--mega-pass`, …) | yes | **no command line; the plugin's JSON keys are its own** |
 | `rclone.exe` file in `%TEMP%` | yes (bootstrap) | **nothing on disk** |
 | rclone config file | `--config NUL` workaround | **memory-only config** (`config.SetConfigPath("")`) |
@@ -30,7 +30,7 @@ Eliminated by running rclone in-process instead of spawning `rclone.exe`:
 
 Still inherent to exfiltration and not addressed by the plugin: outbound TLS
 to the cloud provider, provider-side logs, and rclone-related strings inside
-the mapped image pages (visible to memory scanners). The DLL file name is
+the child process memory (visible to memory scanners). The DLL file name is
 whatever the operator names it in the server plugin directory.
 
 The rclone backend option keys inside `settings` (for example `pass` for

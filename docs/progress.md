@@ -29,6 +29,25 @@
 - Windows amd64 DLL build requires mingw-w64 (`build.sh`); Go allocates its TLS at runtime via `TlsAlloc`, so a Go DLL does not depend on OS-loader TLS processing — still flagged for live PE-loader validation on a lab VM.
 - No new operator surface: the exfil command is `pe load <dll> Run <json>` through the existing plugin parity chain.
 
+### 2026-10-09 — Isolated Go plugin execution
+
+- Replaced in-process manual PE mapping with a Windows child-process runner.
+- The authenticated parent fetches a plugin DLL, starts
+  `agent.exe --plugin-child`, passes the DLL bytes and export input over stdin,
+  and captures stdout. No plugin file is created.
+- Plugin crashes and large plugin dependencies are isolated from the beacon
+  process; the child has a ten-minute timeout.
+- Added `make go-test` for Windows amd64 and Linux amd64 cross-build checks.
+
+### 2026-10-09 — Screenshot plugin
+
+- Moved Go Windows screenshot capture into `agent-plugins/screenshot/`.
+- `__SCREENSHOT__` now loads `screenshot.dll` through the authenticated,
+  isolated child-process plugin path and preserves the existing PNG result
+  handling and operator surfaces.
+- The plugin uses native GDI capture and returns the existing base64 PNG
+  payload; no screenshot DLL is written to the target disk.
+
 ### 2026-10-09 — Go agent diskless PE plugin system
 
 - Added the `__PE_LOAD__` command to the Go agent: plugins are fetched from the beacon-authenticated `/tools/plugins/<name>` endpoint on demand and manually mapped into the agent process with an NT section object. Nothing is written to the target disk; code pages are never RWX and the image is reported as `MEM_IMAGE` (see `docs/go-agent-plugins.md`).

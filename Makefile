@@ -7,7 +7,7 @@ PY_MODULES := server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tools.py rmm_r
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-parity check-web-contracts check
+.PHONY: help install-lint lint-md lint-yaml lint test check-parity check-web-contracts check go-test
 
 help:
 	@printf "Available targets:\n"
@@ -19,6 +19,11 @@ help:
 	@printf "  make check-parity  MCP / API client / web shell alignment\n"
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
+	@printf "  make go-test       Cross-build the Go agent for supported targets\n"
+
+go-test:
+	@cd agent-go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
+	@cd agent-go && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...
 
 install-lint:
 	$(PYTHON) -m pip install pymarkdownlnt yamllint

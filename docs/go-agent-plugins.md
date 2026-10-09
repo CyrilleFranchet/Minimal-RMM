@@ -1,10 +1,10 @@
 # Go agent PE plugin system
 
-The Go agent supports **diskless PE plugins**: DLL images that the operator
-places on the server, the agent fetches over the authenticated beacon channel
-**only when needed**, and the agent maps into its own process memory. Nothing
-is ever written to the target disk. This keeps the agent binary small and
-moves functionality into operator-controlled plugins. Authorized lab use only.
+The Go agent supports PE plugins as separate child processes. The agent fetches
+the DLL over the authenticated beacon channel, sends the bytes to a short-lived
+child over stdin, and maps it there. The plugin is never mapped in the beacon
+process, which keeps the agent small and isolates plugin crashes. Nothing is
+written to the target disk. Authorized lab use only.
 
 ## Overview
 
@@ -17,37 +17,28 @@ POST /api/v1/sessions/{id}/pe     (queue __PE_LOAD__ <plugin> <export> [input])
         │
         ▼
 agent-go: execute() dispatch  ──  __PE_LOAD__ handler
-        ├── fetch  GET /tools/plugins/<name>  (in memory, beacon auth)
-        ├── map    NtCreateSection + dual view (RW staging, RX execution)
-        └── call   DllMain attach, then the requested export
+        ├── fetch  GET /tools/plugins/<name>  (beacon auth)
+        ├── child  agent.exe --plugin-child <export>
+        └── frame  DLL bytes + input over stdin
 ```
 
-Plugin images stay cached in the agent's memory after the first load;
-repeated `__PE_LOAD__` commands for the same plugin reuse the mapped image
-and skip the download.
+Plugin images are downloaded and started per command. The parent does not cache
+the DLL or load it into its own address space.
 
 ## How loading works
 
-The loader lives in `agent-go/pe_loader_windows.go` and uses only the Go
-standard library (`debug/pe`, `syscall`, `unsafe`):
+The runner lives in `agent-go/pe_loader_windows.go` and uses only the Go
+standard library:
 
 1. **Fetch** — the plugin bytes are downloaded through the same authenticated
    `request()` helper as every other beacon call (`X-RMM-Beacon-Token` header)
-   and stay in a `[]byte`.
-2. **Map** — one NT section object (`NtCreateSection`, `SEC_COMMIT`) is mapped
-   twice via `NtMapViewOfSection`: a `PAGE_READWRITE` staging view for writing
-   and a `PAGE_EXECUTE_READ` execution view.
-3. **Relocate** — `IMAGE_REL_BASED_DIR64` entries are patched when the image
-   lands away from its preferred base.
-4. **Imports** — the import address table is resolved with `LoadLibraryA` and
-   `GetProcAddress`. Only DLLs available on the target resolve.
-5. **Protect** — per-section `VirtualProtect` inside the RX view keeps data
-   writable but not executable and code executable but not writable.
-6. **Attach** — the staging view is unmapped, then `DllMain(base,
-   DLL_PROCESS_ATTACH, 0)` runs through `syscall.SyscallN`.
-7. **Call** — the requested export is found by walking the mapped image's
-   export address table (the Windows loader does not know about manually
-   mapped modules, so `GetProcAddress` cannot be used) and invoked.
+   request helper as every other beacon call.
+2. **Run** — the parent starts itself with `--plugin-child` and frames the DLL
+   bytes and input over stdin.
+3. **Map** — the child uses the existing NT section mapper and invokes the
+   requested export.
+4. **Cleanup** — the parent waits up to ten minutes and returns stdout as the
+   plugin result. No plugin file is created.
 
 Discretion properties:
 
@@ -106,13 +97,13 @@ clang -shared -o hello.dll plugin.c
 | Limitation | Detail |
 |------------|--------|
 | Architecture | Only PE32+ amd64 images; other plugins fail with an explicit error |
-| Relocations | Plugins must keep base relocations (`/DYNAMICBASE`, the default) |
-| Loader registration | The image is not in the PEB module list: `GetModuleHandle(self)`, resource lookup by module handle, and implicit TLS (`__declspec(thread)`) do not work |
-| Exceptions | C++ exceptions (`throw`) are not safe: unwind data is not registered for manually mapped images (`RtlAddFunctionTable` is a possible future addition) |
-| CFG | Do not build plugins with Control Flow Guard expectations |
-| Dependencies | Import system DLLs only; `LoadLibraryA` resolves them normally |
-| Isolation | A crashing plugin terminates the agent process; in-process loading shares the beacon loop |
-| Blocking | `DllMain` and the export run synchronously inside the `/cmd` poll cycle |
+| Relocations | Standard Windows DLL relocations are handled by `LoadLibrary` |
+| Loader registration | The child uses the normal Windows loader, so standard module lookup and DLL initialization are available |
+| Exceptions | Plugin language runtimes may use their normal Windows loader requirements inside the child |
+| CFG | Follow the normal compiler and loader requirements for the plugin toolchain |
+| Dependencies | DLL dependencies must be available to the child through the normal Windows loader search rules |
+| Isolation | A crashing plugin terminates only the child runner; the beacon process remains alive |
+| Blocking | The parent waits for the child for up to ten minutes; the beacon poll cycle is still occupied during that command |
 | .NET | Managed assemblies are out of scope; build AOT native binaries instead |
 
 Test plugins in the lab before queuing them against live sessions.
@@ -170,17 +161,8 @@ New Go functions in `agent-go/`:
 
 | Function | File | Role |
 |----------|------|------|
-| `loadPluginPE` | `pe_loader_windows.go` | Fetch (on miss), map, cache, and call a plugin export |
-| `mapPluginPE` | `pe_loader_windows.go` | Manually map a PE32+ amd64 image and return the RX base |
-| `mapPluginViews` | `pe_loader_windows.go` | Create the NT section object and its RW/RX views |
-| `copyPluginImage` | `pe_loader_windows.go` | Copy headers and sections into the staging view |
-| `applyPluginRelocations` | `pe_loader_windows.go` | Patch DIR64 base relocations for the mapped base |
-| `resolvePluginImports` | `pe_loader_windows.go` | Patch the import address table |
-| `applyPluginProtections` | `pe_loader_windows.go` | Tighten per-section page protections |
-| `callPluginExport` | `pe_loader_windows.go` | Resolve and invoke the plugin export with the ABI |
-| `findPluginExport` | `pe_loader_windows.go` | Walk the mapped image export table |
-| `mappedPluginString` | `pe_loader_windows.go` | Read a NUL-terminated string from mapped memory |
-| `pluginRawAt` / `pluginRawOffset` / `pluginRawString` | `pe_loader_windows.go` | Raw-file RVA helpers for directories, imports, and relocations |
+| `loadPluginPE` | `pe_loader_windows.go` | Fetch, stage, run, and clean up a plugin child |
+| `runPluginChild` | `pe_loader_windows.go` | Load a DLL with the Windows loader and invoke its export |
 | `loadPluginCommand` | `main.go` | Parse the `__PE_LOAD__` operator command |
 | `loadPluginPE` (stub) | `platform_other.go` | Non-Windows builds return an explicit error |
 
@@ -204,6 +186,10 @@ New Python functions:
 ## Security notes
 
 - Plugin downloads require the beacon secret and a registered session ID.
+- Plugin bytes are passed through an anonymous pipe and are never written to
+  the target disk.
+- The child receives only the framed plugin bytes, export name, and JSON input;
+  it does not receive beacon credentials.
 - The plugin directory is operator-controlled server storage; treat its
   contents like any other operator tooling.
 - The API validates plugin names, export names, and input before queueing.
@@ -216,7 +202,8 @@ New Python functions:
 
 | Plugin | Role | Doc |
 |--------|------|-----|
-| `rclone-exfil` | In-process rclone engine for diskless exfil | `docs/agent-plugin-exfil.md` |
+| `rclone-exfil` | rclone engine isolated in a plugin child process | `docs/agent-plugin-exfil.md` |
+| `screenshot` | Native GDI screenshot capture in a plugin child process | `docs/screenshot-plugin.md` |
 
 The server selects this plugin for `mode=auto` exfil requests only when the
 session identifies itself as a Go agent with PE plugin support. Use
