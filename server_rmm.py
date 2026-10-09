@@ -54,7 +54,6 @@ from rmm_rclone import (
     get_profile,
     resolve_dest_path,
     RCLONE_REMOTE_NAME,
-    list_plugin_files,
     rclone_binary_available,
     rclone_public_config,
 )
