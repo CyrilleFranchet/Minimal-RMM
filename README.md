@@ -120,6 +120,9 @@ MCP tools mirror `rmm_cli.py` operator actions:
 | `rclone-config` | `get_rclone_config` |
 | `upload` | `queue_upload` |
 | `screenshot` | `queue_screenshot` |
+| `pe list` | `list_plugins` |
+| `pe load <plugin>` / `pe <plugin>` | `queue_pe_load` |
+| `pe build <plugin>` | `build_plugin` |
 | `socks list` | `list_socks` |
 | `socks` / `socks stop` | `start_socks` / `stop_socks` |
 | — | `list_history`, `get_history_session`, `get_history_events`, `delete_history`, `clear_history` |
@@ -185,6 +188,9 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/exfil` | `{"remote_path":"…","profile":"mega-lab","dest":"…"}` | Queue `__EXFIL__` (agent rclone upload of file or folder; link in events for files) |
 | `GET` | `/rclone/config` | — | rclone binary + profile status |
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
+| `GET` | `/plugins` | — | List Go agent PE plugins on the server (name, size, SHA-256, build targets, toolchain status) |
+| `POST` | `/plugins/build` | `{"name":"rclone-exfil","output":"mytool.dll"}` | Cross-compile a checked-in Go plugin into the server plugin directory |
+| `POST` | `/sessions/{id}/pe` | `{"plugin":"hello.dll","export":"Run","input":"…"}` | Queue `__PE_LOAD__` (diskless plugin mapping on the Go agent) |
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080}` or `{"stop":true}` | Start/stop SOCKS5 on `127.0.0.1` via agent |
 | `GET` | `/ai/skills` | — | List server AI skills (metadata only) |

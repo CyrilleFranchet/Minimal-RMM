@@ -5,6 +5,21 @@
 
 ## Current Status
 
+### 2026-10-09 — Server-side plugin builds and organized deploy UI
+
+- Added `POST /api/v1/plugins/build`: the server cross-compiles checked-in `agent-plugins/<name>/` sources (windows/amd64 CGO c-shared, `-trimpath -ldflags "-s -w"`) straight into the plugin directory. Free output DLL name, mingw-w64 compiler requirement (`RMM_PLUGIN_CC`), 600-second default timeout (`RMM_PLUGIN_BUILD_TIMEOUT`), Go caches under `RMM_logs/`. Only repository sources are ever built — no browser-supplied code.
+- `GET /api/v1/plugins` now also reports buildable `targets` and `toolchain` availability; the parity chain gained `build_plugin` (REST → CLI `pe build` → MCP) and the web shell gained the `pe` meta verb.
+- Deploy UI reorganized by language/OS: PowerShell panel unchanged (generate/download, not compiled), Go agent panel now compile-only (source viewer removed), new **Deploy plugins (Go)** panel (target selection, output naming, toolchain status, plugin inventory with sizes/SHA-256).
+- Tests: `POST /plugins/build` validation, toolchain-missing mapping, unsafe output names; `GET /plugins` response shape. Docs updated (`go-agent-plugins.md`, `agent-plugin-exfil.md`, `mcp-parity.md`, `go-agent.md`, README, this log).
+
+### 2026-10-09 — Go agent diskless PE plugin system
+
+- Added the `__PE_LOAD__` command to the Go agent: plugins are fetched from the beacon-authenticated `/tools/plugins/<name>` endpoint on demand and manually mapped into the agent process with an NT section object. Nothing is written to the target disk; code pages are never RWX and the image is reported as `MEM_IMAGE` (see `docs/go-agent-plugins.md`).
+- `agent-go/pe_loader_windows.go` implements parsing (`debug/pe`), dual-view mapping (`NtCreateSection` + `NtMapViewOfSection` RW/RX), base relocations, IAT resolution, per-section protections, `DllMain` attach, export resolution, and in-memory plugin caching. Windows amd64 only; other builds return explicit unsupported errors.
+- Server: `GET /api/v1/plugins` (name/size/SHA-256 listing), `POST /api/v1/sessions/{id}/pe` (queues `__PE_LOAD__` with plugin/export/input validation), and plugin serving from `RMM_logs/plugins/` (`RMM_PLUGINS_DIR` override) with beacon auth plus a registered-session check.
+- Full operator parity: `rmm_cli.py pe list` / `pe load`, interactive `pe` verb, MCP tools `list_plugins` and `queue_pe_load`; parity script and README/`docs/mcp-parity.md` tables updated.
+- Tests: `tests/test_server_rmm_plugins.py` covers the API routes, plugin listing, and serving; `tests/test_go_agent.py` manifest now includes the new source file.
+
 ### 2026-10-08 — Go agent build workflow
 
 - Added the dependency-free `agent-go/` protocol-compatible beacon with command execution, runtime config acknowledgement, chunked file transfer, HTTP proxy support, HTTP-poll SOCKS, rclone bootstrap/exfiltration, and Windows-specific screenshot/keylog/persistence adapters.

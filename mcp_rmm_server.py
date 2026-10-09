@@ -56,6 +56,9 @@ from rmm_tools import (
     tool_queue_keylog,
     tool_queue_persistent,
     tool_queue_screenshot,
+    tool_list_plugins,
+    tool_queue_pe_load,
+    tool_build_plugin,
     tool_queue_upload,
     tool_remove_persistence,
     tool_start_socks,
@@ -163,6 +166,24 @@ def get_rclone_config() -> str:
 def queue_screenshot(session_ref: str) -> str:
     """Queue screenshot on agent."""
     return tool_queue_screenshot(_client(), session_ref)
+
+
+@mcp.tool()
+def list_plugins() -> str:
+    """List PE plugins available on the RMM server for the Go agent."""
+    return tool_list_plugins(_client())
+
+
+@mcp.tool()
+def queue_pe_load(session_ref: str, plugin: str, export: str = "Run", input: str = "") -> str:
+    """Queue a diskless PE plugin load on the Go agent; poll get_events for the output."""
+    return tool_queue_pe_load(_client(), session_ref, plugin, export=export, plugin_input=input)
+
+
+@mcp.tool()
+def build_plugin(plugin_name: str, output: str = "") -> str:
+    """Cross-compile a checked-in Go PE plugin on the RMM server into its plugin directory."""
+    return tool_build_plugin(_client(), plugin_name, output)
 
 
 @mcp.tool()

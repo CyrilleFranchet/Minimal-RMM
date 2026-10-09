@@ -410,6 +410,31 @@ body.sidebar-resizing iframe {
   line-height: 1.4;
 }
 
+.agent-plugins-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 10rem;
+  overflow-y: auto;
+  font-size: 0.78rem;
+}
+
+.agent-plugins-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.agent-plugins-meta {
+  color: var(--muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
 .agent-gen-inner input[type="url"],
 .agent-gen-inner input[type="text"],
 .agent-gen-inner input[type="password"],

@@ -32,6 +32,7 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `download` | `queue_download` | `POST …/download` |
 | `exfil` | `queue_exfil` | `POST …/exfil` |
 | `screenshot` | `queue_screenshot` | `POST …/screenshot` |
+| `pe` | `queue_pe_load` | `POST …/pe` |
 
 `upload` is intentionally **not** a shell meta command (browser file picker only). See intentional exceptions.
 
@@ -51,6 +52,8 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `POST …/exfil` | `queue_exfil` | Same as shell `exfil` / CLI |
 | `GET /rclone/config` | `get_rclone_config` | |
 | `POST …/screenshot` | `queue_screenshot` | Same as shell `screenshot` |
+| `GET /plugins`, `POST …/pe` | `list_plugins`, `queue_pe_load` | Diskless PE plugin mapping on the Go agent (`__PE_LOAD__`) |
+| `POST /plugins/build` | `build_plugin` | Server-side cross-compile of checked-in Go plugins; only repository sources are built |
 | `POST …/upload` | `queue_upload` | Local path on MCP host |
 | `GET /socks`, `POST …/socks` | `list_socks`, `start_socks`, `stop_socks` | |
 | `GET …/downloads` | `list_session_downloads` | Completed agent→server files |

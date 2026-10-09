@@ -63,6 +63,13 @@ WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 CLIENT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "client_rmm.ps1")
 GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-go")
 GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
+AGENT_PLUGINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-plugins")
+# Operator PE plugins served to the Go agent; override with RMM_PLUGINS_DIR.
+PLUGINS_DIR = os.environ.get("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
+PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+# Cross compiler used for server-side Go PE plugin builds (CGO c-shared).
+PLUGIN_CC = os.environ.get("RMM_PLUGIN_CC", "x86_64-w64-mingw32-gcc").strip()
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
 WEB_MIME = {
@@ -156,6 +163,146 @@ def safe_join_under(base_dir: str, *parts: str) -> str:
     if path != base and not path.startswith(base + os.sep):
         raise ValueError("path escapes storage directory")
     return path
+
+
+def plugin_directory() -> str:
+    """Return the operator PE plugin directory, creating it on first use."""
+    os.makedirs(PLUGINS_DIR, exist_ok=True)
+    return PLUGINS_DIR
+
+
+def list_plugin_files() -> list[dict]:
+    """List PE plugins available to the Go agent with size and SHA-256."""
+    try:
+        names = sorted(os.listdir(plugin_directory()))
+    except OSError:
+        return []
+    plugins = []
+    for name in names:
+        if not PLUGIN_NAME_RE.match(name):
+            continue
+        path = os.path.join(plugin_directory(), name)
+        if not os.path.isfile(path):
+            continue
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    digest.update(chunk)
+                    size += len(chunk)
+        except OSError:
+            continue
+        plugins.append({"name": name, "size": size, "sha256": digest.hexdigest()})
+    return plugins
+
+
+# Cross-compile timeout for server-side Go PE plugin builds. Override with
+# RMM_PLUGIN_BUILD_TIMEOUT. The first rclone-based build far exceeds the
+# agent's 120-second budget because every backend is compiled once.
+PLUGIN_BUILD_TIMEOUT = _env_int("RMM_PLUGIN_BUILD_TIMEOUT", 600)
+
+
+def plugin_build_targets() -> list[str]:
+    """Return checked-in Go plugin directories available for server builds."""
+    if not os.path.isdir(AGENT_PLUGINS_DIR):
+        return []
+    targets = []
+    for name in sorted(os.listdir(AGENT_PLUGINS_DIR)):
+        if os.path.isfile(os.path.join(AGENT_PLUGINS_DIR, name, "go.mod")):
+            targets.append(name)
+    return targets
+
+
+def plugin_toolchain() -> dict:
+    """Report whether the server can cross-compile Go PE plugins."""
+    return {
+        "go": bool(shutil.which("go")),
+        "cross_compiler": bool(shutil.which(PLUGIN_CC)),
+        "cross_compiler_name": PLUGIN_CC,
+    }
+
+
+_plugin_build_lock = threading.Lock()
+
+
+def build_plugin(name: str, output: str | None = None) -> dict:
+    """Cross-compile one checked-in Go plugin into the server plugin directory.
+
+    Only repository source under agent-plugins/ is ever built; the output
+    artifact is served to Go agents immediately from the plugin directory.
+    """
+    name = str(name or "").strip()
+    if name not in plugin_build_targets():
+        raise ValueError("unknown plugin target")
+    go_bin = shutil.which("go")
+    if not go_bin:
+        raise RuntimeError("Go toolchain is not installed on the RMM server")
+    if not shutil.which(PLUGIN_CC):
+        raise RuntimeError(f"plugin cross compiler {PLUGIN_CC} is not installed on the RMM server")
+    output = str(output or "").strip() or f"{name}.dll"
+    if not output.lower().endswith(".dll") or not PLUGIN_NAME_RE.match(output):
+        raise ValueError("invalid plugin output name")
+    source_dir = safe_join_under(AGENT_PLUGINS_DIR, name)
+    go_cache = safe_join_under(LOG_DIR, "go-cache")
+    go_mod_cache = safe_join_under(LOG_DIR, "go-mod-cache")
+    os.makedirs(go_cache, exist_ok=True)
+    os.makedirs(go_mod_cache, exist_ok=True)
+    artifact_dir = plugin_directory()
+    artifact_path = safe_join_under(artifact_dir, output)
+    # Leading dot keeps the staging file out of the plugin listing on failure.
+    staging_path = safe_join_under(artifact_dir, f".build-{output}.tmp")
+    env = os.environ.copy()
+    env.update(
+        {
+            "CGO_ENABLED": "1",
+            "GOOS": "windows",
+            "GOARCH": "amd64",
+            "GO111MODULE": "on",
+            "CC": PLUGIN_CC,
+            "GOCACHE": go_cache,
+            "GOMODCACHE": go_mod_cache,
+        }
+    )
+    with _plugin_build_lock:
+        try:
+            completed = subprocess.run(
+                [
+                    go_bin,
+                    "build",
+                    "-trimpath",
+                    "-ldflags",
+                    "-s -w",
+                    "-buildmode=c-shared",
+                    "-o",
+                    staging_path,
+                    ".",
+                ],
+                cwd=source_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=PLUGIN_BUILD_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"plugin build timed out after {PLUGIN_BUILD_TIMEOUT} seconds") from exc
+        if completed.returncode != 0:
+            if os.path.exists(staging_path):
+                try:
+                    os.remove(staging_path)
+                except OSError:
+                    pass
+            detail = (completed.stderr or completed.stdout or "build failed").strip()
+            raise RuntimeError(detail[-4000:])
+        os.replace(staging_path, artifact_path)
+    digest = hashlib.sha256()
+    size = 0
+    with open(artifact_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return {"ok": True, "name": name, "output": output, "size": size, "sha256": digest.hexdigest()}
 
 
 GO_AGENT_TARGETS = {
@@ -2165,6 +2312,29 @@ class RMMHandler(BaseHTTPRequestHandler):
         self._safe_write(data)
         return True
 
+    def _serve_plugin_tool(self, name: str) -> bool:
+        """Beacon-authenticated download of one PE plugin for the Go agent."""
+        if not PLUGIN_NAME_RE.match(name):
+            self._respond(400, "Invalid plugin name")
+            return True
+        try:
+            path = safe_join_under(plugin_directory(), name)
+        except ValueError:
+            self._respond(400, "Invalid plugin name")
+            return True
+        if not os.path.isfile(path):
+            self._respond(404, "Unknown plugin")
+            return True
+        with open(path, "rb") as handle:
+            data = handle.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self._safe_write(data)
+        return True
+
     def _serve_web(self, path: str) -> bool:
         """Serve static files from WEB_DIR under /ui/ (and redirect / → /ui/)."""
         if path in ("", "/"):
@@ -2340,6 +2510,17 @@ class RMMHandler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "artifacts":
             return self._serve_artifact(parts[1], parts[2], qs)
 
+        if parts == ["plugins"]:
+            self._json(
+                200,
+                {
+                    "plugins": list_plugin_files(),
+                    "targets": plugin_build_targets(),
+                    "toolchain": plugin_toolchain(),
+                },
+            )
+            return True
+
         self._json(404, {"error": "not_found"})
         return True
 
@@ -2481,6 +2662,52 @@ class RMMHandler(BaseHTTPRequestHandler):
             srv.set_command(session.id, "__SCREENSHOT__", "oneshot")
             srv.record_operator_action(session, "__SCREENSHOT__", "screenshot")
             self._json(200, {"ok": True, "session_id": session.id, "queued": "__SCREENSHOT__"})
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "pe":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            plugin = str(body.get("plugin", "")).strip()
+            if not plugin:
+                self._json(400, {"error": "missing_plugin"})
+                return True
+            if not PLUGIN_NAME_RE.match(plugin):
+                self._json(400, {"error": "invalid_plugin"})
+                return True
+            export = str(body.get("export", "")).strip() or "Run"
+            if not PLUGIN_EXPORT_RE.match(export):
+                self._json(400, {"error": "invalid_export"})
+                return True
+            plugin_input = str(body.get("input", ""))
+            if "\r" in plugin_input or "\n" in plugin_input:
+                self._json(400, {"error": "invalid_input"})
+                return True
+            plugin_input = plugin_input[:4096]
+            command = f"__PE_LOAD__ {plugin} {export}"
+            if plugin_input:
+                command += " " + plugin_input
+            srv.set_command(session.id, command, "oneshot")
+            srv.record_operator_action(session, command, "pe")
+            self._json(200, {"ok": True, "session_id": session.id, "queued": command})
+            return True
+
+        if parts == ["plugins", "build"]:
+            name = str(body.get("name", "")).strip()
+            if not name:
+                self._json(400, {"error": "missing_name"})
+                return True
+            output = str(body.get("output", "") or "").strip()
+            try:
+                result = build_plugin(name, output or None)
+            except ValueError as exc:
+                self._json(400, {"error": "invalid_plugin_build", "detail": str(exc)})
+                return True
+            except RuntimeError as exc:
+                self._json(503, {"error": "plugin_build_failed", "detail": str(exc)})
+                return True
+            self._json(200, result)
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "socks":
@@ -2714,6 +2941,21 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._respond(404, "Unknown session")
                 return
             if self._serve_rclone_tool():
+                return
+
+        if path.startswith("/tools/plugins/"):
+            plugin_name = path[len("/tools/plugins/"):]
+            if not self._beacon_authorized(qs):
+                self._beacon_forbidden()
+                return
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+                return
+            if not self.server_instance.get_session(session_id):
+                self._respond(404, "Unknown session")
+                return
+            if self._serve_plugin_tool(plugin_name):
                 return
 
         if self._serve_web(path):

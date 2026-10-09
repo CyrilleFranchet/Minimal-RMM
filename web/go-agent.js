@@ -1,9 +1,8 @@
-/** Authenticated Go agent source viewer and fixed-target server build UI. */
+/** Authenticated Go agent server build UI for the fixed OS/architecture targets. */
 (function () {
   const PREFS_KEY = "rmm_go_agent_prefs";
   const TOKEN_KEY = "rmm_api_token";
   const $ = (selector) => document.querySelector(selector);
-  let files = [];
 
   function token() {
     return sessionStorage.getItem(TOKEN_KEY) || "";
@@ -33,7 +32,6 @@
       httpProxy: $("#agent-go-proxy")?.value.trim() || "",
       goos: $("#agent-goos")?.value || "windows",
       goarch: $("#agent-goarch")?.value || "amd64",
-      sourceFile: $("#agent-go-file")?.value || "",
     };
   }
 
@@ -61,8 +59,6 @@
       const input = $(selector);
       if (input && value !== undefined && value !== null) input.value = value;
     }
-    const file = $("#agent-go-file");
-    if (file && prefs.sourceFile !== undefined && prefs.sourceFile !== null) file.value = prefs.sourceFile;
   }
 
   function status(message, error = false) {
@@ -70,36 +66,6 @@
     if (!node) return;
     node.textContent = message;
     node.classList.toggle("error", error);
-  }
-
-  function renderSource() {
-    const select = $("#agent-go-file");
-    const output = $("#agent-go-source");
-    if (!select || !output) return;
-    const current = files[Number(select.value)] || files[0];
-    output.value = current ? `// ${current.filename}\n\n${current.content}` : "";
-  }
-
-  async function loadSource() {
-    if (!token()) {
-      status("Connect with an API token before loading the Go source.", true);
-      return;
-    }
-    status("Loading source…");
-    try {
-      const response = await fetch("/api/v1/agent/go", { headers: headers(false) });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
-      files = data.files || [];
-      const select = $("#agent-go-file");
-      select.replaceChildren(...files.map((file, index) => new Option(file.filename, String(index))));
-      const savedFile = loadPrefs().sourceFile;
-      if (savedFile && files.some((file, index) => String(index) === savedFile)) select.value = savedFile;
-      renderSource();
-      status(`${files.length} source files loaded. Choose a target and compile on the server.`);
-    } catch (error) {
-      status(error.message, true);
-    }
   }
 
   async function build() {
@@ -163,8 +129,6 @@
   function bind() {
     if (!$("#agent-go-panel")) return;
     applyPrefs();
-    $("#agent-go-file")?.addEventListener("change", renderSource);
-    $("#agent-go-refresh")?.addEventListener("click", loadSource);
     $("#agent-go-build")?.addEventListener("click", build);
     $("#agent-go-use-origin")?.addEventListener("click", () => {
       const input = $("#agent-go-server-url");
@@ -183,10 +147,9 @@
       "#agent-goos",
       "#agent-goarch",
     ].forEach((selector) => $(selector)?.addEventListener("input", savePrefs));
-    ["#agent-go-file", "#agent-goos", "#agent-goarch"].forEach((selector) =>
+    ["#agent-goos", "#agent-goarch"].forEach((selector) =>
       $(selector)?.addEventListener("change", savePrefs),
-    );
-    $("#agent-go-download")?.addEventListener("click", async (event) => {
+    );    $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
       const url = event.currentTarget.dataset.downloadUrl;
       if (!url) return;
@@ -207,9 +170,6 @@
       } catch (error) {
         status(error.message, true);
       }
-    });
-    $("#agent-go-panel")?.addEventListener("toggle", (event) => {
-      if (event.target.open && !files.length) loadSource();
     });
     window.addEventListener("rmm-config-imported", applyPrefs);
   }

