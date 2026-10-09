@@ -8,9 +8,8 @@ second registration or command path.
 
 1. Sign in to `/ui/` with the operator API token.
 2. Open the separate **Deploy agent (Go)** section.
-3. Load and inspect the checked-in source.
-4. Set the server URL and beacon secret, then choose the target and timing.
-5. Click **Compile on server** and download the returned ZIP archive.
+3. Set the server URL and beacon secret, then choose the target and timing.
+4. Click **Compile on server** and download the returned ZIP archive.
 
 The archive contains the target binary, `README.txt`, and a launcher script:
 `run-agent.ps1` for Windows or `run-agent.sh` for Linux. Set
@@ -51,12 +50,13 @@ protocol. On Windows it supports `cmd.exe`, `PS:`,
 
 The Go agent now implements the HTTP-poll SOCKS worker, chunked file transfer,
 HTTP proxy support, Windows screenshot capture, Windows keylogging, Windows
-startup/Run-key persistence, and rclone exfiltration when `rclone` is already
-available on the target. If rclone is absent, the agent bootstraps it through
-the authenticated `/tools/rclone.exe` endpoint. Linux returns explicit
-unsupported results for the Windows desktop features. HTTP polling is the
-portable SOCKS path; the PowerShell WebSocket transport remains an optional
-optimization rather than a requirement.
+startup/Run-key persistence, rclone exfiltration when `rclone` is already
+available on the target, and diskless PE plugin loading (`__PE_LOAD__`, see
+`docs/go-agent-plugins.md`). If rclone is absent, the agent bootstraps it
+through the authenticated `/tools/rclone.exe` endpoint. Linux returns
+explicit unsupported results for the Windows desktop features. HTTP polling
+is the portable SOCKS path; the PowerShell WebSocket transport remains an
+optional optimization rather than a requirement.
 
 The Windows-specific adapters are isolated in `platform_windows.go` and are
 selected by Go build tags. They should be tested on representative Windows

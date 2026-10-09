@@ -150,7 +150,7 @@
         <details class="agent-gen-panel agent-go-panel sidebar-footer" id="agent-go-panel">
           <summary>Deploy agent (Go)</summary>
           <div class="agent-gen-inner">
-            <p class="agent-gen-intro">Inspect the checked-in Go source, compile it on this RMM server, then download the binary.</p>
+            <p class="agent-gen-intro">Compile the checked-in Go agent on this RMM server for the selected OS and architecture, then download the ZIP.</p>
             <label for="agent-go-server-url">Server URL</label>
             <div class="agent-gen-row">
               <input type="url" id="agent-go-server-url" placeholder="https://your-server.example.com" autocomplete="off">
@@ -167,8 +167,6 @@
             <label for="agent-go-proxy">HTTP proxy (optional)</label>
             <input type="text" id="agent-go-proxy" placeholder="http://proxy.corp:8080" autocomplete="off">
             <div class="agent-go-options">
-              <label for="agent-go-file">Source file</label>
-              <select id="agent-go-file" aria-label="Go source file"></select>
               <label for="agent-goos">Operating system</label>
               <select id="agent-goos" aria-label="Go operating system">
                   <option value="windows">Windows</option>
@@ -180,13 +178,28 @@
                   <option value="arm64">arm64</option>
               </select>
             </div>
-            <textarea id="agent-go-source" class="agent-gen-output" readonly rows="12" spellcheck="false" aria-label="Go source"></textarea>
             <div class="agent-gen-actions">
-              <button type="button" class="secondary" id="agent-go-refresh">Load source</button>
               <button type="button" id="agent-go-build">Compile on server</button>
             </div>
             <p class="agent-gen-hint" id="agent-go-status">The server must have the Go toolchain installed.</p>
             <a id="agent-go-download" class="hidden" href="#" role="button">Download agent ZIP</a>
+          </div>
+        </details>
+
+        <details class="agent-gen-panel agent-plugins-panel sidebar-footer" id="agent-plugins-panel">
+          <summary>Deploy plugins (Go)</summary>
+          <div class="agent-gen-inner">
+            <p class="agent-gen-intro">Cross-compile the checked-in Go PE plugins on this RMM server. Built DLLs are served to Go agents from the server plugin directory — copy none, load them with the shell command <code>pe &lt;name&gt; [export] [input]</code>.</p>
+            <label for="agent-plugins-target">Plugin</label>
+            <select id="agent-plugins-target" aria-label="Plugin target"></select>
+            <label for="agent-plugins-output">Output DLL name (optional)</label>
+            <input type="text" id="agent-plugins-output" placeholder="rclone-exfil.dll" autocomplete="off">
+            <div class="agent-gen-actions">
+              <button type="button" class="secondary" id="agent-plugins-refresh">Refresh</button>
+              <button type="button" id="agent-plugins-build">Compile on server</button>
+            </div>
+            <p class="agent-gen-hint" id="agent-plugins-status">The server needs Go and a mingw-w64 cross compiler (set RMM_PLUGIN_CC to override).</p>
+            <ul id="agent-plugins-list" class="agent-plugins-list"></ul>
           </div>
         </details>
       </aside>
@@ -395,6 +408,7 @@
   <script src="app.js"></script>
   <script src="agent-gen.js"></script>
   <script src="go-agent.js"></script>
+  <script src="plugins.js"></script>
   <script src="ai.js"></script>
 </body>
 </html>

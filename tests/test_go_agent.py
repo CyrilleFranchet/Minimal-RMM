@@ -9,7 +9,13 @@ class GoAgentTests(unittest.TestCase):
         names = {item["filename"] for item in files}
         self.assertEqual(
             names,
-            {"go.mod", "main.go", "platform_other.go", "platform_windows.go"},
+            {
+                "go.mod",
+                "main.go",
+                "pe_loader_windows.go",
+                "platform_other.go",
+                "platform_windows.go",
+            },
         )
         self.assertTrue(all(".." not in item["filename"] for item in files))
 

@@ -31,6 +31,9 @@ REQUIRED_MCP_TOOLS = frozenset({
     "queue_exfil",
     "get_rclone_config",
     "queue_screenshot",
+    "list_plugins",
+    "queue_pe_load",
+    "build_plugin",
     "queue_upload",
     "list_socks",
     "start_socks",
@@ -63,6 +66,9 @@ TOOL_CLIENT_METHOD: dict[str, str] = {
     "queue_exfil": "queue_exfil",
     "get_rclone_config": "get_rclone_config",
     "queue_screenshot": "queue_screenshot",
+    "list_plugins": "list_plugins",
+    "queue_pe_load": "queue_pe_load",
+    "build_plugin": "build_plugin",
     "queue_upload": "upload_file",
     "list_socks": "list_socks",
     "start_socks": "start_socks",
@@ -86,6 +92,7 @@ WEB_SHELL_META: dict[str, str] = {
     "download": "queue_download",
     "exfil": "queue_exfil",
     "screenshot": "queue_screenshot",
+    "pe": "queue_pe_load",
 }
 
 
