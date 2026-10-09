@@ -12,6 +12,11 @@ The REST, CLI, MCP, and Web AI surfaces accept `mode`:
 
 The plugin artifact remains on the RMM server in the operator plugin directory. The binary fallback remains supported for PowerShell agents and compatibility testing.
 
+Every successful queue response includes both `mode` (the requested mode)
+and `execution_mode` (the resolved method, `plugin` or `binary`). The server
+also records the resolved method in the session operator event. The CLI prints
+it, and the WebUI shows it under the queued exfil command.
+
 ## Flow
 
 1. Operator queues via REST, CLI, MCP, or web UI (`exfil`).

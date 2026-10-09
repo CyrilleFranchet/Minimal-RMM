@@ -1346,7 +1346,10 @@ function historyOperatorMeta(body) {
   const action = operatorActionKind(body);
   if (body.startsWith("queued:")) return "(queued)";
   if (action === "download") return "(download queued)";
-  if (action === "exfil") return "(exfil queued)";
+  if (action === "exfil") {
+    const mode = body.match(/\[mode=(plugin|binary)\]/i)?.[1];
+    return mode ? `(exfil queued via ${mode})` : "(exfil queued)";
+  }
   if (action === "upload") return "(upload queued)";
   if (action === "screenshot") return "(screenshot queued)";
   if (action === "pe") return "(plugin load queued)";
@@ -2213,7 +2216,7 @@ async function postExfilQueue(remote, profile, mode = "auto") {
     return false;
   }
   pollSessionEvents().catch(() => {});
-  return true;
+  return data;
 }
 
 async function postScreenshotQueue() {
@@ -2288,7 +2291,13 @@ async function dispatchShellMetaCommand(cmd) {
         `exfil ${remote} --profile ${profile}`,
       ],
     });
-    await postExfilQueue(remote, profile);
+    const data = await postExfilQueue(remote, profile);
+    if (data && data.execution_mode) {
+      const block = state.pendingCommandBlocks.find(
+        (item) => !item.filled && item.kind === "exfil" && item.remotePath === remote
+      );
+      if (block?.metaLine) block.metaLine.textContent = `(exfil queued via ${data.execution_mode})`;
+    }
     return true;
   }
 
@@ -2507,7 +2516,13 @@ async function queueExfil() {
     matchKeys: [`exfil ${remote} ${profile}`, `exfil ${remote}`, `exfil ${remote} --profile ${profile}`],
   });
   $("#exfil-remote").value = "";
-  await postExfilQueue(remote, profile, mode);
+  const data = await postExfilQueue(remote, profile, mode);
+  if (data && data.execution_mode) {
+    const block = state.pendingCommandBlocks.find(
+      (item) => !item.filled && item.kind === "exfil" && item.remotePath === remote
+    );
+    if (block?.metaLine) block.metaLine.textContent = `(exfil queued via ${data.execution_mode})`;
+  }
 }
 
 async function queueScreenshot() {
