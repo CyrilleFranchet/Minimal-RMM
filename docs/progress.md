@@ -14,6 +14,7 @@
 - Go Windows screenshot capture now uses native GDI APIs and Go PNG encoding without launching PowerShell.
 - Replaced fragile `GetDIBits` screenshot readback with a native GDI DIB section whose pixel buffer is read directly.
 - Go agents now exit when registration returns the server's `TERMINATED` response after a session kill.
+- Go rclone exfil now obscures plain `*_PASS` profile values like the PowerShell agent before upload.
 
 ### 2026-10-08 — AI tool-round diagnostics
 

