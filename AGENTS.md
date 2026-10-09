@@ -14,7 +14,7 @@ server_rmm.py  ── REST /api/v1/*  +  beacon /register /cmd /result /socks
         ├── rmm_ws.py      stdlib WebSocket (operator events + agent SOCKS channel)
         └── RMM_logs/      downloads, screenshots, keylogs
 
-client_rmm.ps1 (Windows agent)
+agent-powershell/client_rmm.ps1 (Windows agent)
         ├── Main loop: register → poll /cmd → execute → POST /result
         └── SOCKS worker (optional): WebSocket or HTTP poll on /socks when socks_active
 ```
@@ -22,7 +22,7 @@ client_rmm.ps1 (Windows agent)
 | File | Role |
 |------|------|
 | `server_rmm.py` | Threaded HTTP server, sessions, command queue, results, operator API |
-| `client_rmm.ps1` | Windows beacon + SOCKS relay worker (separate runspace) |
+| `agent-powershell/client_rmm.ps1` | Windows beacon + SOCKS relay worker (separate runspace) |
 | `rmm_cli.py` | Operator CLI (`RmmApiClient` → `/api/v1`) |
 | `rmm_socks.py` | SOCKS5 bridge: listener on server, TCP relayed through agent |
 | `rmm_tools.py` | Shared tool implementations for MCP and web AI |
@@ -50,7 +50,7 @@ client_rmm.ps1 (Windows agent)
 4. Operator features should be exposed consistently: **REST API → `rmm_cli.py` → MCP** (`rmm_tools.py` + `mcp_rmm_server.py`). See `docs/mcp-parity.md`.
 5. After operator-surface changes, run **`make check-parity`** and update `scripts/check_operator_parity.py` if tools or shell meta commands changed.
 6. Do not break the beacon path (`/cmd` latency, register sync, beacon secret).
-7. SOCKS changes touch `rmm_socks.py`, `server_rmm.py`, and `client_rmm.ps1` together; test through tunnels if relevant.
+7. SOCKS changes touch `rmm_socks.py`, `server_rmm.py`, and `agent-powershell/client_rmm.ps1` together; test through tunnels if relevant.
 
 ## Project Instructions
 

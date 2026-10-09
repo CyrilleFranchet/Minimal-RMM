@@ -1,6 +1,6 @@
 # Web UI — PowerShell agent generator
 
-Operators can build a **ready-to-run `client_rmm.ps1`** from the web console without hand-editing the script.
+Operators can build a **ready-to-run `client_rmm.ps1`** from the web console without hand-editing the script. The repository source is stored at `agent-powershell/client_rmm.ps1`; the API continues to return the downloaded artifact as `client_rmm.ps1`.
 
 ## Location
 
