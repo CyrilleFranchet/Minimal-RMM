@@ -263,6 +263,12 @@
                 <select id="exfil-profile" title="rclone profile on server" disabled>
                   <option value="">Loading…</option>
                 </select>
+                <label class="exfil-profile-label" for="exfil-mode">Mode</label>
+                <select id="exfil-mode" title="Exfil execution mode">
+                  <option value="auto" selected>Auto</option>
+                  <option value="plugin">Go plugin</option>
+                  <option value="binary">rclone binary</option>
+                </select>
                 <button type="button" id="btn-exfil" class="secondary" disabled>Exfil (rclone)</button>
               </div>
               <p class="tools-hint" id="exfil-status-hint">rclone: checking server configuration…</p>

@@ -197,12 +197,14 @@ class RmmApiClient:
         remote_path: str,
         profile: str | None = None,
         dest: str | None = None,
+        mode: str = "auto",
     ):
         body: dict = {"remote_path": remote_path}
         if profile:
             body["profile"] = profile
         if dest:
             body["dest"] = dest
+        body["mode"] = mode
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/exfil",
@@ -626,6 +628,7 @@ def cmd_exfil(client: RmmApiClient, state: dict, args):
         args.remote_path,
         profile=getattr(args, "profile", None),
         dest=getattr(args, "dest", None),
+        mode=getattr(args, "mode", "auto"),
     )
     if code != 200:
         die(f"exfil queue failed ({code}): {data}")
@@ -1523,6 +1526,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_exfil.add_argument("remote_path")
     sp_exfil.add_argument("--profile", "-p", default=None, help="Named rclone profile on server")
     sp_exfil.add_argument("--dest", default=None, help="Cloud destination path override")
+    sp_exfil.add_argument("--mode", choices=("auto", "plugin", "binary"), default="auto", help="Execution mode")
     sp_exfil.add_argument("--session", "-s", default=None)
     sp_exfil.set_defaults(func=cmd_exfil)
 

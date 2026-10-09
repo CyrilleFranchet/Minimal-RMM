@@ -7,7 +7,7 @@ Keyboard ergonomics for the web console shell input (`#shell-input`).
 | Key | Action |
 |-----|--------|
 | **↑ / ↓** | Navigate command history for the selected session (newest at ↑ from empty line) |
-| **Tab** | Complete from history + dispatch prefixes; longest shared prefix first, then cycle matches |
+| **Tab** | Complete from history + dispatch prefixes; longest shared prefix first, then cycle matches repeatedly |
 | **Shift+Tab** | Cycle completion matches backward |
 | **Enter** | Queue for next beacon |
 | **Ctrl+Enter** | Run and wait (`/exec`) |
@@ -24,7 +24,7 @@ A hint line under the input shows the top completion match or match count.
 
 - Session command history (most recent first in candidate list)
 - Static agent dispatch prefixes: `cmd:`, `PS:`, `powershell:`, `pwsh:`
-- Operator meta commands: `exfil`, `download`, `screenshot`
+- Operator meta commands: `exfil`, `download`, `screenshot`, `pe`
 
 Agent-side path completion is out of scope (tech plan §4 v2).
 
@@ -37,6 +37,7 @@ These commands are handled in the browser (same as `rmm_cli.py`) and POST to the
 | `download <remote_path>` | `POST …/download` | Spaces in path: quote or omit extra tokens are joined |
 | `exfil <remote_path> [profile]` | `POST …/exfil` | File or folder; profile defaults to Exfil panel / server default |
 | `screenshot` | `POST …/screenshot` | No arguments |
+| `pe <plugin> [export] [input]` | `POST …/pe` | Loads a checked-in Go PE plugin through the selected agent; export defaults to `Run` |
 
 Example: `exfil C:\Users\…\file.iso mega-lab` queues rclone upload; it is not passed to `cmd.exe`.
 

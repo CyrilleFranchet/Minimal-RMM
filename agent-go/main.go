@@ -169,6 +169,8 @@ func register(client *http.Client, cfg *config) error {
 	v.Set("s", strconv.Itoa(cfg.SleepSeconds))
 	v.Set("j", strconv.Itoa(cfg.JitterPercent))
 	v.Set("sync", "1")
+	v.Set("agent", "go")
+	v.Set("caps", "pe,rclone-plugin")
 	_, err := request(client, cfg, http.MethodGet, "/register", v, nil)
 	return err
 }

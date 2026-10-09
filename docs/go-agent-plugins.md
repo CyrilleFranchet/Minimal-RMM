@@ -217,3 +217,8 @@ New Python functions:
 | Plugin | Role | Doc |
 |--------|------|-----|
 | `rclone-exfil` | In-process rclone engine for diskless exfil | `docs/agent-plugin-exfil.md` |
+
+The server selects this plugin for `mode=auto` exfil requests only when the
+session identifies itself as a Go agent with PE plugin support. Use
+`mode=plugin` to require it or `mode=binary` to force the legacy executable
+path.

