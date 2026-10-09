@@ -1610,11 +1610,12 @@ class RMMServer:
                 return f"{API_PREFIX}/artifacts/{kind}/{os.path.basename(real)}"
         return None
 
-    def record_operator_action(self, session, command: str, action: str = "queued"):
+    def record_operator_action(self, session, command: str, action: str = "queued", detail: str | None = None):
         """Log operator commands for shared history (web UI, rmm_cli, API)."""
         if not session or not command:
             return
-        self._record_event(session, "operator", f"{action}: {command}", command=command)
+        suffix = f" [{detail}]" if detail else ""
+        self._record_event(session, "operator", f"{action}: {command}{suffix}", command=command)
 
     def _broadcast_ephemeral_event(self, session_id: str, ev: dict) -> None:
         """WebSocket-only event (not stored in transcript or session history)."""
@@ -2697,7 +2698,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             except (ValueError, RcloneConfigError) as e:
                 self._json(503, {"error": str(e), "rclone": rclone_public_config()})
                 return True
-            srv.record_operator_action(session, cmd.split("\n", 1)[0], "exfil")
+            execution_mode = "plugin" if cmd.startswith("__PE_LOAD__ ") else "binary"
+            srv.record_operator_action(session, f"exfil {remote_path}", "exfil", f"mode={execution_mode}")
             self._json(
                 200,
                 {
@@ -2706,6 +2708,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "queued": cmd.split("\n", 1)[0],
                     "profile": profile,
                     "mode": mode,
+                    "execution_mode": execution_mode,
                     "max_bytes": get_rclone_max_bytes(),
                     "rclone": rclone_public_config(),
                 },

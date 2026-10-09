@@ -633,8 +633,11 @@ def cmd_exfil(client: RmmApiClient, state: dict, args):
     if code != 200:
         die(f"exfil queue failed ({code}): {data}")
     profile = data.get("profile") if isinstance(data, dict) else None
+    execution_mode = data.get("execution_mode") if isinstance(data, dict) else None
     if profile:
         print(f"Profile: {profile}")
+    if execution_mode:
+        print(f"Execution mode: {execution_mode}")
     print("Exfil queued — poll events for cloud link or destination path")
 
 
