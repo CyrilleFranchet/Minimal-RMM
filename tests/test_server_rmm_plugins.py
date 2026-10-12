@@ -3,6 +3,7 @@
 import hashlib
 import os
 import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -197,10 +198,17 @@ class PluginServeTests(unittest.TestCase):
                 handle.write(payload)
             with patch("server_rmm.PLUGINS_DIR", tmp):
                 handler = FakeServeHandler()
-                served = RMMHandler._serve_plugin_tool(handler, "tool.dll")
+                handler.server_instance = SimpleNamespace(log=Mock())
+                served = RMMHandler._serve_plugin_tool(
+                    handler,
+                    "tool.dll",
+                    "12345678-1234-1234-1234-123456789012",
+                )
         self.assertTrue(served)
         self.assertEqual(handler.status, 200)
         self.assertEqual(handler.body, payload)
+        handler.server_instance.log.assert_called_once()
+        self.assertIn("Plugin downloaded: session=12345678 plugin=tool.dll bytes=9", handler.server_instance.log.call_args.args[0])
 
     def test_rejects_unsafe_and_missing_names(self):
         handler = FakeServeHandler()
@@ -213,6 +221,56 @@ class PluginServeTests(unittest.TestCase):
                 served = RMMHandler._serve_plugin_tool(handler, "missing.dll")
         self.assertTrue(served)
         self.assertEqual(handler.responses[-1][0], 404)
+
+
+class PluginLifecycleTests(unittest.TestCase):
+    """Verify server-side plugin lifecycle correlation and redaction."""
+
+    def _server(self):
+        server = object.__new__(server_rmm.RMMServer)
+        server.sessions = {}
+        server.killed_sessions = set()
+        server.session_lock = threading.Lock()
+        server.tty_lock = threading.Lock()
+        server._cli_use_ptk = True
+        server.tty_print = Mock()
+        server.log = Mock()
+        server._record_event = Mock()
+        return server
+
+    def test_metadata_rejects_non_plugin_commands(self):
+        self.assertEqual(
+            server_rmm.plugin_command_metadata("__PE_LOAD__ tool.dll Run secret"),
+            {"plugin": "tool.dll", "export": "Run"},
+        )
+        self.assertEqual(
+            server_rmm.plugin_command_metadata("__SCREENSHOT__"),
+            {"plugin": "screenshot.dll", "export": "Run"},
+        )
+        self.assertIsNone(server_rmm.plugin_command_metadata("whoami"))
+
+    def test_lifecycle_log_omits_plugin_input(self):
+        server = self._server()
+        session = server_rmm.Session(
+            "12345678-1234-1234-1234-123456789012", "host", "user"
+        )
+        server.sessions[session.id] = session
+        secret_input = "operator-secret"
+
+        server.set_command(
+            session.id,
+            f"__PE_LOAD__ tool.dll Run {secret_input}",
+            "oneshot",
+        )
+        command, response_type = server.get_command(session.id)
+        self.assertEqual((command, response_type), ("__PE_LOAD__ tool.dll Run operator-secret", "execute"))
+        server.handle_result(session.id, "plugin result", "output")
+
+        messages = [call.args[0] for call in server.log.call_args_list]
+        self.assertTrue(any(message.startswith("Plugin queued:") for message in messages))
+        self.assertTrue(any(message.startswith("Plugin dispatched:") for message in messages))
+        self.assertTrue(any(message.startswith("Plugin completed:") for message in messages))
+        self.assertNotIn(secret_input, "\n".join(messages))
 
 
 if __name__ == "__main__":

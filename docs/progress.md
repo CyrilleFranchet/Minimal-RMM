@@ -55,10 +55,13 @@
 - The screenshot plugin now returns an explicit overflow error instead of
   writing truncated output that the server cannot decode.
 
-### 2026-10-12 — Plugin lifecycle logging
+### 2026-10-12 — Server-side plugin lifecycle logging
 
-- The parent Go agent now logs plugin fetch, child launch, completion, failure,
-  timeout, byte count, and elapsed time through `RMM_LOG_FILE`.
+- Removed plugin lifecycle logging from the Go agent's target-side log.
+- The RMM server now logs plugin queueing, authenticated delivery, dispatch, and
+  completion or failure with safe metadata, including output size and duration.
+- Added an explicit repository rule that plugin lifecycle and operator audit
+  logs belong on the server.
 
 ### 2026-10-09 — Go agent diskless PE plugin system
 

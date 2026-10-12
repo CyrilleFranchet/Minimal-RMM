@@ -67,3 +67,5 @@ open a console window. Child command windows are also hidden, including
 PowerShell commands. Screenshot capture uses native Windows GDI APIs and does
 not invoke PowerShell. Startup and connection errors are written to
 `%TEMP%\minimal-rmm-agent.log`; set `RMM_LOG_FILE` to choose another path.
+Plugin lifecycle events are logged by the RMM server and are never written to
+this target-side log.

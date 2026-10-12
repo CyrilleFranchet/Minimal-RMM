@@ -35,6 +35,13 @@ agent-powershell/client_rmm.ps1 (Windows agent)
 - `RMM_BEACON_SECRET` — beacon endpoints (`/register`, `/cmd`, `/result`, `/socks`)
 - Server binds `127.0.0.1` by default; `--insecure` is lab-only
 
+## Logging boundary
+
+- Never add client-side logging for plugin fetch, mapping, execution, results, or operator command lifecycle.
+- Plugin lifecycle and operator audit events must be logged on the RMM server.
+- Keep plugin input, plugin output, URLs, credentials, and operator command details out of the target agent log.
+- Existing agent diagnostics unrelated to plugin lifecycle may remain in the agent log.
+
 ## SOCKS (important)
 
 - Start: operator `socks [port]` → server sets `socks_active` on `/cmd` → agent opens WS to `GET /socks`

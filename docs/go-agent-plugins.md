@@ -124,11 +124,12 @@ Full parity (REST → CLI → MCP), see `docs/mcp-parity.md`:
 Plugin output is returned through the normal `output` result event; poll
 `GET /api/v1/sessions/{id}/events` or the `events` CLI command.
 
-The parent agent logs plugin lifecycle events to its normal log file, including
-fetch start and completion, child start, child failure or timeout, output size,
-and elapsed time. The default path is `%TEMP%\minimal-rmm-agent.log`; set
-`RMM_LOG_FILE` to choose another path. Plugin input and output contents are not
-written to the lifecycle log.
+Plugin lifecycle logging is server-side. The RMM server logs queueing,
+authenticated plugin delivery, command dispatch, and completion or failure with
+the session, DLL, export, result type, output size, and elapsed time. Session
+history retains the operator queue and result events. The Go agent does not log
+plugin fetch, mapping, execution, or result details to its target-side log, and
+plugin input and output contents are not written to the lifecycle log.
 
 ## Server-side builds
 
@@ -178,6 +179,7 @@ New Python functions:
 |----------|------|------|
 | `plugin_directory` | `server_rmm.py` | Return (and create) the plugin directory |
 | `list_plugin_files` | `server_rmm.py` | List plugins with size and SHA-256 |
+| `plugin_command_metadata` | `server_rmm.py` | Extract safe plugin identity for server-side lifecycle logs |
 | `plugin_build_targets` | `server_rmm.py` | List checked-in Go plugin directories |
 | `plugin_toolchain` | `server_rmm.py` | Report Go and mingw cross-compiler availability |
 | `build_plugin` | `server_rmm.py` | Cross-compile a checked-in plugin into the plugin directory |
