@@ -31,7 +31,7 @@ def _quoted_array(text: str, name: str) -> set[str]:
 
 
 def _shell_meta_docs(text: str) -> set[str]:
-    return set(re.findall(r"^\| `([a-z][a-z0-9_-]*)[^`]*` \|", text, re.MULTILINE))
+    return set(re.findall(r"^\| `([a-z?][a-z0-9_?-]*)[^`]*` \|", text, re.MULTILINE))
 
 
 def _check_shell_contract(errors: list[str]) -> None:

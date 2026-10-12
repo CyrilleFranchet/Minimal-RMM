@@ -9,8 +9,8 @@ const SHELL_HISTORY_MAX = 100;
 /** Agent dispatch prefixes (client_rmm.ps1 Invoke-RmmUserCommand). */
 const SHELL_DISPATCH_PREFIXES = ["cmd:", "PS:", "powershell:", "pwsh:"];
 
-/** Operator meta commands (rmm_cli.py) — routed to REST, not the agent shell. */
-const SHELL_META_COMMANDS = ["exfil", "download", "screenshot", "pe"];
+/** Operator meta commands — handled locally instead of being sent to the agent shell. */
+const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe"];
 
 const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
@@ -2259,6 +2259,27 @@ async function dispatchShellMetaCommand(cmd) {
   if (!words.length) return false;
   const verb = words[0].toLowerCase();
   const rest = words.slice(1);
+
+  if (verb === "help" || verb === "?") {
+    if (rest.length) {
+      appendShellError("Usage: help");
+      return true;
+    }
+    appendShellEcho(cmd);
+    appendShellLine(
+      "output",
+      `<pre>Local commands:
+  help | ?                         Show this help
+  download &lt;remote_path&gt;           Queue a download from the agent
+  exfil &lt;remote_path&gt; [profile]    Queue rclone exfiltration
+  screenshot                       Queue a screenshot
+  pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
+
+Any other command is sent to the selected agent. Prefix commands with
+cmd:, PS:, powershell:, or pwsh: to choose the agent-side interpreter.</pre>`
+    );
+    return true;
+  }
 
   if (verb === "download") {
     if (!rest.length) {

@@ -95,6 +95,9 @@ WEB_SHELL_META: dict[str, str] = {
     "pe": "queue_pe_load",
 }
 
+# Browser-local shell commands do not have an operator API or MCP equivalent.
+WEB_SHELL_LOCAL = frozenset({"help", "?"})
+
 
 def _load_module(name: str, path: Path):
     if str(ROOT) not in sys.path:
@@ -176,7 +179,7 @@ def main() -> int:
             errors.append(f"web shell meta {verb!r} maps to unknown MCP tool {mcp_tool!r}")
 
     for verb in shell_meta:
-        if verb not in WEB_SHELL_META:
+        if verb not in WEB_SHELL_META and verb not in WEB_SHELL_LOCAL:
             errors.append(
                 f"web shell meta command {verb!r} has no entry in WEB_SHELL_META "
                 f"(update scripts/check_operator_parity.py and docs/mcp-parity.md)"

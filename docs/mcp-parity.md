@@ -29,6 +29,7 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 
 | Shell verb | MCP tool | REST |
 |------------|----------|------|
+| `help` / `?` | — | Browser-local command reference |
 | `download` | `queue_download` | `POST …/download` |
 | `exfil` | `queue_exfil` | `POST …/exfil` |
 | `screenshot` | `queue_screenshot` | `POST …/screenshot` |
