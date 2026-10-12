@@ -13,6 +13,7 @@ A minimal **remote monitoring and management (RMM)** proof of concept: a Python 
 | `server_rmm.py` | Threaded HTTP server: **beacon API** (`/register`, `/cmd`, `/result`) + **operator API** (`/api/v1/…`) in parallel |
 | `rmm_cli.py` | Operator CLI — calls the REST API (scriptable, `--json`) |
 | `web/` | Operator **web UI** — served at `/ui/` (same origin as API) |
+| `rmm_tun.py` + `server-tun/` | Server-owned TUN lifecycle and user-space IP stack frontend |
 | `agent-powershell/client_rmm.ps1` | Windows PowerShell beacon — unchanged protocol |
 
 1. **Server** listens on HTTP. By default it runs **headless** (API only). Use `--cli` for the legacy embedded console.
@@ -125,6 +126,8 @@ MCP tools mirror `rmm_cli.py` operator actions:
 | `pe build <plugin>` | `build_plugin` |
 | `socks list` | `list_socks` |
 | `socks` / `socks stop` | `start_socks` / `stop_socks` |
+| `tun list` | `list_tun` |
+| `tun start` / `tun stop` | `start_tun` / `stop_tun` |
 | — | `list_history`, `get_history_session`, `get_history_events`, `delete_history`, `clear_history` |
 | — | `list_session_downloads` |
 | — | `get_agent_script` |
@@ -193,6 +196,8 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/pe` | `{"plugin":"hello.dll","export":"Run","input":"…"}` | Queue `__PE_LOAD__` (diskless plugin mapping on the Go agent) |
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080,"bind_host":"127.0.0.1"}` or `{"stop":true}` | Start/stop SOCKS5 via the agent pivot plugin |
+| `GET` | `/tun` | — | List active server-owned TUN relays |
+| `POST` | `/sessions/{id}/tun` | `{"device":"tun://rmm0","route":"10.10.0.0/16"}` or `{"stop":true}` | Start/stop a server TUN whose traffic exits through a Go agent |
 | `GET` | `/ai/skills` | — | List server AI skills (metadata only) |
 | `GET` | `/sessions/{id}/ai/chat` | — | Load persisted AI chat for session (live or archived) |
 | `DELETE` | `/sessions/{id}/ai/chat` | — | Clear persisted AI chat |
@@ -288,11 +293,11 @@ When an operator runs **`socks [port]`** (default **1080**), the server binds a 
 
 Use **`socks stop`** (or kill the session) to tear down.
 
-**Troubleshooting:** The listener is **SOCKS5 with no authentication** and supports TCP `CONNECT`; configure `proxychains` with `socks5`, not `socks4` or `http`. Check the server logs for plugin delivery/readiness, `SOCKS connect request`, and `SOCKS remote connect ok`. A Go agent must advertise `socks-plugin` and have `socks.dll` in the server plugin directory. Point tools at **`socks5://127.0.0.1:1080` on the machine running the server** (not the agent).
+**Troubleshooting:** The listener is **SOCKS5 with no authentication** and supports TCP `CONNECT`; the server-owned TUN frontend also uses SOCKS5 `UDP ASSOCIATE` internally. Configure `proxychains` with `socks5`, not `socks4` or `http`. Check the server logs for plugin delivery/readiness, `SOCKS connect request`, and `SOCKS remote connect ok`. A Go agent must advertise `socks-plugin` and have `socks.dll` in the server plugin directory. Point tools at **`socks5://127.0.0.1:1080` on the machine running the server** (not the agent).
 
 The server handles fast agent connect responses immediately, including responses that arrive before the waiting thread begins blocking.
 
-**SMB / “NETBIOS connection timed out”:** The relay only tunnels **TCP** (e.g. port **445**). It does not carry NetBIOS name (137/138) or session (139) traffic. Prefer **`10.x.x.x:445`** or `\\10.x.x.x\share` through SOCKS, not a hostname that your PC resolves locally. Wireshark on the target path may show `STATUS_LOGON_FAILURE` (bad credentials on the remote host) while the Windows client still reports a generic NetBIOS timeout. Check server logs for `SOCKS remote connect ok` and agent logs for outbound TCP to the target IP.
+**SMB / “NETBIOS connection timed out”:** The regular SOCKS relay carries **TCP** (e.g. port **445**). It does not carry NetBIOS name (137/138) or session (139) traffic. Prefer **`10.x.x.x:445`** or `\\10.x.x.x\share` through SOCKS, not a hostname that your PC resolves locally. Wireshark on the target path may show `STATUS_LOGON_FAILURE` (bad credentials on the remote host) while the Windows client still reports a generic NetBIOS timeout. Check server logs for `SOCKS remote connect ok` and agent logs for outbound TCP to the target IP. The server-owned TUN path adds UDP socket forwarding for tools that use normal UDP sockets.
 
 | Beacon | Purpose |
 |--------|---------|
@@ -301,6 +306,33 @@ The server handles fast agent connect responses immediately, including responses
 | `POST /socks?id=…` | HTTP fallback: agent posts `{"responses":[…]}` |
 
 Operator API: `POST /api/v1/sessions/{id}/socks` with `{"port":1080}` or `{"stop":true}`.
+
+### RMM-owned TUN relay (`/tun`)
+
+The RMM server creates and owns the TUN device. Its `rmm-tun` helper provides
+the user-space IP/TCP/UDP stack and sends traffic through the existing
+per-session SOCKS channel. The Go agent only opens ordinary target-side TCP and
+UDP sockets, so it does not create a TUN device or require administrator
+privileges. This currently requires a Windows amd64 Go agent with the built
+`socks.dll` transport.
+
+Build the two server-side components once:
+
+```bash
+python rmm_cli.py pe build socks
+make tun-build
+```
+
+Start a relay and route a target network through it:
+
+```bash
+python rmm_cli.py tun start <session> tun://rmm0 \
+  --route 10.10.0.0/16 --interface eth0
+```
+
+The server must be able to create/configure a TUN interface. Use `tun list` to
+inspect active relays and `tun stop <session>` to tear one down. Full setup,
+Exegol routing, and current TCP/UDP limits are in `docs/tun-pivot.md`.
 
 ---
 
@@ -325,6 +357,7 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `rclone-config` | Show rclone profiles + binary status |
 | `upload <local> <remote>` | Queue `__UPLOAD__` |
 | `socks [port]` / `socks stop` | SOCKS5 on 127.0.0.1 via remote agent (default port 1080) |
+| `tun list` / `tun start` / `tun stop` | Server-owned TUN relay through a Go agent |
 | `events` | Poll result events (`--since`, `--limit`) |
 
 Global flags: `--url`, `--token` (or `RMM_SERVER_URL`, `RMM_API_TOKEN`).

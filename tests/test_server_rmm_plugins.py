@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import server_rmm
+from rmm_tun import normalize_tun_config
 from server_rmm import API_PREFIX, RMMHandler
 
 
@@ -19,9 +20,9 @@ def _fake_session(session_id="12345678-1234-1234-1234-123456789012"):
 class FakeApiHandler:
     """Minimal handler surface required by the plugin API routes."""
 
-    def __init__(self, session=None):
+    def __init__(self, session=None, server_instance=None):
         self.responses = []
-        self.server_instance = SimpleNamespace(
+        self.server_instance = server_instance or SimpleNamespace(
             resolve_session=lambda ref: session,
             set_command=Mock(return_value=True),
             record_operator_action=Mock(),
@@ -189,6 +190,96 @@ class PluginBuildTests(unittest.TestCase):
         self.assertEqual(body["output"], "x.dll")
 
 
+class TunApiTests(unittest.TestCase):
+    """Verify server-owned TUN lifecycle endpoint validation and state."""
+
+    def _handler(self, session=None, **overrides):
+        server = SimpleNamespace(
+            resolve_session=lambda ref: session,
+            tun_active=Mock(return_value=False),
+            tun_plugin_error=Mock(return_value=None),
+            start_tun=Mock(return_value={"session_id": session.id if session else ""}),
+            stop_tun=Mock(return_value=True),
+            list_tun_status=Mock(return_value=[]),
+        )
+        for name, value in overrides.items():
+            setattr(server, name, value)
+        return FakeApiHandler(session=session, server_instance=server)
+
+    def test_normalize_accepts_device_route_and_stack_options(self):
+        config = normalize_tun_config(
+            {
+                "device": "tun://rmm0",
+                "route": "10.20.0.0/16",
+                "tun_address": "198.18.0.1/15",
+                "interface": "eth0",
+                "mtu": 1400,
+                "udp_timeout_seconds": 90,
+            }
+        )
+        self.assertEqual(config["device"], "tun://rmm0")
+        self.assertEqual(config["device_name"], "rmm0")
+        self.assertEqual(config["route"], "10.20.0.0/16")
+        self.assertEqual(config["mtu"], 1400)
+        self.assertEqual(config["udp_timeout_seconds"], 90)
+
+    def test_start_passes_normalized_config(self):
+        session = _fake_session()
+        handler = self._handler(session)
+        RMMHandler._handle_api_post(
+            handler,
+            f"{API_PREFIX}/sessions/abcd1234/tun",
+            {
+                "device": "tun://rmm0",
+                "route": "10.20.0.0/16",
+                "tun_address": "198.18.0.1/15",
+                "interface": "eth0",
+                "mtu": 1400,
+                "udp_timeout_seconds": 90,
+            },
+        )
+        status, body = handler.responses[-1]
+        self.assertEqual(status, 200)
+        self.assertTrue(body["tun_active"])
+        handler.server_instance.start_tun.assert_called_once_with(
+            session.id,
+            {
+                "device": "tun://rmm0",
+                "device_name": "rmm0",
+                "route": "10.20.0.0/16",
+                "tun_address": "198.18.0.1/15",
+                "interface": "eth0",
+                "mtu": 1400,
+                "udp_timeout_seconds": 90,
+            },
+        )
+
+    def test_start_rejects_unsafe_address(self):
+        handler = self._handler(_fake_session())
+        RMMHandler._handle_api_post(
+            handler,
+            f"{API_PREFIX}/sessions/abcd1234/tun",
+            {"device": "https://proxy.example:11601"},
+        )
+        status, body = handler.responses[-1]
+        self.assertEqual((status, body["error"]), (400, "invalid_tun_config"))
+
+    def test_stop_and_list(self):
+        session = _fake_session()
+        handler = self._handler(session)
+        RMMHandler._handle_api_post(
+            handler,
+            f"{API_PREFIX}/sessions/abcd1234/tun",
+            {"stop": True},
+        )
+        self.assertEqual(handler.responses[-1][0], 200)
+        handler = self._handler(
+            list_tun_status=Mock(return_value=[{"session_id": session.id}])
+        )
+        RMMHandler._handle_api_get(handler, f"{API_PREFIX}/tun", {})
+        self.assertEqual(handler.responses[-1], (200, {"count": 1, "relays": [{"session_id": session.id}]}))
+
+
 class PluginServeTests(unittest.TestCase):
     """Verify _serve_plugin_tool serving and rejection paths."""
 
@@ -338,6 +429,24 @@ class PivotPluginReadinessTests(unittest.TestCase):
                 handle.write(b"MZpayload")
             with patch("server_rmm.PLUGINS_DIR", tmp):
                 self.assertIsNone(self._server().pivot_plugin_error(session))
+
+    def test_tun_requires_socks_plugin_capability(self):
+        session = SimpleNamespace(agent_type="go", capabilities=[])
+        detail = self._server().tun_plugin_error(session)
+        self.assertIn("socks-plugin", detail)
+
+    def test_tun_accepts_built_transport_and_helper(self):
+        session = SimpleNamespace(agent_type="go", capabilities=["socks-plugin"])
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "socks.dll"), "wb") as handle:
+                handle.write(b"MZpayload")
+            helper = os.path.join(tmp, "rmm-tun")
+            with open(helper, "wb") as handle:
+                handle.write(b"helper")
+            os.chmod(helper, 0o700)
+            with patch("server_rmm.PLUGINS_DIR", tmp):
+                with patch("server_rmm.TUN_HELPER", helper):
+                    self.assertIsNone(self._server().tun_plugin_error(session))
 
     def test_powershell_uses_checked_in_plugin(self):
         session = SimpleNamespace(agent_type="powershell", capabilities=["socks-plugin"])

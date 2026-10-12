@@ -61,6 +61,7 @@ RMM_CLI_COMMANDS = [
     "screenshot",
     "pe",
     "socks",
+    "tun",
     "events",
     "exec",
     "persist",
@@ -253,6 +254,39 @@ class RmmApiClient:
 
     def list_socks(self):
         return self.request("GET", "/api/v1/socks")
+
+    def start_tun(
+        self,
+        session_id: str,
+        device: str,
+        route: str = "",
+        tun_address: str = "198.18.0.1/15",
+        interface: str = "",
+        mtu: int = 1500,
+        udp_timeout_seconds: int = 300,
+    ):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/tun",
+            {
+                "device": device,
+                "route": route,
+                "tun_address": tun_address,
+                "interface": interface,
+                "mtu": mtu,
+                "udp_timeout_seconds": udp_timeout_seconds,
+            },
+        )
+
+    def stop_tun(self, session_id: str):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/tun",
+            {"stop": True},
+        )
+
+    def list_tun(self):
+        return self.request("GET", "/api/v1/tun")
 
     def list_history(self):
         return self.request("GET", "/api/v1/history")
@@ -746,6 +780,60 @@ def cmd_socks_list(client: RmmApiClient, state: dict, args):
     print_socks_relays(data.get("relays", []), json_mode=getattr(args, "json", False))
 
 
+def print_tun_relays(relays: list, *, json_mode: bool = False) -> None:
+    if json_mode:
+        print(json.dumps({"count": len(relays), "relays": relays}, indent=2))
+        return
+    if not relays:
+        say("No active TUN relays")
+        return
+    for relay in relays:
+        host = relay.get("hostname")
+        user = relay.get("username")
+        agent = f"{user}@{host}" if host else relay.get("session_id", "?")[:8]
+        say(
+            f"{relay.get('device', '?')}  →  {agent}  "
+            f"[session {relay.get('session_id', '')[:8]}]  "
+            f"route={relay.get('route') or 'manual'}  "
+            f"helper={'up' if relay.get('helper_alive') else 'down'}"
+        )
+
+
+def cmd_tun_list(client: RmmApiClient, state: dict, args):
+    code, data = client.list_tun()
+    if code != 200:
+        die(f"tun list failed ({code}): {data}")
+    print_tun_relays(data.get("relays", []), json_mode=getattr(args, "json", False))
+
+
+def cmd_tun_start(client: RmmApiClient, state: dict, args):
+    code, data = client.start_tun(
+        args.session_ref,
+        args.device,
+        route=args.route,
+        tun_address=args.tun_address,
+        interface=args.interface,
+        mtu=args.mtu,
+        udp_timeout_seconds=args.udp_timeout_seconds,
+    )
+    if code != 200:
+        die(f"tun start failed ({code}): {data}")
+    if getattr(args, "json", False):
+        print_json(data)
+    else:
+        print(f"RMM TUN relay enabled on {args.device}")
+
+
+def cmd_tun_stop(client: RmmApiClient, state: dict, args):
+    code, data = client.stop_tun(args.session_ref)
+    if code != 200:
+        die(f"tun stop failed ({code}): {data}")
+    if getattr(args, "json", False):
+        print_json(data)
+    else:
+        print(f"RMM TUN relay stopped for {args.session_ref}")
+
+
 def _resolve_session_id(client: RmmApiClient, state: dict, prefix: str):
     """Return full session id from prefix via API list."""
     code, data = client.list_sessions()
@@ -808,6 +896,7 @@ Files:    download <remote> | exfil <remote> [profile] | upload <local> <remote>
 Plugins: pe list | pe build <plugin> [output.dll] | pe <plugin> [export] [input]   (diskless PE load on the Go agent)
 Config:   rclone-config   (rclone profiles + binary status on server)
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
+          tun list | tun start <session> <device> | tun stop <session>
 Other:    events [since] | health | help | quit
 
 Tip: agent output and config_ack events stream for all connected sessions (prefix [session8]).
@@ -1322,6 +1411,79 @@ def run_interactive(
                 else:
                     warn(f"failed ({code}): {data}")
                 continue
+            if cmd == "tun":
+                if rest and rest[0].lower() == "list":
+                    code, data = client.list_tun()
+                    if code != 200:
+                        warn(f"tun list failed ({code}): {data}")
+                    else:
+                        print_tun_relays(data.get("relays", []), json_mode=json_mode)
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                if rest and rest[0].lower() == "stop":
+                    code, _ = client.stop_tun(sid)
+                    if code == 200:
+                        say("RMM TUN relay stopped")
+                    else:
+                        warn(f"failed ({code})")
+                    continue
+                if rest and rest[0].lower() == "start":
+                    rest = rest[1:]
+                if not rest:
+                    warn("Usage: tun start <device> [--route cidr] [--address cidr] [--interface name] [--mtu n]")
+                    continue
+                device = rest[0]
+                route = ""
+                tun_address = "198.18.0.1/15"
+                interface = ""
+                mtu = 1500
+                udp_timeout_seconds = 300
+                i = 1
+                while i < len(rest):
+                    option = rest[i]
+                    if option in ("--route", "--address", "--interface", "--mtu", "--udp-timeout") and i + 1 < len(rest):
+                        value = rest[i + 1]
+                        if option == "--route":
+                            route = value
+                        elif option == "--address":
+                            tun_address = value
+                        elif option == "--interface":
+                            interface = value
+                        elif option == "--mtu":
+                            try:
+                                mtu = int(value)
+                            except ValueError:
+                                warn("Invalid MTU")
+                                break
+                        else:
+                            try:
+                                udp_timeout_seconds = int(value)
+                            except ValueError:
+                                warn("Invalid UDP timeout")
+                                break
+                        i += 1
+                    else:
+                        warn("Invalid TUN option")
+                        break
+                    i += 1
+                else:
+                    code, data = client.start_tun(
+                        sid,
+                        device,
+                        route=route,
+                        tun_address=tun_address,
+                        interface=interface,
+                        mtu=mtu,
+                        udp_timeout_seconds=udp_timeout_seconds,
+                    )
+                    if code == 200:
+                        say("RMM TUN relay enabled")
+                    else:
+                        warn(f"failed ({code}): {data}")
+                continue
             if cmd == "run":
                 if not rest:
                     warn("Usage: run <command>")
@@ -1574,6 +1736,29 @@ def build_parser() -> argparse.ArgumentParser:
         "list", parents=[shared], help="List all SOCKS listeners and connected agents"
     )
     sp_socks_list.set_defaults(func=cmd_socks_list)
+
+    sp_tun = sub.add_parser("tun", help="RMM server-side TUN relay management")
+    sp_tun_sub = sp_tun.add_subparsers(dest="tun_cmd", required=True)
+    sp_tun_list = sp_tun_sub.add_parser(
+        "list", parents=[shared], help="List active server-side TUN relays"
+    )
+    sp_tun_list.set_defaults(func=cmd_tun_list)
+    sp_tun_start = sp_tun_sub.add_parser(
+        "start", parents=[shared], help="Create a TUN relay for a Go session"
+    )
+    sp_tun_start.add_argument("session_ref", help="Session id prefix or hostname")
+    sp_tun_start.add_argument("device", help="TUN device, for example tun://rmm0 or utun4")
+    sp_tun_start.add_argument("--route", default="", help="IPv4 CIDR routed through this relay")
+    sp_tun_start.add_argument("--address", dest="tun_address", default="198.18.0.1/15")
+    sp_tun_start.add_argument("--interface", default="", help="Physical egress interface")
+    sp_tun_start.add_argument("--mtu", type=int, default=1500)
+    sp_tun_start.add_argument("--udp-timeout", dest="udp_timeout_seconds", type=int, default=300)
+    sp_tun_start.set_defaults(func=cmd_tun_start)
+    sp_tun_stop = sp_tun_sub.add_parser(
+        "stop", parents=[shared], help="Disable the server-side TUN relay"
+    )
+    sp_tun_stop.add_argument("session_ref", help="Session id prefix or hostname")
+    sp_tun_stop.set_defaults(func=cmd_tun_stop)
 
     return p
 

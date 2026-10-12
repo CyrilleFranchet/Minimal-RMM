@@ -61,11 +61,28 @@ The remaining PowerShell plugin functions support those entrypoints:
 `Set-RmmSocksRunspaceVariables`.
 
 The Go plugin exports `Run`. Its implementation functions are
-`validateConfig`, `runRelay`, `runRelayWithClient`, `newHTTPClient`, `getPoll`, `processTasks`,
-`readConnectionData`, `snapshotConnections`, `closeConnection`, `writeAll`,
-`closeConnections`, `postResponses`, `request`, `isPermanentHTTPError`, and
-`writeOutput`; together they validate the child input, poll the server, relay
-TCP data, and return the plugin status through the PE ABI.
+`validateConfig`, `runRelay`, `runRelayWithClient`, `newHTTPClient`, `getPoll`,
+`processTasks`, `processUDPTasks`, `readConnectionData`, `readUDPData`,
+`snapshotConnections`, `snapshotUDPConnections`, `closeConnection`,
+`closeUDPConnection`, `writeAll`, `closeConnections`, `closeUDPConnections`,
+`postResponses`, `request`, `isPermanentHTTPError`, and `writeOutput`; together
+they validate the child input, poll the server, relay TCP and UDP data, and
+return the plugin status through the PE ABI.
+
+The pivot task protocol uses `connect`, `send`, and `close` for TCP plus
+`udp_send` and `udp_close` for datagrams. UDP sends are delivered once and
+bounded per poll; UDP close tasks are retried until the plugin returns
+`udp_closed`.
+
+## RMM-owned TUN relay
+
+The server-owned TUN frontend uses the existing Go `socks` plugin as its
+authenticated transport. The server creates the TUN device and runs the
+user-space IP stack; the target-side Go plugin opens ordinary TCP and UDP
+sockets without creating a device or requiring administrator privileges. It is
+controlled through `GET /api/v1/tun` and `POST /api/v1/sessions/{id}/tun`, with
+matching CLI and MCP tools. See `docs/tun-pivot.md` for setup, routing, and
+current protocol limits.
 
 ## Operator setup
 

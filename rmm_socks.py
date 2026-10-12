@@ -1,5 +1,6 @@
 """
-SOCKS5 listener on the operator host; TCP is relayed through a pivot plugin.
+SOCKS5 listener on the operator host; TCP and TUN UDP flows are relayed through
+a pivot plugin.
 
 This module owns the operator-side listener, task queue, and /socks protocol.
 The agent-side relay implementation is delivered separately as a pivot plugin;
@@ -16,6 +17,7 @@ import json
 import socket
 import struct
 import threading
+import time
 import uuid
 from collections import deque
 from typing import Any
@@ -26,8 +28,11 @@ GO_SOCKS_PLUGIN_FILE = "socks.dll"
 SOCKS_CHUNK = 16384
 CONNECT_TIMEOUT = 45.0
 RELAY_IDLE_TIMEOUT = 300.0
-# Cap sends per pull so WS JSON stays under common proxy frame limits (~1 MiB).
+# Cap sends per pull so JSON stays under common proxy frame limits (~1 MiB).
 MAX_SENDS_PER_PULL = 32
+# UDP payloads are larger than normal TCP chunks, so use a smaller batch cap.
+MAX_UDP_SENDS_PER_PULL = 8
+MAX_QUEUED_UDP_TASKS = 256
 
 
 def _b64(data: bytes) -> str:
@@ -41,20 +46,33 @@ def _ub64(text: str) -> bytes:
 class SessionSocksBridge:
     """Per-session SOCKS relay state (server-side listener + beacon task queue)."""
 
-    def __init__(self, session_id: str, bind_host: str, port: int, on_log=None):
+    def __init__(
+        self,
+        session_id: str,
+        bind_host: str,
+        port: int,
+        on_log=None,
+        udp_idle_timeout: float = RELAY_IDLE_TIMEOUT,
+    ):
         self.session_id = session_id
         self.bind_host = bind_host
         self.port = port
         self.on_log = on_log or (lambda _msg, _level="INFO": None)
+        self.udp_idle_timeout = max(1.0, float(udp_idle_timeout))
         self.lock = threading.Lock()
         self.task_queue: deque[dict[str, Any]] = deque()
         self.connect_events: dict[str, threading.Event] = {}
         self.connect_errors: dict[str, str] = {}
         self.tunnels: dict[str, dict[str, Any]] = {}
         self._pending_sends: dict[str, deque[dict[str, Any]]] = {}
+        self._queued_udp_tasks = 0
         self._listener_sock: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._running = False
+        self._udp_sock: socket.socket | None = None
+        self._udp_control_sock: socket.socket | None = None
+        self._udp_thread: threading.Thread | None = None
+        self.udp_tunnels: dict[str, dict[str, Any]] = {}
         self._agent_ws: Any = None
         self._agent_ws_lock = threading.Lock()
 
@@ -84,6 +102,7 @@ class SessionSocksBridge:
                 return
             self._listener_sock = sock
             self._accept_thread = accept_thread
+            self.port = int(sock.getsockname()[1])
             self._running = True
         try:
             accept_thread.start()
@@ -151,6 +170,12 @@ class SessionSocksBridge:
             self.connect_events.clear()
             self.connect_errors.clear()
             self._pending_sends.clear()
+            self._queued_udp_tasks = 0
+            udp_sock = self._udp_sock
+            udp_control_sock = self._udp_control_sock
+            self._udp_sock = None
+            self._udp_control_sock = None
+            self.udp_tunnels.clear()
         with self._agent_ws_lock:
             aws = self._agent_ws
             self._agent_ws = None
@@ -172,6 +197,18 @@ class SessionSocksBridge:
                 ls.close()
             except OSError:
                 pass
+        if udp_sock:
+            try:
+                udp_sock.close()
+            except OSError:
+                pass
+        if udp_control_sock:
+            try:
+                udp_control_sock.close()
+            except OSError:
+                pass
+        if self._udp_thread and self._udp_thread.is_alive():
+            self._udp_thread.join(timeout=2.0)
         if self._accept_thread and self._accept_thread.is_alive():
             self._accept_thread.join(timeout=2.0)
         self.log(f"SOCKS stopped for session {self.session_id[:8]}", "INFO")
@@ -198,6 +235,10 @@ class SessionSocksBridge:
 
     def _enqueue_task(self, task: dict[str, Any]) -> None:
         with self.lock:
+            if task.get("op") == "udp_send":
+                if self._queued_udp_tasks >= MAX_QUEUED_UDP_TASKS:
+                    return
+                self._queued_udp_tasks += 1
             if task.get("op") == "send":
                 cid = task.get("id")
                 tunnel = self.tunnels.get(cid) if cid else None
@@ -214,27 +255,37 @@ class SessionSocksBridge:
         del task
 
     def _drain_task_queue(self) -> list[dict[str, Any]]:
-        """Dequeue deliverable tasks (send once; connect until ack)."""
+        """Dequeue tasks, retaining control/close work until it is acknowledged."""
         with self.lock:
             outbound: list[dict[str, Any]] = []
             keep: deque[dict[str, Any]] = deque()
             deferred_sends: deque[dict[str, Any]] = deque()
+            deferred_udp: deque[dict[str, Any]] = deque()
             send_count = 0
+            udp_count = 0
             for task in self.task_queue:
-                if task.get("op") == "send":
+                op = task.get("op")
+                if op == "send":
                     if send_count < MAX_SENDS_PER_PULL:
                         outbound.append(task)
                         send_count += 1
                     else:
                         deferred_sends.append(task)
-                elif task.get("op") == "close":
+                elif op == "udp_send":
+                    if udp_count < MAX_UDP_SENDS_PER_PULL:
+                        outbound.append(task)
+                        udp_count += 1
+                        self._queued_udp_tasks = max(0, self._queued_udp_tasks - 1)
+                    else:
+                        deferred_udp.append(task)
+                elif op in ("close", "connect", "udp_close"):
                     # Close is retained until the agent acknowledges it. This
                     # lets a later poll recover when the delivery response was
                     # lost in transit.
                     keep.append(task)
                 else:
                     keep.append(task)
-            self.task_queue = deque([*keep, *deferred_sends])
+            self.task_queue = deque([*keep, *deferred_sends, *deferred_udp])
             # Persistent control tasks precede the current send batch.
             return list(keep) + outbound
 
@@ -244,10 +295,17 @@ class SessionSocksBridge:
 
     def _drop_tasks(self, conn_id: str, op: str) -> None:
         with self.lock:
-            self.task_queue = deque(
-                t for t in self.task_queue
-                if not (t.get("id") == conn_id and t.get("op") == op)
-            )
+            kept = deque()
+            removed_udp = 0
+            for task in self.task_queue:
+                if task.get("id") == conn_id and task.get("op") == op:
+                    if op == "udp_send":
+                        removed_udp += 1
+                    continue
+                kept.append(task)
+            self.task_queue = kept
+            if removed_udp:
+                self._queued_udp_tasks = max(0, self._queued_udp_tasks - removed_udp)
 
     def _flush_pending_sends(self, conn_id: str) -> None:
         with self.lock:
@@ -322,6 +380,18 @@ class SessionSocksBridge:
                             sock.sendall(payload)
                     except OSError:
                         self._close_tunnel(tunnel)
+            elif op == "udp_data":
+                data_b64 = resp.get("data_b64")
+                host = str(resp.get("host") or "")
+                try:
+                    port = int(resp.get("port"))
+                    payload = _ub64(data_b64 or "")
+                except (TypeError, ValueError, OSError):
+                    continue
+                if host and 1 <= port <= 65535 and payload:
+                    self._send_udp_datagram(str(cid), host, port, payload)
+            elif op == "udp_closed":
+                self._drop_tasks(str(cid), "udp_close")
             elif op in ("closed", "close"):
                 self._drop_tasks(cid, "connect")
                 self._drop_tasks(cid, "send")
@@ -429,7 +499,13 @@ class SessionSocksBridge:
             client_sock.settimeout(30.0)
             if not self._socks5_handshake(client_sock):
                 return
-            target_host, target_port = self._socks5_read_request(client_sock)
+            command, target_host, target_port = self._socks5_read_command(client_sock)
+            if command == 0x03:
+                self._handle_udp_associate(client_sock)
+                return
+            if command != 0x01:
+                self._socks5_reply(client_sock, rep=0x07)
+                return
             if not target_host:
                 return
             conn_id = uuid.uuid4().hex
@@ -458,6 +534,171 @@ class SessionSocksBridge:
                 client_sock.close()
             except OSError:
                 pass
+
+    def _handle_udp_associate(self, control_sock: socket.socket) -> None:
+        """Serve one SOCKS5 UDP association for a server-side TUN frontend."""
+        udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            udp_sock.bind((self.bind_host, 0))
+            udp_sock.settimeout(1.0)
+            bind_host, bind_port = udp_sock.getsockname()[:2]
+            with self.lock:
+                if not self._running:
+                    return
+                old = self._udp_sock
+                self._udp_sock = udp_sock
+                self._udp_control_sock = control_sock
+                self.udp_tunnels.clear()
+            if old:
+                try:
+                    old.close()
+                except OSError:
+                    pass
+            if not self._socks5_reply(control_sock, rep=0x00, bind=(bind_host, bind_port)):
+                return
+            thread = threading.Thread(
+                target=self._udp_loop,
+                args=(udp_sock,),
+                name=f"socks-udp-{self.session_id[:8]}",
+                daemon=True,
+            )
+            self._udp_thread = thread
+            thread.start()
+            control_sock.settimeout(1.0)
+            while self._running:
+                try:
+                    if not control_sock.recv(1):
+                        break
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+        finally:
+            with self.lock:
+                if self._udp_control_sock is control_sock:
+                    self._udp_control_sock = None
+                if self._udp_sock is udp_sock:
+                    self._udp_sock = None
+                    self.udp_tunnels.clear()
+            try:
+                udp_sock.close()
+            except OSError:
+                pass
+
+    def _udp_loop(self, udp_sock: socket.socket) -> None:
+        """Decode SOCKS5 UDP datagrams and queue them for the agent."""
+        while self._running:
+            try:
+                packet, client_addr = udp_sock.recvfrom(65535)
+            except socket.timeout:
+                self._expire_udp_tunnels()
+                continue
+            except OSError:
+                return
+            decoded = self._decode_socks5_udp(packet)
+            if not decoded:
+                continue
+            host, port, payload = decoded
+            key = f"{host}:{port}"
+            with self.lock:
+                tunnel = self.udp_tunnels.get(key)
+                if tunnel is None:
+                    tunnel = {"id": uuid.uuid4().hex, "last_seen": time.monotonic()}
+                    self.udp_tunnels[key] = tunnel
+                tunnel["last_seen"] = time.monotonic()
+                tunnel["client_addr"] = client_addr
+                conn_id = tunnel["id"]
+            self._enqueue_task(
+                {
+                    "op": "udp_send",
+                    "id": conn_id,
+                    "host": host,
+                    "port": port,
+                    "data_b64": _b64(payload),
+                }
+            )
+
+    def _expire_udp_tunnels(self) -> None:
+        """Expire idle UDP destinations and tell the agent to close them."""
+        cutoff = time.monotonic() - self.udp_idle_timeout
+        expired: list[str] = []
+        with self.lock:
+            for key, tunnel in list(self.udp_tunnels.items()):
+                if tunnel.get("last_seen", 0) < cutoff:
+                    expired.append(str(tunnel.get("id") or ""))
+                    self.udp_tunnels.pop(key, None)
+        for conn_id in expired:
+            if conn_id:
+                self._enqueue_task({"op": "udp_close", "id": conn_id})
+
+    def _send_udp_datagram(self, conn_id: str, host: str, port: int, payload: bytes) -> None:
+        """Wrap an agent UDP response and send it to the SOCKS client."""
+        with self.lock:
+            tunnel = next(
+                (value for value in self.udp_tunnels.values() if value.get("id") == conn_id),
+                None,
+            )
+            udp_sock = self._udp_sock
+            client_addr = tunnel.get("client_addr") if tunnel else None
+        if not udp_sock or not client_addr:
+            return
+        try:
+            udp_sock.sendto(self._encode_socks5_udp(host, port, payload), client_addr)
+        except OSError:
+            pass
+
+    @classmethod
+    def _decode_socks5_udp(cls, packet: bytes) -> tuple[str, int, bytes] | None:
+        """Decode one SOCKS5 UDP request into target host, port, and payload."""
+        if len(packet) < 4 or packet[0:2] != b"\x00\x00" or packet[2] != 0:
+            return None
+        offset = 4
+        atyp = packet[3]
+        if atyp == 0x01:
+            if len(packet) < offset + 4:
+                return None
+            host = socket.inet_ntoa(packet[offset:offset + 4])
+            offset += 4
+        elif atyp == 0x03:
+            if len(packet) < offset + 1:
+                return None
+            length = packet[offset]
+            offset += 1
+            if length == 0 or len(packet) < offset + length:
+                return None
+            host_b = packet[offset:offset + length]
+            try:
+                host = host_b.decode("idna")
+            except UnicodeError:
+                host = host_b.decode("ascii", errors="replace")
+            offset += length
+        elif atyp == 0x04:
+            if len(packet) < offset + 16:
+                return None
+            host = socket.inet_ntop(socket.AF_INET6, packet[offset:offset + 16])
+            offset += 16
+        else:
+            return None
+        if len(packet) < offset + 2:
+            return None
+        port = struct.unpack("!H", packet[offset:offset + 2])[0]
+        payload = packet[offset + 2:]
+        if not payload or not 1 <= port <= 65535:
+            return None
+        return host, port, payload
+
+    @staticmethod
+    def _encode_socks5_udp(host: str, port: int, payload: bytes) -> bytes:
+        """Encode an agent UDP response as a SOCKS5 UDP datagram."""
+        try:
+            address = b"\x01" + socket.inet_pton(socket.AF_INET, host)
+        except OSError:
+            try:
+                address = b"\x04" + socket.inet_pton(socket.AF_INET6, host)
+            except OSError:
+                encoded = host.encode("idna")[:255]
+                address = b"\x03" + bytes([len(encoded)]) + encoded
+        return b"\x00\x00\x00" + address + struct.pack("!H", port) + payload
 
     def _relay_local_to_remote(self, tunnel: dict[str, Any]) -> None:
         client_sock = tunnel["client"]
@@ -517,42 +758,65 @@ class SessionSocksBridge:
         return True
 
     @classmethod
-    def _socks5_read_request(cls, client_sock: socket.socket) -> tuple[str | None, int | None]:
+    def _socks5_read_command(cls, client_sock: socket.socket) -> tuple[int | None, str | None, int | None]:
+        """Read a SOCKS5 command and its address tuple from a client."""
         req = cls._read_exact(client_sock, 4)
-        if req is None or len(req) < 4 or req[0] != 0x05 or req[1] != 0x01:
-            return None, None
+        if req is None or len(req) < 4 or req[0] != 0x05:
+            return None, None, None
+        command = req[1]
         atyp = req[3]
         if atyp == 0x01:
             raw = cls._read_exact(client_sock, 4)
             if raw is None:
-                return None, None
+                return command, None, None
             host = socket.inet_ntoa(raw)
         elif atyp == 0x03:
             n = cls._read_exact(client_sock, 1)
             if n is None:
-                return None, None
+                return command, None, None
             host_len = n[0]
             host_b = cls._read_exact(client_sock, host_len)
             if host_b is None:
-                return None, None
-            host = host_b.decode("utf-8", errors="replace")
+                return command, None, None
+            try:
+                host = host_b.decode("idna")
+            except UnicodeError:
+                host = host_b.decode("ascii", errors="replace")
         elif atyp == 0x04:
             raw = cls._read_exact(client_sock, 16)
             if raw is None:
-                return None, None
+                return command, None, None
             host = socket.inet_ntop(socket.AF_INET6, raw)
         else:
-            return None, None
+            return command, None, None
         port_b = cls._read_exact(client_sock, 2)
         if port_b is None:
-            return None, None
+            return command, None, None
         port = struct.unpack("!H", port_b)[0]
+        return command, host, port
+
+    @classmethod
+    def _socks5_read_request(cls, client_sock: socket.socket) -> tuple[str | None, int | None]:
+        """Read a SOCKS5 CONNECT request for compatibility with older callers."""
+        command, host, port = cls._socks5_read_command(client_sock)
+        if command != 0x01:
+            return None, None
         return host, port
 
     @staticmethod
-    def _socks5_reply(client_sock: socket.socket, rep: int) -> bool:
-        # VER REP RSV ATYP BND.ADDR BND.PORT — bound address unused (0.0.0.0:0)
-        reply = struct.pack("!BBBB", 0x05, rep, 0x00, 0x01) + socket.inet_aton("0.0.0.0") + struct.pack("!H", 0)
+    def _socks5_reply(
+        client_sock: socket.socket,
+        rep: int,
+        bind: tuple[str, int] = ("0.0.0.0", 0),
+    ) -> bool:
+        """Send a SOCKS5 reply with an IPv4 or IPv6 bound address."""
+        # VER REP RSV ATYP BND.ADDR BND.PORT.
+        host, port = bind
+        try:
+            address = b"\x01" + socket.inet_pton(socket.AF_INET, host)
+        except OSError:
+            address = b"\x04" + socket.inet_pton(socket.AF_INET6, host)
+        reply = struct.pack("!BBBB", 0x05, rep, 0x00, address[0]) + address[1:] + struct.pack("!H", port)
         client_sock.sendall(reply)
         return rep == 0x00
 
@@ -572,7 +836,13 @@ class SocksManager:
         with self.lock:
             return self.bridges.get(session_id)
 
-    def start(self, session_id: str, port: int = DEFAULT_SOCKS_PORT, bind_host: str = DEFAULT_BIND_HOST) -> SessionSocksBridge:
+    def start(
+        self,
+        session_id: str,
+        port: int = DEFAULT_SOCKS_PORT,
+        bind_host: str = DEFAULT_BIND_HOST,
+        udp_idle_timeout: float = RELAY_IDLE_TIMEOUT,
+    ) -> SessionSocksBridge:
         with self.lock:
             existing = self.bridges.pop(session_id, None)
             if existing:
@@ -582,6 +852,7 @@ class SocksManager:
                 bind_host,
                 port,
                 on_log=lambda m, lvl="INFO": self._log(m, lvl),
+                udp_idle_timeout=udp_idle_timeout,
             )
             try:
                 bridge.start()
@@ -613,7 +884,7 @@ class SocksManager:
         relays: list[dict[str, Any]] = []
         for bridge in bridges:
             with bridge.lock:
-                tunnels = len(bridge.tunnels)
+                tunnels = len(bridge.tunnels) + len(bridge.udp_tunnels)
                 running = bridge._running
             ws = bridge.agent_ws_connected()
             relays.append({

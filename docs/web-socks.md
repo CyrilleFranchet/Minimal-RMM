@@ -17,7 +17,8 @@ The connection exits through the selected agent host. The session sidebar
 shows the listener port beside sessions with an active relay.
 
 The listener implements **SOCKS5 with no authentication** and the TCP
-`CONNECT` command. Configure clients with `socks5`; SOCKS4 and HTTP
+`CONNECT` command for regular operator clients. The server-owned TUN frontend
+also uses `UDP ASSOCIATE`. Configure clients with `socks5`; SOCKS4 and HTTP
 proxy configuration are not supported. For example, the proxy entry in
 `proxychains.conf` must use:
 
@@ -63,6 +64,7 @@ The controls call the existing operator endpoints:
   to start or restart a relay.
 - `POST /api/v1/sessions/{id}/socks` with `{"stop": true}` to stop it.
 
-SOCKS carries TCP traffic through the agent and is intended for authorized lab
-use. The relay is separate from rclone exfiltration: `rmm_rclone.py` manages
-cloud upload profiles and does not configure SOCKS.
+The regular operator SOCKS path carries TCP `CONNECT` traffic through the agent.
+The server-owned TUN frontend also uses the relay's SOCKS5 `UDP ASSOCIATE`
+support for datagram flows. The relay is separate from rclone exfiltration:
+`rmm_rclone.py` manages cloud upload profiles and does not configure SOCKS.

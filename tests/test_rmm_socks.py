@@ -1,5 +1,7 @@
 """Focused tests for the server-side SOCKS relay state machine."""
 
+import base64
+import struct
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -33,6 +35,16 @@ class RecordingSocket:
 
     def sendall(self, payload):
         self.sent.append(bytes(payload))
+
+
+class RecordingDatagramSocket:
+    """Socket-shaped test double for UDP packets returned to the TUN stack."""
+
+    def __init__(self):
+        self.sent = []
+
+    def sendto(self, payload, address):
+        self.sent.append((bytes(payload), address))
 
 
 class SocksBridgeTests(unittest.TestCase):
@@ -74,6 +86,52 @@ class SocksBridgeTests(unittest.TestCase):
             ("example.com", 443),
         )
 
+    def test_udp_packet_round_trip_preserves_domain_and_payload(self):
+        payload = b"dns-query"
+        packet = (
+            b"\x00\x00\x00\x03\x0bexample.com"
+            + struct.pack("!H", 53)
+            + payload
+        )
+
+        self.assertEqual(
+            SessionSocksBridge._decode_socks5_udp(packet),
+            ("example.com", 53, payload),
+        )
+        self.assertEqual(
+            SessionSocksBridge._encode_socks5_udp("example.com", 53, payload),
+            packet,
+        )
+
+    def test_udp_response_is_written_to_association_client(self):
+        bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
+        udp = RecordingDatagramSocket()
+        bridge._udp_sock = udp
+        bridge.udp_tunnels["8.8.8.8:53"] = {
+            "id": "udp-1",
+            "client_addr": ("127.0.0.1", 40000),
+        }
+
+        bridge.submit_responses(
+            [
+                {
+                    "id": "udp-1",
+                    "op": "udp_data",
+                    "host": "8.8.8.8",
+                    "port": 53,
+                    "data_b64": base64.b64encode(b"dns-response").decode(),
+                }
+            ]
+        )
+
+        self.assertEqual(len(udp.sent), 1)
+        packet, address = udp.sent[0]
+        self.assertEqual(address, ("127.0.0.1", 40000))
+        self.assertEqual(
+            SessionSocksBridge._decode_socks5_udp(packet),
+            ("8.8.8.8", 53, b"dns-response"),
+        )
+
     def test_close_task_retries_until_agent_acknowledges_it(self):
         bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
         bridge.task_queue.append({"op": "close", "id": "closed-once"})
@@ -87,6 +145,25 @@ class SocksBridgeTests(unittest.TestCase):
             [{"op": "close", "id": "closed-once"}],
         )
         bridge.submit_responses([{"id": "closed-once", "op": "closed"}])
+        self.assertEqual(bridge.fetch_tasks_for_pull(), [])
+
+    def test_udp_send_task_is_not_replayed(self):
+        bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
+        bridge.task_queue.append(
+            {"op": "udp_send", "id": "udp-1", "host": "127.0.0.1", "port": 53}
+        )
+        bridge._queued_udp_tasks = 1
+
+        self.assertEqual(len(bridge.fetch_tasks_for_pull()), 1)
+        self.assertEqual(bridge.fetch_tasks_for_pull(), [])
+
+    def test_udp_close_retries_until_agent_acknowledges_it(self):
+        bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
+        bridge.task_queue.append({"op": "udp_close", "id": "udp-1"})
+
+        self.assertEqual(bridge.fetch_tasks_for_pull(), [{"op": "udp_close", "id": "udp-1"}])
+        self.assertEqual(bridge.fetch_tasks_for_pull(), [{"op": "udp_close", "id": "udp-1"}])
+        bridge.submit_responses([{"id": "udp-1", "op": "udp_closed"}])
         self.assertEqual(bridge.fetch_tasks_for_pull(), [])
 
     def test_send_tasks_are_capped_without_being_replayed(self):

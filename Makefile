@@ -1,13 +1,13 @@
 SHELL := /bin/bash
 PYTHON ?= python3
 
-PY_MODULES := server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tools.py rmm_rclone.py \
+PY_MODULES := server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
 	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_run_on_host.py rmm_kill_host_sessions.py
 
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-parity check-web-contracts check go-test
+.PHONY: help install-lint lint-md lint-yaml lint test check-parity check-web-contracts check go-test tun-build
 
 help:
 	@printf "Available targets:\n"
@@ -19,12 +19,18 @@ help:
 	@printf "  make check-parity  MCP / API client / web shell alignment\n"
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
-	@printf "  make go-test       Cross-build the Go agent and test the SOCKS pivot plugin\n"
+	@printf "  make go-test       Cross-build the Go agent and test the pivot components\n"
+	@printf "  make tun-build     Build the server-side TUN helper\n"
 
 go-test:
 	@cd agent-go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
 	@cd agent-go && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...
 	@cd agent-plugins/socks && go test ./...
+	@cd server-tun && go test ./...
+
+tun-build:
+	@mkdir -p RMM_logs/tools
+	@cd server-tun && go build -trimpath -ldflags "-s -w" -o ../RMM_logs/tools/rmm-tun .
 
 install-lint:
 	$(PYTHON) -m pip install pymarkdownlnt yamllint

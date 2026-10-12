@@ -51,10 +51,13 @@ runtime configuration over stdin:
 }
 ```
 
-The plugin polls the existing `/socks` endpoint, owns the remote TCP
+The plugin polls the existing `/socks` endpoint, owns the remote TCP and UDP
 connections, and exits when the server clears the relay. The normal beacon
 continues polling `/cmd` while the pivot is active. Cancelling the agent also
-cancels the child process.
+cancels the child process. The server-owned TUN frontend uses this plugin as
+its transport; the TUN device and user-space IP stack stay on the server.
+See `docs/tun-pivot.md` for the complete path from the server TUN to target
+side sockets.
 
 ## How loading works
 
@@ -221,9 +224,11 @@ New Python functions:
 | `RmmApiClient.list_plugins` | `rmm_cli.py` | `GET /api/v1/plugins` |
 | `RmmApiClient.queue_pe_load` | `rmm_cli.py` | `POST /api/v1/sessions/{id}/pe` |
 | `RmmApiClient.build_plugin` | `rmm_cli.py` | `POST /api/v1/plugins/build` |
+| `RmmApiClient.start_tun` / `stop_tun` / `list_tun` | `rmm_cli.py` | Server-owned TUN lifecycle REST methods |
 | `tool_list_plugins` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
 | `tool_queue_pe_load` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
 | `tool_build_plugin` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
+| `tool_start_tun` / `tool_stop_tun` / `tool_list_tun` | `rmm_tools.py` | Shared server-owned TUN operator tools |
 
 ## Security notes
 

@@ -57,6 +57,7 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `POST /plugins/build` | `build_plugin` | Server-side cross-compile of checked-in Go plugins; only repository sources are built |
 | `POST …/upload` | `queue_upload` | Local path on MCP host |
 | `GET /socks`, `POST …/socks` | `list_socks`, `start_socks`, `stop_socks` | |
+| `GET /tun`, `POST …/tun` | `list_tun`, `start_tun`, `stop_tun` | Server-owned TUN; traffic exits through the Go agent's authenticated SOCKS transport |
 | `GET …/downloads` | `list_session_downloads` | Completed agent→server files |
 | `GET /history` | `list_history` | Archived sessions |
 | `GET /history/{id}` | `get_history_session` | |

@@ -47,6 +47,7 @@ from rmm_tools import (
     tool_list_history,
     tool_list_session_downloads,
     tool_list_socks,
+    tool_list_tun,
     tool_list_sessions,
     tool_patch_config,
     tool_queue_command,
@@ -62,8 +63,10 @@ from rmm_tools import (
     tool_queue_upload,
     tool_remove_persistence,
     tool_start_socks,
+    tool_start_tun,
     tool_stop_persistent,
     tool_stop_socks,
+    tool_stop_tun,
 )
 
 mcp = FastMCP(
@@ -209,6 +212,41 @@ def start_socks(session_ref: str, port: int = 1080, bind_host: str = "127.0.0.1"
 def stop_socks(session_ref: str) -> str:
     """Stop SOCKS5 relay for the session."""
     return tool_stop_socks(_client(), session_ref)
+
+
+@mcp.tool()
+def list_tun() -> str:
+    """List active server-side TUN relays configured on the RMM server."""
+    return tool_list_tun(_client())
+
+
+@mcp.tool()
+def start_tun(
+    session_ref: str,
+    device: str,
+    route: str = "",
+    tun_address: str = "198.18.0.1/15",
+    interface: str = "",
+    mtu: int = 1500,
+    udp_timeout_seconds: int = 300,
+) -> str:
+    """Create a server-side TUN relay whose traffic exits through a Go agent."""
+    return tool_start_tun(
+        _client(),
+        session_ref,
+        device,
+        route=route,
+        tun_address=tun_address,
+        interface=interface,
+        mtu=mtu,
+        udp_timeout_seconds=udp_timeout_seconds,
+    )
+
+
+@mcp.tool()
+def stop_tun(session_ref: str) -> str:
+    """Disable the server-side TUN relay for a session."""
+    return tool_stop_tun(_client(), session_ref)
 
 
 @mcp.tool()

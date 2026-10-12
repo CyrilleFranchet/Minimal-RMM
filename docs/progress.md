@@ -5,6 +5,21 @@
 
 ## Current Status
 
+### 2026-10-12 — Server-owned TUN pivot
+
+- Replaced the external proxy-based TUN prototype with an RMM-owned TUN
+  frontend. The server creates the device and starts the checked-in
+  `server-tun/rmm-tun` helper; no external proxy console is required.
+- Extended the existing SOCKS transport with SOCKS5 UDP association support.
+  The Windows amd64 Go agent's `socks.dll` plugin now opens target-side UDP
+  sockets alongside its TCP connections while remaining privilege-free.
+- Added `GET /tun` and `POST /sessions/{id}/tun`, matching CLI and MCP tools,
+  Linux/macOS device and route lifecycle, helper readiness checks, and cleanup
+  on stop, kill, and server shutdown.
+- Added `docs/tun-pivot.md` and focused TUN/UDP validation. The first slice
+  carries TCP and UDP socket flows; raw
+  packet and ICMP semantics remain a separate capability.
+
 ### 2026-10-12 — PowerShell screenshot plugin
 
 - Moved the PowerShell screenshot capture implementation into the checked-in
@@ -196,7 +211,7 @@
 | `agent-powershell/client_rmm.ps1` | ~2k | Windows PowerShell beacon, command execution, pivot plugin host |
 | `agent-plugins/` | — | Checked-in Go PE plugins and the PowerShell SOCKS5 pivot script |
 | `rmm_cli.py` | ~1.3k | Operator CLI (`RmmApiClient`), interactive REPL + subcommands |
-| `rmm_socks.py` | ~570 | SOCKS5 listener on server; task queue; TCP relay via pivot plugin |
+| `rmm_socks.py` | ~570 | SOCKS5 listener on server; task queue; TCP/UDP relay via pivot plugin |
 | `rmm_ws.py` | ~210 | Stdlib WebSocket (operator event hub + agent SOCKS channel) |
 | `rmm_tools.py` | ~430 | Shared operator tools (MCP + web AI fallback) |
 | `mcp_rmm_server.py` | ~170 | FastMCP server (16 tools) |
@@ -234,7 +249,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 **Beacon model:** poll-based, no interactive TCP shell. Latency ≥ one sleep interval (+ jitter). Commands are JSON on `GET /cmd`; results on `POST /result`.
 
-**SOCKS model:** SOCKS5 binds on **operator host** (`127.0.0.1:N`). Bytes traverse: local SOCKS client → server listener → task queue → agent pivot plugin (HTTP `/socks`) → remote TCP on agent LAN. The server still exposes the WebSocket transport for compatible future plugins.
+**SOCKS model:** SOCKS5 binds on **operator host** (`127.0.0.1:N`). Bytes traverse: local SOCKS client → server listener → task queue → agent pivot plugin (HTTP `/socks`) → remote TCP or UDP socket on agent LAN. The server-owned TUN frontend uses the same relay and the server still exposes the WebSocket transport for compatible future plugins.
 
 ---
 
@@ -276,7 +291,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ### SOCKS (`rmm_socks.py`)
 
-- [x] `SessionSocksBridge` — SOCKS5 handshake, CONNECT, per-tunnel TCP relay
+- [x] `SessionSocksBridge` — SOCKS5 handshake, CONNECT, UDP ASSOCIATE, and per-tunnel TCP/UDP relay
 - [x] Task ops: `connect`, `send` (base64), `close`; pending sends until remote connect ack
 - [x] `SocksManager` — per-session bridge; `list_relays()` for operator inventory
 - [x] Agent WebSocket attach on `GET /socks` upgrade; pull-based task delivery (`pull` → `tasks`)
@@ -499,7 +514,7 @@ beacon_detector's inter-arrival distribution bimodal `[~70ms, ~5000ms]` instead 
 
 | Issue | Detail |
 |-------|--------|
-| SMB / “NETBIOS timeout” via SOCKS | Relay is TCP-only (`:445`); not 137–139. Windows may show generic timeout on `STATUS_LOGON_FAILURE`. Use target IP. |
+| SMB / “NETBIOS timeout” via SOCKS | The regular SOCKS path carries TCP (`:445`), not 137–139. Windows may show generic timeout on `STATUS_LOGON_FAILURE`. Use target IP. The TUN path adds UDP association support. |
 | Upload size | Single base64 POST per file; no chunking (downloads are chunked). |
 | SOCKS throughput | Pull-loop latency; adequate for interactive use, not bulk transfer optimized. |
 | Pivot throughput | HTTP pull-loop latency; adequate for interactive use, not bulk transfer optimized. |

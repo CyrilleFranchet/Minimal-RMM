@@ -50,6 +50,7 @@ from rmm_socks import (
     GO_SOCKS_PLUGIN_FILE,
     SocksManager,
 )
+from rmm_tun import TunError, TunManager, normalize_tun_config
 from rmm_rclone import (
     RcloneConfigError,
     get_rclone_max_bytes,
@@ -86,6 +87,7 @@ PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # Cross compiler used for server-side Go PE plugin builds (CGO c-shared).
 PLUGIN_CC = os.environ.get("RMM_PLUGIN_CC", "x86_64-w64-mingw32-gcc").strip()
+TUN_HELPER = os.environ.get("RMM_TUN_HELPER", "").strip() or os.path.join(LOG_DIR, "tools", "rmm-tun")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
 WEB_MIME = {
@@ -833,6 +835,7 @@ class RMMServer:
         self.running = True
         self.event_hub = OperatorEventHub()
         self.socks = SocksManager(log_fn=self.log)
+        self.tun = TunManager(TUN_HELPER, self.socks, log_fn=self.log)
         self._sessions_broadcast_lock = threading.Lock()
         self._sessions_broadcast_timer = None
         self._archive_orphaned_sessions_on_startup()
@@ -1721,12 +1724,16 @@ class RMMServer:
                 self.current_session = None
         self.remove_persisted_session(session.id)
         self.event_hub.broadcast_sessions(self.sessions_to_json())
+        self.tun.stop(session.id)
         self.socks.stop(session.id)
         return True, session.id
 
     def start_socks(self, session_id: str, port: int = DEFAULT_SOCKS_PORT, bind_host: str = DEFAULT_BIND_HOST) -> bool:
         session = self.get_session(session_id)
         if not session:
+            return False
+        if self.tun_active(session.id):
+            self.log(f"SOCKS cannot replace active TUN relay for {session.id[:8]}", "ERROR")
             return False
         plugin_error = self.pivot_plugin_error(session)
         if plugin_error:
@@ -1769,6 +1776,8 @@ class RMMServer:
         return None
 
     def stop_socks(self, session_id: str) -> bool:
+        if self.tun_active(session_id):
+            return self.stop_tun(session_id)
         stopped = self.socks.stop(session_id)
         session = self.get_session(session_id)
         if session:
@@ -1786,6 +1795,80 @@ class RMMServer:
         for relay in self.socks.list_relays():
             row = dict(relay)
             session = self.get_session(relay["session_id"])
+            if session:
+                row["hostname"] = session.hostname
+                row["username"] = session.username
+                row["beacon_status"] = session.beacon_status()
+            else:
+                row["hostname"] = None
+                row["username"] = None
+                row["beacon_status"] = None
+            rows.append(row)
+        return rows
+
+    def tun_plugin_error(self, session) -> str | None:
+        """Return a readiness error for the built-in server-side TUN pivot."""
+        agent_type = str(getattr(session, "agent_type", "")).lower()
+        capabilities = {str(item).lower() for item in getattr(session, "capabilities", [])}
+        if agent_type != "go":
+            return f"the TUN pivot currently requires a Go agent, got {agent_type or 'unknown'}"
+        if "socks-plugin" not in capabilities:
+            return "the Go agent does not advertise socks-plugin support"
+        try:
+            plugin_path = safe_join_under(plugin_directory(), GO_SOCKS_PLUGIN_FILE)
+        except ValueError:
+            return "the Go SOCKS plugin path is invalid"
+        if not os.path.isfile(plugin_path):
+            return "build the socks plugin first (POST /api/v1/plugins/build with name=socks)"
+        if not os.path.isfile(TUN_HELPER) or not os.access(TUN_HELPER, os.X_OK):
+            return f"build the server TUN helper first (make tun-build; expected {TUN_HELPER})"
+        return None
+
+    def start_tun(self, session_id: str, config: dict) -> dict:
+        """Start the RMM-owned TUN frontend for one Go session."""
+        session = self.get_session(session_id)
+        if not session:
+            raise TunError("session not found")
+        plugin_error = self.tun_plugin_error(session)
+        if plugin_error:
+            raise TunError(plugin_error)
+        normalized = normalize_tun_config(config)
+        relay = self.tun.start(session.id, normalized)
+        self.record_operator_action(session, f"tun start {normalized['device_name']}", "tun")
+        self._record_event(
+            session,
+            "output",
+            f"RMM TUN relay enabled on {normalized['device_name']}",
+            command=f"tun start {normalized['device_name']}",
+        )
+        return relay.status()
+
+    def stop_tun(self, session_id: str) -> bool:
+        """Disable the server-side TUN frontend for one session."""
+        stopped = self.tun.stop(session_id)
+        session = self.get_session(session_id)
+        if session:
+            self.record_operator_action(session, "tun stop", "tun")
+            if stopped:
+                self._record_event(session, "output", "RMM TUN relay stopped", command="tun stop")
+        return stopped
+
+    def tun_active(self, session_id: str) -> bool:
+        """Return whether a server-side TUN relay exists for a session."""
+        return self.tun.get(session_id) is not None
+
+    def tun_config(self, session_id: str) -> dict | None:
+        """Return the safe operator configuration for a session relay."""
+        relay = self.tun.get(session_id)
+        return relay.status() if relay else None
+
+    def list_tun_status(self) -> list[dict]:
+        """Return active TUN relays with session identity and beacon status."""
+        active = self.tun.list_status()
+        rows = []
+        for row in active:
+            session_id = row["session_id"]
+            session = self.get_session(session_id)
             if session:
                 row["hostname"] = session.hostname
                 row["username"] = session.username
@@ -2609,6 +2692,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"count": len(relays), "relays": relays})
             return True
 
+        if parts == ["tun"]:
+            relays = srv.list_tun_status()
+            self._json(200, {"count": len(relays), "relays": relays})
+            return True
+
         if len(parts) == 2 and parts[0] == "sessions":
             session = srv.resolve_session(parts[1])
             if not session:
@@ -2916,6 +3004,43 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "session_id": session.id,
                     "socks_url": f"socks5://{bind_host}:{port}",
                     "socks_active": True,
+                },
+            )
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "tun":
+            session = srv.resolve_session(parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            if body.get("stop"):
+                srv.stop_tun(session.id)
+                self._json(200, {"ok": True, "session_id": session.id, "stopped": True})
+                return True
+            try:
+                config = normalize_tun_config(body)
+            except ValueError as exc:
+                self._json(400, {"error": "invalid_tun_config", "detail": str(exc)})
+                return True
+            if srv.tun_active(session.id):
+                self._json(409, {"error": "tun_already_active", "detail": "stop the current relay before changing its configuration"})
+                return True
+            plugin_error = srv.tun_plugin_error(session)
+            if plugin_error:
+                self._json(503, {"error": "tun_unavailable", "detail": plugin_error})
+                return True
+            try:
+                status = srv.start_tun(session.id, config)
+            except TunError as exc:
+                self._json(503, {"error": "tun_start_failed", "detail": str(exc)})
+                return True
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "session_id": session.id,
+                    "tun_active": True,
+                    "tun": status,
                 },
             )
             return True
@@ -3809,6 +3934,7 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             print(f"\n{Colors.YELLOW}Shutting down...{Colors.END}")
+        server.tun.stop_all()
         http_server.shutdown()
         return
 
@@ -3833,6 +3959,7 @@ def main():
 
     if not getattr(server, "_cli_use_ptk", False):
         readline.write_history_file(HISTORY_FILE)
+    server.tun.stop_all()
     http_server.shutdown()
 
 if __name__ == "__main__":
