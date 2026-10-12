@@ -5,6 +5,13 @@
 
 ## Current Status
 
+### 2026-10-12 — WebUI shell help
+
+- Added local `help` and `?` commands to the WebUI shell. They display the
+  browser-handled command reference and no longer queue `help` for `cmd.exe`.
+- Added the commands to WebUI Tab completion and documented their behavior in
+  `README.md` and `docs/web-shell-completion.md`.
+
 ### 2026-10-12 — WebUI file and screenshot overlays
 
 - Replaced the inline **Files & screenshot** and **Downloads from agent**
