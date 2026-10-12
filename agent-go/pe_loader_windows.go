@@ -163,11 +163,14 @@ func mapPluginPE(data []byte) (uintptr, error) {
 	committed := false
 	defer func() {
 		if !committed {
-			procNtUnmapViewOfSection.Call(rwBase)
-			procNtUnmapViewOfSection.Call(rxBase)
+			unmapPluginView(rwBase)
+			unmapPluginView(rxBase)
 			procNtClose.Call(section)
 		}
 	}()
+	if rwBase == 0 || rxBase == 0 {
+		return 0, errors.New("plugin mapping returned a null view")
+	}
 	if err := copyPluginImage(rwBase, file, opt, data); err != nil {
 		return 0, err
 	}
@@ -182,13 +185,13 @@ func mapPluginPE(data []byte) (uintptr, error) {
 	}
 	applyPluginProtections(rxBase, file, opt)
 	// Drop the writable alias; only the RX image view remains mapped.
-	procNtUnmapViewOfSection.Call(rwBase)
+	unmapPluginView(rwBase)
 	procNtClose.Call(section)
 	committed = true
 	if opt.AddressOfEntryPoint != 0 {
 		ret, _, _ := syscall.SyscallN(rxBase+uintptr(opt.AddressOfEntryPoint), rxBase, 1, 0)
 		if ret == 0 {
-			procNtUnmapViewOfSection.Call(rxBase)
+			unmapPluginView(rxBase)
 			return 0, errors.New("plugin DllMain rejected DLL_PROCESS_ATTACH")
 		}
 	}
@@ -214,6 +217,10 @@ func mapPluginViews(imageSize uint32) (uintptr, uintptr, uintptr, error) {
 		return 0, 0, 0, fmt.Errorf("NtCreateSection failed with status 0x%x", uintptr(status))
 	}
 	process, _, _ := procGetCurrentProcess.Call()
+	if process == 0 {
+		procNtClose.Call(handle)
+		return 0, 0, 0, errors.New("GetCurrentProcess returned a null handle")
+	}
 	mapView := func(protection uintptr) (uintptr, error) {
 		base := uintptr(0)
 		viewSize := uintptr(0)
@@ -230,6 +237,13 @@ func mapPluginViews(imageSize uint32) (uintptr, uintptr, uintptr, error) {
 		if uintptr(status)>>63 != 0 {
 			return 0, fmt.Errorf("NtMapViewOfSection failed with status 0x%x", uintptr(status))
 		}
+		if base == 0 {
+			return 0, errors.New("NtMapViewOfSection returned a null base")
+		}
+		if viewSize < uintptr(imageSize) {
+			unmapPluginView(base)
+			return 0, fmt.Errorf("NtMapViewOfSection returned a short view: 0x%x bytes", viewSize)
+		}
 		return base, nil
 	}
 	rwBase, err := mapView(pageReadWrite)
@@ -239,17 +253,35 @@ func mapPluginViews(imageSize uint32) (uintptr, uintptr, uintptr, error) {
 	}
 	rxBase, err := mapView(pageExecuteRead)
 	if err != nil {
-		procNtUnmapViewOfSection.Call(rwBase)
+		unmapPluginView(rwBase)
 		procNtClose.Call(handle)
 		return 0, 0, 0, err
 	}
 	return rxBase, rwBase, handle, nil
 }
 
+// unmapPluginView releases a view from the current process. The NT API takes
+// both the process handle and the view base address.
+func unmapPluginView(base uintptr) {
+	if base == 0 {
+		return
+	}
+	process, _, _ := procGetCurrentProcess.Call()
+	if process != 0 {
+		procNtUnmapViewOfSection.Call(process, base)
+	}
+}
+
 // copyPluginImage copies the DOS/PE headers and every raw-backed section
 // into the writable staging view. Fresh section pages are already zero,
 // so BSS-style sections need no handling here.
 func copyPluginImage(rwBase uintptr, file *pe.File, opt *pe.OptionalHeader64, data []byte) error {
+	if rwBase == 0 {
+		return errors.New("plugin writable view is null")
+	}
+	if opt.SizeOfHeaders == 0 || uint64(opt.SizeOfHeaders) > uint64(opt.SizeOfImage) {
+		return errors.New("plugin has invalid PE header size")
+	}
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(rwBase)), int(opt.SizeOfHeaders)), data[:opt.SizeOfHeaders])
 	for _, section := range file.Sections {
 		header := &section.SectionHeader
