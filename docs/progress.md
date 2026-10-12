@@ -5,6 +5,16 @@
 
 ## Current Status
 
+### 2026-10-12 — PowerShell screenshot plugin
+
+- Moved the PowerShell screenshot capture implementation into the checked-in
+  `agent-plugins/screenshot-powershell/screenshot.ps1` script plugin.
+- The agent now fetches the script through the authenticated plugin endpoint,
+  evaluates it once, and preserves the existing screenshot result and operator
+  API behavior.
+- Added server delivery coverage and documented the PowerShell and Go plugin
+  paths in `docs/screenshot-plugin.md` and `docs/go-agent-plugins.md`.
+
 ### 2026-10-12 — SOCKS relay reliability audit
 
 - Fixed fragmented SOCKS5 handshake and request reads, rejected clients that do

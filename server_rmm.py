@@ -79,6 +79,9 @@ AGENT_PLUGINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ag
 # Operator PE plugins served to the Go agent; override with RMM_PLUGINS_DIR.
 PLUGINS_DIR = os.environ.get("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
 POWERSHELL_SOCKS_PLUGIN = os.path.join(AGENT_PLUGINS_DIR, "socks-powershell", "socks.ps1")
+POWERSHELL_SCREENSHOT_PLUGIN = os.path.join(
+    AGENT_PLUGINS_DIR, "screenshot-powershell", "screenshot.ps1"
+)
 PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # Cross compiler used for server-side Go PE plugin builds (CGO c-shared).
@@ -185,10 +188,14 @@ def plugin_directory() -> str:
 
 
 def plugin_script_path(name: str) -> str | None:
-    """Return the checked-in script plugin path for a supported agent plugin."""
-    if name != "socks.ps1":
+    """Return the checked-in PowerShell script plugin path for a supported name."""
+    path_value = {
+        "socks.ps1": POWERSHELL_SOCKS_PLUGIN,
+        "screenshot.ps1": POWERSHELL_SCREENSHOT_PLUGIN,
+    }.get(name)
+    if not path_value:
         return None
-    path = os.path.realpath(POWERSHELL_SOCKS_PLUGIN)
+    path = os.path.realpath(path_value)
     source_root = os.path.realpath(AGENT_PLUGINS_DIR)
     if path == source_root or not path.startswith(source_root + os.sep):
         return None
@@ -221,11 +228,12 @@ def list_plugin_files() -> list[dict]:
     return plugins
 
 
-def plugin_command_metadata(command: str) -> dict | None:
+def plugin_command_metadata(command: str, agent_type: str | None = None) -> dict | None:
     """Extract safe plugin identity metadata from a queued agent command."""
     fields = str(command or "").split("\n", 1)[0].split(None, 3)
     if fields and fields[0] == "__SCREENSHOT__":
-        return {"plugin": "screenshot.dll", "export": "Run"}
+        plugin = "screenshot.ps1" if str(agent_type or "").strip().lower() == "powershell" else "screenshot.dll"
+        return {"plugin": plugin, "export": "Run"}
     if len(fields) < 3 or fields[0] != "__PE_LOAD__":
         return None
     plugin, export = fields[1], fields[2]
@@ -1935,7 +1943,7 @@ class RMMServer:
         session = self.get_session(session_id)
         if not session:
             return False
-        plugin_meta = plugin_command_metadata(command)
+        plugin_meta = plugin_command_metadata(command, session.agent_type)
         with self.session_lock:
             if command == "__STOP__":
                 session.persistent_cmd = None

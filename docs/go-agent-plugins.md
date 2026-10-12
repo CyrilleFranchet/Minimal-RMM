@@ -25,6 +25,16 @@ agent-go: execute() dispatch  ──  __PE_LOAD__ handler
 One-shot plugin images are downloaded and started per command. The parent does
 not cache the DLL or load it into its own address space.
 
+## PowerShell script plugins
+
+PowerShell agents use the same authenticated plugin endpoint for checked-in
+script plugins. The server serves only an allowlisted script path from
+`agent-plugins/`; the client evaluates the script in memory and calls its
+exported function. The screenshot plugin is available at
+`agent-plugins/screenshot-powershell/screenshot.ps1` and is invoked through
+`Invoke-RmmScreenshotPlugin`. The existing SOCKS plugin uses the same delivery
+boundary and keeps its persistent worker in a dedicated runspace.
+
 ## Persistent pivot plugin
 
 The SOCKS5 pivot uses the same loader with a long-lived export. When `/cmd`
@@ -201,7 +211,7 @@ New Python functions:
 | Function | File | Role |
 |----------|------|------|
 | `plugin_directory` | `server_rmm.py` | Return (and create) the plugin directory |
-| `plugin_script_path` | `server_rmm.py` | Resolve the checked-in PowerShell pivot plugin |
+| `plugin_script_path` | `server_rmm.py` | Resolve checked-in PowerShell script plugins |
 | `list_plugin_files` | `server_rmm.py` | List plugins with size and SHA-256 |
 | `plugin_command_metadata` | `server_rmm.py` | Extract safe plugin identity for server-side lifecycle logs |
 | `plugin_build_targets` | `server_rmm.py` | List checked-in Go plugin directories |
@@ -232,13 +242,20 @@ New Python functions:
 - Only Windows amd64 Go agents map plugins; every other agent build returns
   an explicit unsupported error.
 
-## Shipped plugins
+## Shipped Go plugins
 
 | Plugin | Role | Doc |
 |--------|------|-----|
 | `rclone-exfil` | rclone engine isolated in a plugin child process | `docs/agent-plugin-exfil.md` |
 | `screenshot` | Native GDI screenshot capture in a plugin child process | `docs/screenshot-plugin.md` |
 | `socks` | Persistent SOCKS5 pivot channel for Windows amd64 Go agents | this document |
+
+## Shipped PowerShell script plugins
+
+| Plugin | Role | Doc |
+|--------|------|-----|
+| `screenshot.ps1` | Primary display capture for PowerShell agents | `docs/screenshot-plugin.md` |
+| `socks.ps1` | Persistent SOCKS5 pivot channel for PowerShell agents | `docs/web-socks.md` |
 
 The server selects this plugin for `mode=auto` exfil requests only when the
 session identifies itself as a Go agent with PE plugin support. Use

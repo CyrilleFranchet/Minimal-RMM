@@ -244,6 +244,27 @@ class PluginServeTests(unittest.TestCase):
         self.assertEqual(handler.body, payload)
         self.assertIn(("Content-Type", "text/plain; charset=utf-8"), handler.headers)
 
+    def test_serves_checked_in_powershell_screenshot_plugin(self):
+        payload = b"function global:Invoke-RmmScreenshotPlugin {}"
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_path = os.path.join(tmp, "screenshot.ps1")
+            with open(plugin_path, "wb") as handle:
+                handle.write(payload)
+            with patch("server_rmm.PLUGINS_DIR", os.path.join(tmp, "artifacts")):
+                with patch("server_rmm.AGENT_PLUGINS_DIR", tmp):
+                    with patch("server_rmm.POWERSHELL_SCREENSHOT_PLUGIN", plugin_path):
+                        handler = FakeServeHandler()
+                        handler.server_instance = SimpleNamespace(log=Mock())
+                        served = RMMHandler._serve_plugin_tool(
+                            handler,
+                            "screenshot.ps1",
+                            "12345678-1234-1234-1234-123456789012",
+                        )
+        self.assertTrue(served)
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(handler.body, payload)
+        self.assertIn(("Content-Type", "text/plain; charset=utf-8"), handler.headers)
+
 
 class PluginLifecycleTests(unittest.TestCase):
     """Verify server-side plugin lifecycle correlation and redaction."""
@@ -268,6 +289,10 @@ class PluginLifecycleTests(unittest.TestCase):
         self.assertEqual(
             server_rmm.plugin_command_metadata("__SCREENSHOT__"),
             {"plugin": "screenshot.dll", "export": "Run"},
+        )
+        self.assertEqual(
+            server_rmm.plugin_command_metadata("__SCREENSHOT__", "powershell"),
+            {"plugin": "screenshot.ps1", "export": "Run"},
         )
         self.assertIsNone(server_rmm.plugin_command_metadata("whoami"))
 
