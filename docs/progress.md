@@ -55,6 +55,11 @@
 - The screenshot plugin now returns an explicit overflow error instead of
   writing truncated output that the server cannot decode.
 
+### 2026-10-12 — Plugin lifecycle logging
+
+- The parent Go agent now logs plugin fetch, child launch, completion, failure,
+  timeout, byte count, and elapsed time through `RMM_LOG_FILE`.
+
 ### 2026-10-09 — Go agent diskless PE plugin system
 
 - Added the `__PE_LOAD__` command to the Go agent: plugins are fetched from the beacon-authenticated `/tools/plugins/<name>` endpoint on demand and manually mapped into the child process with private allocations. Nothing is written to the target disk; code pages are never RWX (see `docs/go-agent-plugins.md`).

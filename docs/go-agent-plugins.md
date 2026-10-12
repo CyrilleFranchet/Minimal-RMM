@@ -124,6 +124,12 @@ Full parity (REST → CLI → MCP), see `docs/mcp-parity.md`:
 Plugin output is returned through the normal `output` result event; poll
 `GET /api/v1/sessions/{id}/events` or the `events` CLI command.
 
+The parent agent logs plugin lifecycle events to its normal log file, including
+fetch start and completion, child start, child failure or timeout, output size,
+and elapsed time. The default path is `%TEMP%\minimal-rmm-agent.log`; set
+`RMM_LOG_FILE` to choose another path. Plugin input and output contents are not
+written to the lifecycle log.
+
 ## Server-side builds
 
 The web UI and CLI compile **only checked-in plugin sources** from

