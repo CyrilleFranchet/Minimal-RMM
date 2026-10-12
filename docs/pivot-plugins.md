@@ -109,7 +109,7 @@ The default outputs are `RMM_logs/plugins/socks.dll` and
 `RMM_logs/plugins/tun.dll`. A public SOCKS relay requires the Go
 `socks-plugin` capability and `socks.dll`; a TUN relay requires `tun-plugin`
 and `tun.dll`. Existing `/socks` REST, CLI, MCP, and WebUI controls remain
-stable; the WebUI exposes TUN routing in its own control.
+stable; the WebUI exposes TUN routing inside the Pivots dialog.
 
 ## Security and logging
 

@@ -7,14 +7,18 @@
 
 ### 2026-10-12 — WebUI TUN routing controls
 
-- Added a dedicated **TUN routing** control beside the SOCKS **Pivots** action
-  in the live session header. Operators can configure the server device,
+- Added TUN routing controls inside the SOCKS **Pivots** dialog in the live
+  session header. Operators can configure the server device,
   target route, TUN address, egress interface, MTU, and UDP timeout.
 - Added active TUN inventory, helper and beacon status, start/stop actions, and
   periodic refresh through the existing `/tun` operator endpoints.
 - Added a dedicated privilege-free `tun.dll` plugin for TUN routing. It runs
   in its own child process, polls `/tun`, and stays separate from the public
   `socks.dll` plugin and `/socks` channel.
+- Moved the server-side `rmm-tun` build output to `tools/rmm-tun`, keeping
+  `RMM_logs/` for runtime data and logs.
+- Added `run_server.py` to build all checked-in Go plugins and the TUN helper
+  before starting `server_rmm.py`.
 - Added WebUI contract coverage and a regression test for private bridge
   filtering.
 

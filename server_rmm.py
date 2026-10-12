@@ -73,6 +73,7 @@ HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 PORT = 8080
 LOG_DIR = "RMM_logs"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+SERVER_TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
 CLIENT_SCRIPT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "agent-powershell", "client_rmm.ps1"
 )
@@ -89,7 +90,7 @@ PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # Cross compiler used for server-side Go PE plugin builds (CGO c-shared).
 PLUGIN_CC = os.environ.get("RMM_PLUGIN_CC", "x86_64-w64-mingw32-gcc").strip()
-TUN_HELPER = os.environ.get("RMM_TUN_HELPER", "").strip() or os.path.join(LOG_DIR, "tools", "rmm-tun")
+TUN_HELPER = os.environ.get("RMM_TUN_HELPER", "").strip() or os.path.join(SERVER_TOOLS_DIR, "rmm-tun")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
 WEB_MIME = {

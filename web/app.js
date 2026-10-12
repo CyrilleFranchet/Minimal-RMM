@@ -500,7 +500,7 @@ async function refreshTunRelays() {
   updateTunUi();
 }
 
-function openTunDialog() {
+function prepareTunControls() {
   if (!state.selectedId || state.viewMode !== "live") return;
   const relay = selectedTunRelay();
   const values = {
@@ -517,9 +517,6 @@ function openTunDialog() {
   }
   setTunActionStatus("");
   updateTunUi();
-  const dialog = $("#tun-dialog");
-  if (dialog?.showModal && !dialog.open) dialog.showModal();
-  refreshTunRelays().catch(() => {});
 }
 
 async function startSelectedTun() {
@@ -730,10 +727,12 @@ function openSocksDialog() {
   if (port) port.value = String(relay?.port || 1080);
   if (bindHost) bindHost.value = String(relay?.bind_host || "127.0.0.1");
   setSocksActionStatus("");
+  prepareTunControls();
   updateSocksUi();
   const dialog = $("#socks-dialog");
   if (dialog?.showModal && !dialog.open) dialog.showModal();
   refreshSocksRelays().catch(() => {});
+  refreshTunRelays().catch(() => {});
 }
 
 async function startSelectedSocks() {
@@ -3143,7 +3142,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (dialog?.showModal && !dialog.open) dialog.showModal();
   });
   $("#open-socks-dialog")?.addEventListener("click", openSocksDialog);
-  $("#open-tun-dialog")?.addEventListener("click", openTunDialog);
   $("#socks-start")?.addEventListener("click", () => {
     startSelectedSocks().catch((err) => setSocksActionStatus(err.message || String(err), true));
   });

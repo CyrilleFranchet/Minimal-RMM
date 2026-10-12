@@ -53,14 +53,14 @@ make tun-build
 ```
 
 The plugin build needs the same Windows cross compiler as the other Go PE
-plugins. `make tun-build` writes `RMM_logs/tools/rmm-tun`; set
+plugins. `make tun-build` writes `tools/rmm-tun`; set
 `RMM_TUN_HELPER` if the helper is stored elsewhere.
 
 ## WebUI workflow
 
-The WebUI exposes a **TUN routing** button in the selected live session
-header. Before opening it, build `tun.dll` from **Deploy plugins (Go)** and
-build the server helper with `make tun-build`. In the TUN dialog, configure:
+The WebUI exposes TUN routing inside the **Pivots** dialog in the selected live
+session header. Before opening it, build `tun.dll` from **Deploy plugins (Go)**
+and build the server helper with `make tun-build`. In the TUN section, configure:
 
 - the server TUN device, such as `tun://rmm0` on Linux or `utun4` on macOS;
 - the narrow target route, such as `10.10.0.0/16`;

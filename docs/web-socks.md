@@ -1,8 +1,8 @@
 # Web UI — SOCKS pivot
 
-The WebUI exposes the SOCKS5 operator API for the selected live session
-console. Server-owned TUN routing has its own **TUN routing** control; see
-[`docs/tun-pivot.md`](tun-pivot.md) for its configuration and lifecycle.
+The WebUI exposes SOCKS5 and server-owned TUN routing inside the **Pivots**
+dialog for the selected live session console. See
+[`docs/tun-pivot.md`](tun-pivot.md) for TUN configuration and lifecycle.
 
 ## Start a relay
 

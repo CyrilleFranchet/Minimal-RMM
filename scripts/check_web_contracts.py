@@ -132,8 +132,6 @@ def _check_tun_contract(errors: list[str]) -> None:
     app = _read("web/app.js")
     html = _read("web/index.html")
     required_ids = {
-        "open-tun-dialog",
-        "tun-dialog",
         "tun-device",
         "tun-route",
         "tun-address",
@@ -148,8 +146,10 @@ def _check_tun_contract(errors: list[str]) -> None:
     missing_ids = [element_id for element_id in sorted(required_ids) if f'id="{element_id}"' not in html]
     if missing_ids:
         errors.append(f"WebUI TUN controls missing from web/index.html: {missing_ids}")
-    if 'id="open-tun-dialog">TUN routing<' not in html:
-        errors.append("WebUI session header must expose the TUN routing control")
+    if 'id="open-tun-dialog"' in html or 'id="tun-dialog"' in html:
+        errors.append("WebUI TUN controls must live inside the Pivots dialog")
+    if 'id="socks-dialog"' not in html or 'id="tun-section-title"' not in html:
+        errors.append("WebUI Pivots dialog must contain the TUN routing section")
     if "Server-owned device" not in html or "target-side TCP and UDP sockets" not in html:
         errors.append("WebUI must explain that the TUN device belongs to the server")
     for function_name in ("refreshTunRelays", "startSelectedTun", "stopTunRelay"):
@@ -172,7 +172,7 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("WebUI contract check OK: shell, configuration, SOCKS, and TUN controls")
+    print("WebUI contract check OK: shell, configuration, and pivot controls")
     return 0
 
 

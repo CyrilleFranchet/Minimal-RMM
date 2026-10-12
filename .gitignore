@@ -21,3 +21,6 @@ agent-plugins/**/*.h
 
 # Local Go agent builds
 agent-go/minimal-rmm-agent*
+
+# Local server-side TUN helper build
+tools/rmm-tun
