@@ -994,8 +994,8 @@ body.sidebar-resizing iframe {
 }
 
 .session-tools-dialog {
-  width: min(46rem, calc(100vw - 2rem));
-  max-height: min(42rem, calc(100vh - 2rem));
+  width: min(72rem, calc(100vw - 2rem));
+  height: min(82vh, 52rem, calc(100vh - 2rem));
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0;
@@ -1009,7 +1009,8 @@ body.sidebar-resizing iframe {
 }
 
 .session-tools-card {
-  max-height: inherit;
+  height: 100%;
+  box-sizing: border-box;
   overflow: auto;
   padding: 1rem 1.15rem 1.1rem;
   margin: 0;

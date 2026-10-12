@@ -9,6 +9,8 @@
 
 - Replaced the inline **Files & screenshot** and **Downloads from agent**
   sections with dialog overlays opened from the selected session header.
+- Sized both overlays against the viewport so the file form and download table
+  remain usable even when their contents are short.
 - Screenshot previews now expose a translucent **Download** control on hover or
   keyboard focus. It uses the authenticated artifact download path and saves
   the screenshot locally.
