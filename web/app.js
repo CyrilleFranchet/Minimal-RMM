@@ -466,6 +466,7 @@ function setConsoleReadOnly(readonly) {
     input.disabled = readonly;
   }
   if (readonly) {
+    document.querySelectorAll(".session-tools-dialog[open]").forEach((dialog) => dialog.close());
     resetShellHistoryNav();
     const hint = $("#shell-completion-hint");
     if (hint) hint.classList.add("hidden");
@@ -1713,7 +1714,8 @@ function renderEventBodyHtml(ev) {
   const body = String(ev.body || "");
   if (ev.type === "screenshot" && ev.artifact_url) {
     const src = artifactSrc(ev.artifact_url);
-    return `<img class="screenshot-preview" src="${escapeHtml(src)}" alt="screenshot">`;
+    const name = suggestedDownloadFilename({ artifact: ev.artifact });
+    return `<div class="screenshot-preview"><img class="screenshot-image" src="${escapeHtml(src)}" alt="Screenshot"><button type="button" class="screenshot-download" data-artifact-url="${escapeHtml(ev.artifact_url)}" data-download-name="${escapeHtml(name)}">Download</button></div>`;
   }
   if (ev.type === "file_upload" && ev.artifact_url) {
     fetchSessionDownloads().catch(() => {});
@@ -1952,6 +1954,7 @@ async function selectSession(id) {
   state.echoedCommands.clear();
   state.pendingCommandBlocks = [];
   state.renderedEventIds.clear();
+  document.querySelectorAll(".session-tools-dialog[open]").forEach((dialog) => dialog.close());
   renderSessionList();
   const s = state.sessions.find((x) => x.id === id);
   if (!s) return;
@@ -1997,6 +2000,7 @@ function showEmptyConsole() {
   state.selectedHistoryId = null;
   state.viewMode = "live";
   state.renderedEventIds.clear();
+  document.querySelectorAll(".session-tools-dialog[open]").forEach((dialog) => dialog.close());
   if (typeof window.syncAiChatWithSession === "function") {
     window.syncAiChatWithSession(null);
   }
@@ -2684,6 +2688,14 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
   $("#console-close")?.addEventListener("click", closeConsole);
+  $("#open-files-dialog")?.addEventListener("click", () => {
+    const dialog = $("#files-dialog");
+    if (dialog?.showModal && !dialog.open) dialog.showModal();
+  });
+  $("#open-downloads-dialog")?.addEventListener("click", () => {
+    const dialog = $("#downloads-dialog");
+    if (dialog?.showModal && !dialog.open) dialog.showModal();
+  });
   $("#history-clear-all")?.addEventListener("click", (e) => {
     e.preventDefault();
     clearAllHistorySessions();
@@ -2702,6 +2714,16 @@ document.addEventListener("DOMContentLoaded", () => {
   bindShellInputCompletion();
 
   $("#shell-output").addEventListener("click", (e) => {
+    const screenshotDownload = e.target.closest("button.screenshot-download");
+    if (screenshotDownload) {
+      downloadArtifactEntry({
+        artifact_url: screenshotDownload.dataset.artifactUrl,
+        remote_path: screenshotDownload.dataset.downloadName,
+      }).catch((err) => {
+        appendShellError(err.message || String(err));
+      });
+      return;
+    }
     const link = e.target.closest("a.artifact-download");
     if (!link) return;
     e.preventDefault();

@@ -615,8 +615,7 @@ body.sidebar-resizing iframe {
 }
 
 .console-panel.readonly-mode .shell-input-line,
-.console-panel.readonly-mode .tools-panel,
-.console-panel.readonly-mode .downloads-panel {
+.console-panel.readonly-mode .console-header-actions > :not(.console-close) {
   display: none !important;
 }
 
@@ -733,6 +732,17 @@ body.sidebar-resizing iframe {
   min-width: 0;
 }
 
+.console-header-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.console-header-actions button {
+  padding: 0.25rem 0.55rem;
+}
+
 .console-close {
   flex-shrink: 0;
   padding: 0.25rem 0.55rem;
@@ -745,6 +755,17 @@ body.sidebar-resizing iframe {
   color: var(--muted);
   margin-top: 0.25rem;
   font-family: var(--mono);
+}
+
+@media (max-width: 600px) {
+  .console-header-row {
+    align-items: flex-start;
+  }
+
+  .console-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
 }
 
 /* Shell: only this region scrolls */
@@ -906,48 +927,6 @@ body.sidebar-resizing iframe {
   border-color: var(--accent);
 }
 
-.tools-panel {
-  flex-shrink: 0;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-  font-size: 0.85rem;
-}
-
-.tools-panel summary {
-  padding: 0.5rem 1.25rem;
-  cursor: pointer;
-  color: var(--muted);
-  user-select: none;
-}
-
-.tools-panel[open] summary {
-  border-bottom: 1px solid var(--border);
-}
-
-.downloads-panel {
-  flex-shrink: 0;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-  font-size: 0.85rem;
-}
-
-.downloads-panel summary {
-  padding: 0.5rem 1.25rem;
-  cursor: pointer;
-  color: var(--muted);
-  user-select: none;
-}
-
-.downloads-panel[open] summary {
-  border-bottom: 1px solid var(--border);
-}
-
-.downloads-inner {
-  padding: 0.75rem 1.25rem 1rem;
-  max-height: 220px;
-  overflow: auto;
-}
-
 .downloads-empty {
   margin: 0;
   color: var(--muted);
@@ -1014,10 +993,46 @@ body.sidebar-resizing iframe {
   border-radius: 4px;
 }
 
-.tools-inner {
-  padding: 0.75rem 1.25rem 1rem;
-  max-height: 200px;
-  overflow-y: auto;
+.session-tools-dialog {
+  width: min(46rem, calc(100vw - 2rem));
+  max-height: min(42rem, calc(100vh - 2rem));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-modal);
+}
+
+.session-tools-dialog::backdrop {
+  background: var(--overlay);
+}
+
+.session-tools-card {
+  max-height: inherit;
+  overflow: auto;
+  padding: 1rem 1.15rem 1.1rem;
+  margin: 0;
+}
+
+.session-tools-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.session-tools-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.session-tools-header button {
+  flex-shrink: 0;
+  padding: 0.25rem 0.55rem;
+  font-size: 1.1rem;
+  line-height: 1;
 }
 
 .beacon-config-dialog {
@@ -1150,11 +1165,36 @@ body.sidebar-resizing iframe {
 }
 
 .screenshot-preview {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 0.35rem;
+}
+
+.screenshot-image {
+  display: block;
   max-width: 100%;
   max-height: 280px;
-  margin-top: 0.35rem;
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+
+.screenshot-download {
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  opacity: 0.82;
+  padding: 0.3rem 0.55rem;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 35%, transparent);
+  color: var(--text);
+  box-shadow: none;
+  transition: opacity 0.15s ease;
+}
+
+.screenshot-preview:hover .screenshot-download,
+.screenshot-preview:focus-within .screenshot-download {
+  opacity: 1;
 }
 
 .artifact-link {

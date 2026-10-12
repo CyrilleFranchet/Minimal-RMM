@@ -5,6 +5,14 @@
 
 ## Current Status
 
+### 2026-10-12 — WebUI file and screenshot overlays
+
+- Replaced the inline **Files & screenshot** and **Downloads from agent**
+  sections with dialog overlays opened from the selected session header.
+- Screenshot previews now expose a translucent **Download** control on hover or
+  keyboard focus. It uses the authenticated artifact download path and saves
+  the screenshot locally.
+
 ### 2026-10-09 — WebUI command completion audit
 
 - Confirmed shell history navigation and Tab/Shift+Tab completion are wired to the selected session, persisted in `sessionStorage`, and rebuilt from session events after reload.
