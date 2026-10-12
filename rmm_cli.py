@@ -264,13 +264,16 @@ class RmmApiClient:
         interface: str = "",
         mtu: int = 1500,
         udp_timeout_seconds: int = 300,
+        routes: list[str] | None = None,
     ):
+        route_values = list(routes) if routes is not None else ([route] if route else [])
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/tun",
             {
                 "device": device,
-                "route": route,
+                "route": route or (route_values[0] if route_values else ""),
+                "routes": route_values,
                 "tun_address": tun_address,
                 "interface": interface,
                 "mtu": mtu,
@@ -791,10 +794,14 @@ def print_tun_relays(relays: list, *, json_mode: bool = False) -> None:
         host = relay.get("hostname")
         user = relay.get("username")
         agent = f"{user}@{host}" if host else relay.get("session_id", "?")[:8]
+        routes = relay.get("routes")
+        if not isinstance(routes, list):
+            routes = [relay.get("route")] if relay.get("route") else []
+        route_label = ", ".join(str(route) for route in routes if route) or "manual"
         say(
             f"{relay.get('device', '?')}  →  {agent}  "
             f"[session {relay.get('session_id', '')[:8]}]  "
-            f"route={relay.get('route') or 'manual'}  "
+            f"routes={route_label}  "
             f"helper={'up' if relay.get('helper_alive') else 'down'}"
         )
 
@@ -810,7 +817,8 @@ def cmd_tun_start(client: RmmApiClient, state: dict, args):
     code, data = client.start_tun(
         args.session_ref,
         args.device,
-        route=args.route,
+        route=getattr(args, "route", ""),
+        routes=getattr(args, "routes", None),
         tun_address=args.tun_address,
         interface=args.interface,
         mtu=args.mtu,
@@ -1433,10 +1441,10 @@ def run_interactive(
                 if rest and rest[0].lower() == "start":
                     rest = rest[1:]
                 if not rest:
-                    warn("Usage: tun start <device> [--route cidr] [--address cidr] [--interface name] [--mtu n]")
+                    warn("Usage: tun start <device> [--route cidr ...] [--address cidr] [--interface name] [--mtu n]")
                     continue
                 device = rest[0]
-                route = ""
+                routes = []
                 tun_address = "198.18.0.1/15"
                 interface = ""
                 mtu = 1500
@@ -1447,7 +1455,7 @@ def run_interactive(
                     if option in ("--route", "--address", "--interface", "--mtu", "--udp-timeout") and i + 1 < len(rest):
                         value = rest[i + 1]
                         if option == "--route":
-                            route = value
+                            routes.append(value)
                         elif option == "--address":
                             tun_address = value
                         elif option == "--interface":
@@ -1473,7 +1481,7 @@ def run_interactive(
                     code, data = client.start_tun(
                         sid,
                         device,
-                        route=route,
+                        routes=routes,
                         tun_address=tun_address,
                         interface=interface,
                         mtu=mtu,
@@ -1748,7 +1756,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp_tun_start.add_argument("session_ref", help="Session id prefix or hostname")
     sp_tun_start.add_argument("device", help="TUN device, for example tun://rmm0 or utun4")
-    sp_tun_start.add_argument("--route", default="", help="IPv4 CIDR routed through this relay")
+    sp_tun_start.add_argument(
+        "--route",
+        dest="routes",
+        action="append",
+        default=None,
+        help="IPv4 CIDR routed through this relay; repeat for multiple networks",
+    )
     sp_tun_start.add_argument("--address", dest="tun_address", default="198.18.0.1/15")
     sp_tun_start.add_argument("--interface", default="", help="Physical egress interface")
     sp_tun_start.add_argument("--mtu", type=int, default=1500)

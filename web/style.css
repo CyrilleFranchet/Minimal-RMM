@@ -1308,9 +1308,22 @@ body.sidebar-resizing iframe {
 }
 
 .tun-config-grid input[type="number"],
-.tun-config-grid input[type="text"] {
+.tun-config-grid input[type="text"],
+.tun-config-grid textarea {
   width: 100%;
   margin-bottom: 0;
+}
+
+.tun-config-grid textarea {
+  min-height: 5.25rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  resize: vertical;
 }
 
 .tun-protocol {

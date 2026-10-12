@@ -200,7 +200,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080,"bind_host":"127.0.0.1"}` or `{"stop":true}` | Start/stop SOCKS5 via the agent pivot plugin |
 | `GET` | `/tun` | — | List active server-owned TUN relays |
-| `POST` | `/sessions/{id}/tun` | `{"device":"tun://rmm0","route":"10.10.0.0/16"}` or `{"stop":true}` | Start/stop a server TUN whose traffic exits through a Go agent |
+| `POST` | `/sessions/{id}/tun` | `{"device":"tun://rmm0","routes":["10.10.0.0/16","10.20.0.0/16"]}` or `{"stop":true}` | Start/stop a server TUN whose traffic exits through a Go agent; legacy `route` is accepted |
 | `GET` | `/ai/skills` | — | List server AI skills (metadata only) |
 | `GET` | `/sessions/{id}/ai/chat` | — | Load persisted AI chat for session (live or archived) |
 | `DELETE` | `/sessions/{id}/ai/chat` | — | Clear persisted AI chat |
@@ -326,16 +326,20 @@ python rmm_cli.py pe build tun
 make tun-build
 ```
 
-Start a relay and route a target network through it:
+Start a relay and route target networks through it:
 
 ```bash
 python rmm_cli.py tun start <session> tun://rmm0 \
-  --route 10.10.0.0/16 --interface eth0
+  --route 10.10.0.0/16 --route 10.20.0.0/16 --interface eth0
 ```
 
-The server must be able to create/configure a TUN interface. Use `tun list` to
-inspect active relays and `tun stop <session>` to tear one down. Full setup,
-Exegol routing, and current TCP/UDP limits are in `docs/tun-pivot.md`.
+Repeat `--route` for every target network. The server must be able to
+create/configure a TUN interface. On Linux, this requires `/dev/net/tun` and
+the permission to create network interfaces; containers need the TUN device and
+`CAP_NET_ADMIN`. On macOS, use an explicit `utun<N>` device such as `utun4`.
+Use `tun list` to inspect active relays and `tun stop <session>` to tear one
+down. Full setup, Exegol routing, and current TCP/UDP limits are in
+`docs/tun-pivot.md`.
 
 ---
 

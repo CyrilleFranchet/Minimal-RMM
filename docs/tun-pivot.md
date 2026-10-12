@@ -32,7 +32,12 @@ required.
 ## Requirements
 
 - The RMM server must run on Linux or macOS and have permission to create and
-  configure a TUN device and route.
+  configure a TUN device and routes.
+- On Linux, `/dev/net/tun` must be available and the server needs the permission
+  to create network interfaces. A container needs `/dev/net/tun` plus
+  `CAP_NET_ADMIN`.
+- On macOS, use an explicit `utun<N>` device name such as `utun4`. Linux names
+  such as `rmm0` are not valid for the macOS helper.
 - The server needs Go 1.26.3 or newer to build `rmm-tun`.
 - A Windows amd64 Go agent must advertise `tun-plugin` and the server must
   have a built `tun.dll`. The current TUN lifecycle intentionally rejects
@@ -63,13 +68,14 @@ session header. Before opening it, build `tun.dll` from **Deploy plugins (Go)**
 and build the server helper with `make tun-build`. In the TUN section, configure:
 
 - the server TUN device, such as `tun://rmm0` on Linux or `utun4` on macOS;
-- the narrow target route, such as `10.10.0.0/16`;
+- the narrow target routes, one IPv4 CIDR per line, such as
+  `10.10.0.0/16` and `10.20.0.0/16`;
 - the server TUN address, egress interface, MTU, and UDP idle timeout.
 
 Click **Start TUN routing** to create the device, configure the address and
-route, and start the server helper. The dialog shows active relays, helper
-health, beacon state, and the route in use. Click **Stop TUN routing** to
-remove the route, stop the helper, and release the device. The TUN controls
+routes, and start the server helper. The dialog shows active relays, helper
+health, beacon state, and the routes in use. Click **Stop TUN routing** to
+remove the routes, stop the helper, and release the device. The TUN controls
 use `GET /api/v1/tun` and `POST /api/v1/sessions/{id}/tun`; the target agent
 only provides the unprivileged TCP and UDP transport.
 
@@ -82,14 +88,14 @@ example:
 
 ```bash
 python rmm_cli.py tun start SESSION tun://rmm0 \
-  --route 10.10.0.0/16 --interface eth0
+  --route 10.10.0.0/16 --route 10.20.0.0/16 --interface eth0
 ```
 
 macOS example:
 
 ```bash
 python rmm_cli.py tun start SESSION utun4 \
-  --route 10.10.0.0/16 --interface en0
+  --route 10.10.0.0/16 --route 10.20.0.0/16 --interface en0
 ```
 
 The default address assigned to the server TUN is `198.18.0.1/15`. It is a
@@ -99,7 +105,7 @@ The default MTU is 1500 and the default UDP idle timeout is 300 seconds.
 
 The server starts a private SOCKS listener on an ephemeral loopback port,
 starts `rmm-tun`, configures the interface, and then reports the relay as
-active. `tun list` shows the helper state and selected route:
+active. `tun list` shows the helper state and configured routes:
 
 ```bash
 python rmm_cli.py tun list
@@ -113,16 +119,17 @@ GET /api/v1/tun
 POST /api/v1/sessions/{id}/tun
 Content-Type: application/json
 
-{"device":"tun://rmm0","route":"10.10.0.0/16","interface":"eth0"}
+{"device":"tun://rmm0","routes":["10.10.0.0/16","10.20.0.0/16"],"interface":"eth0"}
 ```
 
+The legacy single-route form `{"route":"10.10.0.0/16"}` remains accepted.
 Stop with `{"stop":true}`. The same lifecycle is exposed as MCP tools
-`list_tun`, `start_tun`, and `stop_tun`.
+`list_tun`, `start_tun`, and `stop_tun`; pass multiple CIDRs in `routes`.
 
 ## Using Exegol
 
-After the relay starts, verify that the route is present in the namespace that
-runs the tools:
+After the relay starts, verify that the routes are present in the namespace
+that runs the tools:
 
 ```bash
 ip addr show rmm0
@@ -147,7 +154,7 @@ and the agent's beacon latency.
   `tun.dll`, and an executable `rmm-tun` helper.
 - The server refuses a second TUN relay for the same session until the first
   one is stopped. A normal SOCKS listener cannot replace an active TUN relay.
-- Stopping the TUN relay removes the configured route, stops the helper, and
+- Stopping the TUN relay removes the configured routes, stops the helper, and
   stops the private SOCKS bridge. Killing the session performs the same
   cleanup.
 - The server logs relay start, stop, and setup failures. The target agent log
@@ -160,9 +167,9 @@ The server-side implementation is split across these functions and classes:
 
 | Symbol | File | Role |
 |--------|------|------|
-| `normalize_tun_config` | `rmm_tun.py` | Validate device, route, address, MTU, and UDP timeout values |
+| `normalize_tun_config` | `rmm_tun.py` | Validate device, routes, address, MTU, and UDP timeout values |
 | `_device_name` / `_run_system_command` | `rmm_tun.py` | Parse safe device names and execute fixed network command argument lists |
-| `ServerTunRelay` | `rmm_tun.py` | Own one helper process, interface, route, and private relay bridge |
+| `ServerTunRelay` | `rmm_tun.py` | Own one helper process, interface, routes, and private relay bridge |
 | `ServerTunRelay.start` / `stop` | `rmm_tun.py` | Configure and tear down one relay |
 | `ServerTunRelay.alive` / `status` | `rmm_tun.py` | Report helper health and safe operator state |
 | `ServerTunRelay._prepare_linux_device` / `_configure_interface` / `_remove_route` | `rmm_tun.py` | Apply platform-specific TUN and route operations |
@@ -171,7 +178,7 @@ The server-side implementation is split across these functions and classes:
 | `RMMServer.start_tun` / `stop_tun` | `server_rmm.py` | Operator lifecycle and event logging |
 | `RMMServer.tun_plugin_error` | `server_rmm.py` | Check Go transport and helper readiness |
 | `RMMServer.list_tun_status` | `server_rmm.py` | Return operator-visible relay state |
-| `refreshTunRelays` / `startSelectedTun` / `stopTunRelay` | `web/app.js` | WebUI inventory and TUN lifecycle controls |
+| `tunRelayRoutes` / `refreshTunRelays` / `startSelectedTun` / `stopTunRelay` | `web/app.js` | WebUI route display, inventory, and TUN lifecycle controls |
 | `tunConfig` / `validateConfig` | `server-tun/main.go` | Validate helper flags before starting the stack |
 | `main` | `server-tun/main.go` | Run the server-side TUN process until shutdown |
 

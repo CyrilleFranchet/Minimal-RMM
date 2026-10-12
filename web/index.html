@@ -451,8 +451,8 @@
             <input type="text" id="tun-device" value="tun://rmm0" autocomplete="off" spellcheck="false">
           </div>
           <div>
-            <label for="tun-route">Target route (IPv4 CIDR)</label>
-            <input type="text" id="tun-route" placeholder="10.10.0.0/16" autocomplete="off" spellcheck="false">
+            <label for="tun-route">Target routes (IPv4 CIDR, one per line)</label>
+            <textarea id="tun-route" rows="3" placeholder="10.10.0.0/16&#10;10.20.0.0/16" autocomplete="off" spellcheck="false"></textarea>
           </div>
           <div>
             <label for="tun-address">TUN address</label>
@@ -473,7 +473,7 @@
         </div>
         <p class="tun-protocol" role="note">
           <span class="tun-protocol-label">Server-owned device</span>
-          <span>The TUN interface and route are created on the RMM server. The Go agent only opens target-side TCP and UDP sockets.</span>
+          <span>The TUN interface and routes are created on the RMM server. The Go agent only opens target-side TCP and UDP sockets.</span>
         </p>
         <div class="tun-actions">
           <button type="button" id="tun-start">Start TUN routing</button>
@@ -482,7 +482,7 @@
         </div>
         <p id="tun-status" class="tools-hint" role="status" aria-live="polite"></p>
         <p id="tun-action-status" class="tools-hint" role="status" aria-live="polite"></p>
-        <p class="tools-hint">Use a narrow target route such as <code>10.10.0.0/16</code>. The server needs the built <code>rmm-tun</code> helper, a built <code>tun.dll</code>, and permission to configure the host TUN device.</p>
+        <p class="tools-hint">Use narrow target routes such as <code>10.10.0.0/16</code>, one per line. The server needs the built <code>rmm-tun</code> helper, a built <code>tun.dll</code>, and permission to configure the host TUN device.</p>
         <h3 class="tun-relays-title">Active server TUN relays</h3>
         <div id="tun-relays-list" class="tun-relays-list">
           <p class="downloads-empty">No active TUN relays.</p>

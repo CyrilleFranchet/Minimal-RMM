@@ -229,6 +229,7 @@ def start_tun(
     interface: str = "",
     mtu: int = 1500,
     udp_timeout_seconds: int = 300,
+    routes: list[str] | None = None,
 ) -> str:
     """Create a server-side TUN relay whose traffic exits through a Go agent."""
     return tool_start_tun(
@@ -236,6 +237,7 @@ def start_tun(
         session_ref,
         device,
         route=route,
+        routes=routes,
         tun_address=tun_address,
         interface=interface,
         mtu=mtu,

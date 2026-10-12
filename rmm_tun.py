@@ -26,6 +26,7 @@ DEFAULT_TUN_MTU = 1500
 DEFAULT_UDP_TIMEOUT_SECONDS = 300
 TUN_DEVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 TUN_INTERFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
+MACOS_TUN_DEVICE_RE = re.compile(r"^utun[0-9]+$")
 
 
 class TunError(RuntimeError):
@@ -70,17 +71,36 @@ def normalize_tun_config(body: dict) -> dict:
     if tun_address.version != 4:
         raise ValueError("tun_address must be IPv4")
 
-    route_text = str(body.get("route", "")).strip()
-    route = None
-    if route_text:
+    route_values: list[tuple[str, str]] = []
+    raw_routes = body.get("routes")
+    if raw_routes is not None:
+        if isinstance(raw_routes, str):
+            raw_routes = [item for item in re.split(r"[,\n]", raw_routes) if item.strip()]
+        elif not isinstance(raw_routes, list):
+            raise ValueError("routes must be an array of IPv4 CIDRs")
+        for index, value in enumerate(raw_routes):
+            route_values.append((str(value).strip(), f"routes[{index}]"))
+    legacy_route = body.get("route", "")
+    if legacy_route not in (None, ""):
+        if not isinstance(legacy_route, str):
+            raise ValueError("route must be an IPv4 CIDR")
+        route_values.insert(0, (legacy_route.strip(), "route"))
+
+    routes: list[str] = []
+    for route_text, field_name in route_values:
+        if not route_text:
+            raise ValueError(f"{field_name} must be an IPv4 CIDR")
         try:
             route = ipaddress.ip_network(route_text, strict=False)
         except ValueError as exc:
-            raise ValueError("route must be an IPv4 CIDR") from exc
+            raise ValueError(f"{field_name} must be an IPv4 CIDR") from exc
         if route.version != 4 or route.prefixlen == 0:
-            raise ValueError("route must be a non-default IPv4 CIDR")
+            raise ValueError(f"{field_name} must be a non-default IPv4 CIDR")
         if route.overlaps(tun_address.network):
-            raise ValueError("route must not overlap the TUN address network")
+            raise ValueError(f"{field_name} must not overlap the TUN address network")
+        route_text = str(route)
+        if route_text not in routes:
+            routes.append(route_text)
 
     interface = str(body.get("interface", "")).strip()
     if interface and not TUN_INTERFACE_RE.fullmatch(interface):
@@ -104,7 +124,8 @@ def normalize_tun_config(body: dict) -> dict:
         "device": f"tun://{device_name}" if device.startswith("tun://") else device_name,
         "device_name": device_name,
         "tun_address": str(tun_address),
-        "route": str(route) if route else "",
+        "routes": routes,
+        "route": routes[0] if routes else "",
         "interface": interface,
         "mtu": mtu,
         "udp_timeout_seconds": udp_timeout,
@@ -125,6 +146,19 @@ def _run_system_command(args: list[str]) -> None:
         raise TunError(f"required command is unavailable: {args[0]}") from exc
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "").strip()
+        detail_lower = detail.lower()
+        if args[:3] == ["ip", "tuntap", "add"]:
+            if "no such file or directory" in detail_lower or "open:" in detail_lower:
+                raise TunError(
+                    "Linux TUN device is unavailable: /dev/net/tun is missing or inaccessible; "
+                    "load the tun kernel module and expose /dev/net/tun to the server "
+                    "(Docker: --device /dev/net/tun --cap-add NET_ADMIN)"
+                ) from exc
+            if "operation not permitted" in detail_lower or "permission denied" in detail_lower:
+                raise TunError(
+                    "Linux TUN setup lacks permissions: grant access to /dev/net/tun and "
+                    "CAP_NET_ADMIN to the server"
+                ) from exc
         raise TunError(f"network command failed: {args[0]} {detail}".strip()) from exc
     except subprocess.TimeoutExpired as exc:
         raise TunError(f"network command timed out: {args[0]}") from exc
@@ -143,18 +177,23 @@ class ServerTunRelay:
         self.process: subprocess.Popen | None = None
         self.socks_port: int | None = None
         self._created_linux_device = False
-        self._route_configured = False
+        self._configured_routes: list[str] = []
 
     def log(self, message: str, level: str = "INFO") -> None:
         self.log_fn(message, level)
 
     def start(self) -> None:
-        """Start the private relay bridge, TUN helper, and host route."""
+        """Start the private relay bridge, TUN helper, and host routes."""
         if not os.path.isfile(self.helper_path) or not os.access(self.helper_path, os.X_OK):
             raise TunError(f"TUN helper is unavailable: {self.helper_path}")
         system = platform.system().lower()
         if system not in ("linux", "darwin"):
             raise TunError(f"server TUN support is not implemented for {system or 'unknown'}")
+        if system == "darwin" and not MACOS_TUN_DEVICE_RE.fullmatch(self.config["device_name"]):
+            raise TunError(
+                "macOS TUN devices must use an explicit utun<N> name (for example utun4); "
+                "Linux names such as rmm0 are not valid on macOS"
+            )
 
         bridge = self.socks_manager.start(
             self.session_id,
@@ -201,7 +240,7 @@ class ServerTunRelay:
         )
 
     def stop(self) -> None:
-        """Stop the helper, remove the route, and stop the private SOCKS bridge."""
+        """Stop the helper, remove the routes, and stop the private SOCKS bridge."""
         system = platform.system().lower()
         try:
             self._remove_route(system)
@@ -240,6 +279,7 @@ class ServerTunRelay:
             "session_id": self.session_id,
             "device": self.config["device"],
             "tun_address": self.config["tun_address"],
+            "routes": list(self.config.get("routes", [])),
             "route": self.config["route"],
             "interface": self.config["interface"],
             "mtu": self.config["mtu"],
@@ -270,22 +310,22 @@ class ServerTunRelay:
         self._created_linux_device = True
 
     def _configure_interface(self, system: str) -> None:
-        """Assign the TUN address, bring it up, and install the optional route."""
+        """Assign the TUN address, bring it up, and install optional routes."""
         address = ipaddress.ip_interface(self.config["tun_address"])
         name = self.config["device_name"]
         if system == "linux":
             _run_system_command(["ip", "addr", "replace", str(address), "dev", name])
             _run_system_command(["ip", "link", "set", "dev", name, "up"])
-            if self.config["route"]:
-                _run_system_command(["ip", "route", "replace", self.config["route"], "dev", name])
-                self._route_configured = True
+            for route in self.config.get("routes", []):
+                _run_system_command(["ip", "route", "replace", route, "dev", name])
+                self._configured_routes.append(route)
             return
         if system == "darwin":
             if shutil.which("ifconfig") is None:
                 raise TunError("ifconfig is required for macOS TUN setup")
             _run_system_command(["ifconfig", name, str(address.ip), str(address.ip), "up"])
-            if self.config["route"]:
-                route = ipaddress.ip_network(self.config["route"], strict=False)
+            for route_text in self.config.get("routes", []):
+                route = ipaddress.ip_network(route_text, strict=False)
                 _run_system_command(
                     [
                         "route",
@@ -298,26 +338,41 @@ class ServerTunRelay:
                         str(address.ip),
                     ]
                 )
-                self._route_configured = True
+                self._configured_routes.append(route_text)
 
     def _remove_route(self, system: str) -> None:
-        """Remove the route previously installed for this relay, if any."""
-        if not self._route_configured or not self.config["route"]:
+        """Remove routes previously installed for this relay, if any."""
+        if not self._configured_routes:
             return
         name = self.config["device_name"]
+        routes = list(self._configured_routes)
+        self._configured_routes.clear()
+        errors: list[TunError] = []
         if system == "linux":
-            try:
-                _run_system_command(["ip", "route", "del", self.config["route"], "dev", name])
-            finally:
-                self._route_configured = False
+            for route in reversed(routes):
+                try:
+                    _run_system_command(["ip", "route", "del", route, "dev", name])
+                except TunError as exc:
+                    errors.append(exc)
         elif system == "darwin":
-            route = ipaddress.ip_network(self.config["route"], strict=False)
-            try:
-                _run_system_command(
-                    ["route", "-n", "delete", "-net", str(route.network_address), "-netmask", str(route.netmask)]
-                )
-            finally:
-                self._route_configured = False
+            for route_text in reversed(routes):
+                route = ipaddress.ip_network(route_text, strict=False)
+                try:
+                    _run_system_command(
+                        [
+                            "route",
+                            "-n",
+                            "delete",
+                            "-net",
+                            str(route.network_address),
+                            "-netmask",
+                            str(route.netmask),
+                        ]
+                    )
+                except TunError as exc:
+                    errors.append(exc)
+        if errors:
+            raise errors[0]
 
 
 class TunManager:

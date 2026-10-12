@@ -404,6 +404,11 @@ function selectedTunRelay(sessionId = state.selectedId) {
   return state.tunRelays.find((relay) => relay.session_id === sessionId) || null;
 }
 
+function tunRelayRoutes(relay) {
+  const values = Array.isArray(relay?.routes) ? relay.routes : [relay?.route];
+  return values.map((route) => String(route || "").trim()).filter(Boolean);
+}
+
 function setTunActionStatus(message, error = false) {
   const el = $("#tun-action-status");
   if (!el) return;
@@ -422,7 +427,8 @@ function renderTunRelayList() {
   const rows = state.tunRelays
     .map((relay) => {
       const sessionId = String(relay.session_id || "");
-      const route = String(relay.route || "").trim() || "no target route";
+      const routes = tunRelayRoutes(relay);
+      const route = routes.join(", ") || "no target route";
       const device = String(relay.device || "?");
       const address = String(relay.tun_address || "?");
       const helper = relay.helper_alive ? "helper running" : "helper stopped";
@@ -439,7 +445,7 @@ function renderTunRelayList() {
 
   container.innerHTML = `<table class="socks-table tun-table">
     <caption class="sr-only">Active server TUN relays</caption>
-    <thead><tr><th scope="col">Agent</th><th scope="col">Device and route</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+    <thead><tr><th scope="col">Agent</th><th scope="col">Device and routes</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 
@@ -466,9 +472,10 @@ function updateTunUi() {
   }
   if (status) {
     if (relay) {
-      const route = relay.route || "no target route";
+      const routes = tunRelayRoutes(relay);
+      const route = routes.join(", ") || "no target route";
       const helper = relay.helper_alive ? "helper running" : "helper stopped";
-      status.textContent = `Active server TUN · ${relay.device} · route ${route} · ${helper}`;
+      status.textContent = `Active server TUN · ${relay.device} · routes ${route} · ${helper}`;
       status.classList.add("tun-active");
     } else {
       status.textContent = state.selectedId
@@ -505,7 +512,7 @@ function prepareTunControls() {
   const relay = selectedTunRelay();
   const values = {
     "#tun-device": relay?.device || "tun://rmm0",
-    "#tun-route": relay?.route || "",
+    "#tun-route": tunRelayRoutes(relay).join("\n"),
     "#tun-address": relay?.tun_address || "198.18.0.1/15",
     "#tun-interface": relay?.interface || "",
     "#tun-mtu": relay?.mtu || 1500,
@@ -523,7 +530,8 @@ async function startSelectedTun() {
   const sessionId = state.selectedId;
   if (!sessionId || state.viewMode !== "live") return;
   const device = $("#tun-device")?.value.trim() || "";
-  const route = $("#tun-route")?.value.trim() || "";
+  const routeText = $("#tun-route")?.value.trim() || "";
+  const routes = routeText.split(/[\s,]+/).map((route) => route.trim()).filter(Boolean);
   const tunAddress = $("#tun-address")?.value.trim() || "198.18.0.1/15";
   const interfaceName = $("#tun-interface")?.value.trim() || "";
   const mtu = Number.parseInt($("#tun-mtu")?.value, 10);
@@ -549,7 +557,8 @@ async function startSelectedTun() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         device,
-        route,
+        route: routes[0] || "",
+        routes,
         tun_address: tunAddress,
         interface: interfaceName,
         mtu,
@@ -562,9 +571,10 @@ async function startSelectedTun() {
     }
     const relay = data.tun || {};
     const activeDevice = relay.device || device;
-    const activeRoute = relay.route || route || "no target route";
-    setTunActionStatus(`TUN routing active on ${activeDevice} · route ${activeRoute}`);
-    appendShellMeta(`Server TUN routing enabled on ${activeDevice} · route ${activeRoute}`);
+    const activeRoutes = tunRelayRoutes(relay);
+    const activeRoute = activeRoutes.join(", ") || routes.join(", ") || "no target route";
+    setTunActionStatus(`TUN routing active on ${activeDevice} · routes ${activeRoute}`);
+    appendShellMeta(`Server TUN routing enabled on ${activeDevice} · routes ${activeRoute}`);
     await refreshTunRelays();
     await refreshSocksRelays();
   } finally {

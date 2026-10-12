@@ -220,6 +220,7 @@ class TunApiTests(unittest.TestCase):
         )
         self.assertEqual(config["device"], "tun://rmm0")
         self.assertEqual(config["device_name"], "rmm0")
+        self.assertEqual(config["routes"], ["10.20.0.0/16"])
         self.assertEqual(config["route"], "10.20.0.0/16")
         self.assertEqual(config["mtu"], 1400)
         self.assertEqual(config["udp_timeout_seconds"], 90)
@@ -247,11 +248,41 @@ class TunApiTests(unittest.TestCase):
             {
                 "device": "tun://rmm0",
                 "device_name": "rmm0",
+                "routes": ["10.20.0.0/16"],
                 "route": "10.20.0.0/16",
                 "tun_address": "198.18.0.1/15",
                 "interface": "eth0",
                 "mtu": 1400,
                 "udp_timeout_seconds": 90,
+            },
+        )
+
+    def test_start_passes_multiple_routes(self):
+        session = _fake_session()
+        handler = self._handler(session)
+        RMMHandler._handle_api_post(
+            handler,
+            f"{API_PREFIX}/sessions/abcd1234/tun",
+            {
+                "device": "tun://rmm0",
+                "routes": ["10.20.0.0/16", "10.30.0.0/16"],
+            },
+        )
+
+        status, body = handler.responses[-1]
+        self.assertEqual(status, 200)
+        self.assertTrue(body["tun_active"])
+        handler.server_instance.start_tun.assert_called_once_with(
+            session.id,
+            {
+                "device": "tun://rmm0",
+                "device_name": "rmm0",
+                "routes": ["10.20.0.0/16", "10.30.0.0/16"],
+                "route": "10.20.0.0/16",
+                "tun_address": "198.18.0.1/15",
+                "interface": "",
+                "mtu": 1500,
+                "udp_timeout_seconds": 300,
             },
         )
 

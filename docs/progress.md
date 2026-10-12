@@ -5,6 +5,16 @@
 
 ## Current Status
 
+### 2026-10-12 — Multiple TUN routes and host diagnostics
+
+- Added canonical `routes[]` support across the REST API, CLI, MCP tools, and
+  WebUI. The existing single `route` field remains accepted for compatibility.
+- The server installs and removes all configured routes with the relay
+  lifecycle; the WebUI accepts one IPv4 CIDR per line and the CLI repeats
+  `--route`.
+- Added actionable Linux TUN errors for missing `/dev/net/tun` and missing
+  `CAP_NET_ADMIN`, plus validation for explicit `utun<N>` names on macOS.
+
 ### 2026-10-12 — WebUI TUN routing controls
 
 - Added TUN routing controls inside the SOCKS **Pivots** dialog in the live
