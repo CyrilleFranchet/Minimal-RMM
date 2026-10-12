@@ -5,6 +5,47 @@
 
 ## Current Status
 
+### 2026-10-12 — SOCKS relay reliability audit
+
+- Fixed fragmented SOCKS5 handshake and request reads, rejected clients that do
+  not offer the supported no-auth method, and buffered fast remote data until
+  the local client socket is attached.
+- Fixed server task queue behavior: close operations retry until the agent
+  acknowledges them, the 32-send poll cap is enforced without replaying
+  deferred data, and failed listener binds no longer leave a registered
+  running relay.
+- Added bounded PowerShell target connects, remote EOF detection, bounded read
+  batches, transient `GET /socks` retry behavior, and response batch retries.
+  The Go plugin now reuses sockets across repeated connect tasks, retries
+  response batches, and completes short TCP writes.
+- Added regression tests for fragmentation, task ordering/caps, early remote
+  data, listener rollback, and Go short writes. `rmm_rclone.py` remains a
+  separate cloud upload module.
+
+### 2026-10-12 — Pivot plugin boundary
+
+- Renamed the WebUI session control to **Pivots** while keeping SOCKS5 as the
+  first technical pivot type and preserving the `/socks` API for compatibility.
+- Moved the Go agent SOCKS relay into the persistent `agent-plugins/socks`
+  plugin. Windows amd64 Go agents start it from the `socks_active` lifecycle
+  flag and can cancel it without blocking the beacon loop.
+- Moved the PowerShell relay implementation into the checked-in
+  `agent-plugins/socks-powershell/socks.ps1` plugin, fetched through the
+  authenticated plugin endpoint and run in its dedicated worker runspace.
+- Added plugin readiness checks so a Go pivot cannot start until the default
+  `socks.dll` artifact is built. See `docs/web-socks.md` and
+  `docs/go-agent-plugins.md`.
+
+### 2026-10-12 — WebUI pivot controls
+
+- Added a **SOCKS5 relays** dialog to the live session header. Operators can
+  start or restart the selected session relay, stop it, choose the listener
+  port and bind host, and copy the proxy URL.
+- Added a global relay inventory backed by `GET /api/v1/socks`, with agent
+  identity, proxy URL, channel, tunnel count, beacon state, and per-relay stop
+  actions. Active listener ports also appear in the session sidebar.
+- Documented the flow in `docs/web-socks.md` and added a WebUI contract check.
+
 ### 2026-10-12 — Plugin exfil password normalization
 
 - Fixed the in-process rclone plugin path to obscure plain backend password
@@ -97,9 +138,9 @@
 
 ### 2026-10-08 — Go agent build workflow
 
-- Added the dependency-free `agent-go/` protocol-compatible beacon with command execution, runtime config acknowledgement, chunked file transfer, HTTP proxy support, HTTP-poll SOCKS, rclone bootstrap/exfiltration, and Windows-specific screenshot/keylog/persistence adapters.
+- Added the dependency-free `agent-go/` protocol-compatible beacon with command execution, runtime config acknowledgement, chunked file transfer, HTTP proxy support, plugin-managed SOCKS pivot startup, rclone bootstrap/exfiltration, and Windows-specific screenshot/keylog/persistence adapters.
 - Added authenticated WebUI source inspection and server-side cross-compilation for Windows/Linux amd64/arm64.
-- Added `docs/go-agent.md`; the Go HTTP-poll SOCKS path is portable and the PowerShell WebSocket path remains an optional optimization.
+- Added `docs/go-agent.md`; Windows amd64 Go agents use the persistent `socks` plugin, while the PowerShell agent fetches its script plugin on demand.
 - Go Windows child commands now use hidden process creation, including PowerShell screenshot capture and explicit PowerShell commands.
 - Go Windows screenshot capture now uses native GDI APIs and Go PNG encoding without launching PowerShell.
 - Replaced fragile `GetDIBits` screenshot readback with a native GDI DIB section whose pixel buffer is read directly.
@@ -134,9 +175,10 @@
 | Path | Lines (approx.) | Role |
 |------|-----------------|------|
 | `server_rmm.py` | ~2k | Threaded HTTP server: beacon + `/api/v1` operator API + embedded `--cli` |
-| `agent-powershell/client_rmm.ps1` | ~2k | Windows PowerShell beacon, command execution, SOCKS worker |
+| `agent-powershell/client_rmm.ps1` | ~2k | Windows PowerShell beacon, command execution, pivot plugin host |
+| `agent-plugins/` | — | Checked-in Go PE plugins and the PowerShell SOCKS5 pivot script |
 | `rmm_cli.py` | ~1.3k | Operator CLI (`RmmApiClient`), interactive REPL + subcommands |
-| `rmm_socks.py` | ~570 | SOCKS5 listener on server; task queue; TCP relay via agent |
+| `rmm_socks.py` | ~570 | SOCKS5 listener on server; task queue; TCP relay via pivot plugin |
 | `rmm_ws.py` | ~210 | Stdlib WebSocket (operator event hub + agent SOCKS channel) |
 | `rmm_tools.py` | ~430 | Shared operator tools (MCP + web AI fallback) |
 | `mcp_rmm_server.py` | ~170 | FastMCP server (16 tools) |
@@ -169,12 +211,12 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
          ▼                         ▼                         ▼
   agent-powershell/         rmm_cli.py / web/          mcp_rmm_server.py
   (main loop +              (REST)                     (FastMCP tools)
-   SOCKS runspace)
+   pivot plugin host)
 ```
 
 **Beacon model:** poll-based, no interactive TCP shell. Latency ≥ one sleep interval (+ jitter). Commands are JSON on `GET /cmd`; results on `POST /result`.
 
-**SOCKS model:** SOCKS5 binds on **operator host** (`127.0.0.1:N`). Bytes traverse: local SOCKS client → server listener → task queue → agent (WS or HTTP `/socks`) → remote TCP on agent LAN.
+**SOCKS model:** SOCKS5 binds on **operator host** (`127.0.0.1:N`). Bytes traverse: local SOCKS client → server listener → task queue → agent pivot plugin (HTTP `/socks`) → remote TCP on agent LAN. The server still exposes the WebSocket transport for compatible future plugins.
 
 ---
 
@@ -237,10 +279,10 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Chunked exfil (`Send-RmmFileDownload`, varied **2 / 5 / 10 / 20 MB** chunks → `POST /result` `file_upload`; live `download_progress` POSTs; **paced by default** — `$downloadBurst` / `RMM_DOWNLOAD_BURST` for burst mode)
 - [x] Keylogger job (`__KEYLOG__ start|stop|dump`) → temp file → `keylog` result type
 - [x] Persistence installer copies script to `%APPDATA%` + Run key (with current URL/sleep/jitter)
-- [x] SOCKS: `Sync-RmmSocksChannelFromServer` on `socks_active` from `/cmd`; dedicated runspace worker
-- [x] SOCKS WS: `Connect-RmmSocksClientWebSocket` (IPv4 + Host), pull loop, chunked responses, no cancelled `ReceiveAsync`
-- [x] SOCKS HTTP fallback; 12× WS retry before fallback; host log queue → main console
-- [x] Runspace isolation: `RmmHostAnchor`, `BeginInvoke`, function import into worker runspace (PS 5.1 safe)
+- [x] SOCKS lifecycle hook: `Sync-RmmSocksChannelFromServer` starts and stops the fetched `socks.ps1` plugin from the `/cmd` flag
+- [x] SOCKS PowerShell plugin: authenticated fetch, HTTP poll, TCP task handling, and dedicated runspace execution
+- [x] SOCKS Go plugin: persistent `socks.dll` child for Windows amd64, with cancellation owned by the beacon
+- [x] Runspace/process isolation: PowerShell `BeginInvoke` and Go plugin child keep relay code outside the main beacon loop
 
 ### Operator CLI (`rmm_cli.py`)
 
@@ -265,6 +307,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] Live session list — WebSocket + 12 s poll; client-side beacon status refresh; kill closes console
 - [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`); hover **Delete** removes one archive; **Clear all** removes every ended archive (`DELETE /api/v1/history`)
 - [x] Beacon config apply (PATCH sleep/jitter) — per-session **Beacon** button opens modal dialog
+- [x] **SOCKS5 relays** — start/stop/restart selected session relays and manage the global relay inventory; see `docs/web-socks.md`
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
 - [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); tab-scoped OpenAI, Anthropic, and Mistral keys with live validation and provider-specific model lists; Mistral standard and multi-message completion responses normalize to displayable text, and Mistral tool results include the function name required to end a tool loop; optional Exegol MCP settings; **server skills** (`ai-skills/*.md`, `GET /api/v1/ai/skills`) — see `docs/ai-providers.md` and `docs/web-ai-skills.md`
 - [x] **AI task completion reports** — default `task-completion-report` skill requires a concise work summary; successful responses include server-generated UTC task start and completion timestamps
@@ -290,6 +333,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `README.md` — setup, API tables, SOCKS troubleshooting, MCP mapping
 - [x] `CLAUDE.md` — project overview for agents
 - [x] `docs/downloads-browser.md` — web downloads panel + `GET …/downloads` API
+- [x] `docs/web-socks.md` — WebUI pivot controls and global SOCKS5 relay inventory
+- [x] `docs/pivot-plugins.md` — agent-side pivot plugin delivery and lifecycle
 - [x] `docs/web-shell-completion.md` — shell ↑/↓ history and Tab completion
 - [x] `docs/client-command-execution.md` — hidden CMD/PS process launch on the agent
 - [x] `docs/prd.md` — product vision; EDR/AV compatibility as commercial gate
@@ -319,13 +364,13 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Agent script (`GET /agent/script`) | ✅ | ❌ | ❌ | ✅ `get_agent_script` | ✅ | ❌ |
 | Upload file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Screenshot | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
-| SOCKS start/stop | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
-| SOCKS list all | ✅ | ✅ `socks list` | ✅ `socks list` | ✅ | ❌ | ✅ `socks list` |
+| SOCKS start/stop | ✅ | ✅ | ❌ | ✅ | ✅ dialog | ✅ |
+| Pivot list (SOCKS5) | ✅ | ✅ `socks list` | ✅ `socks list` | ✅ | ✅ dialog | ✅ `socks list` |
 | Events / transcript | ✅ | ✅ | ✅ | ✅ | ✅ WS | ❌ |
 | Keylog | queue only | ❌ | ❌ | ✅ `queue_keylog` | ❌ | ✅ |
 | Install/remove persist | queue only | ❌ | ❌ | ✅ `install_persistence` / `remove_persistence` | ❌ | ✅ |
 
-**Gaps to note:** Web UI and CLI subcommands lack SOCKS start/stop. MCP parity requirement: `docs/mcp-parity.md`.
+**Gaps to note:** CLI subcommands still lack dedicated SOCKS start/stop commands. MCP parity requirement: `docs/mcp-parity.md`.
 
 ---
 
@@ -340,7 +385,6 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [ ] **Web UI — archived sessions missing entered commands** — see [tech plan §11](tech-plan.md#11-web-ui--archived-sessions-missing-entered-commands-bug): history replay should show operator-typed command lines, not only output or internal `__DOWNLOAD__` tokens
 - [ ] **Web UI — traffic & beacon charts** — see [tech plan §1](tech-plan.md#1-beacon--traffic-visualization-web-ui): `GET …/metrics`, poll/byte counters, Chart.js panel
 - [ ] **Web UI — interactive shell (cmd / PowerShell)** — see [tech plan §5](tech-plan.md#5-web-ui--interactive-shell-mode-cmd--powershell): shell mode selector, cwd prompt, `PS:` / `pwsh:` dispatch
-- [ ] **Web UI:** SOCKS controls + global relay list (`GET /api/v1/socks`)
 - [ ] **Chunked upload** (symmetry with download; large `content_b64` still single POST today)
 - [ ] **CLI subcommands:** `screenshot`, `socks start|stop` (only interactive today)
 - [ ] **Tests:** SOCKS task ordering, chunked download reassembly, API auth, WS handshake
@@ -356,8 +400,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 |-------|----------|
 | Commercial viability | **EDR/AV must not routinely block the agent** — see `docs/prd.md`; otherwise the product is not sellable |
 | Control plane | Beacon HTTP only (`/cmd`); SOCKS control via `socks_active` flag, not shell command |
-| SOCKS data plane | WebSocket on `GET /socks` (upgrade); HTTP poll fallback; pull-based tasks (no push) |
-| WS receive | Never cancel `ClientWebSocket.ReceiveAsync` (Aborted state on .NET) |
+| SOCKS data plane | Shipped pivot plugins use HTTP `GET/POST /socks`; WebSocket upgrade remains for compatible future plugins |
 | Task order | Server returns connect/close before send; agent sorts connect → send → close |
 | SOCKS bind | Listener on **RMM server** host; tools use `socks5://127.0.0.1:port` there |
 | Downloads | Varied chunk sizes (2 / 5 / 10 / 20 MB raw) on `POST /result` `file_upload`; `upload_id` + `offset` + `eof`; paced by default (`$downloadBurst`) |
@@ -373,7 +416,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 - `docs/tech-plan.md` covers traffic charts; `docs/rclone-exfil.md` documents rclone exfil; `docs/downloads-browser.md` documents the web downloads panel (shipped).
 - Agent `file_upload` JSON may include `remote_path` (full agent path) alongside `filename`.
-- SOCKS uses custom JSON task protocol over WebSocket, not a generic byte-stream tunnel.
+- SOCKS uses a custom JSON task protocol over HTTP poll for the shipped pivot plugins, not a generic byte-stream tunnel. The server WebSocket adapter remains available for compatible future plugins.
 - Embedded `server_rmm.py --cli` remains alongside `rmm_cli.py` (duplicate UX).
 - Keylog + persistence exist on client and embedded CLI but are intentionally absent from MCP/web.
 
@@ -441,7 +484,7 @@ beacon_detector's inter-arrival distribution bimodal `[~70ms, ~5000ms]` instead 
 | SMB / “NETBIOS timeout” via SOCKS | Relay is TCP-only (`:445`); not 137–139. Windows may show generic timeout on `STATUS_LOGON_FAILURE`. Use target IP. |
 | Upload size | Single base64 POST per file; no chunking (downloads are chunked). |
 | SOCKS throughput | Pull-loop latency; adequate for interactive use, not bulk transfer optimized. |
-| Proxy idle WS | Cloudflare/tunnels may drop long-idle WebSockets; `KeepAliveInterval=20s` on agent. |
+| Pivot throughput | HTTP pull-loop latency; adequate for interactive use, not bulk transfer optimized. |
 | ~~Register + Web UI WS deadlock~~ | **Fixed:** single `_io_lock` on operator WS blocked `broadcast_sessions` during idle `recv_json` → Cloudflare 524 (~100s). Split send/recv locks in `rmm_ws.py`; async/debounced session broadcast; lighter register path. |
 | ~~Beacon hang after large results~~ | **Fixed:** `/result` waited for history write + full-body WS push before HTTP 200; slow clients could block origin. Now respond 200 immediately, process async; truncate WS event bodies; 15s WS send timeout; client shows `Beacon poll…` and reports failed result POSTs. Web UI hydrates truncated live bodies from REST so operators still see the complete output. |
 | No automated tests | Regressions caught manually only. |
@@ -451,7 +494,7 @@ beacon_detector's inter-arrival distribution bimodal `[~70ms, ~5000ms]` instead 
 | ~~CMD nested quotes / cwd~~ | **Fixed:** temp `.cmd` under `%TEMP%` runs the operator line literally; `/d /c` passes only the script path; `WorkingDirectory` for cwd (no `/S` + `%CD%` on `H:\`). |
 | Web UI archived commands | History sidebar replays events without the operator-entered command line (`rmm> …`) — shows output only, internal tokens (`__DOWNLOAD__`), or `result » cmd` meta; see [tech plan §11](tech-plan.md#11-web-ui--archived-sessions-missing-entered-commands-bug). |
 | README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
-| Web ↔ CLI parity | No SOCKS or keylog in web UI; no interactive cmd/PS mode or traffic/beacon charts yet. |
+| Web ↔ CLI parity | No keylog in web UI; no interactive cmd/PS mode or traffic/beacon charts yet. |
 
 ---
 

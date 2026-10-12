@@ -19,11 +19,12 @@ help:
 	@printf "  make check-parity  MCP / API client / web shell alignment\n"
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
-	@printf "  make go-test       Cross-build the Go agent for supported targets\n"
+	@printf "  make go-test       Cross-build the Go agent and test the SOCKS pivot plugin\n"
 
 go-test:
 	@cd agent-go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
 	@cd agent-go && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...
+	@cd agent-plugins/socks && go test ./...
 
 install-lint:
 	$(PYTHON) -m pip install pymarkdownlnt yamllint

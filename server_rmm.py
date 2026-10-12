@@ -44,7 +44,12 @@ except ImportError:
     _PTCompleterBase = object  # RMMPTKCompleter only used when prompt_toolkit is installed
 
 from rmm_ws import OperatorEventHub, WebSocketConnection
-from rmm_socks import DEFAULT_SOCKS_PORT, DEFAULT_BIND_HOST, SocksManager
+from rmm_socks import (
+    DEFAULT_SOCKS_PORT,
+    DEFAULT_BIND_HOST,
+    GO_SOCKS_PLUGIN_FILE,
+    SocksManager,
+)
 from rmm_rclone import (
     RcloneConfigError,
     get_rclone_max_bytes,
@@ -73,6 +78,7 @@ GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
 AGENT_PLUGINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-plugins")
 # Operator PE plugins served to the Go agent; override with RMM_PLUGINS_DIR.
 PLUGINS_DIR = os.environ.get("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
+POWERSHELL_SOCKS_PLUGIN = os.path.join(AGENT_PLUGINS_DIR, "socks-powershell", "socks.ps1")
 PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # Cross compiler used for server-side Go PE plugin builds (CGO c-shared).
@@ -176,6 +182,17 @@ def plugin_directory() -> str:
     """Return the operator PE plugin directory, creating it on first use."""
     os.makedirs(PLUGINS_DIR, exist_ok=True)
     return PLUGINS_DIR
+
+
+def plugin_script_path(name: str) -> str | None:
+    """Return the checked-in script plugin path for a supported agent plugin."""
+    if name != "socks.ps1":
+        return None
+    path = os.path.realpath(POWERSHELL_SOCKS_PLUGIN)
+    source_root = os.path.realpath(AGENT_PLUGINS_DIR)
+    if path == source_root or not path.startswith(source_root + os.sep):
+        return None
+    return path if os.path.isfile(path) else None
 
 
 def list_plugin_files() -> list[dict]:
@@ -1703,6 +1720,10 @@ class RMMServer:
         session = self.get_session(session_id)
         if not session:
             return False
+        plugin_error = self.pivot_plugin_error(session)
+        if plugin_error:
+            self.log(f"SOCKS pivot unavailable for {session.id[:8]}: {plugin_error}", "ERROR")
+            return False
         try:
             self.socks.start(session_id, port=port, bind_host=bind_host)
         except OSError as e:
@@ -1716,6 +1737,28 @@ class RMMServer:
             command=f"socks {port}",
         )
         return True
+
+    def pivot_plugin_error(self, session) -> str | None:
+        """Return a clear readiness error for the session's SOCKS plugin."""
+        agent_type = str(getattr(session, "agent_type", "")).lower()
+        capabilities = {str(item).lower() for item in getattr(session, "capabilities", [])}
+        if agent_type == "go":
+            if "socks-plugin" not in capabilities:
+                return "the Go agent does not advertise socks-plugin support"
+            try:
+                plugin_path = safe_join_under(plugin_directory(), GO_SOCKS_PLUGIN_FILE)
+            except ValueError:
+                return "the Go SOCKS plugin path is invalid"
+            if not os.path.isfile(plugin_path):
+                return (
+                    "build the socks plugin first "
+                    "(POST /api/v1/plugins/build with name=socks)"
+                )
+        elif agent_type == "powershell" and plugin_script_path("socks.ps1") is None:
+            return "the PowerShell SOCKS plugin is missing from the repository"
+        elif agent_type != "powershell":
+            return f"no SOCKS pivot plugin is available for agent type {agent_type or 'unknown'}"
+        return None
 
     def stop_socks(self, session_id: str) -> bool:
         stopped = self.socks.stop(session_id)
@@ -2418,7 +2461,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         return True
 
     def _serve_plugin_tool(self, name: str, session_id: str | None = None) -> bool:
-        """Beacon-authenticated download of one PE plugin for the Go agent."""
+        """Beacon-authenticated download of one agent plugin."""
         if not PLUGIN_NAME_RE.match(name):
             self._respond(400, "Invalid plugin name")
             return True
@@ -2427,13 +2470,17 @@ class RMMHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._respond(400, "Invalid plugin name")
             return True
+        content_type = "application/octet-stream"
         if not os.path.isfile(path):
-            self._respond(404, "Unknown plugin")
-            return True
+            path = plugin_script_path(name)
+            if path is None:
+                self._respond(404, "Unknown plugin")
+                return True
+            content_type = "text/plain; charset=utf-8"
         with open(path, "rb") as handle:
             data = handle.read()
         self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Disposition", f'attachment; filename="{name}"')
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
@@ -2847,6 +2894,10 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "invalid_port"})
                 return True
             bind_host = str(body.get("bind_host", DEFAULT_BIND_HOST))
+            plugin_error = srv.pivot_plugin_error(session)
+            if plugin_error:
+                self._json(503, {"error": "pivot_plugin_unavailable", "detail": plugin_error})
+                return True
             if not srv.start_socks(session.id, port=port, bind_host=bind_host):
                 self._json(500, {"error": "socks_start_failed"})
                 return True

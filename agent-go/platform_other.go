@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os/exec"
@@ -13,6 +14,10 @@ func newCommand(name string, args ...string) *exec.Cmd {
 }
 
 func loadPluginPE(*http.Client, *config, string, string, string) (string, error) {
+	return "", errors.New("PE plugins require the Windows agent build")
+}
+
+func loadPluginPEContext(context.Context, *http.Client, *config, string, string, string) (string, error) {
 	return "", errors.New("PE plugins require the Windows agent build")
 }
 

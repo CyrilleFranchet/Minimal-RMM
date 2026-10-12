@@ -664,6 +664,14 @@ body.sidebar-resizing iframe {
   margin-top: 0.2rem;
 }
 
+.socks-session-status {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  margin-left: 0.35rem;
+  white-space: nowrap;
+}
+
 .beacon-status {
   font-size: 0.65rem;
   font-weight: 600;
@@ -1143,6 +1151,109 @@ body.sidebar-resizing iframe {
 .file-row select {
   min-width: 6rem;
   margin-bottom: 0;
+}
+
+.socks-selected-session {
+  margin: 0 0 0.85rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.socks-config-grid {
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.7fr) minmax(12rem, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.socks-config-grid input[type="number"],
+.socks-config-grid input[type="text"] {
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.socks-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.85rem 0 0.5rem;
+}
+
+.socks-active {
+  color: var(--success);
+}
+
+.socks-action-error {
+  color: var(--danger);
+}
+
+.socks-relays-title {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.socks-relays-list {
+  overflow-x: auto;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.socks-table {
+  width: 100%;
+  min-width: 46rem;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.socks-table th,
+.socks-table td {
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.socks-table th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.socks-table code {
+  white-space: nowrap;
+}
+
+.socks-relay-id {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+}
+
+.socks-relay-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.socks-relay-actions button {
+  padding: 0.2rem 0.45rem;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 600px) {
+  .socks-config-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .exfil-row .exfil-profile-label {

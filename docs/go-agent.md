@@ -48,15 +48,18 @@ protocol. On Windows it supports `cmd.exe`, `PS:`,
 
 ## Feature parity
 
-The Go agent now implements the HTTP-poll SOCKS worker, chunked file transfer,
-HTTP proxy support, Windows screenshot capture, Windows keylogging, Windows
-startup/Run-key persistence, rclone exfiltration when `rclone` is already
-available on the target, and isolated PE plugin loading (`__PE_LOAD__`, see
-`docs/go-agent-plugins.md`). If rclone is absent, the agent bootstraps it
-through the authenticated `/tools/rclone.exe` endpoint. Linux returns
-explicit unsupported results for the Windows desktop features. HTTP polling
-is the portable SOCKS path; the PowerShell WebSocket transport remains an
-optional optimization rather than a requirement.
+The Go agent now implements chunked file transfer, HTTP proxy support, Windows
+screenshot capture, Windows keylogging, Windows startup/Run-key persistence,
+rclone exfiltration when `rclone` is already available on the target, and
+isolated PE plugin loading (`__PE_LOAD__`, see
+`docs/go-agent-plugins.md`). SOCKS5 is a persistent pivot plugin on Windows
+amd64: the beacon observes `socks_active`, then starts the server-managed
+`socks.dll` plugin in a cancellable child process. Build that plugin with
+`POST /api/v1/plugins/build` and `{"name":"socks"}` before starting a pivot.
+If rclone is absent, the agent bootstraps it through the authenticated
+`/tools/rclone.exe` endpoint. Linux returns explicit unsupported results for
+the Windows desktop features and does not advertise the Windows PE pivot
+plugin.
 
 The Windows-specific adapters are isolated in `platform_windows.go` and are
 selected by Go build tags. They should be tested on representative Windows

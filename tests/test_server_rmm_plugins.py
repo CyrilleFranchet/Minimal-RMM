@@ -159,6 +159,7 @@ class PluginBuildTests(unittest.TestCase):
 
     def test_build_targets_include_checked_in_plugins(self):
         self.assertIn("rclone-exfil", server_rmm.plugin_build_targets())
+        self.assertIn("socks", server_rmm.plugin_build_targets())
 
     def test_missing_name_returns_400(self):
         status, body = self.call_post({})
@@ -222,6 +223,27 @@ class PluginServeTests(unittest.TestCase):
         self.assertTrue(served)
         self.assertEqual(handler.responses[-1][0], 404)
 
+    def test_serves_checked_in_powershell_pivot_plugin(self):
+        payload = b"function global:Start-RmmSocksChannelPlugin {}"
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_path = os.path.join(tmp, "socks.ps1")
+            with open(plugin_path, "wb") as handle:
+                handle.write(payload)
+            with patch("server_rmm.PLUGINS_DIR", os.path.join(tmp, "artifacts")):
+                with patch("server_rmm.AGENT_PLUGINS_DIR", tmp):
+                    with patch("server_rmm.POWERSHELL_SOCKS_PLUGIN", plugin_path):
+                        handler = FakeServeHandler()
+                        handler.server_instance = SimpleNamespace(log=Mock())
+                        served = RMMHandler._serve_plugin_tool(
+                            handler,
+                            "socks.ps1",
+                            "12345678-1234-1234-1234-123456789012",
+                        )
+        self.assertTrue(served)
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(handler.body, payload)
+        self.assertIn(("Content-Type", "text/plain; charset=utf-8"), handler.headers)
+
 
 class PluginLifecycleTests(unittest.TestCase):
     """Verify server-side plugin lifecycle correlation and redaction."""
@@ -271,6 +293,38 @@ class PluginLifecycleTests(unittest.TestCase):
         self.assertTrue(any(message.startswith("Plugin dispatched:") for message in messages))
         self.assertTrue(any(message.startswith("Plugin completed:") for message in messages))
         self.assertNotIn(secret_input, "\n".join(messages))
+
+
+class PivotPluginReadinessTests(unittest.TestCase):
+    """Verify pivot start rejects sessions whose agent plugin is unavailable."""
+
+    def _server(self):
+        return object.__new__(server_rmm.RMMServer)
+
+    def test_go_requires_plugin_capability(self):
+        session = SimpleNamespace(agent_type="go", capabilities=[])
+        detail = self._server().pivot_plugin_error(session)
+        self.assertIn("socks-plugin", detail)
+
+    def test_go_accepts_built_plugin(self):
+        session = SimpleNamespace(agent_type="go", capabilities=["socks-plugin"])
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "socks.dll"), "wb") as handle:
+                handle.write(b"MZpayload")
+            with patch("server_rmm.PLUGINS_DIR", tmp):
+                self.assertIsNone(self._server().pivot_plugin_error(session))
+
+    def test_powershell_uses_checked_in_plugin(self):
+        session = SimpleNamespace(agent_type="powershell", capabilities=["socks-plugin"])
+        with tempfile.NamedTemporaryFile(suffix=".ps1") as handle:
+            with patch("server_rmm.POWERSHELL_SOCKS_PLUGIN", handle.name):
+                with patch("server_rmm.AGENT_PLUGINS_DIR", os.path.dirname(handle.name)):
+                    self.assertIsNone(self._server().pivot_plugin_error(session))
+
+    def test_unknown_agent_type_is_rejected(self):
+        session = SimpleNamespace(agent_type="custom", capabilities=[])
+        detail = self._server().pivot_plugin_error(session)
+        self.assertIn("custom", detail)
 
 
 if __name__ == "__main__":

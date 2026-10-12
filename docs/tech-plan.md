@@ -969,7 +969,6 @@ Or the same command inside an Exegol container (current workflow).
 
 Items tracked in `docs/progress.md` **Up Next** but not spec’d here yet:
 
-- Web UI SOCKS controls + global relay list
 - Web shell meta commands — `socks`, `persist`/`stop`, `upload` (browser limitation); see `docs/web-shell-completion.md`
 - Chunked upload (symmetry with chunked download)
 - CLI subcommands for screenshot / SOCKS

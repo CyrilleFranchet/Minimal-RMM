@@ -31,6 +31,8 @@ const state = {
   /** Serialize live event rendering so REST hydration preserves WS event order. */
   liveEventQueue: Promise.resolve(),
   sessionDownloads: [],
+  socksRelays: [],
+  socksBusy: false,
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
   /** Pending command blocks for queued result placement (tech plan §6). */
@@ -181,6 +183,7 @@ async function retryServerConnection() {
       window.fetchAiSkills().catch(() => {});
     }
     await refreshExfilStatus();
+    await refreshSocksRelays();
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -388,6 +391,201 @@ async function fetchSessionDownloads() {
   renderDownloadsList(data.downloads || []);
 }
 
+function selectedSocksRelay(sessionId = state.selectedId) {
+  if (!sessionId) return null;
+  return state.socksRelays.find((relay) => relay.session_id === sessionId) || null;
+}
+
+function socksAgentLabel(relay) {
+  const user = String(relay?.username || "").trim();
+  const host = String(relay?.hostname || "").trim();
+  if (user && host) return `${user}@${host}`;
+  if (host) return host;
+  return String(relay?.session_id || "?").slice(0, 8);
+}
+
+function socksChannelLabel(relay) {
+  return relay?.agent_channel === "websocket" ? "WebSocket" : "HTTP / pending";
+}
+
+function setSocksActionStatus(message, error = false) {
+  const el = $("#socks-action-status");
+  if (!el) return;
+  el.textContent = message || "";
+  el.classList.toggle("socks-action-error", Boolean(error));
+}
+
+function renderSocksRelayList() {
+  const container = $("#socks-relays-list");
+  if (!container) return;
+  if (!state.socksRelays.length) {
+    container.innerHTML = '<p class="downloads-empty">No active pivots.</p>';
+    return;
+  }
+
+  const rows = state.socksRelays
+    .map((relay) => {
+      const sessionId = String(relay.session_id || "");
+      const url = String(relay.socks_url || "");
+      const beacon = String(relay.beacon_status || "unknown");
+      const listener = relay.listener_running ? "listening" : "stopped";
+      return `<tr>
+        <td>${escapeHtml(socksAgentLabel(relay))}<br><span class="socks-relay-id">${escapeHtml(sessionId.slice(0, 8))}</span></td>
+        <td><code>${escapeHtml(url)}</code></td>
+        <td>${escapeHtml(socksChannelLabel(relay))}</td>
+        <td>${escapeHtml(String(relay.active_tunnels ?? 0))}</td>
+        <td>${escapeHtml(listener)} · ${escapeHtml(beacon)}</td>
+        <td><div class="socks-relay-actions">
+          <button type="button" class="secondary socks-copy-url" data-url="${escapeHtml(url)}">Copy</button>
+          <button type="button" class="danger socks-stop-relay" data-session-id="${escapeHtml(sessionId)}"${state.socksBusy ? " disabled" : ""}>Stop</button>
+        </div></td>
+      </tr>`;
+    })
+    .join("");
+
+  container.innerHTML = `<table class="socks-table">
+    <caption class="sr-only">Active pivots</caption>
+    <thead><tr><th scope="col">Agent</th><th scope="col">Proxy URL</th><th scope="col">Channel</th><th scope="col">Tunnels</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+
+  container.querySelectorAll(".socks-copy-url").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const url = button.dataset.url || "";
+      if (!url) return;
+      try {
+        await navigator.clipboard.writeText(url);
+        setSocksActionStatus(`Copied ${url}`);
+      } catch {
+        setSocksActionStatus(`Copy failed — use ${url}`, true);
+      }
+    });
+  });
+  container.querySelectorAll(".socks-stop-relay").forEach((button) => {
+    button.addEventListener("click", () => {
+      const sessionId = button.dataset.sessionId || "";
+      stopSocksRelay(sessionId).catch(() => {});
+    });
+  });
+}
+
+function updateSocksUi() {
+  const selectedLabel = $("#socks-selected-session");
+  const status = $("#socks-status");
+  const start = $("#socks-start");
+  const stop = $("#socks-stop");
+  const relay = selectedSocksRelay();
+  const session = state.sessions.find((item) => item.id === state.selectedId);
+
+  if (selectedLabel) {
+    selectedLabel.textContent = session
+      ? `Selected session: ${session.username}@${session.hostname} · ${session.id.slice(0, 8)}`
+      : "No live session selected";
+  }
+  if (status) {
+    if (relay) {
+      status.textContent = `Active SOCKS5 pivot · ${relay.socks_url} · ${socksChannelLabel(relay)} · ${relay.active_tunnels ?? 0} active tunnel(s)`;
+      status.classList.add("socks-active");
+    } else {
+      status.textContent = state.selectedId
+        ? "No SOCKS5 pivot for the selected session."
+        : "Select a live session to start a pivot.";
+      status.classList.remove("socks-active");
+    }
+  }
+  if (start) {
+    start.disabled = state.socksBusy || !state.selectedId || state.viewMode !== "live";
+    start.textContent = relay ? "Restart SOCKS5 pivot" : "Start SOCKS5 pivot";
+  }
+  if (stop) {
+    stop.disabled = state.socksBusy || !relay || state.viewMode !== "live";
+  }
+  renderSocksRelayList();
+}
+
+async function refreshSocksRelays() {
+  if (!state.token) return;
+  const { status, data } = await api("/socks");
+  if (status === 401) {
+    disconnect();
+    return;
+  }
+  if (status !== 200) return;
+  state.socksRelays = Array.isArray(data.relays) ? data.relays : [];
+  updateSocksUi();
+}
+
+function openSocksDialog() {
+  if (!state.selectedId || state.viewMode !== "live") return;
+  const relay = selectedSocksRelay();
+  const port = $("#socks-port");
+  const bindHost = $("#socks-bind-host");
+  if (port) port.value = String(relay?.port || 1080);
+  if (bindHost) bindHost.value = String(relay?.bind_host || "127.0.0.1");
+  setSocksActionStatus("");
+  updateSocksUi();
+  const dialog = $("#socks-dialog");
+  if (dialog?.showModal && !dialog.open) dialog.showModal();
+  refreshSocksRelays().catch(() => {});
+}
+
+async function startSelectedSocks() {
+  const sessionId = state.selectedId;
+  if (!sessionId || state.viewMode !== "live") return;
+  const port = parseInt($("#socks-port")?.value, 10);
+  const bindHost = $("#socks-bind-host")?.value.trim() || "127.0.0.1";
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    setSocksActionStatus("Listener port must be between 1 and 65535.", true);
+    return;
+  }
+  state.socksBusy = true;
+  updateSocksUi();
+  setSocksActionStatus("Starting SOCKS5 pivot…");
+  try {
+    const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}/socks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ port, bind_host: bindHost }),
+    });
+    if (status !== 200) {
+      setSocksActionStatus(data.error || `SOCKS5 pivot start failed (HTTP ${status})`, true);
+      return;
+    }
+    setSocksActionStatus(`SOCKS5 pivot listening on ${data.socks_url || `socks5://${bindHost}:${port}`}`);
+    appendShellMeta(`SOCKS5 pivot listening on ${data.socks_url || `socks5://${bindHost}:${port}`}`);
+    await refreshSocksRelays();
+  } finally {
+    state.socksBusy = false;
+    updateSocksUi();
+  }
+}
+
+async function stopSocksRelay(sessionId = state.selectedId) {
+  if (!sessionId) return;
+  state.socksBusy = true;
+  updateSocksUi();
+  setSocksActionStatus("Stopping SOCKS5 pivot…");
+  try {
+    const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}/socks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stop: true }),
+    });
+    if (status !== 200) {
+      setSocksActionStatus(data.error || `SOCKS5 pivot stop failed (HTTP ${status})`, true);
+      return;
+    }
+    if (sessionId === state.selectedId) {
+      appendShellMeta("SOCKS5 pivot stopped");
+    }
+    setSocksActionStatus("SOCKS5 pivot stopped");
+    await refreshSocksRelays();
+  } finally {
+    state.socksBusy = false;
+    updateSocksUi();
+  }
+}
+
 async function previewDownload(url, kind, name) {
   const panel = $("#downloads-preview");
   if (!panel) return;
@@ -492,6 +690,7 @@ function startSessionPolling() {
   const tick = () => {
     refreshSessions().catch(() => {});
     fetchSessionHistory().catch(() => {});
+    refreshSocksRelays().catch(() => {});
   };
   tick();
   state.sessionPollTimer = setInterval(tick, 5000);
@@ -1860,6 +2059,7 @@ async function connect() {
     window.fetchAiSkills().catch(() => {});
   }
   await refreshExfilStatus();
+  await refreshSocksRelays();
 }
 
 function disconnect() {
@@ -1872,6 +2072,8 @@ function disconnect() {
   sessionStorage.removeItem(STORAGE_KEY);
   state.token = "";
   state.selectedId = null;
+  state.socksRelays = [];
+  state.socksBusy = false;
   state.echoedCommands.clear();
   showLogin();
 }
@@ -1898,11 +2100,15 @@ function renderSessionList() {
     const ago = agoSec != null ? formatAgo(agoSec) : formatTime(s.last_seen);
     const st = computeBeaconStatus(s);
     const connected = formatFirstConnected(s.first_seen);
+    const relay = selectedSocksRelay(s.id);
+    const socksMeta = relay
+      ? `<span class="socks-session-status">Pivot SOCKS5 ${escapeHtml(String(relay.port))}</span>`
+      : "";
     li.innerHTML = `
       <div class="id">${escapeHtml(s.id.slice(0, 8))} <span class="beacon-status ${statusClass(st)}">${escapeHtml(st)}</span></div>
       <div class="meta">${escapeHtml(s.username)}@${escapeHtml(s.hostname)}</div>
       ${connected ? `<div class="sub sub-connected">connected ${escapeHtml(connected)}</div>` : ""}
-      <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)}</div>
+      <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)} ${socksMeta}</div>
     `;
 
     const actions = document.createElement("div");
@@ -1992,6 +2198,7 @@ async function selectSession(id) {
     }
   }
   await fetchSessionDownloads();
+  await refreshSocksRelays();
 }
 
 function showEmptyConsole() {
@@ -2012,6 +2219,7 @@ function showEmptyConsole() {
   if (dl) {
     dl.innerHTML = '<p class="downloads-empty">No files downloaded yet.</p>';
   }
+  updateSocksUi();
   renderSessionList();
   renderHistoryList();
   updateShellPrompt();
@@ -2716,6 +2924,19 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#open-downloads-dialog")?.addEventListener("click", () => {
     const dialog = $("#downloads-dialog");
     if (dialog?.showModal && !dialog.open) dialog.showModal();
+  });
+  $("#open-socks-dialog")?.addEventListener("click", openSocksDialog);
+  $("#socks-start")?.addEventListener("click", () => {
+    startSelectedSocks().catch((err) => setSocksActionStatus(err.message || String(err), true));
+  });
+  $("#socks-stop")?.addEventListener("click", () => {
+    stopSocksRelay().catch((err) => setSocksActionStatus(err.message || String(err), true));
+  });
+  $("#socks-refresh")?.addEventListener("click", () => {
+    setSocksActionStatus("Refreshing relay list…");
+    refreshSocksRelays()
+      .then(() => setSocksActionStatus("Relay list refreshed"))
+      .catch((err) => setSocksActionStatus(err.message || String(err), true));
   });
   $("#history-clear-all")?.addEventListener("click", (e) => {
     e.preventDefault();

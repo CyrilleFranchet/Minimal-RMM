@@ -1,10 +1,10 @@
 # Go agent PE plugin system
 
 The Go agent supports PE plugins as separate child processes. The agent fetches
-the DLL over the authenticated beacon channel, sends the bytes to a short-lived
-child over stdin, and maps it there. The plugin is never mapped in the beacon
-process, which keeps the agent small and isolates plugin crashes. Nothing is
-written to the target disk. Authorized lab use only.
+the DLL over the authenticated beacon channel, sends the bytes to a child over
+stdin, and maps it there. The plugin is never mapped in the beacon process,
+which keeps the agent small and isolates plugin crashes. Nothing is written to
+the target disk. Authorized lab use only.
 
 ## Overview
 
@@ -22,8 +22,29 @@ agent-go: execute() dispatch  ──  __PE_LOAD__ handler
         └── frame  DLL bytes + input over stdin
 ```
 
-Plugin images are downloaded and started per command. The parent does not cache
-the DLL or load it into its own address space.
+One-shot plugin images are downloaded and started per command. The parent does
+not cache the DLL or load it into its own address space.
+
+## Persistent pivot plugin
+
+The SOCKS5 pivot uses the same loader with a long-lived export. When `/cmd`
+reports `socks_active: true`, a Windows amd64 Go agent starts
+`/tools/plugins/socks.dll` in a cancellable child and passes this private
+runtime configuration over stdin:
+
+```json
+{
+  "base_url": "https://rmm.example",
+  "beacon_secret": "…",
+  "session_id": "…",
+  "http_proxy": ""
+}
+```
+
+The plugin polls the existing `/socks` endpoint, owns the remote TCP
+connections, and exits when the server clears the relay. The normal beacon
+continues polling `/cmd` while the pivot is active. Cancelling the agent also
+cancels the child process.
 
 ## How loading works
 
@@ -103,7 +124,7 @@ clang -shared -o hello.dll plugin.c
 | CFG | Follow the normal compiler and loader requirements for the plugin toolchain |
 | Dependencies | DLL dependencies must be available to the child through the normal Windows loader search rules |
 | Isolation | A crashing plugin terminates only the child runner; the beacon process remains alive |
-| Blocking | The parent waits for the child for up to ten minutes; the beacon poll cycle is still occupied during that command |
+| Blocking | One-shot plugins can occupy the command cycle for up to ten minutes; the persistent pivot runs in a separate child and does not block beacon polling |
 | .NET | Managed assemblies are out of scope; build AOT native binaries instead |
 
 Test plugins in the lab before queuing them against live sessions.
@@ -169,8 +190,10 @@ New Go functions in `agent-go/`:
 | Function | File | Role |
 |----------|------|------|
 | `loadPluginPE` | `pe_loader_windows.go` | Fetch, stage, run, and clean up a plugin child |
+| `loadPluginPEContext` | `pe_loader_windows.go` | Run a plugin child with caller-owned cancellation |
 | `runPluginChild` | `pe_loader_windows.go` | Load a DLL with the Windows loader and invoke its export |
 | `loadPluginCommand` | `main.go` | Parse the `__PE_LOAD__` operator command |
+| `socksPluginController` | `main.go` | Start and cancel the persistent SOCKS5 pivot child |
 | `loadPluginPE` (stub) | `platform_other.go` | Non-Windows builds return an explicit error |
 
 New Python functions:
@@ -178,6 +201,7 @@ New Python functions:
 | Function | File | Role |
 |----------|------|------|
 | `plugin_directory` | `server_rmm.py` | Return (and create) the plugin directory |
+| `plugin_script_path` | `server_rmm.py` | Resolve the checked-in PowerShell pivot plugin |
 | `list_plugin_files` | `server_rmm.py` | List plugins with size and SHA-256 |
 | `plugin_command_metadata` | `server_rmm.py` | Extract safe plugin identity for server-side lifecycle logs |
 | `plugin_build_targets` | `server_rmm.py` | List checked-in Go plugin directories |
@@ -196,8 +220,10 @@ New Python functions:
 - Plugin downloads require the beacon secret and a registered session ID.
 - Plugin bytes are passed through an anonymous pipe and are never written to
   the target disk.
-- The child receives only the framed plugin bytes, export name, and JSON input;
-  it does not receive beacon credentials.
+- One-shot plugin input is framed over stdin. The persistent pivot plugin also
+  receives the beacon URL, session ID, and secret because it owns the
+  authenticated `/socks` channel; these values stay in memory and are not
+  logged or written to disk.
 - The plugin directory is operator-controlled server storage; treat its
   contents like any other operator tooling.
 - The API validates plugin names, export names, and input before queueing.
@@ -212,6 +238,7 @@ New Python functions:
 |--------|------|-----|
 | `rclone-exfil` | rclone engine isolated in a plugin child process | `docs/agent-plugin-exfil.md` |
 | `screenshot` | Native GDI screenshot capture in a plugin child process | `docs/screenshot-plugin.md` |
+| `socks` | Persistent SOCKS5 pivot channel for Windows amd64 Go agents | this document |
 
 The server selects this plugin for `mode=auto` exfil requests only when the
 session identifies itself as a Go agent with PE plugin support. Use
