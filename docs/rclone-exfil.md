@@ -6,7 +6,7 @@ Operators queue exfil of a **remote file or folder on the agent** to cloud stora
 
 The REST, CLI, MCP, and Web AI surfaces accept `mode`:
 
-- `auto` (default): use the isolated plugin child for a Go agent when a matching plugin DLL is available; otherwise use the binary path.
+- `auto` (default): use the isolated plugin child for a Windows amd64 Go agent when a matching plugin DLL is available; otherwise use the binary path.
 - `plugin`: require the isolated plugin child. The request fails if the agent does not advertise Go PE plugin support or the server has no `rclone-exfil*.dll` artifact.
 - `binary`: force the existing rclone executable path.
 
@@ -35,6 +35,11 @@ The agent detects the path type on the host:
 | Directory | `copy` (recursive) | `{profile.folder}/{folder-basename}` |
 
 Use the same operator commands for both — `exfil C:\Users\x\Documents\project mega-lab` uploads the whole tree.
+
+`remote_path` is resolved on the agent host, not on the RMM server. For a
+Windows amd64 Go agent, use a Windows path such as
+`C:\Users\<user>\Desktop`; a controller-side macOS path like
+`/Users/<user>/Desktop` will fail unless that exact path exists on the agent.
 
 - **`RMM_RCLONE_MAX_BYTES`** applies to the **total** size (file length or sum of all files in the folder).
 - MEGA **`link`** is generated for single-file exfil only (not folders).

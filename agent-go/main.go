@@ -177,7 +177,11 @@ func register(client *http.Client, cfg *config) error {
 	v.Set("j", strconv.Itoa(cfg.JitterPercent))
 	v.Set("sync", "1")
 	v.Set("agent", "go")
-	v.Set("caps", "pe,rclone-plugin")
+	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
+		v.Set("caps", "pe,rclone-plugin")
+	} else {
+		v.Set("caps", "")
+	}
 	_, err := request(client, cfg, http.MethodGet, "/register", v, nil)
 	return err
 }

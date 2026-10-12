@@ -33,17 +33,18 @@ import (
 )
 
 const (
-	pageReadOnly         = 0x02
-	pageReadWrite        = 0x04
-	pageExecuteRead      = 0x20
-	pageExecuteReadWrite = 0x40
-	sectionPageSize      = 0x1000
-	memCommit            = 0x1000
-	memReserve           = 0x2000
-	memRelease           = 0x8000
-	pluginOutputBytes    = 16 * 1024 * 1024
-	imageScnMemExecute   = 0x20000000
-	imageScnMemWrite     = 0x80000000
+	pageReadOnly           = 0x02
+	pageReadWrite          = 0x04
+	pageExecuteRead        = 0x20
+	pageExecuteReadWrite   = 0x40
+	sectionPageSize        = 0x1000
+	memCommit              = 0x1000
+	memReserve             = 0x2000
+	memRelease             = 0x8000
+	pluginOutputBytes      = 16 * 1024 * 1024
+	pluginErrorDetailBytes = 4096
+	imageScnMemExecute     = 0x20000000
+	imageScnMemWrite       = 0x80000000
 )
 
 var (
@@ -405,7 +406,17 @@ func callPluginExport(base uintptr, exportName, input string) (string, error) {
 		uintptr(len(output)-1),
 	)
 	if ret != 0 {
-		return "", fmt.Errorf("plugin export %s failed with code %d", exportName, int32(ret))
+		message := fmt.Sprintf("plugin export %s failed with code %d", exportName, int32(ret))
+		if end := bytes.IndexByte(output, 0); end > 0 {
+			detail := strings.TrimSpace(string(output[:end]))
+			if len(detail) > pluginErrorDetailBytes {
+				detail = detail[:pluginErrorDetailBytes] + "..."
+			}
+			if detail != "" {
+				message += ": " + detail
+			}
+		}
+		return "", errors.New(message)
 	}
 	if end := bytes.IndexByte(output, 0); end >= 0 {
 		return string(output[:end]), nil

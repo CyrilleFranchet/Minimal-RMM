@@ -18,7 +18,7 @@
 - Added `POST /api/v1/plugins/build`: the server cross-compiles checked-in `agent-plugins/<name>/` sources (windows/amd64 CGO c-shared, `-trimpath -ldflags "-s -w"`) straight into the plugin directory. Free output DLL name, mingw-w64 compiler requirement (`RMM_PLUGIN_CC`), 600-second default timeout (`RMM_PLUGIN_BUILD_TIMEOUT`), Go caches under `RMM_logs/`. Only repository sources are ever built — no browser-supplied code.
 - `GET /api/v1/plugins` now also reports buildable `targets` and `toolchain` availability; the parity chain gained `build_plugin` (REST → CLI `pe build` → MCP) and the web shell gained the `pe` meta verb.
 - Deploy UI reorganized by language/OS: PowerShell panel unchanged (generate/download, not compiled), Go agent panel now compile-only (source viewer removed), new **Deploy plugins (Go)** panel (target selection, output naming, toolchain status, plugin inventory with sizes/SHA-256).
-- Exfil mode selection now supports `auto`, `plugin`, and `binary`. Go agents advertise `pe` and `rclone-plugin` capabilities; `auto` prefers an available `rclone-exfil*.dll`, while PowerShell agents and explicit `binary` mode retain the executable fallback.
+- Exfil mode selection now supports `auto`, `plugin`, and `binary`. Windows amd64 Go agents advertise `pe` and `rclone-plugin` capabilities; `auto` prefers an available `rclone-exfil*.dll`, while other Go targets, PowerShell agents, and explicit `binary` mode retain the executable fallback.
 - Tests: `POST /plugins/build` validation, toolchain-missing mapping, unsafe output names; `GET /plugins` response shape. Docs updated (`go-agent-plugins.md`, `agent-plugin-exfil.md`, `mcp-parity.md`, `go-agent.md`, README, this log).
 
 ### 2026-10-09 — In-process rclone exfil plugin
