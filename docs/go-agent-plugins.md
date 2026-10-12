@@ -60,7 +60,7 @@ int Run(const char *input, char *output, int outputCap);
 - Return `0` on success; any other value is reported as a plugin error code.
 - `input` is the optional operator-provided string (NUL-terminated, 4096
   bytes max from the API).
-- Write a NUL-terminated result string into `output` (up to 1 MiB); it is
+- Write a NUL-terminated result string into `output` (up to 16 MiB); it is
   posted back as a normal `output` result event.
 - Exports with fewer parameters also work: the x64 calling convention
   ignores extra arguments, so `int Run(void)` is valid.

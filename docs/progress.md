@@ -48,6 +48,13 @@
 - The plugin uses native GDI capture and returns the existing base64 PNG
   payload; no screenshot DLL is written to the target disk.
 
+### 2026-10-12 — Screenshot plugin output limit
+
+- Increased the child plugin output buffer to 16 MiB so high-resolution PNG
+  screenshots do not become truncated base64 payloads.
+- The screenshot plugin now returns an explicit overflow error instead of
+  writing truncated output that the server cannot decode.
+
 ### 2026-10-09 — Go agent diskless PE plugin system
 
 - Added the `__PE_LOAD__` command to the Go agent: plugins are fetched from the beacon-authenticated `/tools/plugins/<name>` endpoint on demand and manually mapped into the child process with private allocations. Nothing is written to the target disk; code pages are never RWX (see `docs/go-agent-plugins.md`).

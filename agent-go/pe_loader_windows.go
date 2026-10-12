@@ -41,7 +41,7 @@ const (
 	memCommit            = 0x1000
 	memReserve           = 0x2000
 	memRelease           = 0x8000
-	pluginOutputBytes    = 1024 * 1024
+	pluginOutputBytes    = 16 * 1024 * 1024
 	imageScnMemExecute   = 0x20000000
 	imageScnMemWrite     = 0x80000000
 )
@@ -410,7 +410,7 @@ func callPluginExport(base uintptr, exportName, input string) (string, error) {
 	if end := bytes.IndexByte(output, 0); end >= 0 {
 		return string(output[:end]), nil
 	}
-	return string(output), nil
+	return "", fmt.Errorf("plugin export %s returned output larger than %d bytes", exportName, pluginOutputBytes-1)
 }
 
 // findPluginExport walks the export address table of the mapped image.
