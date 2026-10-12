@@ -59,6 +59,11 @@ agent-powershell/client_rmm.ps1 (Windows agent)
 6. Do not break the beacon path (`/cmd` latency, register sync, beacon secret).
 7. SOCKS changes touch `rmm_socks.py`, `server_rmm.py`, and `agent-powershell/client_rmm.ps1` together; test through tunnels if relevant.
 
+### Commit workflow
+
+- This repository does not require Jira issue keys in branch names or commit subjects.
+- When using the `commit-working-tree` workflow, do not block a commit because the current branch has no Jira key; use a concise subject that describes the change.
+
 ## Project Instructions
 
 - Document every new feature in the `docs/` folder.
