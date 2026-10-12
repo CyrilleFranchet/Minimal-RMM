@@ -137,6 +137,18 @@ def profile_to_rclone_env(profile: dict) -> dict[str, str]:
     return env
 
 
+def profile_to_plugin_settings(profile: dict) -> dict[str, str]:
+    """Build plugin backend settings using rclone's option names."""
+    skip = {"type", "folder", "name", "description", "pass_obscured"}
+    settings: dict[str, str] = {}
+    for key, value in profile.items():
+        if key in skip or value is None:
+            continue
+        backend_key = _PROFILE_KEY_MAP.get(key, key).lower()
+        settings[backend_key] = str(value)
+    return settings
+
+
 def resolve_dest_path(profile: dict, local_path: str, dest: str | None) -> str:
     """Cloud destination path inside the configured remote (file or folder basename)."""
     if dest and dest.strip():

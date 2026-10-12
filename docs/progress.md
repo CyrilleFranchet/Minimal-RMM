@@ -5,6 +5,13 @@
 
 ## Current Status
 
+### 2026-10-12 — Plugin exfil password normalization
+
+- Fixed the in-process rclone plugin path to obscure plain backend password
+  options before rclone constructs the remote, while preserving values that are
+  already rclone-obscured. Plugin jobs now share the profile key mapping used by
+  binary jobs. Added regression coverage for both password forms.
+
 ### 2026-10-12 — WebUI shell help
 
 - Added local `help` and `?` commands to the WebUI shell. They display the

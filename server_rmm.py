@@ -52,6 +52,7 @@ from rmm_rclone import (
     DEFAULT_PROFILE,
     build_exfil_command,
     get_profile,
+    profile_to_plugin_settings,
     resolve_dest_path,
     RCLONE_REMOTE_NAME,
     rclone_binary_available,
@@ -1245,17 +1246,12 @@ class RMMServer:
         plugin_ready = bool(plugin_name and session.agent_type == "go" and "pe" in session.capabilities)
         if mode in {"auto", "plugin"} and plugin_ready:
             profile = get_profile(profile_name)
-            settings = {
-                str(key): str(value) for key, value in profile.items()
-                if key not in {"type", "folder", "name", "description", "pass_obscured"}
-                and value is not None
-            }
             plugin_job = {
                 "source": remote_path,
                 "account": RCLONE_REMOTE_NAME,
                 "backend": profile.get("type"),
                 "target": resolve_dest_path(profile, remote_path, dest),
-                "settings": settings,
+                "settings": profile_to_plugin_settings(profile),
                 "make_link": bool(profile.get("type") == "mega"),
                 "max_minutes": 30,
             }

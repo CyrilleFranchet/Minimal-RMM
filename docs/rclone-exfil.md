@@ -233,5 +233,6 @@ When rclone JSON stats omit `totalBytes`, the agent falls back to the source fil
 | `load_profiles()` | Read profiles from env/file |
 | `get_profile(name)` | Resolve named profile |
 | `profile_to_rclone_env(profile)` | Build `RCLONE_CONFIG_RMM_*` dict |
+| `profile_to_plugin_settings(profile)` | Build plugin backend settings with rclone option names |
 | `build_exfil_command(...)` | Full `__EXFIL__` command string |
 | `rclone_public_config()` | Operator-safe status dict |
