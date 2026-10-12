@@ -10,6 +10,7 @@ while the server reports `socks_active: true`.
 | --- | --- | --- | --- |
 | Windows PowerShell | `agent-plugins/socks-powershell/socks.ps1` | Authenticated source fetch from `/tools/plugins/socks.ps1` | HTTP `GET/POST /socks` |
 | Windows amd64 Go | `agent-plugins/socks` → `socks.dll` | Cross-built PE plugin from `/tools/plugins/socks.dll` | HTTP `GET/POST /socks` |
+| Windows amd64 Go | `agent-plugins/tun` → `tun.dll` | Cross-built PE plugin from `/tools/plugins/tun.dll` | HTTP `GET/POST /tun` |
 
 The normal `/register`, `/cmd`, and `/result` beacon remains the lifecycle
 control path. The PowerShell plugin runs in its own runspace. The Go plugin
@@ -60,14 +61,16 @@ The remaining PowerShell plugin functions support those entrypoints:
 `Install-RmmSocksRunspaceHostLog`, `New-RmmSocksRunspace`, and
 `Set-RmmSocksRunspaceVariables`.
 
-The Go plugin exports `Run`. Its implementation functions are
+Both Go plugins export `Run`. Their implementation functions are
 `validateConfig`, `runRelay`, `runRelayWithClient`, `newHTTPClient`, `getPoll`,
 `processTasks`, `processUDPTasks`, `readConnectionData`, `readUDPData`,
 `snapshotConnections`, `snapshotUDPConnections`, `closeConnection`,
 `closeUDPConnection`, `writeAll`, `closeConnections`, `closeUDPConnections`,
 `postResponses`, `request`, `isPermanentHTTPError`, and `writeOutput`; together
-they validate the child input, poll the server, relay TCP and UDP data, and
-return the plugin status through the PE ABI.
+they validate the child input, poll their separate server endpoint, relay TCP
+and UDP data, and return the plugin status through the PE ABI. The SOCKS
+versions are in `agent-plugins/socks/main.go`; the TUN versions are in
+`agent-plugins/tun/main.go`.
 
 The pivot task protocol uses `connect`, `send`, and `close` for TCP plus
 `udp_send` and `udp_close` for datagrams. UDP sends are delivered once and
@@ -76,7 +79,7 @@ bounded per poll; UDP close tasks are retried until the plugin returns
 
 ## RMM-owned TUN relay
 
-The server-owned TUN frontend uses the existing Go `socks` plugin as its
+The server-owned TUN frontend uses the dedicated Go `tun` plugin as its
 authenticated transport. The server creates the TUN device and runs the
 user-space IP stack; the target-side Go plugin opens ordinary TCP and UDP
 sockets without creating a device or requiring administrator privileges. It is
@@ -84,20 +87,29 @@ controlled through `GET /api/v1/tun` and `POST /api/v1/sessions/{id}/tun`, with
 matching CLI and MCP tools. See `docs/tun-pivot.md` for setup, routing, and
 current protocol limits.
 
+SOCKS and TUN are separate Go plugin packages, DLLs, lifecycle flags, child
+processes, and beacon endpoints. The TUN plugin reuses the same task framing
+and relay behavior, but it is not loaded when only the public SOCKS pivot is
+active.
+
 ## Operator setup
 
 PowerShell pivot plugins are served from the repository automatically. Before
-starting a pivot for a Windows amd64 Go session, build the Go plugin:
+starting a pivot for a Windows amd64 Go session, build the matching Go plugin:
 
 ```text
 POST /api/v1/plugins/build
 {"name":"socks"}
+
+POST /api/v1/plugins/build
+{"name":"tun"}
 ```
 
-The default output is `RMM_logs/plugins/socks.dll`. The server refuses to start
-a pivot for a Go session that does not advertise `socks-plugin` or lacks this
-artifact. Existing `/socks` REST, CLI, MCP, and WebUI controls remain stable;
-the WebUI labels the group **Pivots** so more pivot types can be added later.
+The default outputs are `RMM_logs/plugins/socks.dll` and
+`RMM_logs/plugins/tun.dll`. A public SOCKS relay requires the Go
+`socks-plugin` capability and `socks.dll`; a TUN relay requires `tun-plugin`
+and `tun.dll`. Existing `/socks` REST, CLI, MCP, and WebUI controls remain
+stable; the WebUI exposes TUN routing in its own control.
 
 ## Security and logging
 

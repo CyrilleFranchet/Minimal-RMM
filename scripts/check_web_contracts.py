@@ -128,17 +128,51 @@ def _check_socks_contract(errors: list[str]) -> None:
         errors.append("WebUI SOCKS inventory must call GET /api/v1/socks")
 
 
+def _check_tun_contract(errors: list[str]) -> None:
+    app = _read("web/app.js")
+    html = _read("web/index.html")
+    required_ids = {
+        "open-tun-dialog",
+        "tun-dialog",
+        "tun-device",
+        "tun-route",
+        "tun-address",
+        "tun-interface",
+        "tun-mtu",
+        "tun-udp-timeout",
+        "tun-start",
+        "tun-stop",
+        "tun-refresh",
+        "tun-relays-list",
+    }
+    missing_ids = [element_id for element_id in sorted(required_ids) if f'id="{element_id}"' not in html]
+    if missing_ids:
+        errors.append(f"WebUI TUN controls missing from web/index.html: {missing_ids}")
+    if 'id="open-tun-dialog">TUN routing<' not in html:
+        errors.append("WebUI session header must expose the TUN routing control")
+    if "Server-owned device" not in html or "target-side TCP and UDP sockets" not in html:
+        errors.append("WebUI must explain that the TUN device belongs to the server")
+    for function_name in ("refreshTunRelays", "startSelectedTun", "stopTunRelay"):
+        if not re.search(rf"function\s+{function_name}\s*\(", app):
+            errors.append(f"WebUI TUN function missing from web/app.js: {function_name}")
+    if 'api("/tun")' not in app:
+        errors.append("WebUI TUN inventory must call GET /api/v1/tun")
+    if "/sessions/${encodeURIComponent(sessionId)}/tun" not in app:
+        errors.append("WebUI TUN controls must call the per-session /tun endpoint")
+
+
 def main() -> int:
     errors: list[str] = []
     _check_shell_contract(errors)
     _check_configuration_contract(errors)
     _check_socks_contract(errors)
+    _check_tun_contract(errors)
     if errors:
         print("WebUI contract check FAILED:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("WebUI contract check OK: shell completion and configuration export/import")
+    print("WebUI contract check OK: shell, configuration, SOCKS, and TUN controls")
     return 0
 
 

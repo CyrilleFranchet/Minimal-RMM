@@ -1,8 +1,8 @@
 """Server-side TUN lifecycle for the built-in RMM pivot.
 
 The RMM server owns the TUN interface and starts a small Go user-space IP
-stack. That stack uses the per-session SOCKS listener as its egress, so the Go
-agent only needs ordinary outbound TCP and UDP sockets and remains
+stack. That stack uses a private per-session relay bridge as its egress, so the
+Go agent only needs ordinary outbound TCP and UDP sockets and remains
 privilege-free.
 """
 
@@ -132,7 +132,7 @@ def _run_system_command(args: list[str]) -> None:
 
 
 class ServerTunRelay:
-    """One TUN process connected to one per-session SOCKS bridge."""
+    """One TUN process connected to one private per-session relay bridge."""
 
     def __init__(self, session_id: str, config: dict, helper_path: str, socks_manager: Any, log_fn=None):
         self.session_id = session_id
@@ -149,7 +149,7 @@ class ServerTunRelay:
         self.log_fn(message, level)
 
     def start(self) -> None:
-        """Start the internal SOCKS bridge, TUN helper, and host route."""
+        """Start the private relay bridge, TUN helper, and host route."""
         if not os.path.isfile(self.helper_path) or not os.access(self.helper_path, os.X_OK):
             raise TunError(f"TUN helper is unavailable: {self.helper_path}")
         system = platform.system().lower()

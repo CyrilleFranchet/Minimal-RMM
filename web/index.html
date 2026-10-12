@@ -228,6 +228,7 @@
                 <button type="button" class="secondary" id="open-files-dialog">Files &amp; screenshot</button>
                 <button type="button" class="secondary" id="open-downloads-dialog">Downloads</button>
                 <button type="button" class="secondary" id="open-socks-dialog">Pivots</button>
+                <button type="button" class="secondary" id="open-tun-dialog">TUN routing</button>
                 <button type="button" class="secondary console-close" id="console-close" title="Close session view" aria-label="Close session view">×</button>
               </div>
             </div>
@@ -441,6 +442,58 @@
       <h3 class="socks-relays-title">Active pivots</h3>
       <div id="socks-relays-list" class="socks-relays-list">
         <p class="downloads-empty">No active pivots.</p>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="tun-dialog" class="session-tools-dialog" aria-labelledby="tun-dialog-title">
+    <form method="dialog" class="session-tools-card">
+      <div class="session-tools-header">
+        <h2 id="tun-dialog-title">TUN routing</h2>
+        <button type="submit" class="secondary" aria-label="Close TUN routing dialog">×</button>
+      </div>
+      <p id="tun-selected-session" class="tun-selected-session"></p>
+      <div class="tun-config-grid">
+        <div>
+          <label for="tun-device">TUN device</label>
+          <input type="text" id="tun-device" value="tun://rmm0" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="tun-route">Target route (IPv4 CIDR)</label>
+          <input type="text" id="tun-route" placeholder="10.10.0.0/16" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="tun-address">TUN address</label>
+          <input type="text" id="tun-address" value="198.18.0.1/15" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="tun-interface">Egress interface (optional)</label>
+          <input type="text" id="tun-interface" placeholder="eth0 or en0" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="tun-mtu">MTU</label>
+          <input type="number" id="tun-mtu" min="576" max="9000" value="1500">
+        </div>
+        <div>
+          <label for="tun-udp-timeout">UDP idle timeout (seconds)</label>
+          <input type="number" id="tun-udp-timeout" min="1" max="86400" value="300">
+        </div>
+      </div>
+      <p class="tun-protocol" role="note">
+        <span class="tun-protocol-label">Server-owned device</span>
+        <span>The TUN interface and route are created on the RMM server. The Go agent only opens target-side TCP and UDP sockets.</span>
+      </p>
+      <div class="tun-actions">
+        <button type="button" id="tun-start">Start TUN routing</button>
+        <button type="button" class="secondary" id="tun-stop" disabled>Stop TUN routing</button>
+        <button type="button" class="secondary" id="tun-refresh">Refresh</button>
+      </div>
+      <p id="tun-status" class="tools-hint" role="status" aria-live="polite"></p>
+      <p id="tun-action-status" class="tools-hint" role="status" aria-live="polite"></p>
+      <p class="tools-hint">Use a narrow target route such as <code>10.10.0.0/16</code>. The server needs the built <code>rmm-tun</code> helper, a built <code>tun.dll</code>, and permission to configure the host TUN device.</p>
+      <h3 class="tun-relays-title">Active server TUN relays</h3>
+      <div id="tun-relays-list" class="tun-relays-list">
+        <p class="downloads-empty">No active TUN relays.</p>
       </div>
     </form>
   </dialog>

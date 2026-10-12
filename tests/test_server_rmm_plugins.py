@@ -161,6 +161,7 @@ class PluginBuildTests(unittest.TestCase):
     def test_build_targets_include_checked_in_plugins(self):
         self.assertIn("rclone-exfil", server_rmm.plugin_build_targets())
         self.assertIn("socks", server_rmm.plugin_build_targets())
+        self.assertIn("tun", server_rmm.plugin_build_targets())
 
     def test_missing_name_returns_400(self):
         status, body = self.call_post({})
@@ -430,15 +431,15 @@ class PivotPluginReadinessTests(unittest.TestCase):
             with patch("server_rmm.PLUGINS_DIR", tmp):
                 self.assertIsNone(self._server().pivot_plugin_error(session))
 
-    def test_tun_requires_socks_plugin_capability(self):
+    def test_tun_requires_tun_plugin_capability(self):
         session = SimpleNamespace(agent_type="go", capabilities=[])
         detail = self._server().tun_plugin_error(session)
-        self.assertIn("socks-plugin", detail)
+        self.assertIn("tun-plugin", detail)
 
     def test_tun_accepts_built_transport_and_helper(self):
-        session = SimpleNamespace(agent_type="go", capabilities=["socks-plugin"])
+        session = SimpleNamespace(agent_type="go", capabilities=["tun-plugin"])
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "socks.dll"), "wb") as handle:
+            with open(os.path.join(tmp, "tun.dll"), "wb") as handle:
                 handle.write(b"MZpayload")
             helper = os.path.join(tmp, "rmm-tun")
             with open(helper, "wb") as handle:
@@ -459,6 +460,60 @@ class PivotPluginReadinessTests(unittest.TestCase):
         session = SimpleNamespace(agent_type="custom", capabilities=[])
         detail = self._server().pivot_plugin_error(session)
         self.assertIn("custom", detail)
+
+
+class PivotInventoryTests(unittest.TestCase):
+    """Verify private TUN egress bridges stay out of the SOCKS inventory."""
+
+    def test_server_creates_separate_socks_and_tun_transports(self):
+        with patch.object(server_rmm.RMMServer, "_load_persisted_session_configs", return_value={}), \
+             patch.object(server_rmm.RMMServer, "_archive_orphaned_sessions_on_startup"):
+            server = server_rmm.RMMServer()
+
+        self.assertIsNot(server.socks, server.tun_transport)
+        self.assertIs(server.tun.socks_manager, server.tun_transport)
+
+    def test_starting_tun_stops_public_socks_first(self):
+        session = SimpleNamespace(id="session-1")
+        server = object.__new__(server_rmm.RMMServer)
+        server.get_session = Mock(return_value=session)
+        server.tun_plugin_error = Mock(return_value=None)
+        server.socks_active = Mock(return_value=True)
+        server.stop_socks = Mock()
+        relay = SimpleNamespace(status=Mock(return_value={"session_id": session.id}))
+        server.tun = SimpleNamespace(start=Mock(return_value=relay))
+        server.record_operator_action = Mock()
+        server._record_event = Mock()
+
+        result = server.start_tun(
+            session.id,
+            {"device": "tun://rmm0", "route": "10.20.0.0/16"},
+        )
+
+        self.assertEqual(result, {"session_id": session.id})
+        server.stop_socks.assert_called_once_with(session.id)
+        server.tun.start.assert_called_once()
+
+    def test_socks_inventory_hides_tun_private_bridge(self):
+        server = object.__new__(server_rmm.RMMServer)
+        private_session = "private-session"
+        public_session = "public-session"
+        server.socks = SimpleNamespace(
+            list_relays=lambda: [
+                {"session_id": private_session, "port": 41001},
+                {"session_id": public_session, "port": 1080},
+            ]
+        )
+        server.tun_active = lambda session_id: session_id == private_session
+        server.get_session = lambda session_id: SimpleNamespace(
+            hostname=session_id,
+            username="user",
+            beacon_status=lambda: "online",
+        )
+
+        rows = server.list_socks_status()
+
+        self.assertEqual([row["session_id"] for row in rows], [public_session])
 
 
 if __name__ == "__main__":

@@ -2,11 +2,13 @@
 SOCKS5 listener on the operator host; TCP and TUN UDP flows are relayed through
 a pivot plugin.
 
-This module owns the operator-side listener, task queue, and /socks protocol.
-The agent-side relay implementation is delivered separately as a pivot plugin;
-the main beacon only reports the lifecycle flag. Current plugins use HTTP poll:
+This module owns the server-side listener, task queue, and relay framing used by
+the public `/socks` channel and the private `/tun` channel. The agent-side
+relay implementation is delivered separately as a pivot plugin; the main
+beacon only reports the matching lifecycle flag. Current plugins use HTTP poll:
 
   - HTTP GET/POST /socks (current plugin transport)
+  - HTTP GET/POST /tun (dedicated TUN plugin transport)
   - WebSocket GET /socks?... with Upgrade (available to compatible plugins)
 """
 

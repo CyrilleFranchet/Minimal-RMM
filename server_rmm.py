@@ -64,6 +64,8 @@ from rmm_rclone import (
     rclone_binary_available,
     rclone_public_config,
 )
+
+GO_TUN_PLUGIN_FILE = "tun.dll"
 # History: GNU readline loads this in _run_cli_readline; prompt_toolkit FileHistory uses the same path in _run_cli_prompt_toolkit
 HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 
@@ -835,7 +837,8 @@ class RMMServer:
         self.running = True
         self.event_hub = OperatorEventHub()
         self.socks = SocksManager(log_fn=self.log)
-        self.tun = TunManager(TUN_HELPER, self.socks, log_fn=self.log)
+        self.tun_transport = SocksManager(log_fn=self.log)
+        self.tun = TunManager(TUN_HELPER, self.tun_transport, log_fn=self.log)
         self._sessions_broadcast_lock = threading.Lock()
         self._sessions_broadcast_timer = None
         self._archive_orphaned_sessions_on_startup()
@@ -1790,9 +1793,13 @@ class RMMServer:
         return self.socks.get(session_id) is not None
 
     def list_socks_status(self) -> list[dict]:
-        """All active SOCKS relays with session hostname/username when known."""
+        """Return public SOCKS relays with session identity when known."""
         rows = []
         for relay in self.socks.list_relays():
+            # A TUN relay uses a private SOCKS bridge as its egress. Keep that
+            # implementation detail out of the public SOCKS inventory.
+            if self.tun_active(relay["session_id"]):
+                continue
             row = dict(relay)
             session = self.get_session(relay["session_id"])
             if session:
@@ -1812,14 +1819,14 @@ class RMMServer:
         capabilities = {str(item).lower() for item in getattr(session, "capabilities", [])}
         if agent_type != "go":
             return f"the TUN pivot currently requires a Go agent, got {agent_type or 'unknown'}"
-        if "socks-plugin" not in capabilities:
-            return "the Go agent does not advertise socks-plugin support"
+        if "tun-plugin" not in capabilities:
+            return "the Go agent does not advertise tun-plugin support"
         try:
-            plugin_path = safe_join_under(plugin_directory(), GO_SOCKS_PLUGIN_FILE)
+            plugin_path = safe_join_under(plugin_directory(), GO_TUN_PLUGIN_FILE)
         except ValueError:
-            return "the Go SOCKS plugin path is invalid"
+            return "the Go TUN plugin path is invalid"
         if not os.path.isfile(plugin_path):
-            return "build the socks plugin first (POST /api/v1/plugins/build with name=socks)"
+            return "build the TUN plugin first (POST /api/v1/plugins/build with name=tun)"
         if not os.path.isfile(TUN_HELPER) or not os.access(TUN_HELPER, os.X_OK):
             return f"build the server TUN helper first (make tun-build; expected {TUN_HELPER})"
         return None
@@ -1833,6 +1840,8 @@ class RMMServer:
         if plugin_error:
             raise TunError(plugin_error)
         normalized = normalize_tun_config(config)
+        if self.socks_active(session.id):
+            self.stop_socks(session.id)
         relay = self.tun.start(session.id, normalized)
         self.record_operator_action(session, f"tun start {normalized['device_name']}", "tun")
         self._record_event(
@@ -3268,7 +3277,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         if self._serve_web(path):
             return
         
-        if path in ("/register", "/cmd", "/ping", "/socks", "/socks-ws"):
+        if path in ("/register", "/cmd", "/ping", "/socks", "/socks-ws", "/tun"):
             if not self._beacon_authorized(qs):
                 self._beacon_forbidden()
                 return
@@ -3326,6 +3335,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "command": cmd,
                     "type": resp_type,
                     "socks_active": self.server_instance.socks_active(session_id),
+                    "tun_active": self.server_instance.tun_active(session_id),
                 })
                 self._respond(200, response, "application/json")
         
@@ -3357,6 +3367,20 @@ class RMMHandler(BaseHTTPRequestHandler):
                     json.dumps({"active": active, "tasks": tasks}),
                     "application/json",
                 )
+
+        elif path == "/tun":
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+            else:
+                self.server_instance.touch_session(session_id)
+                tasks = self.server_instance.tun_transport.poll_tasks(session_id)
+                active = self.server_instance.tun_active(session_id)
+                self._respond(
+                    200,
+                    json.dumps({"active": active, "tasks": tasks}),
+                    "application/json",
+                )
         
         else:
             self._respond(404, "Not Found")
@@ -3380,7 +3404,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._respond(404, "Not Found")
             return
 
-        if path in ("/result", "/socks"):
+        if path in ("/result", "/socks", "/tun"):
             if not self._beacon_authorized(qs):
                 self._beacon_forbidden()
                 return
@@ -3398,6 +3422,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             self.server_instance.touch_session(session_id)
             if not self.server_instance.socks.post_responses(session_id, body):
                 self._respond(400, "INVALID SOCKS PAYLOAD")
+            else:
+                self._respond(200, "OK")
+            return
+
+        if path == "/tun":
+            err, session_id = self._beacon_session_id_from_qs(qs)
+            if err:
+                self._respond(400, err)
+                return
+            self.server_instance.touch_session(session_id)
+            if not self.server_instance.tun_transport.post_responses(session_id, body):
+                self._respond(400, "INVALID TUN PAYLOAD")
             else:
                 self._respond(200, "OK")
             return

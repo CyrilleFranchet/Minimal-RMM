@@ -54,10 +54,19 @@ runtime configuration over stdin:
 The plugin polls the existing `/socks` endpoint, owns the remote TCP and UDP
 connections, and exits when the server clears the relay. The normal beacon
 continues polling `/cmd` while the pivot is active. Cancelling the agent also
-cancels the child process. The server-owned TUN frontend uses this plugin as
-its transport; the TUN device and user-space IP stack stay on the server.
-See `docs/tun-pivot.md` for the complete path from the server TUN to target
-side sockets.
+cancels the child process. This plugin is started only for the public SOCKS
+pivot and only while `socks_active` is true.
+
+The server-owned TUN frontend has a separate `agent-plugins/tun/` package and
+`tun.dll`. When `/cmd` reports `tun_active: true`, the beacon starts that DLL
+in a separate cancellable child process. It polls `/tun` and owns the target
+TCP and UDP sockets for the server TUN relay. The TUN device and user-space IP
+stack stay on the server. The TUN child is not started for a public SOCKS
+relay, and the SOCKS child is not started for a TUN relay.
+
+Both plugins use the same in-memory JSON task framing (`connect`, `send`,
+`close`, `udp_send`, and `udp_close`) but have separate binaries and HTTP
+endpoints so each pivot loads only the code it needs.
 
 ## How loading works
 
@@ -206,7 +215,7 @@ New Go functions in `agent-go/`:
 | `loadPluginPEContext` | `pe_loader_windows.go` | Run a plugin child with caller-owned cancellation |
 | `runPluginChild` | `pe_loader_windows.go` | Load a DLL with the Windows loader and invoke its export |
 | `loadPluginCommand` | `main.go` | Parse the `__PE_LOAD__` operator command |
-| `socksPluginController` | `main.go` | Start and cancel the persistent SOCKS5 pivot child |
+| `pluginController` / `newPluginController` | `main.go` | Start and cancel one persistent SOCKS or TUN child independently |
 | `loadPluginPE` (stub) | `platform_other.go` | Non-Windows builds return an explicit error |
 
 New Python functions:

@@ -1,7 +1,8 @@
-# Web UI — Pivots
+# Web UI — SOCKS pivot
 
-The WebUI exposes the existing SOCKS5 operator API as the first pivot type for
-the selected live session console.
+The WebUI exposes the SOCKS5 operator API for the selected live session
+console. Server-owned TUN routing has its own **TUN routing** control; see
+[`docs/tun-pivot.md`](tun-pivot.md) for its configuration and lifecycle.
 
 ## Start a relay
 
@@ -46,8 +47,8 @@ The relay keeps the SOCKS protocol and tunnel state on the server. It accepts
 fragmented TCP handshake reads, buffers remote bytes that arrive while the
 local client is receiving its success reply, caps large send batches at 32
 chunks per poll, and retries close tasks until the agent acknowledges them.
-Both agent plugins bound target connect time to 20 seconds and retain response
-batches across transient HTTP POST failures.
+The public SOCKS agent plugins bound target connect time to 20 seconds and
+retain response batches across transient HTTP POST failures.
 
 ## Manage active relays
 
@@ -65,6 +66,7 @@ The controls call the existing operator endpoints:
 - `POST /api/v1/sessions/{id}/socks` with `{"stop": true}` to stop it.
 
 The regular operator SOCKS path carries TCP `CONNECT` traffic through the agent.
-The server-owned TUN frontend also uses the relay's SOCKS5 `UDP ASSOCIATE`
-support for datagram flows. The relay is separate from rclone exfiltration:
+The server-owned TUN frontend uses its private relay's SOCKS5 `UDP ASSOCIATE`
+support for datagram flows and its dedicated `/tun` agent channel. The relay is
+separate from rclone exfiltration:
 `rmm_rclone.py` manages cloud upload profiles and does not configure SOCKS.

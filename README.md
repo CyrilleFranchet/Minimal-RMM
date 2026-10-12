@@ -79,7 +79,7 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 ### Web UI
 
-With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. Use **Config** in the header to export or import a versioned UI configuration JSON file; secrets are excluded unless explicitly requested (see `docs/web-ui-configuration.md`). **Dark mode** is the default; use the **☀ / ☽** toggle in the header to switch (saved in `localStorage`). The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates (new agents appear automatically; no manual refresh). The shell queues commands with **Enter**, runs `/exec` wait via **Ctrl+Enter**, and supports **↑/↓ command history** plus **Tab completion** (session history + `cmd:` / `PS:` / `powershell:` / `pwsh:` prefixes). Type **`help`** or **`?`** in the shell for its local commands; all other commands are sent to the selected agent. Click **Pivots** in a live session header to start or stop the current SOCKS5 pivot and inspect the global pivot list (see `docs/web-socks.md`). Completed agent downloads appear in the **Downloads from agent** panel. **Session history** lists archived transcripts from killed sessions. The sidebar has separate **Deploy agent (PowerShell)** and **Deploy agent (Go)** sections — see `docs/web-agent-generator.md` and `docs/go-agent.md`. The token is kept in `sessionStorage` for the browser tab only.
+With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. Use **Config** in the header to export or import a versioned UI configuration JSON file; secrets are excluded unless explicitly requested (see `docs/web-ui-configuration.md`). **Dark mode** is the default; use the **☀ / ☽** toggle in the header to switch (saved in `localStorage`). The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates (new agents appear automatically; no manual refresh). The shell queues commands with **Enter**, runs `/exec` wait via **Ctrl+Enter**, and supports **↑/↓ command history** plus **Tab completion** (session history + `cmd:` / `PS:` / `powershell:` / `pwsh:` prefixes). Type **`help`** or **`?`** in the shell for its local commands; all other commands are sent to the selected agent. Click **Pivots** in a live session header to start or stop the current SOCKS5 pivot and inspect the global pivot list (see `docs/web-socks.md`). Click **TUN routing** to configure the server-owned TUN device, target route, and helper lifecycle (see `docs/tun-pivot.md`). Completed agent downloads appear in the **Downloads from agent** panel. **Session history** lists archived transcripts from killed sessions. The sidebar has separate **Deploy agent (PowerShell)** and **Deploy agent (Go)** sections — see `docs/web-agent-generator.md` and `docs/go-agent.md`. The token is kept in `sessionStorage` for the browser tab only.
 
 **AI Assistant** (button **AI** in the header): opens a chat panel on the right. Configure and validate an **OpenAI**, **Anthropic**, or **Mistral** API key; only providers with a successfully validated key can be selected. Keys and validation state are stored in browser `sessionStorage` for the current tab and are never written to server storage. The model list comes from the selected provider's API, and a custom model ID remains available. Conversation history is **saved per session on the server** (`RMM_logs/history/{id}/ai_chat.json`) and restored when you select that session; use **Reset chat** to start over (see `docs/web-ai-chat-memory.md`). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). See `docs/ai-providers.md` for the provider protocol and API details. **Skills** — Markdown files in `ai-skills/` on the server are injected into the system prompt (see `docs/web-ai-skills.md`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_AI_SKILLS_DIR`. The selected session in the sidebar is passed as context.
 
@@ -293,7 +293,7 @@ When an operator runs **`socks [port]`** (default **1080**), the server binds a 
 
 Use **`socks stop`** (or kill the session) to tear down.
 
-**Troubleshooting:** The listener is **SOCKS5 with no authentication** and supports TCP `CONNECT`; the server-owned TUN frontend also uses SOCKS5 `UDP ASSOCIATE` internally. Configure `proxychains` with `socks5`, not `socks4` or `http`. Check the server logs for plugin delivery/readiness, `SOCKS connect request`, and `SOCKS remote connect ok`. A Go agent must advertise `socks-plugin` and have `socks.dll` in the server plugin directory. Point tools at **`socks5://127.0.0.1:1080` on the machine running the server** (not the agent).
+**Troubleshooting:** The listener is **SOCKS5 with no authentication** and supports TCP `CONNECT`; the server-owned TUN frontend uses `UDP ASSOCIATE` through its own private server relay. Configure `proxychains` with `socks5`, not `socks4` or `http`. Check the server logs for plugin delivery/readiness, `SOCKS connect request`, and `SOCKS remote connect ok`. A public Go SOCKS pivot needs `socks-plugin` and `socks.dll`; a TUN relay needs `tun-plugin` and `tun.dll`. Point tools at **`socks5://127.0.0.1:1080` on the machine running the server** (not the agent).
 
 The server handles fast agent connect responses immediately, including responses that arrive before the waiting thread begins blocking.
 
@@ -311,15 +311,15 @@ Operator API: `POST /api/v1/sessions/{id}/socks` with `{"port":1080}` or `{"stop
 
 The RMM server creates and owns the TUN device. Its `rmm-tun` helper provides
 the user-space IP/TCP/UDP stack and sends traffic through the existing
-per-session SOCKS channel. The Go agent only opens ordinary target-side TCP and
-UDP sockets, so it does not create a TUN device or require administrator
+per-session TUN transport channel. The Go agent only opens ordinary target-side
+TCP and UDP sockets, so it does not create a TUN device or require administrator
 privileges. This currently requires a Windows amd64 Go agent with the built
-`socks.dll` transport.
+`tun.dll` transport.
 
 Build the two server-side components once:
 
 ```bash
-python rmm_cli.py pe build socks
+python rmm_cli.py pe build tun
 make tun-build
 ```
 

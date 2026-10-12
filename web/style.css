@@ -672,6 +672,14 @@ body.sidebar-resizing iframe {
   white-space: nowrap;
 }
 
+.tun-session-status {
+  color: var(--success);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  margin-left: 0.35rem;
+  white-space: nowrap;
+}
+
 .beacon-status {
   font-size: 0.65rem;
   font-weight: 600;
@@ -1274,8 +1282,88 @@ body.sidebar-resizing iframe {
   font-size: 0.75rem;
 }
 
+.tun-selected-session {
+  margin: 0 0 0.85rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.tun-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(12rem, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.tun-config-grid input[type="number"],
+.tun-config-grid input[type="text"] {
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.tun-protocol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin: 0.8rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.tun-protocol-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.tun-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.85rem 0 0.5rem;
+}
+
+.tun-active {
+  color: var(--success);
+}
+
+.tun-action-error {
+  color: var(--danger);
+}
+
+.tun-relays-title {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.tun-relays-list {
+  overflow-x: auto;
+}
+
+.tun-relay-id {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+}
+
+.tun-relay-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.tun-relay-actions button {
+  padding: 0.2rem 0.45rem;
+  font-size: 0.75rem;
+}
+
 @media (max-width: 600px) {
-  .socks-config-grid {
+  .socks-config-grid,
+  .tun-config-grid {
     grid-template-columns: 1fr;
   }
 }

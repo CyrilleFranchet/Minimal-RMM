@@ -1,8 +1,8 @@
 # Server-owned TUN pivot
 
 The TUN device belongs to the RMM server. The agent remains an ordinary
-user-mode Go process and opens target-side TCP and UDP sockets through the
-existing authenticated SOCKS channel.
+user-mode Go process and opens target-side TCP and UDP sockets through a
+dedicated authenticated TUN channel.
 
 ```text
 Exegol tool
@@ -14,17 +14,17 @@ RMM server TUN device
 rmm-tun (user-space IP/TCP/UDP stack)
     │ SOCKS5 TCP CONNECT / UDP ASSOCIATE
     ▼
-RMM per-session SOCKS bridge
-    │ authenticated HTTP /socks poll
+RMM per-session private relay bridge
+    │ authenticated HTTP /tun poll
     ▼
-socks.dll in the Go agent
+tun.dll in its own Go child process
     │ ordinary target-side sockets
     ▼
 Target network
 ```
 
-The RMM code owns the lifecycle, API, route setup, SOCKS transport, and agent
-integration. `server-tun/` embeds the maintained
+The RMM code owns the lifecycle, API, route setup, private relay transport, and
+agent integration. `server-tun/` embeds the maintained
 [`tun2socks`](https://github.com/xjasonlyu/tun2socks) user-space stack instead
 of implementing a TCP/IP stack from scratch. No external proxy or console is
 required.
@@ -34,8 +34,8 @@ required.
 - The RMM server must run on Linux or macOS and have permission to create and
   configure a TUN device and route.
 - The server needs Go 1.26.3 or newer to build `rmm-tun`.
-- A Windows amd64 Go agent must advertise `socks-plugin` and the server must
-  have a built `socks.dll`. The current TUN lifecycle intentionally rejects
+- A Windows amd64 Go agent must advertise `tun-plugin` and the server must
+  have a built `tun.dll`. The current TUN lifecycle intentionally rejects
   other agent types until their transport capabilities are implemented.
 - The Exegol container must share the network namespace that owns the server
   TUN device, or the route must be added in the namespace where the tools run.
@@ -48,13 +48,30 @@ not create an interface, add routes, or open a listening socket on the target.
 Build the Go transport plugin and the server helper from checked-in sources:
 
 ```bash
-python rmm_cli.py pe build socks
+python rmm_cli.py pe build tun
 make tun-build
 ```
 
 The plugin build needs the same Windows cross compiler as the other Go PE
 plugins. `make tun-build` writes `RMM_logs/tools/rmm-tun`; set
 `RMM_TUN_HELPER` if the helper is stored elsewhere.
+
+## WebUI workflow
+
+The WebUI exposes a **TUN routing** button in the selected live session
+header. Before opening it, build `tun.dll` from **Deploy plugins (Go)** and
+build the server helper with `make tun-build`. In the TUN dialog, configure:
+
+- the server TUN device, such as `tun://rmm0` on Linux or `utun4` on macOS;
+- the narrow target route, such as `10.10.0.0/16`;
+- the server TUN address, egress interface, MTU, and UDP idle timeout.
+
+Click **Start TUN routing** to create the device, configure the address and
+route, and start the server helper. The dialog shows active relays, helper
+health, beacon state, and the route in use. Click **Stop TUN routing** to
+remove the route, stop the helper, and release the device. The TUN controls
+use `GET /api/v1/tun` and `POST /api/v1/sessions/{id}/tun`; the target agent
+only provides the unprivileged TCP and UDP transport.
 
 ## Start a relay
 
@@ -126,8 +143,8 @@ and the agent's beacon latency.
 
 ## Lifecycle and failure handling
 
-- `tun start` requires the Go agent's `socks-plugin` capability, the built
-  `socks.dll`, and an executable `rmm-tun` helper.
+- `tun start` requires the Go agent's `tun-plugin` capability, the built
+  `tun.dll`, and an executable `rmm-tun` helper.
 - The server refuses a second TUN relay for the same session until the first
   one is stopped. A normal SOCKS listener cannot replace an active TUN relay.
 - Stopping the TUN relay removes the configured route, stops the helper, and
@@ -145,7 +162,7 @@ The server-side implementation is split across these functions and classes:
 |--------|------|------|
 | `normalize_tun_config` | `rmm_tun.py` | Validate device, route, address, MTU, and UDP timeout values |
 | `_device_name` / `_run_system_command` | `rmm_tun.py` | Parse safe device names and execute fixed network command argument lists |
-| `ServerTunRelay` | `rmm_tun.py` | Own one helper process, interface, route, and private SOCKS bridge |
+| `ServerTunRelay` | `rmm_tun.py` | Own one helper process, interface, route, and private relay bridge |
 | `ServerTunRelay.start` / `stop` | `rmm_tun.py` | Configure and tear down one relay |
 | `ServerTunRelay.alive` / `status` | `rmm_tun.py` | Report helper health and safe operator state |
 | `ServerTunRelay._prepare_linux_device` / `_configure_interface` / `_remove_route` | `rmm_tun.py` | Apply platform-specific TUN and route operations |
@@ -154,12 +171,14 @@ The server-side implementation is split across these functions and classes:
 | `RMMServer.start_tun` / `stop_tun` | `server_rmm.py` | Operator lifecycle and event logging |
 | `RMMServer.tun_plugin_error` | `server_rmm.py` | Check Go transport and helper readiness |
 | `RMMServer.list_tun_status` | `server_rmm.py` | Return operator-visible relay state |
+| `refreshTunRelays` / `startSelectedTun` / `stopTunRelay` | `web/app.js` | WebUI inventory and TUN lifecycle controls |
 | `tunConfig` / `validateConfig` | `server-tun/main.go` | Validate helper flags before starting the stack |
 | `main` | `server-tun/main.go` | Run the server-side TUN process until shutdown |
 
 The agent-side UDP additions are documented in
 `docs/go-agent-plugins.md`; they use `processUDPTasks`, `readUDPData`, and the
-UDP connection cleanup helpers in `agent-plugins/socks/main.go`.
+UDP connection cleanup helpers in `agent-plugins/tun/main.go` for the TUN
+transport. The SOCKS plugin has the same task protocol in its own binary.
 
 The Go beacon keeps the lifecycle in `pollOnce` and uses
 `isPermanentHTTPError` in `agent-go/main.go` to stop a stale pivot child after

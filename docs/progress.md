@@ -5,14 +5,27 @@
 
 ## Current Status
 
+### 2026-10-12 — WebUI TUN routing controls
+
+- Added a dedicated **TUN routing** control beside the SOCKS **Pivots** action
+  in the live session header. Operators can configure the server device,
+  target route, TUN address, egress interface, MTU, and UDP timeout.
+- Added active TUN inventory, helper and beacon status, start/stop actions, and
+  periodic refresh through the existing `/tun` operator endpoints.
+- Added a dedicated privilege-free `tun.dll` plugin for TUN routing. It runs
+  in its own child process, polls `/tun`, and stays separate from the public
+  `socks.dll` plugin and `/socks` channel.
+- Added WebUI contract coverage and a regression test for private bridge
+  filtering.
+
 ### 2026-10-12 — Server-owned TUN pivot
 
 - Replaced the external proxy-based TUN prototype with an RMM-owned TUN
   frontend. The server creates the device and starts the checked-in
   `server-tun/rmm-tun` helper; no external proxy console is required.
-- Extended the existing SOCKS transport with SOCKS5 UDP association support.
-  The Windows amd64 Go agent's `socks.dll` plugin now opens target-side UDP
-  sockets alongside its TCP connections while remaining privilege-free.
+- Added a dedicated TUN transport with SOCKS5 UDP association support. The
+  Windows amd64 Go agent's `tun.dll` plugin opens target-side UDP sockets
+  alongside its TCP connections while remaining privilege-free.
 - Added `GET /tun` and `POST /sessions/{id}/tun`, matching CLI and MCP tools,
   Linux/macOS device and route lifecycle, helper readiness checks, and cleanup
   on stop, kill, and server shutdown.
@@ -234,8 +247,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
                     │           server_rmm.py                 │
                     │  RMMServer + RMMHandler (threaded)      │
                     ├─────────────────────────────────────────┤
- Beacon (secret)    │  /register /cmd /result /ping /socks    │
-                    │  SocksManager ← rmm_socks.py              │
+ Beacon (secret)    │  /register /cmd /result /ping /socks /tun │
+                    │  SocksManager × 2 ← rmm_socks.py          │
  Operator (token)   │  /api/v1/*  +  /api/v1/ws (events)      │
                     │  /ui/* static  +  POST /api/v1/ai/chat  │
                     └──────────────┬──────────────────────────┘
@@ -249,7 +262,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 **Beacon model:** poll-based, no interactive TCP shell. Latency ≥ one sleep interval (+ jitter). Commands are JSON on `GET /cmd`; results on `POST /result`.
 
-**SOCKS model:** SOCKS5 binds on **operator host** (`127.0.0.1:N`). Bytes traverse: local SOCKS client → server listener → task queue → agent pivot plugin (HTTP `/socks`) → remote TCP or UDP socket on agent LAN. The server-owned TUN frontend uses the same relay and the server still exposes the WebSocket transport for compatible future plugins.
+**SOCKS model:** SOCKS5 binds on **operator host** (`127.0.0.1:N`). Bytes traverse: local SOCKS client → server listener → task queue → `socks.dll` (HTTP `/socks`) → remote TCP or UDP socket on agent LAN. The server-owned TUN frontend uses a separate private relay manager and `tun.dll` (HTTP `/tun`) with the same task framing. The server still exposes the WebSocket transport for compatible future plugins.
 
 ---
 
@@ -315,6 +328,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] SOCKS lifecycle hook: `Sync-RmmSocksChannelFromServer` starts and stops the fetched `socks.ps1` plugin from the `/cmd` flag
 - [x] SOCKS PowerShell plugin: authenticated fetch, HTTP poll, TCP task handling, and dedicated runspace execution
 - [x] SOCKS Go plugin: persistent `socks.dll` child for Windows amd64, with cancellation owned by the beacon
+- [x] TUN Go plugin: separate persistent `tun.dll` child and `/tun` channel for server-owned TUN routing
 - [x] Runspace/process isolation: PowerShell `BeginInvoke` and Go plugin child keep relay code outside the main beacon loop
 
 ### Operator CLI (`rmm_cli.py`)
@@ -341,6 +355,8 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`); hover **Delete** removes one archive; **Clear all** removes every ended archive (`DELETE /api/v1/history`)
 - [x] Beacon config apply (PATCH sleep/jitter) — per-session **Beacon** button opens modal dialog
 - [x] **SOCKS5 relays** — start/stop/restart selected session relays and manage the global relay inventory; see `docs/web-socks.md`
+- [x] **Server-owned TUN routing** — configure the device, route, helper, and
+  private agent transport from the selected session; see `docs/tun-pivot.md`
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
 - [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); tab-scoped OpenAI, Anthropic, and Mistral keys with live validation and provider-specific model lists; Mistral standard and multi-message completion responses normalize to displayable text, and Mistral tool results include the function name required to end a tool loop; optional Exegol MCP settings; **server skills** (`ai-skills/*.md`, `GET /api/v1/ai/skills`) — see `docs/ai-providers.md` and `docs/web-ai-skills.md`
 - [x] **AI task completion reports** — default `task-completion-report` skill requires a concise work summary; successful responses include server-generated UTC task start and completion timestamps
@@ -367,6 +383,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] `CLAUDE.md` — project overview for agents
 - [x] `docs/downloads-browser.md` — web downloads panel + `GET …/downloads` API
 - [x] `docs/web-socks.md` — WebUI pivot controls and global SOCKS5 relay inventory
+- [x] `docs/tun-pivot.md` — server-owned TUN setup, routing, WebUI controls, and limits
 - [x] `docs/pivot-plugins.md` — agent-side pivot plugin delivery and lifecycle
 - [x] `docs/web-shell-completion.md` — shell ↑/↓ history and Tab completion
 - [x] `docs/client-command-execution.md` — hidden CMD/PS process launch on the agent
@@ -399,6 +416,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Screenshot | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | SOCKS start/stop | ✅ | ✅ | ❌ | ✅ | ✅ dialog | ✅ |
 | Pivot list (SOCKS5) | ✅ | ✅ `socks list` | ✅ `socks list` | ✅ | ✅ dialog | ✅ `socks list` |
+| Server-owned TUN start/stop/list | ✅ | ✅ `tun` | ✅ `tun list`, `tun start`, `tun stop` | ✅ | ✅ dialog | ✅ `tun` |
 | Events / transcript | ✅ | ✅ | ✅ | ✅ | ✅ WS | ❌ |
 | Keylog | queue only | ❌ | ❌ | ✅ `queue_keylog` | ❌ | ✅ |
 | Install/remove persist | queue only | ❌ | ❌ | ✅ `install_persistence` / `remove_persistence` | ❌ | ✅ |
