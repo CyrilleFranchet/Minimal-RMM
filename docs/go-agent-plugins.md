@@ -31,11 +31,11 @@ The runner lives in `agent-go/pe_loader_windows.go` and uses only the Go
 standard library:
 
 1. **Fetch** — the plugin bytes are downloaded through the same authenticated
-   `request()` helper as every other beacon call (`X-RMM-Beacon-Token` header)
-   request helper as every other beacon call.
+   `request()` helper as every other beacon call (`X-RMM-Beacon-Token` header).
 2. **Run** — the parent starts itself with `--plugin-child` and frames the DLL
    bytes and input over stdin.
-3. **Map** — the child uses the existing NT section mapper and invokes the
+3. **Map** — the child manually maps the PE into private allocations, applies
+   relocations and imports, sets per-section protections, and invokes the
    requested export.
 4. **Cleanup** — the parent waits up to ten minutes and returns stdout as the
    plugin result. No plugin file is created.
@@ -44,10 +44,10 @@ Discretion properties:
 
 - No file is written to the target disk at any point.
 - Code pages are **never writable and executable at the same time**.
-- The mapped region is reported as `MEM_IMAGE` (a normal mapped module),
-  not private `VirtualAlloc` memory.
-- After loading, the writable staging alias is dropped; only the RX image
-  view remains.
+- The image uses private committed memory in the child process and is released
+  when that process exits.
+- After loading, the writable staging allocation is released; only the
+  protected image allocation remains.
 
 ## Plugin ABI
 

