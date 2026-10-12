@@ -16,6 +16,15 @@ the selected live session console.
 The connection exits through the selected agent host. The session sidebar
 shows the listener port beside sessions with an active relay.
 
+The listener implements **SOCKS5 with no authentication** and the TCP
+`CONNECT` command. Configure clients with `socks5`; SOCKS4 and HTTP
+proxy configuration are not supported. For example, the proxy entry in
+`proxychains.conf` must use:
+
+```text
+socks5 127.0.0.1 1080
+```
+
 ## Agent plugin lifecycle
 
 The beacon carries only the `socks_active` lifecycle flag. The relay code runs

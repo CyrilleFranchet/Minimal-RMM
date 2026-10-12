@@ -288,7 +288,7 @@ When an operator runs **`socks [port]`** (default **1080**), the server binds a 
 
 Use **`socks stop`** (or kill the session) to tear down.
 
-**Troubleshooting:** Check the server logs for plugin delivery/readiness, `SOCKS connect request`, and `SOCKS remote connect ok`. A Go agent must advertise `socks-plugin` and have `socks.dll` in the server plugin directory. Point tools at **`socks5://127.0.0.1:1080` on the machine running the server** (not the agent).
+**Troubleshooting:** The listener is **SOCKS5 with no authentication** and supports TCP `CONNECT`; configure `proxychains` with `socks5`, not `socks4` or `http`. Check the server logs for plugin delivery/readiness, `SOCKS connect request`, and `SOCKS remote connect ok`. A Go agent must advertise `socks-plugin` and have `socks.dll` in the server plugin directory. Point tools at **`socks5://127.0.0.1:1080` on the machine running the server** (not the agent).
 
 The server handles fast agent connect responses immediately, including responses that arrive before the waiting thread begins blocking.
 

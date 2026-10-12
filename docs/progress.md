@@ -15,6 +15,14 @@
 - Added server delivery coverage and documented the PowerShell and Go plugin
   paths in `docs/screenshot-plugin.md` and `docs/go-agent-plugins.md`.
 
+### 2026-10-12 — Make SOCKS protocol explicit in the WebUI
+
+- Added a visible SOCKS5 protocol badge and client configuration guidance to
+  the Pivots dialog.
+- Documented that the shipped relay accepts unauthenticated TCP `CONNECT`
+  through SOCKS5 and does not support SOCKS4 or HTTP proxy mode. This avoids
+  confusing a proxy client configuration failure with a relay failure.
+
 ### 2026-10-12 — SOCKS relay reliability audit
 
 - Fixed fragmented SOCKS5 handshake and request reads, rejected clients that do

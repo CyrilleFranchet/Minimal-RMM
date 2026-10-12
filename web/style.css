@@ -1173,6 +1173,30 @@ body.sidebar-resizing iframe {
   margin-bottom: 0;
 }
 
+.socks-protocol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin: 0.8rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.socks-protocol-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.socks-protocol strong {
+  color: var(--accent);
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+}
+
 .socks-actions {
   display: flex;
   flex-wrap: wrap;

@@ -117,6 +117,10 @@ def _check_socks_contract(errors: list[str]) -> None:
         errors.append(f"WebUI SOCKS controls missing from web/index.html: {missing_ids}")
     if 'id="open-socks-dialog">Pivots<' not in html:
         errors.append("WebUI session header must expose the pivot control as Pivots")
+    if "SOCKS5" not in html or "SOCKS4 is not supported" not in html:
+        errors.append("WebUI must identify SOCKS5 and state that SOCKS4 is unsupported")
+    if "socks5" not in html:
+        errors.append("WebUI must show the client SOCKS5 configuration keyword")
     for function_name in ("refreshSocksRelays", "startSelectedSocks", "stopSocksRelay"):
         if not re.search(rf"function\s+{function_name}\s*\(", app):
             errors.append(f"WebUI SOCKS function missing from web/app.js: {function_name}")

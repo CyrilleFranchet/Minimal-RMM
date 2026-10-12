@@ -425,6 +425,11 @@
           <input type="text" id="socks-bind-host" value="127.0.0.1" autocomplete="off" spellcheck="false">
         </div>
       </div>
+      <p class="socks-protocol" role="note">
+        <span class="socks-protocol-label">Proxy protocol</span>
+        <strong>SOCKS5</strong>
+        <span>no authentication · TCP CONNECT</span>
+      </p>
       <div class="socks-actions">
         <button type="button" id="socks-start">Start SOCKS5 pivot</button>
         <button type="button" class="secondary" id="socks-stop" disabled>Stop pivot</button>
@@ -432,7 +437,7 @@
       </div>
       <p id="socks-status" class="tools-hint" role="status" aria-live="polite"></p>
       <p id="socks-action-status" class="tools-hint" role="status" aria-live="polite"></p>
-      <p class="tools-hint">SOCKS5 is the first supported pivot type. Use the proxy URL from the machine running the RMM server. Connections exit through the selected agent host. Keep the bind host at <code>127.0.0.1</code> unless the proxy must be reachable from another network.</p>
+      <p class="tools-hint">This pivot speaks SOCKS5 only. Configure clients with <code>socks5</code> (for example, use <code>socks5</code> in proxychains); SOCKS4 is not supported. Use the proxy URL from the machine running the RMM server. Connections exit through the selected agent host. Keep the bind host at <code>127.0.0.1</code> unless the proxy must be reachable from another network.</p>
       <h3 class="socks-relays-title">Active pivots</h3>
       <div id="socks-relays-list" class="socks-relays-list">
         <p class="downloads-empty">No active pivots.</p>
