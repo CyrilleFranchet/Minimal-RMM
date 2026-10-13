@@ -209,9 +209,10 @@ flowchart LR
 
 The TUN device is a local operator-side interface. It is never created on the
 managed host. The target-side plugin opens ordinary outbound TCP and UDP
-sockets, which keeps the agent privilege-free. The current TUN implementation
-does not carry raw packets or ICMP, so tools that require raw packet semantics
-need a later transport.
+sockets, which keeps the agent privilege-free. The helper completes the
+agent-side TCP `CONNECT` before acknowledging the local SYN, so TCP port status
+comes from the target connection result. The transport does not carry target
+raw packets or ICMP.
 
 ## Storage ownership
 

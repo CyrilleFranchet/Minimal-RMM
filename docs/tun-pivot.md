@@ -30,10 +30,11 @@ Target network
 ```
 
 The RMM code owns the lifecycle, API, route setup, private relay transport, and
-agent integration. `server-tun/` embeds the maintained
-[`tun2socks`](https://github.com/xjasonlyu/tun2socks) user-space stack instead
-of implementing a TCP/IP stack from scratch. No external proxy or console is
-required.
+agent integration. `server-tun/` builds on the maintained
+[`tun2socks`](https://github.com/xjasonlyu/tun2socks) gVisor components instead
+of implementing a TCP/IP stack from scratch. It uses a custom TCP forwarder so
+the agent-side SOCKS `CONNECT` completes before the local TUN client receives a
+TCP SYN-ACK. No external proxy or console is required.
 
 ## Requirements
 
@@ -72,8 +73,8 @@ runtime plugin store. `make tun-build` writes `tools/rmm-tun`; set
 
 ## WebUI workflow
 
-The WebUI exposes TUN routing in the **Pivots** tab of the agent tools dialog in
-the selected live session header. Before opening it, install `tun.dll` from the
+The WebUI exposes TUN routing in the **Pivots** tab of the main workspace after
+selecting a live session. Before opening it, install `tun.dll` from the
 external plugin repository and build the helper with `make tun-build`. In server mode, the helper and
 interface run in the RMM server namespace. In workspace mode, they run in the
 local workspace namespace. In the TUN section, configure:
@@ -85,7 +86,7 @@ local workspace namespace. In the TUN section, configure:
 - the TUN address, egress interface, MTU, and UDP idle timeout.
 
 Click **Start TUN routing** to create the device, configure the address and
-routes, and start the server helper. The dialog shows active relays, helper
+routes, and start the server helper. The tab shows active relays, helper
 health, beacon state, and the routes in use. Click **Stop TUN routing** to
 remove the routes, stop the helper, and release the device. The TUN controls
 use `GET /api/v1/tun` and `POST /api/v1/sessions/{id}/tun`; the target agent
@@ -151,15 +152,18 @@ ip route get 10.10.20.15
 
 Tools that use normal TCP or UDP sockets can then use the target network
 without proxy configuration. Examples include `curl`, `ssh`, `smbclient`,
-Impacket protocols that use TCP, and TCP connect scans. Keep the route narrow
-so unrelated traffic does not enter the pivot.
+Impacket protocols that use TCP, and TCP port scans. For TCP, the helper waits
+for the agent-side `CONNECT` result before it completes the local handshake, so
+closed target ports are reset instead of being acknowledged as open by the
+local stack. Scan timing includes the beacon and relay latency; a scanner with
+a shorter timeout can report a reachable port as filtered. Keep the route
+narrow so unrelated traffic does not enter the pivot.
 
-The first implementation carries TCP and UDP socket flows. It does not expose
-target raw packets or raw ICMP through the unprivileged agent. `ping`, SYN
-scans, and other tools that require raw packet semantics need a later raw
-packet transport or a different agent capability. UDP protocols are supported
-through the SOCKS5 UDP association, subject to the protocol's socket behavior
-and the agent's beacon latency.
+The transport still carries TCP and UDP socket flows rather than target raw
+packets. ICMP echo requests, `ping`, and tools that need target-side raw packet
+semantics remain unsupported. UDP protocols are supported through the SOCKS5
+UDP association, subject to the protocol's socket behavior and the agent's
+beacon latency.
 
 ## Lifecycle and failure handling
 
@@ -195,7 +199,18 @@ The server-side implementation is split across these functions and classes:
 | `RMMServer.list_tun_status` | `server_rmm.py` | Return operator-visible relay state |
 | `tunRelayRoutes` / `refreshTunRelays` / `startSelectedTun` / `stopTunRelay` | `web/app.js` | WebUI route display, inventory, and TUN lifecycle controls |
 | `tunConfig` / `validateConfig` | `server-tun/main.go` | Validate helper flags before starting the stack |
-| `main` | `server-tun/main.go` | Run the server-side TUN process until shutdown |
+| `runStack` | `server-tun/main.go` | Open the TUN device, configure the stack, and wait for shutdown |
+| `parseTUNDevice` / `parseSocks5Proxy` | `server-tun/main.go` | Parse the helper's TUN and private SOCKS endpoints |
+| `createStack` / `installICMPHandler` | `server-tun/main.go` | Build the gVisor stack and install transport handlers before the NIC starts |
+| `relayHandler` | `server-tun/main.go` | Bridge gVisor TCP and UDP flows to the private SOCKS proxy |
+| `relayHandler.handleTCPRequest` | `server-tun/main.go` | Perform proxy `CONNECT` before the local TCP handshake |
+| `relayHandler.handleUDPRequest` / `handleUDPConn` | `server-tun/main.go` | Create and relay one SOCKS5 UDP association |
+| `metadataFromID` / `parseStackAddress` | `server-tun/main.go` | Convert gVisor endpoint IDs into proxy metadata |
+| `pipeTCP` / `copyTCPDirection` | `server-tun/main.go` | Copy TCP bytes with half-close handling |
+| `pipeUDP` / `copyUDPDirection` | `server-tun/main.go` | Copy UDP datagrams with idle expiry |
+| `symmetricNATPacketConn` / `newSymmetricNATPacketConn` | `server-tun/main.go` | Restrict UDP replies to the requested destination |
+| `icmpForwarder.handlePacket` / `handleIPv4` | `server-tun/main.go` | Answer local IPv4 echo requests without forwarding raw ICMP |
+| `main` / `validateConfig` | `server-tun/main.go` | Parse flags, validate input, and start the helper |
 
 The agent-side UDP additions are documented in
 `docs/go-agent-plugins.md`; the external `tun.dll` package uses

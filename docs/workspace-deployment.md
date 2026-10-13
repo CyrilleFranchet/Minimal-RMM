@@ -265,8 +265,10 @@ ip route get 10.10.20.15
 ```
 
 The helper carries TCP and UDP socket flows through the existing agent TUN
-plugin. Raw packet and ICMP semantics remain outside this implementation, so
-`ping`, SYN scans, and other raw-packet tools still need a later transport.
+plugin. It waits for the agent-side TCP `CONNECT` before completing the local
+handshake, so TCP port results reflect the target connection and include beacon
+latency. Raw packet and ICMP semantics remain outside this implementation, so
+`ping` and other target-side raw-packet tools still need a later transport.
 
 Do not add `NET_ADMIN` or `/dev/net/tun` to the central control-plane service.
 Only the per-operator workspace that owns the local interface receives them.
