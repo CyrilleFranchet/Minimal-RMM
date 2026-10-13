@@ -5,6 +5,7 @@
 !.env.example
 RMM_logs
 docker-data
+plugin-store
 .venv
 __pycache__
 *.pyc

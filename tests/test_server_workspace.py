@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import server_rmm
+from rmm_rclone import RcloneConfigError
 from rmm_workspace import WorkspaceEventBroker, WorkspaceRegistry
 from server_rmm import RMMHandler, RMMServer, Session, _resolve_api_session
 
@@ -125,6 +126,49 @@ class ServerWorkspaceTests(unittest.TestCase):
         result = server.workspace_events.read("alice", since=0)
 
         self.assertEqual(result["events"][0]["event"], event)
+
+    def test_workspace_exfil_queues_job_assembled_by_workspace(self):
+        server = self.make_server()
+        session = self.add_session(server)
+        session.workspace_id = "alice"
+        session.agent_type = "go"
+        session.capabilities = ["pe"]
+        server.set_command = MagicMock()
+        job = {
+            "plugin_job": {
+                "source": "C:/Temp/report.txt",
+                "account": "RMM",
+                "backend": "s3",
+                "target": "report.txt",
+                "settings": {"secret_access_key": "workspace-secret"},
+                "make_link": False,
+                "max_minutes": 30,
+            },
+            "max_bytes": 0,
+        }
+        with patch.object(
+            server_rmm,
+            "list_plugin_files",
+            return_value=[{"name": "rclone-exfil.dll"}],
+        ):
+            command = server.queue_agent_exfil(
+                session,
+                "C:/Temp/report.txt",
+                "unused-profile-name",
+                mode="plugin",
+                workspace_job=job,
+            )
+
+        self.assertTrue(command.startswith("__PE_LOAD__ rclone-exfil.dll Run "))
+        self.assertIn("workspace-secret", command)
+        server.set_command.assert_called_once_with(session.id, command, "oneshot")
+
+    def test_workspace_exfil_rejects_central_profile_fallback(self):
+        server = self.make_server()
+        session = self.add_session(server)
+        session.workspace_id = "alice"
+        with self.assertRaises(RcloneConfigError):
+            server.queue_agent_exfil(session, "C:/Temp/report.txt", "central-profile")
 
 
 if __name__ == "__main__":

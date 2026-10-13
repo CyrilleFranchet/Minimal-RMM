@@ -1,6 +1,6 @@
 # Product Requirements — Minimal-RMM
 
-Living product document for **Minimal-RMM** beyond the technical plan. Implementation details stay in `docs/tech-plan.md` and `docs/progress.md`. API and protocol reference: `README.md`.
+Living product document for **Minimal-RMM** beyond the technical plan. Implementation details stay in `tech-plan.md` and `progress.md`. API and protocol reference: the [root README](../README.md). Use the [documentation wiki](README.md) for navigation.
 
 ---
 
@@ -82,7 +82,7 @@ See `docs/progress.md` for status. High level:
 | `docs/progress.md` | Completed work, gaps, lab validation notes |
 | `docs/web-ai-skills.md` | Operator AI skills (including recon opsec) |
 | `ai-skills/windows-ad-recon-stealth.md` | Prefer ADWS over noisy RPC recon |
-| `README.md` | Setup and security defaults |
+| `../README.md` | Setup and security defaults |
 
 ---
 

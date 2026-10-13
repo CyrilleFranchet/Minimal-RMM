@@ -1,5 +1,9 @@
 # Pivot plugins
 
+See the [documentation wiki](README.md) and the [architecture overview](architecture.md)
+for the deployment topology and privilege boundary. This page focuses on the
+agent-side plugin packages and their task protocol.
+
 SOCKS5 is the first pivot type exposed by the WebUI. The server keeps the
 operator-side listener in `rmm_socks.py`; the agent-side relay is loaded only
 while the server reports `socks_active: true`.
@@ -8,9 +12,9 @@ while the server reports `socks_active: true`.
 
 | Agent | Plugin | Delivery | Relay path |
 | --- | --- | --- | --- |
-| Windows PowerShell | `agent-plugins/socks-powershell/socks.ps1` | Authenticated source fetch from `/tools/plugins/socks.ps1` | HTTP `GET/POST /socks` |
-| Windows amd64 Go | `agent-plugins/socks` → `socks.dll` | Cross-built PE plugin from `/tools/plugins/socks.dll` | HTTP `GET/POST /socks` |
-| Windows amd64 Go | `agent-plugins/tun` → `tun.dll` | Cross-built PE plugin from `/tools/plugins/tun.dll` | HTTP `GET/POST /tun` |
+| Windows PowerShell | `socks.ps1` from the external plugin bundle | Authenticated artifact fetch from `/tools/plugins/socks.ps1` | HTTP `GET/POST /socks` |
+| Windows amd64 Go | `socks.dll` from the external plugin bundle | Deployed PE artifact from `/tools/plugins/socks.dll` | HTTP `GET/POST /socks` |
+| Windows amd64 Go | `tun.dll` from the external plugin bundle | Deployed PE artifact from `/tools/plugins/tun.dll` | HTTP `GET/POST /tun` |
 
 The normal `/register`, `/cmd`, and `/result` beacon remains the lifecycle
 control path. The PowerShell plugin runs in its own runspace. The Go plugin
@@ -68,9 +72,8 @@ Both Go plugins export `Run`. Their implementation functions are
 `closeUDPConnection`, `writeAll`, `closeConnections`, `closeUDPConnections`,
 `postResponses`, `request`, `isPermanentHTTPError`, and `writeOutput`; together
 they validate the child input, poll their separate server endpoint, relay TCP
-and UDP data, and return the plugin status through the PE ABI. The SOCKS
-versions are in `agent-plugins/socks/main.go`; the TUN versions are in
-`agent-plugins/tun/main.go`.
+and UDP data, and return the plugin status through the PE ABI. Their source
+packages are maintained in the external plugin repository.
 
 The pivot task protocol uses `connect`, `send`, and `close` for TCP plus
 `udp_send` and `udp_close` for datagrams. UDP sends are delivered once and
@@ -96,20 +99,17 @@ active.
 
 ## Operator setup
 
-PowerShell pivot plugins are served from the repository automatically. Before
-starting a pivot for a Windows amd64 Go session, build the matching Go plugin:
+Install the matching artifacts from the external plugin repository before
+starting a pivot for a Windows amd64 Go session:
 
 ```text
-POST /api/v1/plugins/build
-{"name":"socks"}
-
-POST /api/v1/plugins/build
-{"name":"tun"}
+plugin-store/socks.ps1
+plugin-store/socks.dll
+plugin-store/tun.dll
 ```
 
-The default outputs are `RMM_logs/plugins/socks.dll` and
-`RMM_logs/plugins/tun.dll` in server mode. Container builds place them in the
-image's `/app/plugins` directory. A public SOCKS relay requires the Go
+The default local runtime store is `RMM_logs/plugins/`; Docker deployments
+mount the persistent `/app/plugins` volume. A public SOCKS relay requires the Go
 `socks-plugin` capability and `socks.dll`; a TUN relay requires `tun-plugin`
 and `tun.dll`. Existing `/socks` REST, CLI, MCP, and WebUI controls remain
 stable; the WebUI exposes TUN routing inside the Pivots dialog.

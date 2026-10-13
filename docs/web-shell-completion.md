@@ -39,7 +39,11 @@ These commands are handled in the browser instead of being sent to the agent she
 | `download <remote_path>` | `POST …/download` | Spaces in path: quote or omit extra tokens are joined |
 | `exfil <remote_path> [profile]` | `POST …/exfil` | File or folder; profile defaults to Exfil panel / server default |
 | `screenshot` | `POST …/screenshot` | No arguments |
-| `pe <plugin> [export] [input]` | `POST …/pe` | Loads a checked-in Go PE plugin through the selected agent; export defaults to `Run` |
+| `pe <plugin> [export] [input]` | `POST …/pe` | Loads a Go PE plugin through the selected agent; export defaults to `Run` |
+
+The REST, CLI, and MCP surfaces also support plugin-owned command dispatch by
+passing `command`. Those commands remain in the plugin and are not added to
+the browser shell parser.
 
 Example: `exfil C:\Users\…\file.iso mega-lab` queues rclone upload; it is not passed to `cmd.exe`.
 

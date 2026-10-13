@@ -73,42 +73,68 @@ def load_skill_file(path: str) -> dict | None:
     }
 
 
-def list_ai_skills() -> list[dict]:
+def _skill_directories(directories: list[str] | None = None) -> list[str]:
+    """Return ordered skill directories, with later directories overriding earlier ones."""
+    if directories is None:
+        return [ai_skills_dir()]
+    return [os.path.realpath(str(directory)) for directory in directories if str(directory).strip()]
+
+
+def list_ai_skills(
+    directories: list[str] | None = None,
+    enabled_overrides: dict[str, bool] | None = None,
+) -> list[dict]:
     """Return skill metadata for the operator UI (no body text)."""
-    directory = ai_skills_dir()
-    if not os.path.isdir(directory):
-        return []
-    rows: list[dict] = []
-    try:
-        names = sorted(os.listdir(directory))
-    except OSError:
-        return []
-    for name in names:
-        path = os.path.join(directory, name)
-        if not os.path.isfile(path):
+    rows_by_id: dict[str, dict] = {}
+    for directory in _skill_directories(directories):
+        if not os.path.isdir(directory):
             continue
-        skill = load_skill_file(path)
-        if not skill:
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
             continue
-        rows.append({
-            "id": skill["id"],
-            "title": skill["title"],
-            "description": skill["description"],
-            "default": skill["default"],
-            "always": skill["always"],
-            "filename": skill["filename"],
-        })
-    return rows
+        for name in names:
+            path = os.path.join(directory, name)
+            if not os.path.isfile(path):
+                continue
+            skill = load_skill_file(path)
+            if not skill:
+                continue
+            rows_by_id[skill["id"]] = {
+                "id": skill["id"],
+                "title": skill["title"],
+                "description": skill["description"],
+                "default": skill["default"],
+                "always": skill["always"],
+                "filename": skill["filename"],
+            }
+    rows = []
+    for skill_id, row in rows_by_id.items():
+        row = dict(row)
+        if enabled_overrides and skill_id in enabled_overrides:
+            row["enabled"] = bool(enabled_overrides[skill_id])
+        else:
+            row["enabled"] = bool(row["default"] or row["always"])
+        rows.append(row)
+    return sorted(rows, key=lambda row: row["id"])
 
 
-def resolve_ai_skills(skill_ids: list[str] | None) -> list[dict]:
+def resolve_ai_skills(
+    skill_ids: list[str] | None,
+    directories: list[str] | None = None,
+    enabled_overrides: dict[str, bool] | None = None,
+) -> list[dict]:
     """
     Load full skill bodies.
 
     - skill_ids is None: skills marked default: true or always: true in frontmatter
     - skill_ids is a list: those ids plus all always: true skills
     """
-    available = {row["id"]: row for row in (_load_all_skills_full())}
+    available = {
+        row["id"]: row
+        for row in (_load_all_skills_full(directories))
+        if not enabled_overrides or enabled_overrides.get(row["id"], True)
+    }
     always = [skill for skill in available.values() if skill.get("always")]
     if skill_ids is None:
         return [
@@ -129,23 +155,24 @@ def resolve_ai_skills(skill_ids: list[str] | None) -> list[dict]:
     return chosen
 
 
-def _load_all_skills_full() -> list[dict]:
-    directory = ai_skills_dir()
-    if not os.path.isdir(directory):
-        return []
-    rows: list[dict] = []
-    try:
-        names = sorted(os.listdir(directory))
-    except OSError:
-        return []
-    for name in names:
-        path = os.path.join(directory, name)
-        if not os.path.isfile(path):
+def _load_all_skills_full(directories: list[str] | None = None) -> list[dict]:
+    """Load full skill bodies, allowing a workspace overlay directory."""
+    rows_by_id: dict[str, dict] = {}
+    for directory in _skill_directories(directories):
+        if not os.path.isdir(directory):
             continue
-        skill = load_skill_file(path)
-        if skill:
-            rows.append(skill)
-    return rows
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(directory, name)
+            if not os.path.isfile(path):
+                continue
+            skill = load_skill_file(path)
+            if skill:
+                rows_by_id[skill["id"]] = skill
+    return sorted(rows_by_id.values(), key=lambda row: row["id"])
 
 
 def compose_system_prompt(
@@ -153,10 +180,21 @@ def compose_system_prompt(
     *,
     skill_ids: list[str] | None,
     session_context: str = "",
+    skill_documents: list[dict] | None = None,
+    skill_directories: list[str] | None = None,
+    enabled_overrides: dict[str, bool] | None = None,
 ) -> str:
     """Merge base prompt, selected skills, and optional session context."""
     parts = [base.rstrip()]
-    skills = resolve_ai_skills(skill_ids)
+    skills = (
+        [
+            dict(skill)
+            for skill in skill_documents
+            if isinstance(skill, dict) and str(skill.get("body") or "").strip()
+        ]
+        if skill_documents is not None
+        else resolve_ai_skills(skill_ids, skill_directories, enabled_overrides)
+    )
     if skills:
         parts.append("\n## Operator skills\n")
         parts.append("Follow these server-provided skills when relevant:\n")

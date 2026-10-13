@@ -84,6 +84,20 @@ class PluginDirectoryTests(unittest.TestCase):
         self.assertEqual(plugins[0]["size"], len(b"MZpayload"))
         self.assertEqual(plugins[0]["sha256"], hashlib.sha256(b"MZpayload").hexdigest())
 
+    def test_workspace_plugin_cache_is_used_for_owned_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace_dir = os.path.join(tmp, "workspaces", "alice")
+            os.makedirs(workspace_dir)
+            path = os.path.join(workspace_dir, "tool.dll")
+            with open(path, "wb") as handle:
+                handle.write(b"workspace-plugin")
+            owner = SimpleNamespace(
+                get_session=lambda _session_id: SimpleNamespace(workspace_id="alice")
+            )
+            with patch("server_rmm.PLUGINS_DIR", tmp):
+                resolved = server_rmm.plugin_path_for_session("tool.dll", "session-id", owner)
+            self.assertEqual(resolved, os.path.realpath(path))
+
 
 class PluginApiTests(unittest.TestCase):
     """Verify GET /plugins and POST /sessions/<ref>/pe behavior."""
@@ -107,9 +121,6 @@ class PluginApiTests(unittest.TestCase):
         status, body = handler.responses[-1]
         self.assertEqual(status, 200)
         self.assertEqual([p["name"] for p in body["plugins"]], ["tool.dll"])
-        self.assertIn("rclone-exfil", body["targets"])
-        for key in ("go", "cross_compiler", "cross_compiler_name"):
-            self.assertIn(key, body["toolchain"])
 
     def test_pe_load_queues_full_command(self):
         handler = self.call_post({"plugin": "tool.dll", "export": "Run", "input": "hello world"})
@@ -126,6 +137,26 @@ class PluginApiTests(unittest.TestCase):
         status, body = handler.responses[-1]
         self.assertEqual(status, 200)
         self.assertEqual(body["queued"], "__PE_LOAD__ tool.dll Run")
+
+    def test_plugin_command_queues_plugin_owned_dispatch(self):
+        handler = self.call_post(
+            {"plugin": "tool.dll", "command": "scan", "input": '{"target":"10.0.0.0/8"}'},
+        )
+        status, body = handler.responses[-1]
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            body["queued"],
+            '__PLUGIN_COMMAND__ tool.dll scan {"target":"10.0.0.0/8"}',
+        )
+        handler.server_instance.set_command.assert_called_once_with(
+            body["session_id"],
+            '__PLUGIN_COMMAND__ tool.dll scan {"target":"10.0.0.0/8"}',
+            "oneshot",
+        )
+
+    def test_plugin_command_rejects_unsafe_command_name(self):
+        status, body = self.call_post({"plugin": "tool.dll", "command": "../scan"}).responses[-1]
+        self.assertEqual((status, body["error"]), (400, "invalid_plugin_command"))
 
     def test_pe_load_rejects_missing_plugin(self):
         status, body = self.call_post({}).responses[-1]
@@ -148,47 +179,6 @@ class PluginApiTests(unittest.TestCase):
         RMMHandler._handle_api_post(handler, f"{API_PREFIX}/sessions/abcd1234/pe", {"plugin": "x.dll"})
         status, body = handler.responses[-1]
         self.assertEqual((status, body["error"]), (404, "session_not_found"))
-
-
-class PluginBuildTests(unittest.TestCase):
-    """Verify POST /plugins/build validation and toolchain probing."""
-
-    def call_post(self, body):
-        handler = FakeApiHandler()
-        RMMHandler._handle_api_post(handler, f"{API_PREFIX}/plugins/build", body)
-        return handler.responses[-1]
-
-    def test_build_targets_include_checked_in_plugins(self):
-        self.assertIn("rclone-exfil", server_rmm.plugin_build_targets())
-        self.assertIn("socks", server_rmm.plugin_build_targets())
-        self.assertIn("tun", server_rmm.plugin_build_targets())
-
-    def test_missing_name_returns_400(self):
-        status, body = self.call_post({})
-        self.assertEqual((status, body["error"]), (400, "missing_name"))
-
-    def test_unknown_target_returns_400(self):
-        status, body = self.call_post({"name": "does-not-exist"})
-        self.assertEqual((status, body["error"]), (400, "invalid_plugin_build"))
-
-    def test_missing_toolchain_returns_503(self):
-        with patch("server_rmm.shutil.which", return_value=None):
-            status, body = self.call_post({"name": "rclone-exfil"})
-        self.assertEqual((status, body["error"]), (503, "plugin_build_failed"))
-
-    def test_rejects_unsafe_output_names(self):
-        with patch("server_rmm.shutil.which", return_value="/usr/local/bin/go"):
-            with self.assertRaises(ValueError):
-                server_rmm.build_plugin("rclone-exfil", "../evil.dll")
-            with self.assertRaises(ValueError):
-                server_rmm.build_plugin("rclone-exfil", "tool.exe")
-
-    def test_success_maps_build_result(self):
-        built = {"ok": True, "name": "rclone-exfil", "output": "x.dll", "size": 10, "sha256": "abc"}
-        with patch("server_rmm.build_plugin", return_value=built):
-            status, body = self.call_post({"name": "rclone-exfil", "output": "x.dll"})
-        self.assertEqual(status, 200)
-        self.assertEqual(body["output"], "x.dll")
 
 
 class TunApiTests(unittest.TestCase):
@@ -346,43 +336,52 @@ class PluginServeTests(unittest.TestCase):
         self.assertTrue(served)
         self.assertEqual(handler.responses[-1][0], 404)
 
-    def test_serves_checked_in_powershell_pivot_plugin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "notes.txt"), "wb") as handle:
+                handle.write(b"not a plugin")
+            with patch("server_rmm.PLUGINS_DIR", tmp):
+                handler = FakeServeHandler()
+                served = RMMHandler._serve_plugin_tool(handler, "notes.txt")
+        self.assertTrue(served)
+        self.assertEqual(handler.responses[-1][0], 404)
+
+    def test_serves_deployed_powershell_pivot_plugin(self):
         payload = b"function global:Start-RmmSocksChannelPlugin {}"
         with tempfile.TemporaryDirectory() as tmp:
-            plugin_path = os.path.join(tmp, "socks.ps1")
+            plugin_dir = os.path.join(tmp, "artifacts")
+            os.makedirs(plugin_dir)
+            plugin_path = os.path.join(plugin_dir, "socks.ps1")
             with open(plugin_path, "wb") as handle:
                 handle.write(payload)
-            with patch("server_rmm.PLUGINS_DIR", os.path.join(tmp, "artifacts")):
-                with patch("server_rmm.AGENT_PLUGINS_DIR", tmp):
-                    with patch("server_rmm.POWERSHELL_SOCKS_PLUGIN", plugin_path):
-                        handler = FakeServeHandler()
-                        handler.server_instance = SimpleNamespace(log=Mock())
-                        served = RMMHandler._serve_plugin_tool(
-                            handler,
-                            "socks.ps1",
-                            "12345678-1234-1234-1234-123456789012",
-                        )
+            with patch("server_rmm.PLUGINS_DIR", plugin_dir):
+                handler = FakeServeHandler()
+                handler.server_instance = SimpleNamespace(log=Mock())
+                served = RMMHandler._serve_plugin_tool(
+                    handler,
+                    "socks.ps1",
+                    "12345678-1234-1234-1234-123456789012",
+                )
         self.assertTrue(served)
         self.assertEqual(handler.status, 200)
         self.assertEqual(handler.body, payload)
         self.assertIn(("Content-Type", "text/plain; charset=utf-8"), handler.headers)
 
-    def test_serves_checked_in_powershell_screenshot_plugin(self):
+    def test_serves_deployed_powershell_screenshot_plugin(self):
         payload = b"function global:Invoke-RmmScreenshotPlugin {}"
         with tempfile.TemporaryDirectory() as tmp:
-            plugin_path = os.path.join(tmp, "screenshot.ps1")
+            plugin_dir = os.path.join(tmp, "artifacts")
+            os.makedirs(plugin_dir)
+            plugin_path = os.path.join(plugin_dir, "screenshot.ps1")
             with open(plugin_path, "wb") as handle:
                 handle.write(payload)
-            with patch("server_rmm.PLUGINS_DIR", os.path.join(tmp, "artifacts")):
-                with patch("server_rmm.AGENT_PLUGINS_DIR", tmp):
-                    with patch("server_rmm.POWERSHELL_SCREENSHOT_PLUGIN", plugin_path):
-                        handler = FakeServeHandler()
-                        handler.server_instance = SimpleNamespace(log=Mock())
-                        served = RMMHandler._serve_plugin_tool(
-                            handler,
-                            "screenshot.ps1",
-                            "12345678-1234-1234-1234-123456789012",
-                        )
+            with patch("server_rmm.PLUGINS_DIR", plugin_dir):
+                handler = FakeServeHandler()
+                handler.server_instance = SimpleNamespace(log=Mock())
+                served = RMMHandler._serve_plugin_tool(
+                    handler,
+                    "screenshot.ps1",
+                    "12345678-1234-1234-1234-123456789012",
+                )
         self.assertTrue(served)
         self.assertEqual(handler.status, 200)
         self.assertEqual(handler.body, payload)
@@ -408,6 +407,10 @@ class PluginLifecycleTests(unittest.TestCase):
         self.assertEqual(
             server_rmm.plugin_command_metadata("__PE_LOAD__ tool.dll Run secret"),
             {"plugin": "tool.dll", "export": "Run"},
+        )
+        self.assertEqual(
+            server_rmm.plugin_command_metadata("__PLUGIN_COMMAND__ tool.dll scan secret"),
+            {"plugin": "tool.dll", "command": "scan", "export": "Run"},
         )
         self.assertEqual(
             server_rmm.plugin_command_metadata("__SCREENSHOT__"),
@@ -480,12 +483,13 @@ class PivotPluginReadinessTests(unittest.TestCase):
                 with patch("server_rmm.TUN_HELPER", helper):
                     self.assertIsNone(self._server().tun_plugin_error(session))
 
-    def test_powershell_uses_checked_in_plugin(self):
+    def test_powershell_uses_deployed_plugin(self):
         session = SimpleNamespace(agent_type="powershell", capabilities=["socks-plugin"])
-        with tempfile.NamedTemporaryFile(suffix=".ps1") as handle:
-            with patch("server_rmm.POWERSHELL_SOCKS_PLUGIN", handle.name):
-                with patch("server_rmm.AGENT_PLUGINS_DIR", os.path.dirname(handle.name)):
-                    self.assertIsNone(self._server().pivot_plugin_error(session))
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "socks.ps1"), "wb") as handle:
+                handle.write(b"function global:Start-RmmSocksChannelPlugin {}")
+            with patch("server_rmm.PLUGINS_DIR", tmp):
+                self.assertIsNone(self._server().pivot_plugin_error(session))
 
     def test_unknown_agent_type_is_rejected(self):
         session = SimpleNamespace(agent_type="custom", capabilities=[])

@@ -1,5 +1,9 @@
 # Web UI — SOCKS and TUN pivots
 
+See the [documentation wiki](README.md) and the
+[architecture overview](architecture.md) for system-wide placement and
+privilege boundaries.
+
 The WebUI exposes SOCKS5 and TUN routing inside the **Pivots** dialog for the
 selected live session console. Listener and device ownership follows the
 storage mode: the central server owns them in server mode, while the local
@@ -35,13 +39,12 @@ socks5 127.0.0.1 1080
 The beacon carries only the `socks_active` lifecycle flag. The relay code runs
 in a plugin so the normal command loop stays small:
 
-- PowerShell agents fetch `agent-plugins/socks-powershell/socks.ps1` through
-  the authenticated `/tools/plugins/socks.ps1` endpoint and run it in a
-  dedicated worker runspace.
-- Windows amd64 Go agents fetch `socks.dll` through the same endpoint and run
-  its persistent `Run` export in a cancellable child process. Build it from
-  the checked-in `agent-plugins/socks/` source with the plugin build endpoint
-  before starting a pivot for a Go session.
+- PowerShell agents fetch the deployed `socks.ps1` artifact through the
+  authenticated `/tools/plugins/socks.ps1` endpoint and run it in a dedicated
+  worker runspace.
+- Windows amd64 Go agents fetch the deployed `socks.dll` artifact through the
+  same endpoint and run its persistent `Run` export in a cancellable child
+  process. Build it in the external plugin repository before starting a pivot.
 
 The current plugins use the HTTP `/socks` poll path. The server WebSocket
 endpoint remains available for compatible future pivot plugins.

@@ -2284,6 +2284,12 @@ async function connect() {
   if (typeof window.fetchAiSkills === "function") {
     window.fetchAiSkills().catch(() => {});
   }
+  if (typeof window.refreshAssets === "function") {
+    window.refreshAssets().catch(() => {});
+  }
+  if (typeof window.refreshRmmTransport === "function") {
+    window.refreshRmmTransport().catch(() => {});
+  }
   await refreshExfilStatus();
   await refreshSocksRelays();
   await refreshTunRelays();
@@ -2946,7 +2952,7 @@ async function refreshExfilStatus() {
   if (!hint) return;
   const { status, data } = await api("/rclone/config");
   if (status !== 200) {
-    hint.textContent = "rclone: unable to read server configuration";
+    hint.textContent = "rclone: unable to read deployment configuration";
     populateExfilProfiles(null);
     return;
   }
@@ -2960,8 +2966,9 @@ async function refreshExfilStatus() {
   const limit =
     maxBytes === 0 ? "no size cap" : `max ${formatByteSize(maxBytes)} per file`;
   if (!count) {
+    const scope = data?.workspace_local ? "the operator workspace" : "the server";
     hint.textContent =
-      "No rclone profiles — set RMM_RCLONE_PROFILES or RMM_RCLONE_PROFILES_FILE on the server";
+      `No rclone profiles — set RMM_RCLONE_PROFILES or RMM_RCLONE_PROFILES_FILE in ${scope}`;
     return;
   }
   const paths = [];

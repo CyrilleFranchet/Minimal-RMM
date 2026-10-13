@@ -1,5 +1,9 @@
 # MCP operator parity
 
+See the [documentation wiki](README.md) for navigation and the
+[architecture overview](architecture.md) for the operator and transport
+boundaries.
+
 Every **operator REST capability** exposed by `server_rmm.py` under `/api/v1/*` must be reachable through **`mcp_rmm_server.py`** (and shared `rmm_tools.py` / `OPENAI_TOOLS` for the web AI panel).
 
 ## Requirement
@@ -53,8 +57,9 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `POST …/exfil` | `queue_exfil` | Same as shell `exfil` / CLI |
 | `GET /rclone/config` | `get_rclone_config` | |
 | `POST …/screenshot` | `queue_screenshot` | Same as shell `screenshot` |
-| `GET /plugins`, `POST …/pe` | `list_plugins`, `queue_pe_load` | Isolated child-process PE plugin execution on the Go agent (`__PE_LOAD__`) |
-| `POST /plugins/build` | `build_plugin` | Server-side cross-compile of checked-in Go plugins; only repository sources are built |
+| `GET /plugins`, `POST …/pe` | `list_plugins`, `queue_pe_load` | Isolated child-process PE plugin execution on the Go agent (`__PE_LOAD__` or plugin-owned `__PLUGIN_COMMAND__`) |
+| `GET/POST/PATCH/DELETE /assets/*` | `list_assets`, `add_asset`, `set_asset_enabled`, `remove_asset` | URL-managed agent plugins, AI skills, and rclone profile files |
+| `GET/POST /profile` | `profile_status`, `start_profile`, `stop_profile` | Generic RMM-Profile connector and generated beacon URL |
 | `POST …/upload` | `queue_upload` | Local path on MCP host |
 | `GET /socks`, `POST …/socks` | `list_socks`, `start_socks`, `stop_socks` | |
 | `GET /tun`, `POST …/tun` | `list_tun`, `start_tun`, `stop_tun` | TUN device ownership follows storage mode; traffic exits through the Go agent's authenticated TUN transport; `routes[]` supports multiple CIDRs |

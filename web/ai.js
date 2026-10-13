@@ -275,7 +275,7 @@
         /* ignore */
       }
     }
-    return aiSkills.filter((s) => s.default).map((s) => s.id);
+    return aiSkills.filter((s) => s.enabled ?? s.default).map((s) => s.id);
   }
 
   function persistEnabledSkillIds(ids) {
@@ -284,8 +284,10 @@
 
   function getEnabledSkillIds() {
     const known = new Set(aiSkills.map((s) => s.id));
-    const selected = loadEnabledSkillIds().filter((id) => known.has(id));
-    const always = aiSkills.filter((skill) => skill.always).map((skill) => skill.id);
+    const selected = loadEnabledSkillIds().filter(
+      (id) => known.has(id) && aiSkills.find((skill) => skill.id === id)?.enabled !== false,
+    );
+    const always = aiSkills.filter((skill) => skill.always && skill.enabled !== false).map((skill) => skill.id);
     return [...new Set([...always, ...selected])];
   }
 
@@ -312,6 +314,11 @@
           if (el.checked) next.push(el.value);
         }
         persistEnabledSkillIds(next);
+        window.rmmApi?.(`/assets/skills/${encodeURIComponent(skill.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: input.checked }),
+        }).catch(() => {});
       });
       const text = document.createElement("span");
       text.className = "ai-skill-label";
@@ -327,7 +334,7 @@
     const apiFn = window.rmmApi;
     const st = window.rmmState;
     const container = $("#ai-skills-list");
-    if (!apiFn || !st?.token) {
+    if (!apiFn || (!st?.token && !window.RMM_WORKSPACE_MODE)) {
       if (container) {
         container.innerHTML = '<p class="ai-skills-empty">Connect to load skills.</p>';
       }

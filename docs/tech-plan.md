@@ -1,6 +1,11 @@
 # Tech Plan — Minimal-RMM
 
-Living technical design for planned features. For completed work and parity gaps, see `docs/progress.md`. For API/protocol details, see `README.md`. **Product constraints** (including EDR/AV compatibility as a commercial gate): `docs/prd.md`.
+Living technical design for planned features. Start with the [documentation
+wiki](README.md) and [architecture overview](architecture.md) for current
+runtime behavior. For completed work and parity gaps, see `progress.md`. For
+API/protocol details, see the [root README](../README.md). **Product
+constraints** (including EDR/AV compatibility as a commercial gate):
+[product requirements](prd.md).
 
 **Status key:** `planned` → `in progress` → `done` (update this doc when implementation lands).
 
@@ -103,7 +108,7 @@ Auth: same bearer token as other `/api/v1` routes.
 1. Server counters + `GET …/metrics`
 2. Static charts in web UI
 3. Optional WS push for live updates
-4. Document endpoint in `README.md`; add row to parity table in `docs/progress.md`
+4. Document endpoint in `../README.md`; add row to parity table in `progress.md`
 
 ### Traffic viz — acceptance criteria
 
@@ -225,7 +230,7 @@ Artifact URLs continue to require token.
 2. Web UI list + download buttons wired to existing artifact endpoint
 3. WS-driven refresh on new `file_upload`
 4. Optional preview + delete; CLI/MCP list if needed
-5. Document in `README.md` and parity table in `docs/progress.md`
+5. Document in `../README.md` and parity table in `progress.md`
 
 ### Downloads browser — acceptance criteria
 
@@ -297,7 +302,7 @@ Optional later:
 2. Tab completion from history + `cmd:` / `PS:` / `powershell:` / `pwsh:` hints
 3. Optional ghost-text dropdown
 4. Server: update `work_dir` from `RMM_CWD_SIG` in results (supports §5 shell prompt)
-5. Document in `README.md` and parity row in `docs/progress.md`
+5. Document in `../README.md` and parity row in `progress.md`
 
 ### Command completion — acceptance criteria
 
@@ -385,7 +390,7 @@ No new internal agent commands required for v1 — reuse `Invoke-RmmUserCommand`
 2. Client-side `RMM_CWD_SIG` parsing → update displayed cwd/prompt
 3. Server `work_dir` sync from results + session refresh
 4. §4 completion/history in shell mode
-5. README + `docs/progress.md` parity table
+5. `../README.md` + `progress.md` parity table
 
 ### Interactive shell — acceptance criteria
 
@@ -477,7 +482,7 @@ Optional later: explicit `command_id` on queue API responses for unambiguous pai
 2. Match `output` events via `ev.command` into the correct block
 3. Extend to tool queues (download, MEGA upload, screenshot, upload)
 4. History reload parity
-5. Document in `README.md` / `docs/progress.md`; close known-issue row
+5. Document in `../README.md` / `progress.md`; close known-issue row
 
 ### Acceptance criteria
 
@@ -616,7 +621,7 @@ No new endpoints required for v1. Optional: include `sleep_seconds` / `jitter_pe
 4. Client reconnect sync (`-Reconnect` sends `sync=1` or clear `RmmRegisterConfigSynced` after prolonged failure)
 5. Guard `get_command()` so fresh post-restart sessions do not push defaults before sync
 6. Eager or prioritized config delivery after PATCH; agent-side sleep/interrupt strategy
-7. Document in `README.md` / `docs/progress.md`; close known-issue row
+7. Document in `../README.md` / `progress.md`; close known-issue row
 
 ### Restart config — acceptance criteria
 
@@ -644,20 +649,20 @@ No new endpoints required for v1. Optional: include `sleep_seconds` / `jitter_pe
 
 **Status:** done  
 **Surfaces:** Server (`rmm_rclone.py`, `server_rmm.py`), agent (`client_rmm.ps1`), REST → CLI → MCP → Web UI  
-**Goal:** Operator queues remote file or folder exfil; agent bootstraps rclone from server; upload runs locally with ephemeral profile config; link or path in events.
+**Goal:** Operator queues remote file or folder exfil; the active server or workspace builds an ephemeral profile payload; the agent performs the upload locally and returns a link or destination path.
 
 ### Configuration
 
 | Env | Purpose |
 |-----|---------|
-| `RMM_RCLONE_BIN` | Path to `rclone.exe` on server (default `tools/rclone/rclone.exe`) |
-| `RMM_RCLONE_PROFILES` / `RMM_RCLONE_PROFILES_FILE` | Named remote profiles (MEGA, S3, …) |
+| `RMM_RCLONE_BIN` | Optional central `rclone.exe` bootstrap path for binary fallback |
+| `RMM_RCLONE_PROFILES` / `RMM_RCLONE_PROFILES_FILE` | Named remote profiles; server mode loads them centrally, workspace mode loads them locally |
 | `RMM_RCLONE_DEFAULT_PROFILE` | Default profile when omitted (default `mega-lab`) |
-| `RMM_RCLONE_MAX_BYTES` | Size cap (default 100 MB) |
+| `RMM_RCLONE_MAX_BYTES` | Size cap (default 100 MB; `0` means unlimited) |
 
 ### Flow
 
-`exfil` API → `__EXFIL__` JSON command → agent caches `rclone.exe` → `rclone copyto` (file) or `rclone copy` (folder) + optional `link` → `cloud_upload` event.
+`exfil` API → active server/workspace builds a transient job → Go plugin or agent caches `rclone.exe` → `rclone copyto` (file) or `rclone copy` (folder) + optional `link` → `cloud_upload` event.
 
 See `docs/rclone-exfil.md` for API tables and operator commands.
 
@@ -729,7 +734,7 @@ Archive:
 1. Reproduce: kill session after web queue + tool actions; open history sidebar; confirm missing or wrong command lines
 2. Add optional `display_command` to operator events (server + API callers)
 3. History replay: prefer `display_command`, then mapped internal token, then `ev.command` fallback block
-4. Document in `README.md` / `docs/progress.md`; close known-issue row
+4. Document in `../README.md` / `progress.md`; close known-issue row
 
 ### Archive commands — acceptance criteria
 
@@ -809,7 +814,7 @@ receives `/dev/net/tun` and `CAP_NET_ADMIN`.
 
 ### Reference command (container equivalent)
 
-Host command today:
+Legacy server-mode command:
 
 ```bash
 python server_rmm.py \
@@ -824,12 +829,20 @@ Target control-plane command (secrets via `.env`, not hard-coded):
 
 ```bash
 python server_rmm.py 8080 \
-  --bind 0.0.0.0 \
-  --rclone-profiles /app/tools/rclone/profiles.json \
-  --rclone-max-bytes 0
+  --bind 0.0.0.0
 ```
 
 (`RMM_API_TOKEN` / `RMM_BEACON_SECRET` from env or `--token` / `--beacon-secret`.)
+
+The workspace service owns the profile options in workspace mode:
+
+```bash
+RMM_C2_URL=http://rmm-control:8080 \
+RMM_RCLONE_PROFILES_FILE=/workspace/rclone/profiles.json \
+RMM_RCLONE_DEFAULT_PROFILE=mega-lab \
+RMM_RCLONE_MAX_BYTES=0 \
+python workspace_service.py
+```
 
 ### Deployment options
 
@@ -847,8 +860,8 @@ workspace token, run `workspace_service.py` inside Exegol, and set
 
 The checked-in `docker-compose.yml` is the reference. It defines:
 
-- `rmm-control`, which publishes port `8080`, persists only central control
-  state, and has no TUN device or `NET_ADMIN` capability;
+- `rmm-control`, which publishes port `8080`, persists central control state
+  and the dynamic plugin store, and has no TUN device or `NET_ADMIN` capability;
 - the optional `workspace` profile, which publishes port `8787`, persists
   `/workspace/data`, and receives `/dev/net/tun` plus `NET_ADMIN`;
 - a shared `rmm-control` network so a workspace service can use
@@ -863,8 +876,10 @@ loop when skills need live edits.
 - Base: `python:3.12-slim` (repo minimum 3.10+)
 - Copy application tree; `pip install -r requirements.txt`
 - `.dockerignore`: `RMM_logs/`, `.git`, `**/.venv`, `docker-data/`
-- Build the checked-in `rmm-tun` helper and Windows amd64 Go plugins in a Go
-  builder stage, then copy them into the Python runtime image
+- Build the checked-in `rmm-tun` helper in a Go builder stage; agent plugins
+  come from the external plugin repository
+- Mount `/app/plugins` from the persistent `rmm-plugin-store` volume and
+  install release artifacts there independently of control-plane image updates
 - Default to `RMM_STORAGE_MODE=workspace` and run the central server on
   `0.0.0.0:8080`
 - The same image can run `workspace_service.py`; only that service receives the
@@ -892,12 +907,13 @@ The central container does not expose an operator SOCKS port.
 | Item | Handling |
 |------|----------|
 | `RMM_API_TOKEN`, `RMM_BEACON_SECRET` | `.env.example` + compose `env_file`; never commit real values |
-| `RMM_RCLONE_PROFILES_FILE` | Bind-mount `tools/rclone/profiles.json` (gitignored secrets) |
-| `RMM_RCLONE_BIN` | Default `tools/rclone/rclone.exe`; bind-mount binary |
+| `RMM_RCLONE_PROFILES_FILE` | Bind-mount `tools/rclone/profiles.json` into each workspace service; server mode keeps the legacy server setting |
+| `RMM_RCLONE_BIN` | Optional central `rclone.exe` bootstrap artifact for binary fallback |
 | `RMM_logs/` | Control-plane volume for `sessions.json` and central build artifacts |
 | `RMM_WORKSPACE_DATA` | Workspace volume for SQLite history, AI chat, downloads, screenshots, keylogs, and interrupted upload parts |
 | `RMM_WORKSPACES` | JSON mapping of workspace IDs to unique tokens |
-| `RMM_RCLONE_MAX_BYTES` | `0` = unlimited (lab); set in command or env |
+| `RMM_RCLONE_DEFAULT_PROFILE` | Workspace-local default profile; server mode keeps the legacy server setting |
+| `RMM_RCLONE_MAX_BYTES` | Workspace-local size cap; `0` = unlimited (lab) |
 
 ### Cross-platform (Windows / Mac / Linux)
 

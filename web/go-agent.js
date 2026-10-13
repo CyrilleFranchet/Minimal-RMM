@@ -133,10 +133,17 @@
     $("#agent-go-use-origin")?.addEventListener("click", () => {
       const input = $("#agent-go-server-url");
       if (input) {
-        input.value = window.location.origin.replace(/\/$/, "");
+        input.value = window.rmmBeaconUrl || window.location.origin.replace(/\/$/, "");
         savePrefs();
       }
     });
+    window.refreshRmmTransport?.().then(() => {
+      const input = $("#agent-go-server-url");
+      if (input && !input.value.trim() && window.rmmBeaconUrl) {
+        input.value = window.rmmBeaconUrl;
+        savePrefs();
+      }
+    }).catch(() => {});
     [
       "#agent-go-server-url",
       "#agent-go-beacon-secret",

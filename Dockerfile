@@ -2,26 +2,14 @@
 # The control plane has no network namespace privileges; only a workspace
 # container that owns a local TUN device needs NET_ADMIN and /dev/net/tun.
 
-FROM golang:1.27-bookworm AS artifact-builder
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 \
-    && rm -rf /var/lib/apt/lists/*
+FROM golang:1.27-bookworm AS helper-builder
 
 WORKDIR /src
 COPY server-tun ./server-tun
-COPY agent-plugins ./agent-plugins
 
-RUN mkdir -p /out/plugins /out/tools \
+RUN mkdir -p /out/tools \
     && cd server-tun \
-    && go build -trimpath -ldflags "-s -w" -o /out/tools/rmm-tun . \
-    && for plugin in socks tun screenshot rclone-exfil; do \
-         cd /src/agent-plugins/$${plugin}; \
-         CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
-           CC=x86_64-w64-mingw32-gcc \
-           go build -trimpath -ldflags "-s -w" -buildmode=c-shared \
-           -o /out/plugins/$${plugin}.dll .; \
-       done
+    && go build -trimpath -ldflags "-s -w" -o /out/tools/rmm-tun .
 
 FROM python:3.12-slim AS runtime
 
@@ -29,16 +17,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     RMM_STORAGE_MODE=workspace \
     RMM_PLUGINS_DIR=/app/plugins \
+    RMM_PROFILES_DIR=/app/profiles \
     RMM_WORKSPACE_TUN_HELPER=/app/tools/rmm-tun
 
 WORKDIR /app
 COPY requirements.txt requirements-mcp.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-COPY --from=artifact-builder /out/tools/rmm-tun /app/tools/rmm-tun
-COPY --from=artifact-builder /out/plugins /app/plugins
-RUN chmod 0755 /app/tools/rmm-tun
+COPY --from=helper-builder /out/tools/rmm-tun /app/tools/rmm-tun
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod 0755 /app/tools/rmm-tun /app/docker-entrypoint.sh
 
-EXPOSE 8080 8787
+EXPOSE 8080 8081 8787
 
-CMD ["python3", "server_rmm.py", "8080", "--bind", "0.0.0.0"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["python3", "server_rmm.py", "--admin-port", "8080", "--beacon-port", "8081", "--bind", "0.0.0.0", "--beacon-bind", "0.0.0.0"]

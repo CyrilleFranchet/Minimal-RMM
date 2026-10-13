@@ -1,9 +1,80 @@
 # Progress Log
 
+For current runtime behavior, use the [documentation wiki](README.md) and its
+[architecture overview](architecture.md). This file remains the chronological
+implementation log.
+
 > Living document — update at the end of every work session.  
 > Claude reads this via `/catchup` (`/.claude/commands/catchup.md`).
 
 ## Current Status
+
+### 2026-10-13 — Dynamic RMM-Profiles and operator asset management
+
+- Split the administration listener from the agent beacon listener. The
+  default ports are `8080` for WebUI/API and `8081` for agent and pivot paths;
+  each listener rejects the other role's routes.
+- Added the generic `minimal-rmm-profile-v1` process contract in
+  `rmm_profile.py`. The server starts a trusted profile bundle, waits for a
+  newline-delimited `ready` event, publishes its `public_url`, and stops the
+  process cleanly. Cloudflared moved to the private
+  `CyrilleFranchet/Minimal-RMM-profiles` repository.
+- Added automatic Cloudflared startup and `trycloudflare.com` URL discovery
+  through `/api/v1/profile` and `/api/v1/transport`, with CLI, MCP, and WebUI
+  controls. The agent generators now use the beacon URL.
+- Added `rmm_asset_store.py` and the `/api/v1/assets/*` REST surface for URL
+  installation, enablement, and removal of `.dll`/`.ps1` plugins, `.md` AI
+  skills, and `.json` rclone profiles. The same feature is available through
+  the WebUI, CLI, and MCP.
+- Workspace asset bytes persist under the operator's Exegol data directory.
+  Enabled plugins synchronize to the central runtime cache and are republished
+  after a workspace restart. The workspace plugin list still includes seeded
+  central artifacts.
+- Added `docs/rmm-profiles.md` and `docs/operator-assets.md`, and linked both
+  from the documentation wiki, architecture map, startup guide, workspace
+  guide, and root README.
+- Validation: 102 Python tests, `make check`, `docker compose config`, and
+  `git diff --check` pass.
+
+### 2026-10-13 — Documentation wiki and architecture map
+
+- Added `docs/README.md` as the repository wiki index with links grouped by
+  deployment, architecture, pivots, agent capabilities, WebUI, AI, and
+  planning.
+- Added `docs/architecture.md` as the canonical current architecture page with
+  Mermaid diagrams for the control plane, Exegol workspaces, plugin loading,
+  pivot traffic, storage ownership, and privilege boundaries.
+- Marked `progress.md` as historical status and `tech-plan.md` as roadmap
+  content so they are not mistaken for current runtime documentation.
+
+### 2026-10-13 — External plugin repository boundary
+
+- Confirmed the intended split: Minimal-RMM remains the control-plane and
+  generic agent-host repository; agent plugin sources and release builds move
+  to a separate plugin repository.
+- Created the private
+  `CyrilleFranchet/Minimal-RMM-plugins` repository by preserving the
+  `agent-plugins/` history, then added its manifest, bundle builder, tests, and
+  CI workflow.
+- Removed agent plugin sources, server-side plugin compilation, and the Go
+  plugin build panel from Minimal-RMM. The server now inventories and serves
+  only artifacts installed in `RMM_PLUGINS_DIR`.
+- Kept `server-tun/rmm-tun` in Minimal-RMM because it creates the operator-side
+  TUN device and is not delivered to managed hosts.
+
+### 2026-10-13 — Persistent dynamic plugin store
+
+- Added a persistent Docker plugin volume at `/app/plugins` for dynamically
+  deployed Go and PowerShell plugin artifacts.
+- Added an image seed directory and entrypoint that installs built-in artifacts
+  only when the volume does not already contain them, preserving operator
+  versions across image updates.
+- Documented that plugin commands remain in the plugin artifact and are
+  invoked through the agent's generic isolated PE export loader; new command
+  logic does not require changes to the server or the main Go agent.
+- Added the optional `command` field to the PE operator request. It queues a
+  generic `__PLUGIN_COMMAND__` envelope whose `Run` dispatch remains entirely
+  inside the dynamically delivered plugin.
 
 ### 2026-10-13 — Multi-operator workspace deployment
 
@@ -25,10 +96,17 @@
 - Added workspace unit coverage for registry authentication, event cursor
   overflow, local chunk reassembly, artifact/chat persistence, session claims,
   central payload routing, and transport-only bridges.
+- Moved workspace-mode rclone profiles, default profile selection, and size
+  limits into each operator workspace. The central broker now accepts only the
+  workspace-built transient job and exposes plugin/bootstrap capabilities
+  without returning workspace profiles.
+- Mounted `tools/rclone/` into the Compose workspace service only, added local
+  rclone status and exfil routing, and carried `max_bytes` into the Go plugin
+  path with source-size enforcement.
 - Documented the architecture and operational procedures in
   `docs/workspace-deployment.md`, `docs/server-startup.md`, `docs/tun-pivot.md`,
   `docs/pivot-plugins.md`, `docs/session-history.md`,
-  `docs/web-ai-chat-memory.md`, `README.md`, and this plan.
+  `docs/web-ai-chat-memory.md`, `../README.md`, and this plan.
 
 ### 2026-10-12 — Multiple TUN routes and host diagnostics
 
@@ -273,6 +351,8 @@
 | `rmm_run_on_host.py` | ~215 | Batch recon by hostname (API automation example) |
 | `rmm_kill_host_sessions.py` | ~115 | Kill all sessions matching hostname |
 | `docs/progress.md` | — | This file |
+| `docs/README.md` | — | Wiki index and documentation map |
+| `docs/architecture.md` | — | Canonical current runtime architecture |
 | `CLAUDE.md` | — | Agent onboarding / architecture summary |
 
 Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state.json`, `~/.rmm_cli_history`.
@@ -301,7 +381,11 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 **Beacon model:** poll-based, no interactive TCP shell. Latency ≥ one sleep interval (+ jitter). Commands are JSON on `GET /cmd`; results on `POST /result`.
 
-**SOCKS model:** SOCKS5 binds on **operator host** (`127.0.0.1:N`). Bytes traverse: local SOCKS client → server listener → task queue → `socks.dll` (HTTP `/socks`) → remote TCP or UDP socket on agent LAN. The server-owned TUN frontend uses a separate private relay manager and `tun.dll` (HTTP `/tun`) with the same task framing. The server still exposes the WebSocket transport for compatible future plugins.
+> The [architecture overview](architecture.md) is the canonical current
+> topology. The summary below describes the original single-server model kept
+> here for historical progress context.
+
+**SOCKS model:** SOCKS5 binds on **operator host** (`127.0.0.1:N`). Bytes traverse: local SOCKS client → server listener → task queue → `socks.dll` (HTTP `/socks`) → remote TCP or UDP socket on agent LAN. The TUN frontend uses a separate private relay manager and `tun.dll` (HTTP `/tun`) with the same task framing. In workspace mode, the local workspace owns the operator listener and TUN device while the central server keeps the transport bridge. The server still exposes the WebSocket transport for compatible future plugins.
 
 ---
 
@@ -367,7 +451,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] SOCKS lifecycle hook: `Sync-RmmSocksChannelFromServer` starts and stops the fetched `socks.ps1` plugin from the `/cmd` flag
 - [x] SOCKS PowerShell plugin: authenticated fetch, HTTP poll, TCP task handling, and dedicated runspace execution
 - [x] SOCKS Go plugin: persistent `socks.dll` child for Windows amd64, with cancellation owned by the beacon
-- [x] TUN Go plugin: separate persistent `tun.dll` child and `/tun` channel for server-owned TUN routing
+- [x] TUN Go plugin: separate persistent `tun.dll` child and `/tun` channel for TUN routing in the configured storage namespace
 - [x] Runspace/process isolation: PowerShell `BeginInvoke` and Go plugin child keep relay code outside the main beacon loop
 
 ### Operator CLI (`rmm_cli.py`)
@@ -394,8 +478,9 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [x] **Session history** sidebar — browse archived transcripts (`GET /api/v1/history`); hover **Delete** removes one archive; **Clear all** removes every ended archive (`DELETE /api/v1/history`)
 - [x] Beacon config apply (PATCH sleep/jitter) — per-session **Beacon** button opens modal dialog
 - [x] **SOCKS5 relays** — start/stop/restart selected session relays and manage the global relay inventory; see `docs/web-socks.md`
-- [x] **Server-owned TUN routing** — configure the device, route, helper, and
-  private agent transport from the selected session; see `docs/tun-pivot.md`
+- [x] **TUN routing** — configure the device, routes, helper, and private agent
+  transport from the selected session; ownership follows storage mode; see
+  `docs/tun-pivot.md`
 - [x] WebSocket `/api/v1/ws` + polling fallback; shared event transcript with CLI
 - [x] AI assistant panel (`ai.js` + `POST /api/v1/ai/chat`); tab-scoped OpenAI, Anthropic, and Mistral keys with live validation and provider-specific model lists; Mistral standard and multi-message completion responses normalize to displayable text, and Mistral tool results include the function name required to end a tool loop; optional Exegol MCP settings; **server skills** (`ai-skills/*.md`, `GET /api/v1/ai/skills`) — see `docs/ai-providers.md` and `docs/web-ai-skills.md`
 - [x] **AI task completion reports** — default `task-completion-report` skill requires a concise work summary; successful responses include server-generated UTC task start and completion timestamps
@@ -418,11 +503,16 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 
 ### Documentation
 
-- [x] `README.md` — setup, API tables, SOCKS troubleshooting, MCP mapping
+- [x] `../README.md` — setup, API tables, SOCKS troubleshooting, MCP mapping
+- [x] `docs/README.md` — wiki index and documentation map
+- [x] `docs/architecture.md` — current deployment and data-flow diagrams
+- [x] `docs/plugin-architecture.md` — dynamic plugin volume and command boundary
+- [x] `docs/workspace-deployment.md` — multi-operator data-plane ownership
+- [x] `docs/server-startup.md` — local wrapper, Docker entrypoint, and plugin store
 - [x] `CLAUDE.md` — project overview for agents
 - [x] `docs/downloads-browser.md` — web downloads panel + `GET …/downloads` API
 - [x] `docs/web-socks.md` — WebUI pivot controls and global SOCKS5 relay inventory
-- [x] `docs/tun-pivot.md` — server-owned TUN setup, routing, WebUI controls, and limits
+- [x] `docs/tun-pivot.md` — TUN setup, routing, WebUI controls, and limits
 - [x] `docs/pivot-plugins.md` — agent-side pivot plugin delivery and lifecycle
 - [x] `docs/web-shell-completion.md` — shell ↑/↓ history and Tab completion
 - [x] `docs/client-command-execution.md` — hidden CMD/PS process launch on the agent
@@ -455,7 +545,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Screenshot | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | SOCKS start/stop | ✅ | ✅ | ❌ | ✅ | ✅ dialog | ✅ |
 | Pivot list (SOCKS5) | ✅ | ✅ `socks list` | ✅ `socks list` | ✅ | ✅ dialog | ✅ `socks list` |
-| Server-owned TUN start/stop/list | ✅ | ✅ `tun` | ✅ `tun list`, `tun start`, `tun stop` | ✅ | ✅ dialog | ✅ `tun` |
+| TUN start/stop/list | ✅ | ✅ `tun` | ✅ `tun list`, `tun start`, `tun stop` | ✅ | ✅ dialog | ✅ `tun` |
 | Events / transcript | ✅ | ✅ | ✅ | ✅ | ✅ WS | ❌ |
 | Keylog | queue only | ❌ | ❌ | ✅ `queue_keylog` | ❌ | ✅ |
 | Install/remove persist | queue only | ❌ | ❌ | ✅ `install_persistence` / `remove_persistence` | ❌ | ✅ |
@@ -479,8 +569,9 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - [ ] **CLI subcommands:** `screenshot`, `socks start|stop` (only interactive today)
 - [ ] **Tests:** SOCKS task ordering, chunked download reassembly, API auth, WS handshake
 - [ ] **EDR/AV compatibility (commercial gate)** — see [PRD](prd.md#non-negotiable-edr-and-antivirus-compatibility): signing, lab matrix, review persistence/SOCKS/keylog detections
-- [ ] **Docs:** fix README security line (still says 10 MB cap)
-- [ ] **Docker operator deploy** — deferred; full spec in [tech plan §12](tech-plan.md#12-docker-deployment-rmm-server--exegol-mcp) (phased: RMM-only compose first, then Exegol network + SOCKS, then Exegol MCP). Interim: venv + `python server_rmm.py` (host or Exegol container).
+- [ ] **Generic persistent plugin lifecycle** — one-shot plugin commands are
+  hot-loaded from the runtime store; arbitrary persistent plugins still need
+  explicit lifecycle, cleanup, and operator API support.
 
 ---
 
@@ -497,7 +588,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Register sync | First `/register` sends `s`, `j`, `sync=1` so server adopts client script timing |
 | Operator surfaces | New features should land REST → CLI → MCP together (`rmm_tools.py`) |
 | AI | OpenAI key from browser; server spawns MCP locally; Exegol optional |
-| Docker deploy | **Deferred** — spec in `docs/tech-plan.md` §12; no image/compose in repo yet; interim venv workflow unchanged |
+| Docker deploy | **Delivered** — central control plane plus optional per-operator workspace sidecar; see `docs/workspace-deployment.md` and `docs/architecture.md` |
 | Security default | Dual secrets; localhost bind; no `--insecure` in production |
 
 ---
@@ -583,7 +674,7 @@ beacon_detector's inter-arrival distribution bimodal `[~70ms, ~5000ms]` instead 
 | ~~Server restart vs beacon config~~ | **Fixed:** load `sessions.json` on startup; defer idle `__CONFIG__` until `config_synced`; `config_pending` priority after PATCH; agent `-Reconnect` sends `sync=1`; fast poll after reconnect/config change. |
 | ~~CMD nested quotes / cwd~~ | **Fixed:** temp `.cmd` under `%TEMP%` runs the operator line literally; `/d /c` passes only the script path; `WorkingDirectory` for cwd (no `/S` + `%CD%` on `H:\`). |
 | Web UI archived commands | History sidebar replays events without the operator-entered command line (`rmm> …`) — shows output only, internal tokens (`__DOWNLOAD__`), or `result » cmd` meta; see [tech plan §11](tech-plan.md#11-web-ui--archived-sessions-missing-entered-commands-bug). |
-| README stale | Security section still mentions 10 MB body cap; default is 32 MB + chunking. |
+| ~~README stale~~ | **Fixed 2026-10-13:** security section now documents the 32 MB default body cap and `RMM_MAX_BODY_BYTES`. |
 | Web ↔ CLI parity | No keylog in web UI; no interactive cmd/PS mode or traffic/beacon charts yet. |
 
 ---

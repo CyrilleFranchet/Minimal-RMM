@@ -385,6 +385,7 @@ def _run_ai_chat_mcp(
     exegol_mcp_url: str | None = None,
     exegol_mcp_token: str | None = None,
     skill_ids: list[str] | None = None,
+    skill_documents: list[dict] | None = None,
 ) -> dict:
     """Run a provider chat loop using the local RMM MCP server and optional Exegol MCP."""
     from rmm_mcp_client import run_with_mcp_session
@@ -394,6 +395,7 @@ def _run_ai_chat_mcp(
             mcp.server_instructions or SYSTEM_PROMPT,
             skill_ids=skill_ids,
             session_context=_selected_session_context(selected_session_id),
+            skill_documents=skill_documents,
         )
         return await _run_provider_loop(
             provider=provider,
@@ -436,6 +438,7 @@ def _run_ai_chat_direct(
     selected_session_id: str | None,
     max_rounds: int,
     skill_ids: list[str] | None = None,
+    skill_documents: list[dict] | None = None,
 ) -> dict:
     """Run a provider chat loop with direct in-process RMM tool execution."""
     client = make_client(rmm_base_url, rmm_token, extra_headers=rmm_headers)
@@ -443,6 +446,7 @@ def _run_ai_chat_direct(
         SYSTEM_PROMPT,
         skill_ids=skill_ids,
         session_context=_selected_session_context(selected_session_id),
+        skill_documents=skill_documents,
     )
 
     async def call_tool(name: str, arguments: dict) -> str:
@@ -478,6 +482,7 @@ def run_ai_chat(
     exegol_mcp_url: str | None = None,
     exegol_mcp_token: str | None = None,
     skill_ids: list[str] | None = None,
+    skill_documents: list[dict] | None = None,
 ) -> dict:
     """Run an AI provider agent loop and return its final response and tool activity."""
     started_at = datetime.now(timezone.utc)
@@ -511,6 +516,7 @@ def run_ai_chat(
         "selected_session_id": selected_session_id,
         "max_rounds": max_rounds,
         "skill_ids": skill_ids,
+        "skill_documents": skill_documents,
     }
     if use_mcp_for_ai() and mcp_available():
         result = _run_ai_chat_mcp(

@@ -59,8 +59,14 @@ from rmm_tools import (
     tool_queue_persistent,
     tool_queue_screenshot,
     tool_list_plugins,
+    tool_list_assets,
+    tool_add_asset,
+    tool_set_asset_enabled,
+    tool_remove_asset,
+    tool_profile_status,
+    tool_start_profile,
+    tool_stop_profile,
     tool_queue_pe_load,
-    tool_build_plugin,
     tool_queue_upload,
     tool_remove_persistence,
     tool_start_socks,
@@ -180,15 +186,64 @@ def list_plugins() -> str:
 
 
 @mcp.tool()
-def queue_pe_load(session_ref: str, plugin: str, export: str = "Run", input: str = "") -> str:
-    """Queue a diskless PE plugin load on the Go agent; poll get_events for the output."""
-    return tool_queue_pe_load(_client(), session_ref, plugin, export=export, plugin_input=input)
+def list_assets(kind: str = "") -> str:
+    """List URL-installed plugins, AI skills, and rclone profile files."""
+    return tool_list_assets(_client(), kind)
 
 
 @mcp.tool()
-def build_plugin(plugin_name: str, output: str = "") -> str:
-    """Cross-compile a checked-in Go PE plugin on the RMM server into its plugin directory."""
-    return tool_build_plugin(_client(), plugin_name, output)
+def add_asset(kind: str, url: str, name: str = "", enabled: bool = True) -> str:
+    """Download and install a plugin, AI skill, or rclone file from an HTTP(S) URL."""
+    return tool_add_asset(_client(), kind, url, name, enabled)
+
+
+@mcp.tool()
+def set_asset_enabled(kind: str, name: str, enabled: bool) -> str:
+    """Enable or disable one managed operator asset."""
+    return tool_set_asset_enabled(_client(), kind, name, enabled)
+
+
+@mcp.tool()
+def remove_asset(kind: str, name: str) -> str:
+    """Remove one managed operator asset."""
+    return tool_remove_asset(_client(), kind, name)
+
+
+@mcp.tool()
+def profile_status() -> str:
+    """Show the active RMM-Profile and agent beacon URL."""
+    return tool_profile_status(_client())
+
+
+@mcp.tool()
+def start_profile(name: str = "cloudflared") -> str:
+    """Start an installed RMM-Profile connector."""
+    return tool_start_profile(_client(), name)
+
+
+@mcp.tool()
+def stop_profile() -> str:
+    """Stop the active RMM-Profile connector."""
+    return tool_stop_profile(_client())
+
+
+@mcp.tool()
+def queue_pe_load(
+    session_ref: str,
+    plugin: str,
+    export: str = "Run",
+    input: str = "",
+    command: str = "",
+) -> str:
+    """Queue a diskless PE plugin command; the plugin owns command dispatch."""
+    return tool_queue_pe_load(
+        _client(),
+        session_ref,
+        plugin,
+        export=export,
+        plugin_input=input,
+        plugin_command=command,
+    )
 
 
 @mcp.tool()

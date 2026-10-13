@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build local server artifacts and start the Minimal-RMM server."""
+"""Build the server helper and start the Minimal-RMM server."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def main() -> int:
-    """Build all checked-in Go plugins and the TUN helper, then exec the server."""
+    """Build the server TUN helper, then exec the server."""
     os.chdir(ROOT)
 
     if any(argument in ("-h", "--help") for argument in sys.argv[1:]):
@@ -21,22 +21,31 @@ def main() -> int:
         return 0
 
     try:
-        from server_rmm import build_plugin, plugin_build_targets
-
-        targets = plugin_build_targets()
-        if not targets:
-            raise RuntimeError("no checked-in Go plugin targets were found")
-
-        for name in targets:
-            print(f"[*] Building Go plugin: {name}", flush=True)
-            result = build_plugin(name)
-            print(
-                f"[+] Built {result['output']} ({result['size']} bytes)",
-                flush=True,
-            )
-
         print("[*] Building server TUN helper: tools/rmm-tun", flush=True)
         subprocess.run(["make", "tun-build"], cwd=ROOT, check=True)
+
+        from rmm_profile import discover_profiles, profile_directory
+        from server_rmm import list_plugin_files
+
+        plugins = list_plugin_files()
+        if plugins:
+            print(f"[+] Found {len(plugins)} deployed agent plugin artifact(s)", flush=True)
+        else:
+            print(
+                "[!] No agent plugin artifacts found; install a bundle from "
+                "Minimal-RMM-plugins into RMM_PLUGINS_DIR",
+                flush=True,
+            )
+        profiles = discover_profiles(profile_directory())
+        if profiles:
+            names = ", ".join(row["name"] for row in profiles)
+            print(f"[+] Found installed RMM-Profile bundle(s): {names}", flush=True)
+        else:
+            print(
+                "[!] No RMM-Profile bundles found; install one from "
+                "Minimal-RMM-profiles into RMM_PROFILES_DIR",
+                flush=True,
+            )
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"[!] Startup build failed: {exc}", file=sys.stderr, flush=True)
         return 1

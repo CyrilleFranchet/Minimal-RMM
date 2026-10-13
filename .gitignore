@@ -24,3 +24,10 @@ agent-go/minimal-rmm-agent*
 
 # Local server-side TUN helper build
 tools/rmm-tun
+
+# Local rclone credentials and Windows bootstrap binary
+tools/rclone/profiles.json
+tools/rclone/rclone.exe
+
+# Optional host bind mount for dynamically deployed plugin artifacts
+plugin-store/

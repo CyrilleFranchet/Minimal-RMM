@@ -1,5 +1,9 @@
 # RMM-owned TUN pivot
 
+See the [documentation wiki](README.md) for navigation and the
+[architecture overview](architecture.md) for the control-plane, workspace,
+and agent boundaries.
+
 In the default server storage mode, the TUN device belongs to the RMM server.
 In workspace mode, the central server keeps the authenticated agent transport
 while the per-operator workspace service creates and owns the TUN device. The
@@ -56,22 +60,21 @@ not create an interface, add routes, or open a listening socket on the target.
 
 ## Build
 
-Build the Go transport plugin and the server helper from checked-in sources:
+Build the server helper from the Minimal-RMM repository:
 
 ```bash
-python rmm_cli.py pe build tun
 make tun-build
 ```
 
-The plugin build needs the same Windows cross compiler as the other Go PE
-plugins. `make tun-build` writes `tools/rmm-tun`; set
+Build `tun.dll` in the external plugin repository and install it in the
+runtime plugin store. `make tun-build` writes `tools/rmm-tun`; set
 `RMM_TUN_HELPER` if the helper is stored elsewhere.
 
 ## WebUI workflow
 
 The WebUI exposes TUN routing inside the **Pivots** dialog in the selected live
-session header. Before opening it, build `tun.dll` from **Deploy plugins (Go)**
-and build the helper with `make tun-build`. In server mode, the helper and
+session header. Before opening it, install `tun.dll` from the external plugin
+repository and build the helper with `make tun-build`. In server mode, the helper and
 interface run in the RMM server namespace. In workspace mode, they run in the
 local workspace namespace. In the TUN section, configure:
 
@@ -194,9 +197,10 @@ The server-side implementation is split across these functions and classes:
 | `main` | `server-tun/main.go` | Run the server-side TUN process until shutdown |
 
 The agent-side UDP additions are documented in
-`docs/go-agent-plugins.md`; they use `processUDPTasks`, `readUDPData`, and the
-UDP connection cleanup helpers in `agent-plugins/tun/main.go` for the TUN
-transport. The SOCKS plugin has the same task protocol in its own binary.
+`docs/go-agent-plugins.md`; the external `tun.dll` package uses
+`processUDPTasks`, `readUDPData`, and the UDP connection cleanup helpers for
+the TUN transport. The SOCKS plugin has the same task protocol in its own
+binary.
 
 The Go beacon keeps the lifecycle in `pollOnce` and uses
 `isPermanentHTTPError` in `agent-go/main.go` to stop a stale pivot child after

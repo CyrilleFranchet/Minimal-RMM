@@ -3,7 +3,7 @@ PYTHON ?= python3
 
 PY_MODULES := server_rmm.py run_server.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
 	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_run_on_host.py rmm_kill_host_sessions.py \
-	rmm_workspace.py workspace_pivot.py workspace_service.py
+	rmm_workspace.py workspace_pivot.py workspace_service.py rmm_asset_store.py rmm_profile.py
 
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
@@ -29,8 +29,6 @@ help:
 go-test:
 	@cd agent-go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
 	@cd agent-go && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...
-	@cd agent-plugins/socks && go test ./...
-	@cd agent-plugins/tun && go test ./...
 	@cd server-tun && go test ./...
 
 tun-build:

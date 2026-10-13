@@ -4,13 +4,24 @@ A minimal **remote monitoring and management (RMM)** proof of concept: a Python 
 
 **Use only on systems you own or are explicitly authorized to manage.** Misuse may violate law and policy.
 
+The repository documentation is organized as a [wiki-style index](docs/README.md).
+The [architecture overview](docs/architecture.md) is the canonical map of the
+control plane, Exegol workspaces, agents, plugins, pivots, storage, and
+privilege boundaries.
+
 ---
 
 ## Architecture
 
+The component summary below is intentionally short. Use the
+[architecture overview](docs/architecture.md) for deployment diagrams and
+current data-flow details.
+
 | Component | Role |
 |-----------|------|
-| `server_rmm.py` | Threaded HTTP server: **beacon API** (`/register`, `/cmd`, `/result`) + **operator API** (`/api/v1/…`) in parallel |
+| `server_rmm.py` | Threaded HTTP server with separate administration (`/api/v1/…`, `/ui/`) and beacon (`/register`, `/cmd`, `/result`, pivots) listeners |
+| `rmm_profile.py` | Generic external transport process manager; Cloudflared is supplied by `Minimal-RMM-profiles` |
+| `rmm_asset_store.py` | URL-installed plugin, AI skill, and rclone asset store |
 | `rmm_cli.py` | Operator CLI — calls the REST API (scriptable, `--json`) |
 | `web/` | Operator **web UI** — served at `/ui/` (same origin as API) |
 | `rmm_tun.py` + `server-tun/` | TUN lifecycle and user-space IP stack frontend; ownership follows storage mode |
@@ -43,9 +54,9 @@ The server **requires secrets by default** (no `--insecure`):
 |--------|------------|----------|
 | Operator API | `RMM_API_TOKEN` / `--token` | `/api/v1/*` — list sessions, queue commands, full control |
 | Beacon | `RMM_BEACON_SECRET` / `--beacon-secret` | `/register`, `/cmd`, `/result`, `/ping` — impersonation / hijack |
-| rclone exfil (optional) | `RMM_RCLONE_PROFILES` or `RMM_RCLONE_PROFILES_FILE` | Named cloud profiles; agent uploads via rclone (see `docs/rclone-exfil.md`) |
+| rclone exfil (optional) | `RMM_RCLONE_PROFILES` or `RMM_RCLONE_PROFILES_FILE` | Named cloud profiles in server or workspace scope; agent uploads via rclone (see `docs/rclone-exfil.md`) |
 
-Also: listens on **127.0.0.1** by default (`--bind 0.0.0.0` only behind a firewall), **beacon session IDs** validated (no path-like `id`), artifact files use a **hash prefix** (not `session_id[:8]`), **path traversal** blocked on uploaded filenames, **10 MB** POST body cap, constant-time token checks.
+Also: listens on **127.0.0.1** by default (`--bind 0.0.0.0` only behind a firewall), **beacon session IDs** validated (no path-like `id`), artifact files use a **hash prefix** (not `session_id[:8]`), **path traversal** blocked on uploaded filenames, **32 MB** default POST body cap (`RMM_MAX_BODY_BYTES`), constant-time token checks.
 
 **Lab only:** `python server_rmm.py --insecure` restores the old open API/beacon (never on a real network).
 
@@ -64,9 +75,11 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt   # required for rmm_cli interactive; optional for server --cli
 export RMM_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-python3 run_server.py             # build Go plugins + TUN helper, then start on port 8080
-python3 run_server.py 9000 --bind 0.0.0.0   # expose on LAN (use firewall + secrets)
+python3 run_server.py             # build the server TUN helper, then start on 8080/8081
+python3 run_server.py --admin-port 9000 --beacon-port 9001 --bind 0.0.0.0 \
+  --beacon-bind 0.0.0.0                         # expose listeners deliberately
 # Optional rclone exfil (see docs/rclone-exfil.md):
+# Server mode: profiles are loaded by the RMM server.
 python3 run_server.py --rclone-profiles /path/to/profiles.json
 # or: export RMM_RCLONE_PROFILES_FILE="$PWD/tools/rclone/profiles.example.json"
 
@@ -82,15 +95,40 @@ start the control plane and the example workspace sidecar:
 
 ```bash
 cp .env.example .env
-docker compose up --build rmm-control
-docker compose --profile workspace up --build
+# Create tools/rclone/profiles.json with the operator's remotes.
+docker compose up --build -d rmm-control
+docker compose --profile workspace up --build -d
 ```
 
 Open the workspace UI at **<http://127.0.0.1:8787/ui/>**. Its SQLite database,
 artifacts, history, and local TUN state live in the workspace volume. The
-control plane does not receive `/dev/net/tun` or `CAP_NET_ADMIN`. An existing
-Exegol container can run `workspace_service.py` instead of the example sidecar;
-the full setup is in [`docs/workspace-deployment.md`](docs/workspace-deployment.md).
+control plane does not receive `/dev/net/tun` or `CAP_NET_ADMIN`. The rclone
+profile file is mounted into the workspace service only. The central control
+plane receives the selected job payload transiently and does not load the
+workspace profile file. An existing Exegol container can run
+`workspace_service.py` instead of the example sidecar; set its local
+`RMM_RCLONE_PROFILES_FILE`, `RMM_RCLONE_DEFAULT_PROFILE`, and
+`RMM_RCLONE_MAX_BYTES` values there. The full setup is in
+[`docs/workspace-deployment.md`](docs/workspace-deployment.md).
+
+The control plane mounts a persistent plugin store at `/app/plugins`. Build
+agent plugins in the private
+[`Minimal-RMM-plugins`](https://github.com/CyrilleFranchet/Minimal-RMM-plugins)
+repository, then copy the release bundle's `*.dll` and `*.ps1` artifacts into
+that directory. Set `RMM_PLUGIN_STORE=./plugin-store` in `.env` for a host bind
+mount, or copy the files into the named Docker volume. The server does not
+compile agent plugins. See
+[`docs/plugin-architecture.md`](docs/plugin-architecture.md) and
+[`docs/plugin-repository.md`](docs/plugin-repository.md).
+
+The control plane also mounts a persistent RMM-Profile store at
+`/app/profiles`. Install the trusted `cloudflared/` bundle from the private
+[`Minimal-RMM-profiles`](https://github.com/CyrilleFranchet/Minimal-RMM-profiles)
+repository and make `cloudflared` available in the control-plane image. With
+`RMM_PROFILE_AUTOSTART=1`, the server starts the profile, extracts the generated
+`trycloudflare.com` URL, and exposes it through `profile status` and the WebUI.
+Use that URL for the agent beacon. See
+[`docs/rmm-profiles.md`](docs/rmm-profiles.md).
 
 ### Operator CLI
 
@@ -113,7 +151,7 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. In workspace mode, open the local workspace URL instead; the local service can use an optional `RMM_WORKSPACE_LOCAL_TOKEN` and does not need the global API token in the browser. Use **Config** in the header to export or import a versioned UI configuration JSON file; secrets are excluded unless explicitly requested (see `docs/web-ui-configuration.md`). **Dark mode** is the default; use the **☀ / ☽** toggle in the header to switch (saved in `localStorage`). The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates in server mode. Workspace mode uses the same polling API while the local service owns the durable event stream. The shell queues commands with **Enter**, runs `/exec` wait via **Ctrl+Enter**, and supports **↑/↓ command history** plus **Tab completion** (session history + `cmd:` / `PS:` / `powershell:` / `pwsh:` prefixes). Type **`help`** or **`?`** in the shell for its local commands; all other commands are sent to the selected agent. Click **Pivots** in a live session header to configure the SOCKS5 and TUN pivots in the current namespace, start or stop them, and inspect the workspace or server inventory (see `docs/web-socks.md`, `docs/tun-pivot.md`, and `docs/workspace-deployment.md`). Completed agent downloads appear in the **Downloads from agent** panel. **Session history** lists archived transcripts from killed sessions. The sidebar has separate **Deploy agent (PowerShell)** and **Deploy agent (Go)** sections — see `docs/web-agent-generator.md` and `docs/go-agent.md`. The token is kept in `sessionStorage` for the browser tab only.
 
-**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Configure and validate an **OpenAI**, **Anthropic**, or **Mistral** API key; only providers with a successfully validated key can be selected. Keys and validation state are stored in browser `sessionStorage` for the current tab and are never written to server storage. The model list comes from the selected provider's API, and a custom model ID remains available. Conversation history is saved per session on the server in default mode (`RMM_logs/history/{id}/ai_chat.json`) and in the workspace SQLite database in workspace mode; use **Reset chat** to start over (see `docs/web-ai-chat-memory.md`). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). Workspace-scoped AI tool calls forward the workspace headers to keep the same session ownership. See `docs/ai-providers.md` for the provider protocol and API details. **Skills** — Markdown files in `ai-skills/` on the server are injected into the system prompt (see `docs/web-ai-skills.md`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_AI_SKILLS_DIR`. The selected session in the sidebar is passed as context.
+**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Configure and validate an **OpenAI**, **Anthropic**, or **Mistral** API key; only providers with a successfully validated key can be selected. Keys and validation state are stored in browser `sessionStorage` for the current tab and are never written to server storage. The model list comes from the selected provider's API, and a custom model ID remains available. Conversation history is saved per session on the server in default mode (`RMM_logs/history/{id}/ai_chat.json`) and in the workspace SQLite database in workspace mode; use **Reset chat** to start over (see `docs/web-ai-chat-memory.md`). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). Workspace-scoped AI tool calls forward the workspace headers to keep the same session ownership. See `docs/ai-providers.md` for the provider protocol and API details. **Skills** — built-in Markdown files and URL-installed workspace files can be enabled or disabled in the Config panel and are injected into the system prompt (see `docs/web-ai-skills.md` and `docs/operator-assets.md`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_AI_SKILLS_DIR`. The selected session in the sidebar is passed as context.
 
 The AI agent permits 32 tool rounds per internal checkpoint by default for multi-step tasks. The server automatically continues the existing provider conversation at each checkpoint, with an emergency ceiling of 160 total rounds. Set `RMM_AI_MAX_TOOL_ROUNDS` before starting the server to change the checkpoint size. If the emergency ceiling is reached, the web UI shows the tool-call trace from the failed request.
 
@@ -155,7 +193,6 @@ MCP tools mirror `rmm_cli.py` operator actions:
 | `screenshot` | `queue_screenshot` |
 | `pe list` | `list_plugins` |
 | `pe load <plugin>` / `pe <plugin>` | `queue_pe_load` |
-| `pe build <plugin>` | `build_plugin` |
 | `socks list` | `list_socks` |
 | `socks` / `socks stop` | `start_socks` / `stop_socks` |
 | `tun list` | `list_tun` |
@@ -175,18 +212,24 @@ Interactive-only: `use`, `background`, `clear`, `help`, `quit` (session selectio
 python server_rmm.py --cli
 ```
 
-### Tunnel (example)
+### RMM-Profile transport
 
-Start the server first and note the port in its startup banner (`RMM listening on …:PORT`). Point **cloudflared at that same port**:
+The server defaults to administration port `8080` and beacon port `8081`.
+Install the Cloudflared profile from
+[`Minimal-RMM-profiles`](https://github.com/CyrilleFranchet/Minimal-RMM-profiles)
+under `RMM_PROFILES_DIR`, make `cloudflared` available in the server
+environment, and leave `RMM_PROFILE_AUTOSTART=1`. The server starts the profile,
+forwards it to the beacon port, extracts the generated `trycloudflare.com` URL,
+and publishes that URL through `profile status` or the WebUI.
 
 ```bash
-python server_rmm.py 8081          # example: listen on 8081
-cloudflared tunnel --url http://127.0.0.1:8081
+python rmm_cli.py profile status
+python rmm_cli.py profile start cloudflared
 ```
 
-Default port is **8080** if you omit the port argument. A mismatch (server on 8081, tunnel on 8080) causes **HTTP 524** from the client.
-
-Use the HTTPS URL as `RMM_BASE_URL` on the client (no trailing slash).
+Use the returned HTTPS URL as `RMM_BASE_URL` on the client. Use the
+administration URL for the CLI, MCP, and WebUI. To run without a profile for a
+local lab, point the agent directly at the beacon listener URL.
 
 ### Windows client
 
@@ -232,11 +275,18 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
 | `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
 | `POST` | `/sessions/{id}/exfil` | `{"remote_path":"…","profile":"mega-lab","dest":"…"}` | Queue `__EXFIL__` (agent rclone upload of file or folder; link in events for files) |
-| `GET` | `/rclone/config` | — | rclone binary + profile status |
+| `GET` | `/rclone/config` | — | Active server/workspace rclone profile and execution status |
+| `GET` | `/rclone/capabilities` | — | Central plugin and binary bootstrap capabilities |
+| `GET` | `/profile` | — | Installed and active RMM-Profile status |
+| `POST` | `/profile` | `{"name":"cloudflared"}` or `{"stop":true}` | Start or stop the selected profile |
+| `GET` | `/transport` | — | Administration URL, beacon URL, ports, and profile status |
+| `GET` | `/assets` or `/assets/{kind}` | — | List URL-managed plugins, skills, and rclone files |
+| `POST` | `/assets/{kind}` | `{"url":"https://…","name":"optional.ext"}` | Download and store an operator asset |
+| `PATCH` | `/assets/{kind}/{name}` | `{"enabled":false}` | Enable or disable an asset |
+| `DELETE` | `/assets/{kind}/{name}` | — | Remove an asset |
 | `POST` | `/sessions/{id}/screenshot` | — | Queue `__SCREENSHOT__` |
-| `GET` | `/plugins` | — | List Go agent PE plugins on the server (name, size, SHA-256, build targets, toolchain status) |
-| `POST` | `/plugins/build` | `{"name":"rclone-exfil","output":"mytool.dll"}` | Cross-compile a checked-in Go plugin into the server plugin directory |
-| `POST` | `/sessions/{id}/pe` | `{"plugin":"hello.dll","export":"Run","input":"…"}` | Queue `__PE_LOAD__` (diskless plugin mapping on the Go agent) |
+| `GET` | `/plugins` | — | List agent plugin artifacts in the runtime plugin store (name, size, SHA-256) |
+| `POST` | `/sessions/{id}/pe` | `{"plugin":"hello.dll","export":"Run","input":"…"}` or `{"plugin":"hello.dll","command":"scan","input":"…"}` | Queue a generic plugin load; plugin-owned commands are dispatched inside the DLL |
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080,"bind_host":"127.0.0.1"}` or `{"stop":true}` | Start/stop SOCKS5 via the agent pivot plugin |
 | `GET` | `/tun` | — | List active TUN relays; listener/device ownership depends on storage mode |
@@ -337,13 +387,12 @@ When an operator runs **`socks [port]`** (default **1080**), server mode binds a
 local workspace service and leaves only the agent transport on the central
 server. Both modes set **`socks_active": true`** on **`GET /cmd`** (control
 only). The agent then starts the **SOCKS5 pivot plugin** outside the main
-beacon loop. PowerShell agents fetch `agent-plugins/socks-powershell/socks.ps1`
-through the authenticated plugin endpoint and run its HTTP poll worker in a
-dedicated runspace. Windows amd64 Go agents run the checked-in `socks.dll`
-plugin in a cancellable child process; build it first with
-`POST /api/v1/plugins/build` and `{"name":"socks"}`. **`socks stop`** clears the
-relay and stops the plugin. The main **`/cmd` / `/register` / `/result`** beacon
-is unchanged.
+beacon loop. PowerShell agents fetch the deployed `socks.ps1` artifact through
+the authenticated plugin endpoint and run its HTTP poll worker in a dedicated
+runspace. Windows amd64 Go agents fetch the deployed `socks.dll` artifact and
+run it in a cancellable child process. **`socks stop`** clears the relay and
+stops the plugin. The main **`/cmd` / `/register` / `/result`** beacon is
+unchanged.
 
 Use **`socks stop`** (or kill the session) to tear down.
 
@@ -378,10 +427,10 @@ stack and the Go agent only opens ordinary target-side TCP and UDP sockets, so
 it does not create a TUN device or require administrator privileges. This
 currently requires a Windows amd64 Go agent with the built `tun.dll` transport.
 
-Build the two server-side components once:
+Build the server-side TUN helper once. Install `tun.dll` from the external
+plugin bundle before starting a Go-agent relay:
 
 ```bash
-python rmm_cli.py pe build tun
 make tun-build
 ```
 
@@ -426,6 +475,8 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `upload <local> <remote>` | Queue `__UPLOAD__` |
 | `socks [port]` / `socks stop` | SOCKS5 on 127.0.0.1 via remote agent (default port 1080) |
 | `tun list` / `tun start` / `tun stop` | TUN relay through a Go agent; device ownership follows storage mode |
+| `assets list/add/enable/disable/remove` | Manage URL-installed plugins, AI skills, and rclone files |
+| `profile status/start/stop` | Manage the dynamic RMM-Profile connector |
 | `events` | Poll result events (`--since`, `--limit`) |
 
 Global flags: `--url`, `--token` (or `RMM_SERVER_URL`, `RMM_API_TOKEN`).
@@ -440,7 +491,7 @@ Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Pref
 
 ## Client (`client_rmm.ps1`)
 
-All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`. rclone exfil uses server-side profiles (no credentials in the agent script).
+All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`. rclone exfil uses server-side profiles in server mode and workspace-local profiles in workspace mode; credentials never go into the agent script.
 
 - **URL:** edit `$u` or set `RMM_BASE_URL`.
 - **Beacon secret:** edit `$beaconSecret` or set `RMM_BEACON_SECRET` (must match the server).
@@ -449,7 +500,7 @@ All settings live in a **configuration block at the top of the script** (`$u`, `
 - **Registration:** retries **indefinitely** until the server is back. Re-registers every beacon and after errors so a restarted server is picked up automatically. Only stops on explicit server kill (`TERMINATED` / `__EXIT__`), not on network or auth errors.
 - **Debug:** set `$verboseHttp = $true` or `RMM_VERBOSE=1` to log each HTTP call (logical URL, wire IPv4, `Host` header, status, error bodies).
 
-**HTTP 524 (Cloudflare):** the tunnel reached Cloudflare but **cloudflared could not get a timely response from your origin**. Common cause: **port mismatch** — server on `8081` but `cloudflared tunnel --url http://127.0.0.1:8080`. Restart cloudflared with the port shown in the server banner (`Tunnel: cloudflared tunnel --url http://localhost:PORT`). Also ensure `server_rmm.py` is running on that host. This is not a wrong beacon token (that is usually `401`/`403`).
+**HTTP 524 (Cloudflare):** the profile reached Cloudflare but could not get a timely response from the beacon origin. Check `python rmm_cli.py profile status`, confirm that `beacon_port` matches the server listener, and inspect the profile process log. The administration port is not the Cloudflared origin. A wrong beacon token usually returns `401` or `403`.
 
 ---
 
@@ -458,6 +509,8 @@ All settings live in a **configuration block at the top of the script** (`$u`, `
 | Path | Role |
 |------|------|
 | `server_rmm.py` | HTTP server + operator API |
+| `rmm_profile.py` | Generic RMM-Profile process contract and lifecycle |
+| `rmm_asset_store.py` | Persistent URL-installed operator assets |
 | `rmm_cli.py` | Operator CLI |
 | `web/` | Static web operator UI (`index.html`, `app.js`, `agent-gen.js`, `style.css`) |
 | `rmm_workspace.py` | Workspace authentication and transient central event delivery |

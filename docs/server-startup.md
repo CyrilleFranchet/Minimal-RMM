@@ -1,5 +1,9 @@
 # Server startup wrapper
 
+See the [documentation wiki](README.md) for navigation and the
+[architecture overview](architecture.md) for the control-plane and workspace
+topology.
+
 Use `run_server.py` when starting a development or lab server:
 
 ```bash
@@ -8,20 +12,19 @@ python3 run_server.py
 
 The wrapper performs these steps from the repository root:
 
-1. Finds every checked-in Go plugin under `agent-plugins/`.
-2. Builds each plugin for Windows amd64 with the same compiler path and build
-   settings as `POST /api/v1/plugins/build`.
-3. Writes the plugin DLLs to `RMM_logs/plugins/`.
-4. Runs `make tun-build`, which writes the server-side helper to
+1. Runs `make tun-build`, which writes the server-side helper to
    `tools/rmm-tun`.
-5. Replaces the wrapper process with `server_rmm.py`, passing through all
+2. Reports the deployed artifacts found in `RMM_PLUGINS_DIR`.
+3. Reports the installed RMM-Profile bundles found in `RMM_PROFILES_DIR`.
+4. Replaces the wrapper process with `server_rmm.py`, passing through all
    server arguments.
 
-The wrapper currently builds `rclone-exfil`, `screenshot`, `socks`, and `tun`.
-It fails before starting the server when Go, the configured mingw-w64
-compiler, or the TUN helper build is unavailable. Set `RMM_PLUGIN_CC` to use a
-different Windows cross compiler and `RMM_PLUGIN_BUILD_TIMEOUT` to change the
-per-plugin build timeout.
+The wrapper does not build agent plugins. Build and test those plugins in the
+private [external plugin repository](plugin-repository.md), then install its
+release artifacts into `RMM_PLUGINS_DIR`.
+
+It also does not fetch profile executables. Install trusted bundles from the
+private [RMM-Profile repository](rmm-profiles.md) into `RMM_PROFILES_DIR`.
 
 The server can still be started directly with:
 
@@ -29,8 +32,68 @@ The server can still be started directly with:
 python3 server_rmm.py
 ```
 
-That direct path skips the startup builds and is useful when the artifacts are
-already present.
+That direct path skips the TUN helper build and is useful when the helper and
+plugin artifacts are already present.
+
+## Listener ports and automatic profile startup
+
+The default listeners are:
+
+```text
+administration: 127.0.0.1:8080
+beacon:         127.0.0.1:8081
+```
+
+Set `RMM_ADMIN_PORT` and `RMM_BEACON_PORT`, or pass `--admin-port` and
+`--beacon-port`. The administration listener serves the WebUI and operator
+API. The beacon listener serves agent and pivot endpoints. `RMM_PROFILE_NAME`
+selects the installed connector and `RMM_PROFILE_AUTOSTART=1` starts it after
+the listeners bind. See [RMM-Profiles](rmm-profiles.md) for the Cloudflared
+bundle and its `trycloudflare.com` URL handshake.
+
+The server publishes the active agent URL through:
+
+```bash
+python rmm_cli.py profile status
+curl -H "Authorization: Bearer $RMM_API_TOKEN" \
+  http://127.0.0.1:8080/api/v1/transport
+```
+
+Use that beacon URL in the PowerShell or Go agent generator. Keep the
+administration URL for CLI, MCP, and WebUI access.
+
+## Docker plugin store
+
+The Compose control plane mounts `/app/plugins` from the persistent
+`rmm-plugin-store` volume. The image contains only the server-side `rmm-tun`
+helper. Install the external plugin repository's release artifacts into this
+volume before starting pivots.
+
+For direct host-side deployment, set this in `.env`:
+
+```text
+RMM_PLUGIN_STORE=./plugin-store
+```
+
+Then copy the release bundle's `*.dll` and `*.ps1` artifacts into
+`plugin-store/`. The next `GET /api/v1/plugins` request sees them, and the Go
+agent can load them through `pe load` without rebuilding or restarting the
+server. Keep the server-side TUN helper in `tools/rmm-tun`; it is not an agent
+plugin artifact.
+
+Compose also mounts `/app/profiles` from the persistent `rmm-profile-store`
+volume. Install the trusted profile bundle from `Minimal-RMM-profiles` under
+that volume. The control-plane image must contain the provider executable,
+such as `cloudflared`, in `PATH` or at the configured profile path.
+
+For a host bind mount during development:
+
+```bash
+git clone https://github.com/CyrilleFranchet/Minimal-RMM-profiles.git profiles
+mkdir -p profile-store
+cp -R profiles/cloudflared profile-store/
+RMM_PROFILE_STORE=./profile-store docker compose up --build -d rmm-control
+```
 
 ## Multi-operator workspace deployment
 

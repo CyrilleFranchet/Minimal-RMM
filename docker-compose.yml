@@ -8,11 +8,32 @@ services:
       RMM_WORKSPACES: ${RMM_WORKSPACES:?set RMM_WORKSPACES}
       RMM_STORAGE_MODE: ${RMM_STORAGE_MODE:-workspace}
       RMM_PLUGINS_DIR: /app/plugins
-    command: ["python3", "server_rmm.py", "8080", "--bind", "0.0.0.0"]
+      RMM_PROFILES_DIR: /app/profiles
+      RMM_PROFILE_NAME: ${RMM_PROFILE_NAME:-cloudflared}
+      RMM_PROFILE_AUTOSTART: ${RMM_PROFILE_AUTOSTART:-1}
+      RMM_ASSET_MAX_BYTES: ${RMM_ASSET_MAX_BYTES:-67108864}
+      RMM_ADMIN_PORT: 8080
+      RMM_BEACON_PORT: 8081
+    command:
+      - python3
+      - server_rmm.py
+      - --admin-port
+      - "8080"
+      - --beacon-port
+      - "8081"
+      - --bind
+      - 0.0.0.0
+      - --beacon-bind
+      - 0.0.0.0
     ports:
-      - "${RMM_PORT:-8080}:8080"
+      - "${RMM_ADMIN_PORT:-8080}:8080"
+      - "${RMM_BEACON_PORT:-8081}:8081"
     volumes:
       - rmm-control-state:/app/RMM_logs
+      - ${RMM_PROFILE_STORE:-rmm-profile-store}:/app/profiles
+      # Use the named volume by default. Set RMM_PLUGIN_STORE to a host path
+      # when operators need to copy new artifacts into it directly.
+      - ${RMM_PLUGIN_STORE:-rmm-plugin-store}:/app/plugins
     networks:
       - rmm-control
     restart: unless-stopped
@@ -32,11 +53,17 @@ services:
       RMM_WORKSPACE_BIND: 0.0.0.0
       RMM_WORKSPACE_PORT: 8787
       RMM_WORKSPACE_TUN_HELPER: /app/tools/rmm-tun
+      RMM_RCLONE_PROFILES_FILE: >-
+        ${RMM_RCLONE_PROFILES_FILE:-/workspace/rclone/profiles.json}
+      RMM_RCLONE_PROFILES: ${RMM_RCLONE_PROFILES:-}
+      RMM_RCLONE_DEFAULT_PROFILE: ${RMM_RCLONE_DEFAULT_PROFILE:-mega-lab}
+      RMM_RCLONE_MAX_BYTES: ${RMM_RCLONE_MAX_BYTES:-100000000}
     command: ["python3", "workspace_service.py"]
     ports:
       - "${RMM_WORKSPACE_PORT:-8787}:8787"
     volumes:
       - rmm-workspace-data:/workspace/data
+      - ./tools/rclone:/workspace/rclone:ro
     devices:
       - "/dev/net/tun:/dev/net/tun"
     cap_add:
@@ -47,6 +74,8 @@ services:
 
 volumes:
   rmm-control-state:
+  rmm-plugin-store:
+  rmm-profile-store:
   rmm-workspace-data:
 
 networks:

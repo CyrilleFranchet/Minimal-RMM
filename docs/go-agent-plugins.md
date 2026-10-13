@@ -1,5 +1,10 @@
 # Go agent PE plugin system
 
+See the [documentation wiki](README.md) for navigation, the
+[architecture overview](architecture.md) for system placement, and
+[dynamic plugin architecture](plugin-architecture.md) for the runtime volume
+and hot-loading model.
+
 The Go agent supports PE plugins as separate child processes. The agent fetches
 the DLL over the authenticated beacon channel, sends the bytes to a child over
 stdin, and maps it there. The plugin is never mapped in the beacon process,
@@ -9,14 +14,14 @@ the target disk. Authorized lab use only.
 ## Overview
 
 ```text
-Operator drops plugin DLL into RMM_logs/plugins/
+Operator drops plugin DLL into the persistent plugin volume
         │
         ▼
 GET  /api/v1/plugins              (list: name, size, SHA-256)
-POST /api/v1/sessions/{id}/pe     (queue __PE_LOAD__ <plugin> <export> [input])
+POST /api/v1/sessions/{id}/pe     (queue __PE_LOAD__ or __PLUGIN_COMMAND__)
         │
         ▼
-agent-go: execute() dispatch  ──  __PE_LOAD__ handler
+agent-go: execute() dispatch  ──  generic plugin handler
         ├── fetch  GET /tools/plugins/<name>  (beacon auth)
         ├── child  agent.exe --plugin-child <export>
         └── frame  DLL bytes + input over stdin
@@ -25,15 +30,55 @@ agent-go: execute() dispatch  ──  __PE_LOAD__ handler
 One-shot plugin images are downloaded and started per command. The parent does
 not cache the DLL or load it into its own address space.
 
+## Plugin-owned commands
+
+The agent core exposes a generic PE load operation. Plugin-specific commands
+are exports or dispatch cases inside the plugin artifact. They are not added to
+`agent-go/main.go`, `server_rmm.py`, or the normal target shell parser.
+
+For a plugin that exports separate commands, the operator selects the export:
+
+```text
+pe load network.dll --export Scan --session <id> '{"target":"10.20.0.0/16"}'
+```
+
+For a plugin that wants a single stable export, `Run` can receive a JSON
+command envelope and dispatch subcommands inside the DLL. In both forms the
+agent only knows how to fetch the artifact, load it in the isolated child, call
+the selected entry point, and return its output. A new plugin command becomes
+available as soon as its artifact is present in the runtime plugin store.
+
+The command namespace form uses the same REST endpoint with a `command` field:
+
+```json
+{
+  "plugin": "network.dll",
+  "command": "scan",
+  "input": "{\"target\":\"10.20.0.0/16\"}"
+}
+```
+
+The server queues `__PLUGIN_COMMAND__ network.dll scan ...`. The agent always
+invokes the plugin's `Run` export and passes this envelope:
+
+```json
+{
+  "command": "scan",
+  "input": "{\"target\":\"10.20.0.0/16\"}"
+}
+```
+
+The server does not contain a `scan` handler. The plugin owns the command
+dispatch, input validation, and result format.
+
 ## PowerShell script plugins
 
-PowerShell agents use the same authenticated plugin endpoint for checked-in
-script plugins. The server serves only an allowlisted script path from
-`agent-plugins/`; the client evaluates the script in memory and calls its
-exported function. The screenshot plugin is available at
-`agent-plugins/screenshot-powershell/screenshot.ps1` and is invoked through
-`Invoke-RmmScreenshotPlugin`. The existing SOCKS plugin uses the same delivery
-boundary and keeps its persistent worker in a dedicated runspace.
+PowerShell agents use the same authenticated plugin endpoint for deployed
+script plugins. The server serves only the approved `socks.ps1` and
+`screenshot.ps1` artifacts from the runtime store; the client evaluates the
+script in memory and calls its exported function. The plugin source and
+release build live in the external plugin repository. The existing SOCKS
+plugin keeps its persistent worker in a dedicated runspace.
 
 ## Persistent pivot plugin
 
@@ -57,8 +102,8 @@ continues polling `/cmd` while the pivot is active. Cancelling the agent also
 cancels the child process. This plugin is started only for the public SOCKS
 pivot and only while `socks_active` is true.
 
-The RMM-owned TUN frontend has a separate `agent-plugins/tun/` package and
-`tun.dll`. When `/cmd` reports `tun_active: true`, the beacon starts that DLL
+The RMM-owned TUN frontend has a separate `tun.dll` transport artifact from
+the external plugin repository. When `/cmd` reports `tun_active: true`, the beacon starts that DLL
 in a separate cancellable child process. It polls `/tun` and owns the target
 TCP and UDP sockets for the server or workspace TUN relay. The TUN device and
 user-space IP stack stay with the process that owns the configured storage
@@ -158,15 +203,21 @@ Full parity (REST → CLI → MCP), see `docs/mcp-parity.md`:
 
 | Surface | Usage |
 |---------|-------|
-| REST | `GET /api/v1/plugins` (inventory, build targets, toolchain status), `POST /api/v1/plugins/build`, `POST /api/v1/sessions/{id}/pe` with `{"plugin":"hello.dll","export":"Run","input":"…"}` |
-| CLI | `rmm_cli.py pe list`, `rmm_cli.py pe build <plugin> --output <name.dll>`, `rmm_cli.py pe load hello.dll --export Run --session <id> [input]` |
-| CLI (interactive) | `pe list`, `pe build <plugin> [output.dll]`, `pe <plugin> [export] [input]` |
-| MCP | `list_plugins`, `build_plugin`, `queue_pe_load(session_ref, plugin, export, input)` |
+| REST | `GET /api/v1/plugins` (runtime inventory), `POST /api/v1/sessions/{id}/pe` with `{"plugin":"hello.dll","export":"Run","input":"…"}` or `{"plugin":"hello.dll","command":"scan","input":"…"}` |
+| CLI | `rmm_cli.py pe list`, `rmm_cli.py pe load hello.dll --export Run --session <id> [input]`, or `--command scan` for plugin-owned dispatch |
+| CLI (interactive) | `pe list`, `pe <plugin> [export] [input]` |
+| MCP | `list_plugins`, `queue_pe_load(session_ref, plugin, export, input, command)` |
 | Web AI | Same tools via `rmm_tools.py` (`TOOL_HANDLERS` / `OPENAI_TOOLS`) |
-| Web UI | **Deploy plugins (Go)** panel (inventory + server-side build), shell verb `pe <plugin> [export] [input]` |
+| Web UI | Runtime plugin inventory through the API; shell verb `pe <plugin> [export] [input]` |
 
 Plugin output is returned through the normal `output` result event; poll
 `GET /api/v1/sessions/{id}/events` or the `events` CLI command.
+
+The Docker control plane keeps the delivery endpoint in the image, while the
+active plugin store is a persistent volume populated from the external plugin
+repository. See
+[`plugin-architecture.md`](plugin-architecture.md) for volume deployment and
+the plugin command boundary.
 
 Plugin lifecycle logging is server-side. The RMM server logs queueing,
 authenticated plugin delivery, command dispatch, and completion or failure with
@@ -175,28 +226,11 @@ history retains the operator queue and result events. The Go agent does not log
 plugin fetch, mapping, execution, or result details to its target-side log, and
 plugin input and output contents are not written to the lifecycle log.
 
-## Server-side builds
-
-The web UI and CLI compile **only checked-in plugin sources** from
-`agent-plugins/<name>/` (one directory per plugin, must contain `go.mod`):
-
-- `POST /api/v1/plugins/build` with `{"name":"<plugin>","output":"<name.dll>"}`
-  cross-compiles windows/amd64 with CGO (`-buildmode=c-shared`,
-  `-trimpath`, `-ldflags "-s -w"`) and writes the DLL directly into the
-  plugin directory, ready to serve. The output name is free — naming is an
-  operator choice.
-- The server requires the Go toolchain and a mingw-w64 cross compiler
-  (`x86_64-w64-mingw32-gcc` by default; override with `RMM_PLUGIN_CC`).
-  `GET /api/v1/plugins` reports `toolchain` availability and the buildable
-  `targets` so the UI can disable builds when the compiler is missing.
-- `RMM_PLUGIN_BUILD_TIMEOUT` (default 600 seconds) bounds each build;
-  Go build caches live under `RMM_logs/` so warm rebuilds are fast.
-- The build never compiles browser- or API-supplied code; adding a new
-  plugin means adding its source directory to the repository.
-
 ## Server plugin directory
 
-- Plugins are read from `RMM_logs/plugins/` (override with `RMM_PLUGINS_DIR`).
+- Plugins are read from the runtime plugin store (Docker uses `/app/plugins`;
+  local server mode defaults to `RMM_logs/plugins/`, overridden with
+  `RMM_PLUGINS_DIR`).
 - Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`; anything else is
   rejected by both the API and the serving path.
 - `GET /api/v1/plugins` returns name, size, and SHA-256 for every plugin.
@@ -215,7 +249,8 @@ New Go functions in `agent-go/`:
 | `loadPluginPE` | `pe_loader_windows.go` | Fetch, stage, run, and clean up a plugin child |
 | `loadPluginPEContext` | `pe_loader_windows.go` | Run a plugin child with caller-owned cancellation |
 | `runPluginChild` | `pe_loader_windows.go` | Load a DLL with the Windows loader and invoke its export |
-| `loadPluginCommand` | `main.go` | Parse the `__PE_LOAD__` operator command |
+| `loadPluginCommand` | `main.go` | Parse legacy export loads and plugin-owned command loads |
+| `pluginCommandEnvelope` | `main.go` | Wrap a plugin command and opaque input for the plugin `Run` export |
 | `pluginController` / `newPluginController` | `main.go` | Start and cancel one persistent SOCKS or TUN child independently |
 | `loadPluginPE` (stub) | `platform_other.go` | Non-Windows builds return an explicit error |
 
@@ -224,20 +259,15 @@ New Python functions:
 | Function | File | Role |
 |----------|------|------|
 | `plugin_directory` | `server_rmm.py` | Return (and create) the plugin directory |
-| `plugin_script_path` | `server_rmm.py` | Resolve checked-in PowerShell script plugins |
+| `plugin_script_path` | `server_rmm.py` | Resolve deployed PowerShell script plugins |
 | `list_plugin_files` | `server_rmm.py` | List plugins with size and SHA-256 |
 | `plugin_command_metadata` | `server_rmm.py` | Extract safe plugin identity for server-side lifecycle logs |
-| `plugin_build_targets` | `server_rmm.py` | List checked-in Go plugin directories |
-| `plugin_toolchain` | `server_rmm.py` | Report Go and mingw cross-compiler availability |
-| `build_plugin` | `server_rmm.py` | Cross-compile a checked-in plugin into the plugin directory |
 | `RMMHandler._serve_plugin_tool` | `server_rmm.py` | Beacon-authenticated plugin download |
 | `RmmApiClient.list_plugins` | `rmm_cli.py` | `GET /api/v1/plugins` |
 | `RmmApiClient.queue_pe_load` | `rmm_cli.py` | `POST /api/v1/sessions/{id}/pe` |
-| `RmmApiClient.build_plugin` | `rmm_cli.py` | `POST /api/v1/plugins/build` |
 | `RmmApiClient.start_tun` / `stop_tun` / `list_tun` | `rmm_cli.py` | TUN lifecycle REST methods; device ownership follows storage mode |
 | `tool_list_plugins` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
 | `tool_queue_pe_load` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
-| `tool_build_plugin` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
 | `tool_start_tun` / `tool_stop_tun` / `tool_list_tun` | `rmm_tools.py` | Shared TUN operator tools; device ownership follows storage mode |
 
 ## Security notes
@@ -251,9 +281,10 @@ New Python functions:
   logged or written to disk.
 - The plugin directory is operator-controlled server storage; treat its
   contents like any other operator tooling.
-- The API validates plugin names, export names, and input before queueing.
-- Server-side builds compile only repository plugin sources
-  (`agent-plugins/`); no browser- or API-supplied code is ever built.
+- The API validates plugin names, export names, plugin command names, and input
+  before queueing. It does not implement plugin-specific commands.
+- Agent plugin builds happen in the external plugin repository; the server
+  only inventories and serves deployed artifacts.
 - Only Windows amd64 Go agents map plugins; every other agent build returns
   an explicit unsupported error.
 
@@ -264,6 +295,7 @@ New Python functions:
 | `rclone-exfil` | rclone engine isolated in a plugin child process | `docs/agent-plugin-exfil.md` |
 | `screenshot` | Native GDI screenshot capture in a plugin child process | `docs/screenshot-plugin.md` |
 | `socks` | Persistent SOCKS5 pivot channel for Windows amd64 Go agents | this document |
+| `tun` | Persistent TUN TCP/UDP transport for Windows amd64 Go agents | this document |
 
 ## Shipped PowerShell script plugins
 

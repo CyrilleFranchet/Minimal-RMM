@@ -1,6 +1,10 @@
 # rclone exfil
 
-Operators queue exfil of a **remote file or folder on the agent** to cloud storage (MEGA, S3, …). Go agents can use the isolated `rclone-exfil` plugin child; PowerShell agents and explicit binary mode use the existing rclone executable path. The server holds the profiles and deployment artifacts; credentials are sent to the agent only inside an ephemeral job payload.
+See the [documentation wiki](README.md) and [architecture overview](architecture.md)
+for deployment boundaries. This page covers rclone configuration and operator
+flows.
+
+Operators queue exfil of a **remote file or folder on the agent** to cloud storage (MEGA, S3, …). Go agents can use the isolated `rclone-exfil` plugin child; PowerShell agents and explicit binary mode use the existing rclone executable path. Server mode loads profiles on the RMM server. Workspace mode loads profiles in the active operator workspace and sends only the selected job payload through the central broker.
 
 ## Execution modes
 
@@ -10,12 +14,35 @@ The REST, CLI, MCP, and Web AI surfaces accept `mode`:
 - `plugin`: require the isolated plugin child. The request fails if the agent does not advertise Go PE plugin support or the server has no `rclone-exfil*.dll` artifact.
 - `binary`: force the existing rclone executable path.
 
-The plugin artifact remains on the RMM server in the operator plugin directory. The binary fallback remains supported for PowerShell agents and compatibility testing.
+The plugin artifact remains in the central runtime plugin store. In Docker
+that is the persistent `/app/plugins` volume; the binary fallback remains
+supported for PowerShell agents and compatibility testing.
 
 Every successful queue response includes both `mode` (the requested mode)
 and `execution_mode` (the resolved method, `plugin` or `binary`). The server
 also records the resolved method in the session operator event. The CLI prints
 it, and the WebUI shows it under the queued exfil command.
+
+## Configuration ownership
+
+In server mode, configure profiles with `RMM_RCLONE_PROFILES` or
+`RMM_RCLONE_PROFILES_FILE` on the RMM server. In workspace mode, configure them
+inside each operator workspace:
+
+```bash
+export RMM_RCLONE_PROFILES_FILE="$PWD/tools/rclone/profiles.json"
+export RMM_RCLONE_DEFAULT_PROFILE=mega-lab
+export RMM_RCLONE_MAX_BYTES=0
+```
+
+The workspace service reads the profile, default destination folder, and size
+limit locally. It builds the selected plugin or binary payload and sends that
+payload to the central broker for the agent transport. The central server does
+not load the workspace profile file or persist the profile credentials. The
+central server still needs the `rclone-exfil.dll` plugin artifact for Go plugin
+jobs. Binary fallback additionally requires the Windows `rclone.exe` bootstrap
+artifact on the central server because the agent downloads it from the beacon
+endpoint.
 
 ## Flow
 
@@ -113,20 +140,25 @@ Then queue exfil again (new jobs pick up the updated limit). Check your cloud ba
 
 | Symptom | Likely cause |
 |---------|----------------|
-| `exceeds exfil limit` | Default **100 MB** cap — set `RMM_RCLONE_MAX_BYTES=0` or `--rclone-max-bytes 0` on the server |
+| `exceeds exfil limit` | Default **100 MB** cap — set `RMM_RCLONE_MAX_BYTES=0` in the active server or workspace deployment |
 | `rclone copyto failed (exit ?)` with stats JSON only | rclone exited before transfer; read the **error** line in the message (agent now parses JSON log `level=error`) |
 | `0 B / 0 B` in log tail | Often auth/config or remote path — verify MEGA credentials in profiles and folder name |
 | Large ISO (~6 GB+) | Raise server size cap **and** confirm cloud storage quota (MEGA free accounts may reject multi-GB files) |
 
 The web UI **Exfil** hint shows the current per-file cap from `GET /api/v1/rclone/config` (`max_bytes`).
 
-Start the server with profiles:
+Start the server with profiles in server mode:
 
 ```bash
 python server_rmm.py --rclone-profiles /path/to/profiles.json
 # or
 export RMM_RCLONE_PROFILES_FILE="/path/to/profiles.json"
 python server_rmm.py
+
+In workspace mode, set `RMM_RCLONE_PROFILES_FILE` in the workspace service
+environment instead and point the WebUI and CLI at that local service. The
+central workspace endpoint `/api/v1/rclone/config` intentionally does not
+return workspace profiles.
 ```
 
 Check status:
@@ -164,7 +196,8 @@ GET /api/v1/rclone/config
 - `rmm_cli.py exfil <remote_path> [--profile NAME] [--dest PATH]`
 - `rmm_cli.py rclone-config [--json]`
 - MCP: `queue_exfil` (`mode`: `auto`, `plugin`, or `binary`), `get_rclone_config`
-- Web UI: profile dropdown populated from `GET /rclone/config` (type + folder label)
+- Web UI: profile dropdown populated from the active deployment's
+  `GET /rclone/config` (type + folder label)
 
 ## Result event
 
@@ -221,8 +254,8 @@ When rclone JSON stats omit `totalBytes`, the agent falls back to the source fil
 
 | File | Role |
 |------|------|
-| `rmm_rclone.py` | Profiles, env builder, exfil payload |
-| `server_rmm.py` | `queue_agent_exfil`, `/tools/rclone.exe`, `cloud_upload` handler |
+| `rmm_rclone.py` | Profiles, env builder, and workspace/server exfil payloads |
+| `server_rmm.py` | `queue_agent_exfil`, `queue_workspace_exfil`, `/tools/rclone.exe`, `cloud_upload` handler |
 | `client_rmm.ps1` | Bootstrap, `Invoke-RmmRcloneExfil` |
 | `tools/rclone/` | Binary + example profiles |
 
@@ -234,5 +267,9 @@ When rclone JSON stats omit `totalBytes`, the agent falls back to the source fil
 | `get_profile(name)` | Resolve named profile |
 | `profile_to_rclone_env(profile)` | Build `RCLONE_CONFIG_RMM_*` dict |
 | `profile_to_plugin_settings(profile)` | Build plugin backend settings with rclone option names |
+| `get_rclone_default_profile()` | Read the active default profile name |
+| `build_plugin_exfil_job(...)` | Build an in-process Go plugin job from a local profile |
+| `build_exfil_payload(...)` | Build the legacy binary payload from a local profile |
 | `build_exfil_command(...)` | Full `__EXFIL__` command string |
+| `build_exfil_command_from_payload(...)` | Serialize a workspace-built binary payload |
 | `rclone_public_config()` | Operator-safe status dict |

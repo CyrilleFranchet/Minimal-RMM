@@ -1,5 +1,8 @@
 # Multi-operator workspace deployment
 
+See the [documentation wiki](README.md) and the [architecture overview](architecture.md)
+for the system-wide component map and storage boundaries.
+
 Minimal-RMM supports a central control plane with one local operator workspace
 per Exegol container. The central server still receives agent commands and
 results so it can route the beacon and enforce workspace ownership. The local
@@ -19,7 +22,9 @@ Dockerized RMM control plane
   ├── session registry and command queues
   ├── workspace claims
   ├── bounded per-workspace event queue
-  └── transport-only SOCKS/TUN bridges
+  ├── transport-only SOCKS/TUN bridges
+  ├── central runtime plugin cache
+  └── RMM-Profile process and beacon listener
         │ outbound HTTPS requests from each workspace
         ▼
 Exegol workspace service
@@ -50,8 +55,17 @@ In workspace mode the central server keeps only control-plane state:
 - active session metadata and workspace ownership in `RMM_logs/sessions.json`;
 - command queues and pivot transport state in memory;
 - a bounded transient event queue per workspace;
-- plugin and agent build artifacts in the configured server image or plugin
+- the persistent central plugin volume at `/app/plugins`, which contains
+  externally built agent plugin artifacts;
+- the persistent profile volume at `/app/profiles`, which contains trusted
+  RMM-Profile bundles and runs the selected external transport;
+- server build artifacts such as `rmm-tun` in the configured image or tools
   directory.
+
+Rclone profiles, default profile selection, and the exfiltration size limit are
+workspace configuration. They are not loaded from the central control-plane
+environment in workspace mode. The central process sees the selected job while
+it is queued for the agent transport.
 
 The central server skips durable writes for:
 
@@ -59,6 +73,12 @@ The central server skips durable writes for:
 - downloaded files, screenshots, and keylogs;
 - AI chat history;
 - ended-session history.
+
+URL-installed plugins, AI skills, and rclone files live in the workspace asset
+store under `RMM_WORKSPACE_DATA/assets`. Enabled plugin bytes are synchronized
+to the central runtime cache so the beacon listener can serve them. The
+workspace republishes this cache on startup and removes disabled or deleted
+plugin copies. See [operator-managed assets](operator-assets.md).
 
 The workspace service stores its data under `RMM_WORKSPACE_DATA`:
 
@@ -89,6 +109,13 @@ Central server variables:
 | `RMM_MAX_WORKSPACE_PAYLOAD_BYTES` | Maximum one transient event payload; defaults to `RMM_MAX_BODY_BYTES` |
 | `RMM_API_TOKEN` | Global operator or administrator token |
 | `RMM_BEACON_SECRET` | Agent beacon secret |
+| `RMM_ADMIN_PORT` | Central administration listener; default `8080` |
+| `RMM_BEACON_PORT` | Central beacon listener; default `8081` |
+| `RMM_PROFILES_DIR` | Trusted profile bundles; default `/app/profiles` in Compose |
+| `RMM_PROFILE_NAME` | Profile selected for automatic startup; default `cloudflared` |
+| `RMM_PROFILE_AUTOSTART` | Start the selected installed profile; default `1` |
+| `RMM_ASSET_MAX_BYTES` | URL asset download limit; default 64 MiB |
+| `RMM_ASSETS_DIR` | Server-mode asset store; default `RMM_logs/assets` |
 
 Workspace service variables:
 
@@ -104,6 +131,9 @@ Workspace service variables:
 | `RMM_WORKSPACE_TUN_HELPER` | Local `rmm-tun` path; default `tools/rmm-tun` |
 | `RMM_WORKSPACE_AUTO_CLAIM` | Claim every unassigned session when set to `1` |
 | `RMM_WORKSPACE_POLL_INTERVAL` | Session/event sync interval in seconds; default `1` |
+| `RMM_RCLONE_PROFILES_FILE` | Workspace-local JSON profile file |
+| `RMM_RCLONE_DEFAULT_PROFILE` | Workspace-local default profile; default `mega-lab` |
+| `RMM_RCLONE_MAX_BYTES` | Workspace-local size cap; `0` means unlimited |
 
 Use different workspace tokens for different operators. A workspace token is
 accepted only with both `X-RMM-Workspace` and `X-RMM-Workspace-Token` headers.
@@ -158,6 +188,11 @@ store. The existing WebUI uses its polling fallback in workspace mode because
 the local service intentionally does not proxy the central WebSocket byte
 stream.
 
+It also handles `/api/v1/assets/*` locally. This keeps URL-installed plugins,
+AI skills, and rclone files in the operator's workspace. `GET /api/v1/plugins`
+is proxied to the central server so the operator sees both seeded runtime
+artifacts and workspace-synchronized plugin copies.
+
 The local service exposes the same `/api/v1/` paths as the central server, so
 the existing `rmm_cli.py` works when `RMM_SERVER_URL` points at the local
 workspace service. Set `RMM_WORKSPACE_LOCAL_TOKEN` whenever the local bind is
@@ -171,6 +206,23 @@ direct `rmm_tools` client and the stdio `mcp_rmm_server.py` child. The child
 therefore lists and controls only sessions claimed by the current workspace.
 The provider API key remains in the browser request and is never written to the
 workspace database.
+
+### Rclone profile scope
+
+The workspace service serves `GET /api/v1/rclone/config` from its own
+`RMM_RCLONE_PROFILES_FILE`, `RMM_RCLONE_DEFAULT_PROFILE`, and
+`RMM_RCLONE_MAX_BYTES` settings. The central broker exposes only
+`GET /api/v1/rclone/capabilities`, which reports whether the Go plugin and the
+optional central binary bootstrap artifact are available. In workspace mode,
+the central `/api/v1/rclone/config` endpoint refuses to return profiles.
+
+When an operator queues exfiltration, the workspace builds the selected plugin
+or binary job from its local profile and sends that job through the
+authenticated central request. The central server queues it for the matching
+agent but does not load or persist the workspace profile file. Binary mode
+still requires `rclone.exe` on the central control plane because the agent
+downloads it from the beacon endpoint; Go agents should use the in-process
+plugin path when available.
 
 ## SOCKS and TUN placement
 
@@ -221,7 +273,7 @@ Copy `.env.example` to `.env`, replace every placeholder, and start the control
 plane:
 
 ```bash
-docker compose up --build rmm-control
+docker compose up --build -d rmm-control
 ```
 
 The control plane listens on the published port and has no TUN device or
@@ -229,8 +281,26 @@ network administration capability. To run the example workspace sidecar on a
 Linux Docker host:
 
 ```bash
-docker compose --profile workspace up --build
+docker compose --profile workspace up --build -d
 ```
+
+Create the profile file on the operator host before starting the workspace
+service:
+
+```bash
+cp tools/rclone/profiles.example.json tools/rclone/profiles.json
+$EDITOR tools/rclone/profiles.json
+```
+
+Compose mounts `tools/rclone/` into the workspace service at
+`/workspace/rclone/`. The central `rmm-control` service does not receive that
+mount or the workspace rclone environment variables.
+
+Install the trusted Cloudflared profile bundle in the control-plane
+`rmm-profile-store` volume and make the `cloudflared` executable available in
+the control-plane image. The profile forwards the public quick-tunnel URL to
+the central beacon port; the workspace WebUI uses the returned URL when
+generating agents.
 
 The example sidecar is a workspace service image. An existing Exegol
 container can run the same `workspace_service.py` directly instead:
@@ -240,6 +310,9 @@ RMM_C2_URL=http://rmm-control:8080 \
 RMM_WORKSPACE_ID=alice \
 RMM_WORKSPACE_TOKEN="$ALICE_WORKSPACE_TOKEN" \
 RMM_WORKSPACE_DATA=/workspace/.minimal-rmm \
+RMM_RCLONE_PROFILES_FILE=/workspace/Minimal-RMM/tools/rclone/profiles.json \
+RMM_RCLONE_DEFAULT_PROFILE=mega-lab \
+RMM_RCLONE_MAX_BYTES=0 \
 python3 workspace_service.py
 ```
 
@@ -248,9 +321,13 @@ Attach that Exegol container to the Compose network if it needs to resolve
 Linux Exegol host is required for a usable `/dev/net/tun`; container device
 behavior is not equivalent to a native Linux host.
 
-The Dockerfile builds the checked-in TUN helper and Windows amd64 pivot/plugin
-DLLs into the image. `run_server.py` remains the development wrapper that
-rebuilds the same artifacts before launching the server outside Docker.
+The Dockerfile builds only the checked-in TUN helper into the image. The
+control plane mounts `/app/plugins` from the persistent plugin volume; install
+the Windows amd64 pivot DLLs and PowerShell scripts from the external plugin
+repository before launching a pivot. `run_server.py` builds the same server
+helper outside Docker. New plugin commands stay in their plugin artifact and
+use the agent's generic isolated PE loader; the workspace service does not need
+a copy of the plugin code.
 
 ## Startup order and failure behavior
 
@@ -299,6 +376,10 @@ contract stays close to the code.
 | `WorkspaceStore.delete_history` / `clear_history` | Remove local ended sessions and artifacts |
 | `WorkspaceUpstream` | Add workspace headers and call central REST endpoints |
 | `WorkspaceService` | Coordinate HTTP, synchronization, persistence, and local pivots |
+| `WorkspaceService._rclone_config` | Combine local profile status with central execution capabilities |
+| `WorkspaceService._workspace_exfil_job` | Build a selected plugin or binary job from local settings |
+| `WorkspaceStore.asset_store` / `asset_list` | Persist URL-installed plugins, skills, and rclone files |
+| `WorkspaceService._sync_workspace_plugins` | Republish the workspace plugin cache to the central server |
 | `WorkspaceService.sync_once` | Claim optional sessions, sync metadata, and apply event envelopes |
 | `WorkspaceService._submit_pivot_tasks` / `_fetch_pivot_responses` | Exchange local data-plane batches with central |
 | `WorkspaceService.start` / `serve_forever` / `stop` | Manage the local service lifecycle |
@@ -325,6 +406,9 @@ relay disappeared and recreates listeners whose central relay is still active.
 `workspace_drain_responses`, and `workspace_publish_event` enforce ownership
 and connect the central registry to the local service. `RMMHandler` accepts
 workspace headers, scopes operator routes, and exposes the workspace endpoints.
+`RMMServer.queue_workspace_exfil` accepts only a job assembled by the owning
+workspace, while `GET /api/v1/rclone/capabilities` reports central plugin and
+binary availability without returning workspace profiles.
 `Session.workspace_id` is control-plane metadata and is persisted only in the
 central session registry.
 
@@ -410,6 +494,8 @@ including private helpers that enforce the local storage boundary.
 | WorkspaceService._local_authorized | Authenticate the optional local browser/CLI token |
 | WorkspaceService._proxy | Forward an API request to the central broker |
 | WorkspaceService._local_session | Resolve one active local session for a handler |
+| WorkspaceService._rclone_config | Combine local profiles with central plugin and binary capabilities |
+| WorkspaceService._workspace_exfil_job | Build the selected exfil job from workspace-local settings |
 | WorkspaceService.get_json | Serve local GET routes or return None for proxying |
 | WorkspaceService.post_json | Serve local pivot/AI POST routes or return None for proxying |
 | WorkspaceService.delete_json | Serve local history/AI DELETE routes or return None for proxying |

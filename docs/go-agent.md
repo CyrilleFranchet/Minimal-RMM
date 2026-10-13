@@ -1,5 +1,8 @@
 # Go agent
 
+See the [documentation wiki](README.md) and the [architecture overview](architecture.md)
+for the agent's place in the control plane and plugin boundaries.
+
 The repository includes a dependency-free Go agent in `agent-go/`. It uses the
 same HTTP beacon protocol as `client_rmm.ps1`, so the server does not need a
 second registration or command path.
@@ -51,15 +54,16 @@ protocol. On Windows it supports `cmd.exe`, `PS:`,
 The Go agent now implements chunked file transfer, HTTP proxy support, Windows
 screenshot capture, Windows keylogging, Windows startup/Run-key persistence,
 rclone exfiltration when `rclone` is already available on the target, and
-isolated PE plugin loading (`__PE_LOAD__`, see
+isolated PE plugin loading (`__PE_LOAD__` and plugin-owned
+`__PLUGIN_COMMAND__`, see
 `docs/go-agent-plugins.md`). SOCKS5 is a persistent pivot plugin on Windows
-amd64: the beacon observes `socks_active`, then starts the server-managed
-`socks.dll` plugin in a cancellable child process. Build that plugin with
-`POST /api/v1/plugins/build` and `{"name":"socks"}` before starting a pivot.
+amd64: the beacon observes `socks_active`, then starts the deployed `socks.dll`
+plugin in a cancellable child process. Build that plugin in the external plugin
+repository and install it in the runtime plugin store before starting a pivot.
 The RMM-owned TUN frontend is a separate persistent plugin: the beacon
 observes `tun_active`, then starts `tun.dll` in another cancellable child
-process. Build the required plugin with `POST /api/v1/plugins/build` and
-`{"name":"socks"}` or `{"name":"tun"}` before starting the corresponding
+process. Build the required plugin in the external plugin repository and
+install `socks.dll` or `tun.dll` before starting the corresponding
 pivot. The TUN device and user-space IP stack stay in the namespace selected by
 the storage mode; the Go agent opens ordinary target-side TCP and UDP sockets
 and does not need a TUN device or administrator privileges. See

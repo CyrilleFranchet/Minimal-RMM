@@ -18,6 +18,7 @@
   }
 
   function defaultServerUrl() {
+    if (window.rmmBeaconUrl) return window.rmmBeaconUrl.replace(/\/$/, "");
     try {
       return window.location.origin.replace(/\/$/, "");
     } catch {
@@ -413,12 +414,19 @@
     });
 
     $("#agent-use-origin")?.addEventListener("click", () => {
-      const url = defaultServerUrl();
+      const url = window.rmmBeaconUrl || defaultServerUrl();
       if (url && $("#agent-server-url")) {
         $("#agent-server-url").value = url;
         renderOutput();
       }
     });
+    window.refreshRmmTransport?.().then(() => {
+      const input = $("#agent-server-url");
+      if (input && !input.value.trim() && window.rmmBeaconUrl) {
+        input.value = window.rmmBeaconUrl;
+        renderOutput();
+      }
+    }).catch(() => {});
   }
 
   window.initAgentGenerator = bindAgentGenerator;
