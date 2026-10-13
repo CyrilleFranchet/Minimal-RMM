@@ -85,6 +85,7 @@ Removes **all** ended archived sessions (same filter as `GET /history`). Also pu
 
 - **Sessions** — live agents; hover a row to reveal **Beacon** (sleep/jitter dialog) and **Kill**. Updates via WebSocket `sessions` messages + 5 s poll fallback; beacon status recomputed client-side every 15 s.
 - **Session history** — archived sessions; click to view read-only transcript (shell input and tools hidden). Hover a row to reveal **Delete** (permanent disk removal, with confirmation). **Clear all** (header button) deletes every archived session.
+- **Archive cleanup** — deleting the selected archive clears the transcript and returns the main panel to the empty state. Closing the view or clearing all archives uses the same cleanup path; an in-flight archive load cannot restore a deleted transcript.
 - **Close console** — **×** top-right on the session panel closes the view (live or archived) without killing the agent; sidebar selection clears.
 - **Kill session** — hover **Kill** on a live session row (same pattern as archived **Delete**); closes the console if that session was selected and refreshes both lists.
 

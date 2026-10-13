@@ -142,10 +142,10 @@ When an operator queues `__DOWNLOAD__`, the agent uploads the file to the server
 
 Operators should manage exfil artifacts from the browser the same way they use the shell — without SSHing to the RMM host or digging in `RMM_logs/`.
 
-### Downloads browser — UX (target) (or a dedicated tab beside the shell):
+### Downloads browser — UX (global dialog):
 
 ```text
-┌─ Downloads (from agent) ───────────────────────────────┐
+┌─ Downloads (from all agents) ──────────────────────────┐
 │  Remote path              Size      Received    Actions │
 │  C:\Users\x\doc.pdf       1.2 MB    2m ago      [↓][👁] │
 │  C:\Temp\dump.zip         48 MB     1h ago      [↓]     │
@@ -203,10 +203,11 @@ Optional: `DELETE /api/v1/sessions/{id}/downloads/{artifact}` to remove server-s
 
 ### Downloads browser — web client
 
-- The main workspace exposes Shell, Files & Screenshots, Pivots, Downloads, and
-  Screenshots as tabs. The selected agent's Files & Screenshots tab remains
-  the control surface for queuing operations, while the last two tabs are
-  global artifact views.
+- The main workspace exposes Shell, Files & Screenshots, and Pivots as tabs.
+  The application header exposes global Downloads and Screenshots controls.
+  The selected agent's Files & Screenshots tab remains the control surface for
+  queuing operations, while the global controls show artifacts from every
+  agent.
 - Fetch `GET /api/v1/artifacts?kind=downloads` or
   `GET /api/v1/artifacts?kind=screenshots` and render the global table.
 - Reuse `artifactSrc()` for authenticated download/preview URLs.

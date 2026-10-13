@@ -4,10 +4,10 @@ See the [documentation wiki](README.md) and the
 [architecture overview](architecture.md) for system-wide placement and
 privilege boundaries.
 
-The WebUI exposes **Shell**, **Files & Screenshots**, **Pivots**, **Downloads**,
-and **Screenshots** as tabs in the main workspace. Files and pivots operate on
-the selected live session. Downloads and screenshots are global across all
-agents. Listener and device ownership follows the storage mode: the central
+The WebUI exposes **Shell**, **Files & Screenshots**, and **Pivots** as tabs in
+the main workspace. Files and pivots operate on the selected live session.
+**Downloads** and **Screenshots** remain global controls in the application
+header and list artifacts across all agents. Listener and device ownership follows the storage mode: the central
 server owns them in server mode, while the local workspace service owns them in
 workspace mode. See
 [`docs/tun-pivot.md`](tun-pivot.md) for TUN configuration and lifecycle.
@@ -59,8 +59,9 @@ The central or workspace relay keeps the SOCKS protocol and tunnel state,
 depending on storage mode. In workspace mode the central process retains only
 the transport bridge. The relay accepts fragmented TCP handshake reads,
 buffers remote bytes that arrive while the local client is receiving its
-success reply, caps large send batches at 32 chunks per poll, and retries close
-tasks until the agent acknowledges them.
+success reply, retains a remote-close marker until that success reply is sent,
+caps large send batches at 32 chunks per poll, and retries close tasks until the
+agent acknowledges them.
 The public SOCKS agent plugins bound target connect time to 20 seconds and
 retain response batches across transient HTTP POST failures.
 
@@ -87,9 +88,9 @@ from rclone exfiltration:
 
 ## Global downloads and screenshots
 
-The **Downloads** and **Screenshots** tabs are global views in the main
-workspace. They list artifacts from all agents in the current server or workspace. Each
-row shows the originating agent, a short session ID, whether that session is
+The **Downloads** and **Screenshots** header controls open a global dialog. It
+lists artifacts from all agents in the current server or workspace. Each row
+shows the originating agent, a short session ID, whether that session is
 active or archived, the artifact name or remote path, size, and received time.
 Rows provide authenticated download actions and previews for supported text and
 image files.
@@ -103,6 +104,7 @@ The existing per-session `GET /api/v1/sessions/{id}/downloads` endpoint remains
 available for automation and compatibility. Artifact files continue to use
 `GET /api/v1/artifacts/{kind}/{filename}`.
 
-The workspace tabs are controlled by `setWorkspaceTab()` in `web/app.js`.
-`setGlobalArtifactTab()` changes the Downloads or Screenshots collection while
+The agent workspace tabs are controlled by `setWorkspaceTab()` in `web/app.js`.
+`openGlobalArtifactsDialog()` opens the global artifact dialog, and
+`setGlobalArtifactTab()` switches its Downloads or Screenshots collection while
 the selected live session remains available in the sidebar.

@@ -174,8 +174,11 @@ def _check_artifact_contract(errors: list[str]) -> None:
     app = _read("web/app.js")
     html = _read("web/index.html")
     required_ids = {
-        "workspace-panel-artifacts",
-        "global-artifacts-title",
+        "open-downloads-dialog",
+        "open-screenshots-dialog",
+        "artifacts-dialog",
+        "artifact-tab-downloads",
+        "artifact-tab-screenshots",
         "global-artifacts-list",
         "global-artifacts-preview",
     }
@@ -184,13 +187,28 @@ def _check_artifact_contract(errors: list[str]) -> None:
         errors.append(f"WebUI global artifact controls missing from web/index.html: {missing_ids}")
     if "/artifacts?kind=" not in app:
         errors.append("WebUI global artifact inventory must call GET /api/v1/artifacts?kind=...")
-    if 'data-workspace-tab="downloads"' not in html or 'data-workspace-tab="screenshots"' not in html:
-        errors.append("WebUI workspace tabs must expose global Downloads and Screenshots views")
-    if 'id="artifacts-dialog"' in html or 'id="open-downloads-dialog"' in html:
-        errors.append("WebUI global artifacts must use the main workspace tabs")
-    for function_name in ("refreshGlobalArtifacts", "setWorkspaceTab", "renderGlobalArtifactsList"):
+    if 'data-workspace-tab="downloads"' in html or 'data-workspace-tab="screenshots"' in html:
+        errors.append("WebUI global Downloads and Screenshots must remain outside the workspace tab bar")
+    for function_name in ("refreshGlobalArtifacts", "openGlobalArtifactsDialog", "renderGlobalArtifactsList"):
         if not re.search(rf"function\s+{function_name}\s*\(", app):
             errors.append(f"WebUI artifact function missing from web/app.js: {function_name}")
+
+
+def _check_history_view_contract(errors: list[str]) -> None:
+    app = _read("web/app.js")
+    docs = _read("docs/session-history.md")
+    if not re.search(r"function\s+showEmptyConsole\s*\(", app):
+        errors.append("WebUI history cleanup must define showEmptyConsole")
+    if not re.search(
+        r"function\s+showEmptyConsole\s*\(\)\s*\{.*?shellOutputEl\(\)\.innerHTML\s*=\s*[\"']\s*[\"']",
+        app,
+        re.DOTALL,
+    ):
+        errors.append("showEmptyConsole must clear the shell transcript")
+    if "selectionGeneration" not in app:
+        errors.append("WebUI history selection must invalidate stale transcript loads")
+    if "deleting the selected archive clears the transcript" not in docs:
+        errors.append("docs/session-history.md must document selected archive cleanup")
 
 
 def main() -> int:
@@ -200,12 +218,13 @@ def main() -> int:
     _check_socks_contract(errors)
     _check_tun_contract(errors)
     _check_artifact_contract(errors)
+    _check_history_view_contract(errors)
     if errors:
         print("WebUI contract check FAILED:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("WebUI contract check OK: shell, configuration, pivot, and artifact controls")
+    print("WebUI contract check OK: shell, configuration, pivot, artifact, and history controls")
     return 0
 
 

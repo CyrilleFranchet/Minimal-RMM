@@ -36,6 +36,8 @@
       <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
       <button type="button" class="secondary" id="config-toggle-btn" title="Save or restore UI configuration">Config</button>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
+      <button type="button" class="secondary" id="open-downloads-dialog" title="Show downloads from all agents">Downloads</button>
+      <button type="button" class="secondary" id="open-screenshots-dialog" title="Show screenshots from all agents">Screenshots</button>
       <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
     </header>
 
@@ -216,12 +218,10 @@
             <p id="console-readonly-banner" class="console-readonly hidden">Archived session — read-only transcript</p>
           </div>
 
-          <div class="workspace-tabs" role="tablist" aria-label="Agent and workspace views">
+          <div class="workspace-tabs" role="tablist" aria-label="Agent workspace views">
             <button type="button" class="workspace-tab active" data-workspace-tab="shell" role="tab" aria-selected="true" aria-controls="workspace-panel-shell">Shell</button>
             <button type="button" class="workspace-tab" data-workspace-tab="files" role="tab" aria-selected="false" aria-controls="workspace-panel-files">Files &amp; Screenshots</button>
             <button type="button" class="workspace-tab" data-workspace-tab="pivots" role="tab" aria-selected="false" aria-controls="workspace-panel-pivots">Pivots</button>
-            <button type="button" class="workspace-tab" data-workspace-tab="downloads" role="tab" aria-selected="false" aria-controls="workspace-panel-artifacts">Downloads</button>
-            <button type="button" class="workspace-tab" data-workspace-tab="screenshots" role="tab" aria-selected="false" aria-controls="workspace-panel-artifacts">Screenshots</button>
           </div>
 
           <section id="workspace-panel-shell" class="workspace-tab-panel" data-workspace-panel="shell" role="tabpanel">
@@ -275,7 +275,7 @@
             <div class="file-row">
               <button type="button" id="btn-screenshot" class="secondary">Screenshot</button>
             </div>
-            <p class="tools-hint">Downloads and screenshots are available in the global tabs and include their originating agent.</p>
+            <p class="tools-hint">Downloads and screenshots are available from the global header controls and include their originating agent.</p>
           </section>
 
           <section id="workspace-panel-pivots" class="workspace-tab-panel hidden" data-workspace-panel="pivots" role="tabpanel">
@@ -354,17 +354,6 @@
                 <p class="downloads-empty">No active TUN relays.</p>
               </div>
             </section>
-          </section>
-
-          <section id="workspace-panel-artifacts" class="workspace-tab-panel hidden" data-workspace-panel="artifacts" role="tabpanel">
-            <div class="global-artifacts-header">
-              <h2 id="global-artifacts-title">Downloads from all agents</h2>
-              <p id="artifacts-scope-hint" class="tools-hint">Files returned by every agent in this server or workspace.</p>
-            </div>
-            <div id="global-artifacts-list" class="downloads-list">
-              <p class="downloads-empty">No artifacts received yet.</p>
-            </div>
-            <div id="global-artifacts-preview" class="downloads-preview hidden"></div>
           </section>
 
         </div>
@@ -497,6 +486,24 @@
         <button type="button" id="beacon-config-cancel" class="secondary">Cancel</button>
         <button type="submit" id="beacon-config-apply">Apply</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="artifacts-dialog" class="session-tools-dialog" aria-labelledby="artifacts-dialog-title">
+    <form method="dialog" class="session-tools-card">
+      <div class="session-tools-header">
+        <h2 id="artifacts-dialog-title">Downloads from all agents</h2>
+        <button type="submit" class="secondary" aria-label="Close artifacts dialog">×</button>
+      </div>
+      <div class="artifact-tabs" role="tablist" aria-label="Global artifacts">
+        <button type="button" class="artifact-tab active" id="artifact-tab-downloads" data-artifact-kind="downloads" role="tab" aria-selected="true">Downloads</button>
+        <button type="button" class="artifact-tab" id="artifact-tab-screenshots" data-artifact-kind="screenshots" role="tab" aria-selected="false">Screenshots</button>
+      </div>
+      <p id="artifacts-scope-hint" class="tools-hint">Files returned by every agent in this server or workspace.</p>
+      <div id="global-artifacts-list" class="downloads-list">
+        <p class="downloads-empty">No artifacts received yet.</p>
+      </div>
+      <div id="global-artifacts-preview" class="downloads-preview hidden"></div>
     </form>
   </dialog>
 

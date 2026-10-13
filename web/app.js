@@ -21,6 +21,8 @@ const state = {
   selectedHistoryId: null,
   viewMode: "live",
   workspaceTab: "shell",
+  /** Invalidates asynchronous transcript loads after the view is closed or changed. */
+  selectionGeneration: 0,
   lastEventId: 0,
   localEventSeq: 0,
   ws: null,
@@ -422,16 +424,19 @@ async function refreshGlobalArtifacts(kind = state.globalArtifactKind) {
 }
 
 function refreshGlobalArtifactsIfOpen(kind = state.globalArtifactKind) {
-  if (state.workspaceTab !== "downloads" && state.workspaceTab !== "screenshots") {
-    return Promise.resolve();
-  }
+  if (!$("#artifacts-dialog")?.open) return Promise.resolve();
   return refreshGlobalArtifacts(kind);
 }
 
 function setGlobalArtifactTab(kind) {
   const normalized = kind === "screenshots" ? "screenshots" : "downloads";
   state.globalArtifactKind = normalized;
-  const title = $("#global-artifacts-title");
+  document.querySelectorAll(".artifact-tab").forEach((button) => {
+    const active = button.dataset.artifactKind === normalized;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const title = $("#artifacts-dialog-title");
   if (title) title.textContent = normalized === "screenshots" ? "Screenshots from all agents" : "Downloads from all agents";
   const hint = $("#artifacts-scope-hint");
   if (hint) hint.textContent = normalized === "screenshots"
@@ -445,10 +450,20 @@ function setGlobalArtifactTab(kind) {
   }
 }
 
+function openGlobalArtifactsDialog(kind = "downloads") {
+  setGlobalArtifactTab(kind);
+  const dialog = $("#artifacts-dialog");
+  if (dialog?.showModal && !dialog.open) dialog.showModal();
+  refreshGlobalArtifacts(state.globalArtifactKind).catch(() => {});
+}
+
 function setWorkspaceTab(tab) {
-  const allowed = new Set(["shell", "files", "pivots", "downloads", "screenshots"]);
+  const allowed = new Set(["shell", "files", "pivots"]);
   const normalized = allowed.has(tab) ? tab : "shell";
   state.workspaceTab = normalized;
+  const hasSelection = Boolean(state.selectedId || state.selectedHistoryId);
+  const tabs = document.querySelector(".workspace-tabs");
+  if (tabs) tabs.classList.toggle("hidden", !hasSelection);
   const session = state.sessions.find((item) => item.id === state.selectedId);
   const filesLabel = $("#files-selected-session");
   if (filesLabel) {
@@ -462,10 +477,9 @@ function setWorkspaceTab(tab) {
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
   document.querySelectorAll(".workspace-tab-panel").forEach((panel) => {
-    const panelTab = normalized === "downloads" || normalized === "screenshots" ? "artifacts" : normalized;
-    panel.classList.toggle("hidden", panel.dataset.workspacePanel !== panelTab);
+    panel.classList.toggle("hidden", !hasSelection || panel.dataset.workspacePanel !== normalized);
   });
-  if (normalized === "downloads" || normalized === "screenshots" || state.selectedId || state.selectedHistoryId) {
+  if (state.selectedId || state.selectedHistoryId) {
     hide($("#empty-state"));
   } else {
     show($("#empty-state"));
@@ -479,9 +493,6 @@ function setWorkspaceTab(tab) {
     updateTunUi();
     refreshSocksRelays().catch(() => {});
     refreshTunRelays().catch(() => {});
-  } else if (normalized === "downloads" || normalized === "screenshots") {
-    setGlobalArtifactTab(normalized);
-    refreshGlobalArtifacts(normalized).catch(() => {});
   }
 }
 
@@ -1083,7 +1094,7 @@ async function deleteHistorySession(id) {
     appendShellError(data.error || data.detail || `Delete failed (${status})`);
     return;
   }
-  if (state.selectedHistoryId === id) {
+  if (state.viewMode === "history" && state.selectedHistoryId === id) {
     showEmptyConsole();
   }
   if (typeof window.clearAiChatMemory === "function") {
@@ -1095,6 +1106,7 @@ async function deleteHistorySession(id) {
 async function clearAllHistorySessions() {
   const rows = state.historySessions.filter((s) => !s.active);
   if (!rows.length) return;
+  const clearingSelectedArchive = state.viewMode === "history" && Boolean(state.selectedHistoryId);
   const n = rows.length;
   if (
     !confirm(
@@ -1117,14 +1129,15 @@ async function clearAllHistorySessions() {
     showEmptyConsole();
   }
   await fetchSessionHistory();
-  if (errors.length) {
+  if (errors.length && !clearingSelectedArchive) {
     appendShellError(`Cleared ${deleted} session(s); ${errors.length} failed`);
-  } else if (deleted > 0) {
+  } else if (deleted > 0 && !clearingSelectedArchive) {
     appendShellMeta(`Cleared ${deleted} archived session${deleted === 1 ? "" : "s"}`);
   }
 }
 
 async function selectHistorySession(id) {
+  const selectionGeneration = ++state.selectionGeneration;
   state.viewMode = "history";
   state.selectedHistoryId = id;
   state.selectedId = null;
@@ -1140,6 +1153,13 @@ async function selectHistorySession(id) {
   renderHistoryList();
 
   const { status, data } = await api(`/history/${encodeURIComponent(id)}`);
+  if (
+    selectionGeneration !== state.selectionGeneration ||
+    state.viewMode !== "history" ||
+    state.selectedHistoryId !== id
+  ) {
+    return;
+  }
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
     return;
@@ -1158,6 +1178,13 @@ async function selectHistorySession(id) {
   appendShellMeta(`Archived transcript — ${s.event_count || 0} events`);
 
   const evRes = await api(`/history/${encodeURIComponent(id)}/events?since=0&limit=500`);
+  if (
+    selectionGeneration !== state.selectionGeneration ||
+    state.viewMode !== "history" ||
+    state.selectedHistoryId !== id
+  ) {
+    return;
+  }
   if (evRes.status === 200) {
     const events = (evRes.data.events || []).sort((a, b) => (a.id || 0) - (b.id || 0));
     for (const ev of events) {
@@ -2474,6 +2501,7 @@ function renderSessionList() {
 }
 
 async function selectSession(id) {
+  const selectionGeneration = ++state.selectionGeneration;
   state.viewMode = "live";
   state.selectedHistoryId = null;
   setConsoleReadOnly(false);
@@ -2512,6 +2540,13 @@ async function selectSession(id) {
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(id)}/events?since=0&limit=500`
   );
+  if (
+    selectionGeneration !== state.selectionGeneration ||
+    state.viewMode !== "live" ||
+    state.selectedId !== id
+  ) {
+    return;
+  }
   if (status === 200) {
     const events = (data.events || []).sort((a, b) => (a.id || 0) - (b.id || 0));
     seedShellHistory(id, events);
@@ -2528,10 +2563,14 @@ async function selectSession(id) {
 }
 
 function showEmptyConsole() {
+  state.selectionGeneration += 1;
   stopEventPolling();
   state.selectedId = null;
   state.selectedHistoryId = null;
   state.viewMode = "live";
+  state.lastEventId = 0;
+  state.echoedCommands.clear();
+  state.pendingCommandBlocks = [];
   state.renderedEventIds.clear();
   if (typeof window.syncAiChatWithSession === "function") {
     window.syncAiChatWithSession(null);
@@ -2540,8 +2579,12 @@ function showEmptyConsole() {
   setWorkspaceTab("shell");
   show($("#empty-state"));
   hide($("#console-header"));
-  $("#shell-input").value = "";
-  $("#shell-input").disabled = true;
+  $("#console-title").textContent = "—";
+  $("#console-detail").textContent = "";
+  shellOutputEl().innerHTML = "";
+  const input = $("#shell-input");
+  input.value = "";
+  input.disabled = true;
   updateSocksUi();
   updateTunUi();
   renderSessionList();
@@ -3244,6 +3287,14 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
   $("#console-close")?.addEventListener("click", closeConsole);
+  $("#open-downloads-dialog")?.addEventListener("click", () => openGlobalArtifactsDialog("downloads"));
+  $("#open-screenshots-dialog")?.addEventListener("click", () => openGlobalArtifactsDialog("screenshots"));
+  document.querySelectorAll(".artifact-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      setGlobalArtifactTab(button.dataset.artifactKind || "downloads");
+      refreshGlobalArtifacts(state.globalArtifactKind).catch(() => {});
+    });
+  });
   document.querySelectorAll(".workspace-tab").forEach((button) => {
     button.addEventListener("click", () => {
       setWorkspaceTab(button.dataset.workspaceTab || "shell");

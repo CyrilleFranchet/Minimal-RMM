@@ -11,12 +11,12 @@ implementation log.
 
 ### 2026-10-13 — Unified workspace tabs
 
-- Moved Shell, Files & Screenshots, Pivots, Downloads, and Screenshots into one
-  main workspace tab bar. Files and pivot operations remain scoped to the
-  selected live agent; Downloads and Screenshots remain global across agents.
-- Removed the modal agent-tools and artifact dialogs so operators can move
-  between the live session and global artifact views without leaving the main
-  workspace.
+- Moved Shell, Files & Screenshots, and Pivots into one main agent workspace
+  tab bar. Files and pivot operations remain scoped to the selected live agent.
+- Kept Downloads and Screenshots as global application-header controls backed by
+  the shared artifact dialog, so each view continues to cover every agent.
+- Kept the agent workspace focused on session-scoped operations while the global
+  artifact dialog remains available without changing the selected session.
 - Updated the WebUI contract checks and operator documentation.
 
 ### 2026-10-13 — TUN TCP scan false-positive fix
@@ -35,9 +35,9 @@ implementation log.
 - Removed the SOCKS/TUN lifecycle coupling in the central server and workspace
   pivot manager. Each relay keeps its own transport manager and the Go agent
   keeps one controller per plugin, so both channels can run for one session.
-- Replaced the separate Files, Downloads, and Pivots dialogs with a main
-  workspace tab bar containing Files & Screenshots, Pivots, Downloads, and
-  Screenshots views.
+- Replaced the separate Files and Pivots dialogs with a main workspace tab bar
+  containing Files & Screenshots and Pivots views. Downloads and Screenshots
+  remain global application-header controls.
 - Added `GET /api/v1/artifacts?kind=downloads|screenshots`, including agent
   identity, session status, artifact metadata, and authenticated artifact URLs
   for server and workspace storage modes.
