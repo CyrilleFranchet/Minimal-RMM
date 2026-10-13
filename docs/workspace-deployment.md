@@ -116,6 +116,7 @@ Central server variables:
 | `RMM_PROFILE_AUTOSTART` | Start the selected installed profile; default `1` |
 | `RMM_ASSET_MAX_BYTES` | URL asset download limit; default 64 MiB |
 | `RMM_ASSETS_DIR` | Server-mode asset store; default `RMM_logs/assets` |
+| `RMM_UI_STATE_DB` | Server-mode WebUI state database; default `RMM_logs/ui-state.db` |
 
 Workspace service variables:
 
@@ -195,8 +196,10 @@ artifacts and workspace-synchronized plugin copies.
 
 The local service exposes the same `/api/v1/` paths as the central server, so
 the existing `rmm_cli.py` works when `RMM_SERVER_URL` points at the local
-workspace service. Set `RMM_WORKSPACE_LOCAL_TOKEN` whenever the local bind is
-exposed beyond loopback; the Compose example requires it.
+workspace service. It stores WebUI configuration in the `ui_state` table in
+`RMM_WORKSPACE_DATA/workspace.db`, including AI preferences and the local
+configuration cache. Set `RMM_WORKSPACE_LOCAL_TOKEN` whenever the local bind
+is exposed beyond loopback; the Compose example requires it.
 
 ### AI tool scope
 
@@ -204,8 +207,9 @@ The local AI request is proxied to the central `/api/v1/ai/chat` endpoint with
 the workspace headers. The central handler passes those headers to both the
 direct `rmm_tools` client and the stdio `mcp_rmm_server.py` child. The child
 therefore lists and controls only sessions claimed by the current workspace.
-The provider API key remains in the browser request and is never written to the
-workspace database.
+The provider API key is stored in the workspace's owner-controlled SQLite UI
+state after validation and is sent only to the selected provider request. Keep
+the workspace data directory private.
 
 ### Rclone profile scope
 
@@ -371,7 +375,7 @@ contract stays close to the code.
 | `WorkspaceStore.sync_sessions` | Upsert active session metadata and archive missing rows locally |
 | `WorkspaceStore.apply_event` | Store a transcript event and materialize its artifact payload |
 | `WorkspaceStore.get_events` / `list_history` | Serve live and archived local transcripts |
-| `WorkspaceStore.list_downloads` / `artifact_path` | Serve local artifact inventory and bytes |
+| `WorkspaceStore.list_downloads` / `list_artifacts` / `artifact_path` | Serve per-session and global artifact inventory plus bytes |
 | `WorkspaceStore.get_ai_chat` / `save_ai_chat` / `clear_ai_chat` | Keep AI history in the workspace database |
 | `WorkspaceStore.delete_history` / `clear_history` | Remove local ended sessions and artifacts |
 | `WorkspaceUpstream` | Add workspace headers and call central REST endpoints |

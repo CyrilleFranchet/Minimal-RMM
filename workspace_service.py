@@ -37,7 +37,8 @@ from rmm_rclone import (
     rclone_public_config,
 )
 from rmm_ai_skills import _load_all_skills_full, list_ai_skills
-from rmm_asset_store import AssetError, AssetStore
+from rmm_asset_store import AssetError, AssetStore, decode_asset_content
+from rmm_ui_state import UiStateError, normalize_ui_state
 from workspace_pivot import WorkspacePivotManager
 
 
@@ -117,6 +118,34 @@ class WorkspaceStore:
         """List operator-managed assets stored in this workspace."""
         return self.assets.list(kind)
 
+    def get_ui_state(self) -> dict[str, dict[str, str]] | None:
+        """Load the persisted workspace WebUI state from the local database."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT payload FROM ui_state WHERE namespace='workspace'"
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise UiStateError("stored UI state is invalid") from exc
+        return normalize_ui_state(payload)
+
+    def set_ui_state(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Normalize and persist workspace WebUI state in SQLite."""
+        normalized = normalize_ui_state(payload)
+        encoded = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        updated_at = datetime.now().isoformat(timespec="seconds")
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO ui_state(namespace,payload,updated_at) VALUES('workspace',?,?) "
+                "ON CONFLICT(namespace) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+                (encoded, updated_at),
+            )
+            self._db.commit()
+        return {"state": normalized, "updated_at": updated_at}
+
     def rclone_profiles(self) -> dict[str, dict]:
         """Load enabled workspace rclone profile files, falling back to legacy config."""
         profiles: dict[str, dict] = {}
@@ -184,6 +213,11 @@ class WorkspaceStore:
                 CREATE TABLE IF NOT EXISTS metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS ui_state (
+                    namespace TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
@@ -524,6 +558,71 @@ class WorkspaceStore:
             }
             for row in rows
         ]
+
+    def list_artifacts(self, kind: str) -> list[dict[str, Any]]:
+        """List workspace downloads or screenshots with their agent identity."""
+        if kind not in {"downloads", "screenshots"}:
+            raise ValueError("artifact kind must be downloads or screenshots")
+
+        with self._lock:
+            session_rows = self._db.execute(
+                "SELECT session_id,payload,active FROM sessions"
+            ).fetchall()
+            download_rows = self._db.execute(
+                "SELECT artifact,remote_path,received_at FROM downloads"
+            ).fetchall()
+        sessions: dict[str, dict[str, Any]] = {}
+        for row in session_rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            payload.update({"session_id": row["session_id"], "active": bool(row["active"])})
+            sessions[_session_prefix(row["session_id"])] = payload
+        downloads = {row["artifact"]: row for row in download_rows}
+
+        directory = self.download_dir if kind == "downloads" else self.screenshot_dir
+        try:
+            paths = sorted(
+                path for path in directory.iterdir()
+                if path.is_file() and not path.name.endswith(".part")
+            )
+        except OSError:
+            return []
+        rows: list[dict[str, Any]] = []
+        for path in paths:
+            prefix = path.name.split("_", 1)[0]
+            session = sessions.get(prefix, {})
+            indexed = downloads.get(path.name) if kind == "downloads" else None
+            try:
+                stat = path.stat()
+                size = stat.st_size
+                received_at = datetime.fromtimestamp(stat.st_mtime).isoformat()
+            except OSError:
+                size = 0
+                received_at = datetime.now().isoformat()
+            session_id = str(session.get("session_id") or "") or None
+            hostname = str(session.get("hostname") or "?")
+            username = str(session.get("username") or "?")
+            rows.append(
+                {
+                    "kind": kind,
+                    "artifact": path.name,
+                    "remote_path": str(indexed["remote_path"] or "") if indexed else "",
+                    "size": size,
+                    "received_at": str(indexed["received_at"] or received_at) if indexed else received_at,
+                    "artifact_url": f"/api/v1/artifacts/{kind}/{urllib.parse.quote(path.name)}",
+                    "session_id": session_id,
+                    "hostname": hostname,
+                    "username": username,
+                    "agent_label": f"{username}@{hostname}",
+                    "active": bool(session.get("active", False)),
+                }
+            )
+        rows.sort(key=lambda row: row.get("received_at") or "", reverse=True)
+        return rows
 
     def artifact_path(self, kind: str, filename: str) -> Path | None:
         """Resolve a local artifact path for the authenticated workspace API."""
@@ -984,6 +1083,21 @@ class WorkspaceService:
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
         if path == "/api/v1/health":
             return 200, {"status": "ok", "sessions": len(self.store.list_sessions()), "workspace_id": self.workspace_id}, "application/json"
+        if parts == ["ui", "config"]:
+            try:
+                config = self.store.get_ui_state()
+            except UiStateError as exc:
+                return 500, {"error": "ui_state_invalid", "detail": str(exc)}, "application/json"
+            return (
+                200,
+                {
+                    "config": config or {},
+                    "exists": config is not None,
+                    "storage": "sqlite",
+                    "scope": "workspace",
+                },
+                "application/json",
+            )
         if parts == ["sessions"]:
             return 200, {"sessions": self.store.list_sessions()}, "application/json"
         if len(parts) == 2 and parts[0] == "sessions":
@@ -1045,6 +1159,13 @@ class WorkspaceService:
         if len(parts) == 4 and parts[0] == "sessions" and parts[2:4] == ["ai", "chat"]:
             sid, messages = self.store.get_ai_chat(parts[1])
             return (200, {"session_id": sid, "messages": messages or [], "count": len(messages or [])}, "application/json") if sid else (404, {"error": "session_not_found"}, "application/json")
+        if parts == ["artifacts"]:
+            kind = (qs.get("kind", ["downloads"])[0] or "downloads").strip().lower()
+            try:
+                artifacts = self.store.list_artifacts(kind)
+            except ValueError as exc:
+                return 400, {"error": "invalid_artifact_kind", "detail": str(exc)}, "application/json"
+            return 200, {"kind": kind, "count": len(artifacts), "artifacts": artifacts, "workspace_local": True}, "application/json"
         if len(parts) == 3 and parts[0] == "artifacts":
             path_obj = self.store.artifact_path(parts[1], parts[2])
             if not path_obj:
@@ -1069,16 +1190,29 @@ class WorkspaceService:
         elif parts == ["rclone", "profiles"]:
             asset_kind = "rclone"
         if asset_kind:
-            url = str(body.get("url") or "").strip()
-            if not url:
-                return 400, {"error": "missing_url"}, "application/json"
             try:
-                row = self.store.asset_store.add_url(
-                    asset_kind,
-                    url,
-                    name=str(body.get("name") or "").strip(),
-                    enabled=bool(body.get("enabled", True)),
-                )
+                name = str(body.get("name") or "").strip()
+                content_b64 = body.get("content_b64")
+                if content_b64 is not None:
+                    content = decode_asset_content(content_b64, max_bytes=MAX_LOCAL_BODY)
+                    if not name:
+                        raise AssetError("uploaded asset name is required")
+                    row = self.store.asset_store.add_bytes(
+                        asset_kind,
+                        name,
+                        content,
+                        enabled=bool(body.get("enabled", True)),
+                    )
+                else:
+                    url = str(body.get("url") or "").strip()
+                    if not url:
+                        return 400, {"error": "missing_url_or_content"}, "application/json"
+                    row = self.store.asset_store.add_url(
+                        asset_kind,
+                        url,
+                        name=name,
+                        enabled=bool(body.get("enabled", True)),
+                    )
             except AssetError as exc:
                 return 400, {"error": str(exc)}, "application/json"
             if asset_kind == "plugins" and not self._sync_plugin_asset(row):
@@ -1180,6 +1314,22 @@ class WorkspaceService:
     def patch_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local asset enablement updates or return ``None`` for proxying."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts == ["ui", "config"]:
+            try:
+                result = self.store.set_ui_state(body.get("config", body))
+            except UiStateError as exc:
+                return 400, {"error": "invalid_ui_state", "detail": str(exc)}, "application/json"
+            return (
+                200,
+                {
+                    "ok": True,
+                    "config": result["state"],
+                    "updated_at": result["updated_at"],
+                    "storage": "sqlite",
+                    "scope": "workspace",
+                },
+                "application/json",
+            )
         if len(parts) == 3 and parts[0] == "assets":
             kind, name = parts[1], urllib.parse.unquote(parts[2])
         elif len(parts) == 2 and parts[0] in {"plugins", "rclone", "skills"}:

@@ -18,7 +18,8 @@ A hint line under the input shows the top completion match or match count.
 
 1. Commands echoed in the console (`appendShellEcho`) — includes tool actions like `download …`
 2. Events reloaded from `GET /api/v1/sessions/{id}/events` — operator `queued:` lines and `output` events with `command`
-3. `sessionStorage` key `rmm_shell_history` — last 100 commands per session id (survives page refresh)
+3. SQLite UI state key `rmm_shell_history` — last 100 commands per session id;
+   browser storage remains a short-lived cache.
 
 ## Tab completion sources
 

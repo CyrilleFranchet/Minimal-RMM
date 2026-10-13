@@ -361,6 +361,14 @@ class RmmApiClient:
     def list_session_downloads(self, session_ref: str):
         return self.request("GET", f"/api/v1/sessions/{session_ref}/downloads")
 
+    def list_artifacts(self, kind: str = "downloads"):
+        """List global downloads or screenshots with agent metadata."""
+        normalized = str(kind or "downloads").strip().lower()
+        if normalized not in {"downloads", "screenshots"}:
+            raise ValueError("artifact kind must be downloads or screenshots")
+        query = urllib.parse.urlencode({"kind": normalized})
+        return self.request("GET", f"/api/v1/artifacts?{query}")
+
     def get_agent_script(self):
         return self.request("GET", "/api/v1/agent/script")
 

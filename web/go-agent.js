@@ -38,6 +38,7 @@
   function savePrefs() {
     try {
       sessionStorage.setItem(PREFS_KEY, JSON.stringify(readForm()));
+      window.persistRmmUiConfig?.();
     } catch {
       /* quota */
     }

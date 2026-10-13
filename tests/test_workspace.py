@@ -134,6 +134,9 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertEqual(artifact_path.read_bytes(), b"hello workspace")
         downloads = self.store.list_downloads(self.session_id)
         self.assertEqual(downloads[0]["remote_path"], "C:/Temp/report.txt")
+        global_downloads = self.store.list_artifacts("downloads")
+        self.assertEqual(global_downloads[0]["agent_label"], "user@target")
+        self.assertEqual(global_downloads[0]["session_id"], self.session_id)
 
     def test_screenshot_keylog_events_and_ai_chat_stay_local(self):
         screenshot = self.store.apply_event(
@@ -165,6 +168,9 @@ class WorkspaceStoreTests(unittest.TestCase):
             self.store.artifact_path("screenshots", screenshot["artifact"]).read_bytes(),
             b"png-bytes",
         )
+        global_screenshots = self.store.list_artifacts("screenshots")
+        self.assertEqual(global_screenshots[0]["agent_label"], "user@target")
+        self.assertEqual(global_screenshots[0]["session_id"], self.session_id)
         self.assertEqual(
             self.store.artifact_path("keylogs", keylog["artifact"]).read_text(),
             "operator input",

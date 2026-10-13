@@ -64,6 +64,7 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `GET /socks`, `POST …/socks` | `list_socks`, `start_socks`, `stop_socks` | |
 | `GET /tun`, `POST …/tun` | `list_tun`, `start_tun`, `stop_tun` | TUN device ownership follows storage mode; traffic exits through the Go agent's authenticated TUN transport; `routes[]` supports multiple CIDRs |
 | `GET …/downloads` | `list_session_downloads` | Completed agent→server files |
+| `GET /artifacts?kind=downloads\|screenshots` | `list_artifacts` | Global artifact inventory with agent identity and session status |
 | `GET /history` | `list_history` | Archived sessions |
 | `GET /history/{id}` | `get_history_session` | |
 | `GET /history/{id}/events` | `get_history_events` | |
@@ -81,7 +82,7 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `POST /api/v1/ai/chat` | Uses MCP internally; not an operator action |
 | WebSocket `/api/v1/ws` | Push transport; use `get_events` / poll |
 | `exfil_progress`, `download_progress` | Ephemeral WS events; not in REST history |
-| `GET /artifacts/…` binary download | Use `artifact_url` from `list_session_downloads` or `get_events`; fetch with bearer token outside MCP if needed |
+| `GET /artifacts/…` binary download | Use `artifact_url` from `list_session_downloads`, `list_artifacts`, or `get_events`; fetch with bearer token outside MCP if needed |
 | Web UI file-picker upload | Browser-only; MCP uses `queue_upload` with local path |
 
 ## Files

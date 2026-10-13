@@ -72,9 +72,12 @@ Add optional JSON field:
 
 ## Web UI
 
-AI panel → **Skills** → checkboxes. Selection is stored in `sessionStorage` (`rmm_ai_skills_enabled`) for the browser tab.
+AI panel → **Skills** → checkboxes. Selection is synchronized to the
+server/workspace SQLite UI state (`rmm_ai_skills_enabled`) after connection.
 
-On connect, the UI calls `GET /api/v1/ai/skills` and renders the list.
+On connect, the UI calls `GET /api/v1/ai/skills` and renders the list. The
+Skills section is open by default so the shipped skills are visible without
+another click. Default and always-enabled skills are marked in the list.
 
 ## Shipped skills
 
@@ -104,7 +107,7 @@ The agent default shell is **cmd.exe**. Lines sent as `powershell -Command "scri
 1. Create `ai-skills/your-skill-id.md` for a built-in skill, or install a
    Markdown URL asset for one workspace.
 2. Set frontmatter (`default: true` if it should be on for new operators).
-3. Enable or disable the skill from **Config → Runtime assets and beacon
-   transport**.
+3. Enable or disable the skill from **AI → Skills** or **Config → Runtime
+   assets and beacon transport**.
 4. Reload the web UI (or reconnect). Files are read on each chat and skills
    request; no server restart is required.

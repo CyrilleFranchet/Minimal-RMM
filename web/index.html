@@ -36,6 +36,8 @@
       <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
       <button type="button" class="secondary" id="config-toggle-btn" title="Save or restore UI configuration">Config</button>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
+      <button type="button" class="secondary" id="open-downloads-dialog" title="Show downloads from all agents">Downloads</button>
+      <button type="button" class="secondary" id="open-screenshots-dialog" title="Show screenshots from all agents">Screenshots</button>
       <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
     </header>
 
@@ -209,8 +211,7 @@
             <div class="console-header-row">
               <h2 id="console-title">—</h2>
               <div class="console-header-actions">
-                <button type="button" class="secondary" id="open-files-dialog">Files &amp; screenshot</button>
-                <button type="button" class="secondary" id="open-downloads-dialog">Downloads</button>
+                <button type="button" class="secondary" id="open-files-dialog">Files &amp; Screenshots</button>
                 <button type="button" class="secondary" id="open-socks-dialog">Pivots</button>
                 <button type="button" class="secondary console-close" id="console-close" title="Close session view" aria-label="Close session view">×</button>
               </div>
@@ -253,7 +254,7 @@
         <div class="ai-settings-scroll">
           <details class="ai-settings" open>
             <summary>AI provider settings</summary>
-            <p class="ai-hint">Keys stay in this browser tab. Test each key to enable its provider and load the models available to that key.</p>
+            <p class="ai-hint">Keys are stored in the authenticated server or workspace SQLite state. Test each key to enable its provider and load the models available to that key.</p>
             <div class="ai-provider-config" data-provider="openai">
               <label for="openai-key-input">OpenAI API key</label>
               <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off">
@@ -279,9 +280,9 @@
             <input type="text" id="ai-model-custom" class="hidden" placeholder="Custom model ID" autocomplete="off" spellcheck="false">
             <p class="ai-hint">Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
           </details>
-          <details class="ai-settings">
+          <details class="ai-settings" open>
             <summary>Skills</summary>
-            <p class="ai-hint">Markdown files in the server <code>ai-skills/</code> directory (override with <code>RMM_AI_SKILLS_DIR</code>). Checked skills are injected into the system prompt.</p>
+            <p class="ai-hint">Built-in defaults and uploaded Markdown skills are listed here. Checked skills are injected into the system prompt.</p>
             <div id="ai-skills-list" class="ai-skills-list">
               <p class="ai-skills-empty">Connect to load skills.</p>
             </div>
@@ -328,7 +329,7 @@
       <p id="ui-config-status" class="ui-config-status" role="status" aria-live="polite"></p>
       <details class="asset-manager" open>
         <summary>Runtime assets and beacon transport</summary>
-        <p class="ai-hint">Install a plugin, AI skill, or rclone profile file from an HTTP(S) URL. Assets are stored in the current operator workspace when workspace mode is enabled.</p>
+        <p class="ai-hint">Install plugins and AI skills from an HTTP(S) URL or a local file. Upload an rclone <code>.json</code> profile file directly; it is stored in the current operator workspace or server.</p>
         <div class="asset-form-row">
           <select id="asset-kind" aria-label="Asset kind">
             <option value="plugins">Agent plugin</option>
@@ -338,6 +339,8 @@
           <input type="url" id="asset-url" placeholder="https://example.invalid/release.dll" autocomplete="off">
           <input type="text" id="asset-name" placeholder="Optional filename" autocomplete="off">
           <button type="button" id="asset-add">Install URL</button>
+          <button type="button" class="secondary" id="asset-upload">Upload file</button>
+          <input type="file" id="asset-file" accept=".dll,.ps1" class="hidden">
         </div>
         <p id="asset-status" class="ui-config-status" role="status" aria-live="polite"></p>
         <div id="asset-list" class="asset-list"><p class="ai-hint">Connect to load managed assets.</p></div>
@@ -370,134 +373,144 @@
     </form>
   </dialog>
 
-  <dialog id="files-dialog" class="session-tools-dialog" aria-labelledby="files-dialog-title">
+  <dialog id="agent-tools-dialog" class="session-tools-dialog" aria-labelledby="agent-tools-dialog-title">
     <form method="dialog" class="session-tools-card">
       <div class="session-tools-header">
-        <h2 id="files-dialog-title">Files &amp; screenshot</h2>
-        <button type="submit" class="secondary" aria-label="Close files and screenshot dialog">×</button>
+        <h2 id="agent-tools-dialog-title">Agent tools</h2>
+        <button type="submit" class="secondary" aria-label="Close agent tools dialog">×</button>
       </div>
-      <div class="file-row">
-        <input type="text" id="download-remote" placeholder="Remote path to download">
-        <button type="button" id="btn-download" class="secondary">Download</button>
+      <div class="agent-tools-tabs" role="tablist" aria-label="Agent tools">
+        <button type="button" class="agent-tools-tab active" id="agent-tools-tab-files" data-agent-tools-tab="files" role="tab" aria-selected="true" aria-controls="agent-tools-panel-files">Files &amp; Screenshots</button>
+        <button type="button" class="agent-tools-tab" id="agent-tools-tab-pivots" data-agent-tools-tab="pivots" role="tab" aria-selected="false" aria-controls="agent-tools-panel-pivots">Pivots</button>
       </div>
-      <div class="file-row exfil-row">
-        <input type="text" id="exfil-remote" placeholder="Remote file or folder path">
-        <label class="exfil-profile-label" for="exfil-profile">Profile</label>
-        <select id="exfil-profile" title="rclone profile on server" disabled>
-          <option value="">Loading…</option>
-        </select>
-        <label class="exfil-profile-label" for="exfil-mode">Mode</label>
-        <select id="exfil-mode" title="Exfil execution mode">
-          <option value="auto" selected>Auto</option>
-          <option value="plugin">Go plugin</option>
-          <option value="binary">rclone binary</option>
-        </select>
-        <button type="button" id="btn-exfil" class="secondary" disabled>Exfil (rclone)</button>
-      </div>
-      <p class="tools-hint" id="exfil-status-hint">rclone: checking server configuration…</p>
-      <div class="file-row">
-        <input type="file" id="upload-file">
-        <input type="text" id="upload-remote" placeholder="Remote destination path">
-        <button type="button" id="btn-upload" class="secondary">Upload</button>
-      </div>
-      <div class="file-row">
-        <button type="button" id="btn-screenshot" class="secondary">Screenshot</button>
-      </div>
-    </form>
-  </dialog>
 
-  <dialog id="downloads-dialog" class="session-tools-dialog" aria-labelledby="downloads-dialog-title">
-    <form method="dialog" class="session-tools-card">
-      <div class="session-tools-header">
-        <h2 id="downloads-dialog-title">Downloads from agent</h2>
-        <button type="submit" class="secondary" aria-label="Close downloads dialog">×</button>
-      </div>
-      <div id="downloads-list" class="downloads-list">
-        <p class="downloads-empty">No files downloaded yet.</p>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="socks-dialog" class="session-tools-dialog" aria-labelledby="socks-dialog-title">
-    <form method="dialog" class="session-tools-card">
-      <div class="session-tools-header">
-        <h2 id="socks-dialog-title">Pivots</h2>
-        <button type="submit" class="secondary" aria-label="Close pivots dialog">×</button>
-      </div>
-      <p id="socks-selected-session" class="socks-selected-session"></p>
-      <div class="socks-config-grid">
-        <div>
-          <label for="socks-port">Listener port</label>
-          <input type="number" id="socks-port" min="1" max="65535" value="1080">
+      <section id="agent-tools-panel-files" class="agent-tools-panel" role="tabpanel" aria-labelledby="agent-tools-tab-files">
+        <p id="files-selected-session" class="socks-selected-session"></p>
+        <div class="file-row">
+          <input type="text" id="download-remote" placeholder="Remote path to download">
+          <button type="button" id="btn-download" class="secondary">Download</button>
         </div>
-        <div>
-          <label for="socks-bind-host">Bind host</label>
-          <input type="text" id="socks-bind-host" value="127.0.0.1" autocomplete="off" spellcheck="false">
+        <div class="file-row exfil-row">
+          <input type="text" id="exfil-remote" placeholder="Remote file or folder path">
+          <label class="exfil-profile-label" for="exfil-profile">Profile</label>
+          <select id="exfil-profile" title="rclone profile on server" disabled>
+            <option value="">Loading…</option>
+          </select>
+          <label class="exfil-profile-label" for="exfil-mode">Mode</label>
+          <select id="exfil-mode" title="Exfil execution mode">
+            <option value="auto" selected>Auto</option>
+            <option value="plugin">Go plugin</option>
+            <option value="binary">rclone binary</option>
+          </select>
+          <button type="button" id="btn-exfil" class="secondary" disabled>Exfil (rclone)</button>
         </div>
-      </div>
-      <p class="socks-protocol" role="note">
-        <span class="socks-protocol-label">Proxy protocol</span>
-        <strong>SOCKS5</strong>
-        <span>no authentication · TCP CONNECT</span>
-      </p>
-      <div class="socks-actions">
-        <button type="button" id="socks-start">Start SOCKS5 pivot</button>
-        <button type="button" class="secondary" id="socks-stop" disabled>Stop pivot</button>
-        <button type="button" class="secondary" id="socks-refresh">Refresh</button>
-      </div>
-      <p id="socks-status" class="tools-hint" role="status" aria-live="polite"></p>
-      <p id="socks-action-status" class="tools-hint" role="status" aria-live="polite"></p>
-      <p class="tools-hint">This pivot speaks SOCKS5 only. Configure clients with <code>socks5</code> (for example, use <code>socks5</code> in proxychains); SOCKS4 is not supported. Use the proxy URL from the machine running the RMM server. Connections exit through the selected agent host. Keep the bind host at <code>127.0.0.1</code> unless the proxy must be reachable from another network.</p>
-      <h3 class="socks-relays-title">Active pivots</h3>
-      <div id="socks-relays-list" class="socks-relays-list">
-        <p class="downloads-empty">No active pivots.</p>
-      </div>
-      <section class="pivot-section" aria-labelledby="tun-section-title">
-        <h3 id="tun-section-title" class="pivot-section-title">TUN routing</h3>
-        <p id="tun-selected-session" class="tun-selected-session"></p>
-        <div class="tun-config-grid">
-          <div>
-            <label for="tun-device">TUN device</label>
-            <input type="text" id="tun-device" value="tun://rmm0" autocomplete="off" spellcheck="false">
-          </div>
-          <div>
-            <label for="tun-route">Target routes (IPv4 CIDR, one per line)</label>
-            <textarea id="tun-route" rows="3" placeholder="10.10.0.0/16&#10;10.20.0.0/16" autocomplete="off" spellcheck="false"></textarea>
-          </div>
-          <div>
-            <label for="tun-address">TUN address</label>
-            <input type="text" id="tun-address" value="198.18.0.1/15" autocomplete="off" spellcheck="false">
-          </div>
-          <div>
-            <label for="tun-interface">Egress interface (optional)</label>
-            <input type="text" id="tun-interface" placeholder="eth0 or en0" autocomplete="off" spellcheck="false">
-          </div>
-          <div>
-            <label for="tun-mtu">MTU</label>
-            <input type="number" id="tun-mtu" min="576" max="9000" value="1500">
-          </div>
-          <div>
-            <label for="tun-udp-timeout">UDP idle timeout (seconds)</label>
-            <input type="number" id="tun-udp-timeout" min="1" max="86400" value="300">
-          </div>
+        <p class="tools-hint" id="exfil-status-hint">rclone: checking server configuration…</p>
+        <div class="file-row">
+          <input type="file" id="upload-file">
+          <input type="text" id="upload-remote" placeholder="Remote destination path">
+          <button type="button" id="btn-upload" class="secondary">Upload</button>
         </div>
-        <p class="tun-protocol" role="note">
-          <span class="tun-protocol-label">Workspace or server device</span>
-          <span>The TUN interface and routes are created by the process that owns this deployment namespace. The Go agent only opens target-side TCP and UDP sockets.</span>
-        </p>
-        <div class="tun-actions">
-          <button type="button" id="tun-start">Start TUN routing</button>
-          <button type="button" class="secondary" id="tun-stop" disabled>Stop TUN routing</button>
-          <button type="button" class="secondary" id="tun-refresh">Refresh</button>
+        <div class="file-row">
+          <button type="button" id="btn-screenshot" class="secondary">Screenshot</button>
         </div>
-        <p id="tun-status" class="tools-hint" role="status" aria-live="polite"></p>
-        <p id="tun-action-status" class="tools-hint" role="status" aria-live="polite"></p>
-        <p class="tools-hint">Use narrow target routes such as <code>10.10.0.0/16</code>, one per line. The owning process needs the built <code>rmm-tun</code> helper, a built <code>tun.dll</code>, and permission to configure the local TUN device.</p>
-        <h3 class="tun-relays-title">Active TUN relays</h3>
-        <div id="tun-relays-list" class="tun-relays-list">
-          <p class="downloads-empty">No active TUN relays.</p>
-        </div>
+        <p class="tools-hint">Downloads and screenshots appear in the global lists in the application header after the agent returns them.</p>
       </section>
+
+      <section id="agent-tools-panel-pivots" class="agent-tools-panel hidden" role="tabpanel" aria-labelledby="agent-tools-tab-pivots">
+        <p class="tools-hint">SOCKS5 and TUN are independent channels. They can run at the same time for this agent.</p>
+        <p id="socks-selected-session" class="socks-selected-session"></p>
+        <div class="socks-config-grid">
+          <div>
+            <label for="socks-port">Listener port</label>
+            <input type="number" id="socks-port" min="1" max="65535" value="1080">
+          </div>
+          <div>
+            <label for="socks-bind-host">Bind host</label>
+            <input type="text" id="socks-bind-host" value="127.0.0.1" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <p class="socks-protocol" role="note">
+          <span class="socks-protocol-label">Proxy protocol</span>
+          <strong>SOCKS5</strong>
+          <span>no authentication · TCP CONNECT</span>
+        </p>
+        <div class="socks-actions">
+          <button type="button" id="socks-start">Start SOCKS5 pivot</button>
+          <button type="button" class="secondary" id="socks-stop" disabled>Stop pivot</button>
+          <button type="button" class="secondary" id="socks-refresh">Refresh</button>
+        </div>
+        <p id="socks-status" class="tools-hint" role="status" aria-live="polite"></p>
+        <p id="socks-action-status" class="tools-hint" role="status" aria-live="polite"></p>
+        <p class="tools-hint">This pivot speaks SOCKS5 only. Configure clients with <code>socks5</code> (for example, use <code>socks5</code> in proxychains); SOCKS4 is not supported. Use the proxy URL from the machine running the RMM server. Connections exit through the selected agent host. Keep the bind host at <code>127.0.0.1</code> unless the proxy must be reachable from another network.</p>
+        <h3 class="socks-relays-title">Active pivots</h3>
+        <div id="socks-relays-list" class="socks-relays-list">
+          <p class="downloads-empty">No active pivots.</p>
+        </div>
+        <section class="pivot-section" aria-labelledby="tun-section-title">
+          <h3 id="tun-section-title" class="pivot-section-title">TUN routing</h3>
+          <p id="tun-selected-session" class="tun-selected-session"></p>
+          <div class="tun-config-grid">
+            <div>
+              <label for="tun-device">TUN device</label>
+              <input type="text" id="tun-device" value="tun://rmm0" autocomplete="off" spellcheck="false">
+            </div>
+            <div>
+              <label for="tun-route">Target routes (IPv4 CIDR, one per line)</label>
+              <textarea id="tun-route" rows="3" placeholder="10.10.0.0/16&#10;10.20.0.0/16" autocomplete="off" spellcheck="false"></textarea>
+            </div>
+            <div>
+              <label for="tun-address">TUN address</label>
+              <input type="text" id="tun-address" value="198.18.0.1/15" autocomplete="off" spellcheck="false">
+            </div>
+            <div>
+              <label for="tun-interface">Egress interface (optional)</label>
+              <input type="text" id="tun-interface" placeholder="eth0 or en0" autocomplete="off" spellcheck="false">
+            </div>
+            <div>
+              <label for="tun-mtu">MTU</label>
+              <input type="number" id="tun-mtu" min="576" max="9000" value="1500">
+            </div>
+            <div>
+              <label for="tun-udp-timeout">UDP idle timeout (seconds)</label>
+              <input type="number" id="tun-udp-timeout" min="1" max="86400" value="300">
+            </div>
+          </div>
+          <p class="tun-protocol" role="note">
+            <span class="tun-protocol-label">Workspace or server device</span>
+            <span>The TUN interface and routes are created by the process that owns this deployment namespace. The Go agent only opens target-side TCP and UDP sockets.</span>
+          </p>
+          <div class="tun-actions">
+            <button type="button" id="tun-start">Start TUN routing</button>
+            <button type="button" class="secondary" id="tun-stop" disabled>Stop TUN routing</button>
+            <button type="button" class="secondary" id="tun-refresh">Refresh</button>
+          </div>
+          <p id="tun-status" class="tools-hint" role="status" aria-live="polite"></p>
+          <p id="tun-action-status" class="tools-hint" role="status" aria-live="polite"></p>
+          <p class="tools-hint">Use narrow target routes such as <code>10.10.0.0/16</code>, one per line. The owning process needs the built <code>rmm-tun</code> helper, a built <code>tun.dll</code>, and permission to configure the local TUN device.</p>
+          <h3 class="tun-relays-title">Active TUN relays</h3>
+          <div id="tun-relays-list" class="tun-relays-list">
+            <p class="downloads-empty">No active TUN relays.</p>
+          </div>
+        </section>
+      </section>
+    </form>
+  </dialog>
+
+  <dialog id="artifacts-dialog" class="session-tools-dialog" aria-labelledby="artifacts-dialog-title">
+    <form method="dialog" class="session-tools-card">
+      <div class="session-tools-header">
+        <h2 id="artifacts-dialog-title">Downloads from all agents</h2>
+        <button type="submit" class="secondary" aria-label="Close artifacts dialog">×</button>
+      </div>
+      <div class="artifact-tabs" role="tablist" aria-label="Global artifacts">
+        <button type="button" class="artifact-tab active" id="artifact-tab-downloads" data-artifact-kind="downloads" role="tab" aria-selected="true">Downloads</button>
+        <button type="button" class="artifact-tab" id="artifact-tab-screenshots" data-artifact-kind="screenshots" role="tab" aria-selected="false">Screenshots</button>
+      </div>
+      <p id="artifacts-scope-hint" class="tools-hint">Files returned by every agent in this server or workspace.</p>
+      <div id="global-artifacts-list" class="downloads-list">
+        <p class="downloads-empty">No artifacts received yet.</p>
+      </div>
+      <div id="global-artifacts-preview" class="downloads-preview hidden"></div>
     </form>
   </dialog>
 

@@ -214,6 +214,26 @@ button:disabled {
   flex: 1;
 }
 
+.app-header > button {
+  flex-shrink: 0;
+}
+
+@media (max-width: 760px) {
+  .app-header {
+    gap: 0.4rem;
+    padding: 0.5rem 0.7rem;
+  }
+
+  .app-header h1 {
+    font-size: 0.95rem;
+  }
+
+  .app-header > button {
+    padding: 0.25rem 0.45rem;
+    font-size: 0.75rem;
+  }
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -1027,6 +1047,46 @@ body.sidebar-resizing iframe {
   line-height: 1;
 }
 
+.agent-tools-tabs,
+.artifact-tabs {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-tools-tab,
+.artifact-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 0.45rem 0.7rem;
+  background: transparent;
+  color: var(--muted);
+}
+
+.agent-tools-tab:hover,
+.artifact-tab:hover,
+.agent-tools-tab.active,
+.artifact-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.agent-tools-panel {
+  min-height: 0;
+}
+
+.artifact-session-meta {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.artifacts-table {
+  min-width: 44rem;
+}
+
 .beacon-config-dialog {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1597,7 +1657,7 @@ body.sidebar-resizing iframe {
   border: 1px solid var(--border);
   border-radius: 0.6rem;
   color: var(--text);
-  background: var(--panel);
+  background: var(--surface);
   max-width: 32rem;
   width: calc(100% - 2rem);
 }

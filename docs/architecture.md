@@ -224,6 +224,7 @@ need a later transport.
 | Operator transcripts and events | `RMM_logs/` | Workspace SQLite database |
 | Downloads, screenshots, keylogs | `RMM_logs/` | Workspace artifact directories |
 | AI chat history | `RMM_logs/history/` | Workspace SQLite database |
+| WebUI operator configuration | `RMM_UI_STATE_DB` (default `RMM_logs/ui-state.db`) | `ui_state` table in workspace SQLite database |
 | rclone profiles | Server environment or asset store | Workspace asset store and optional profile file |
 | SOCKS listener | Central server process | Workspace service |
 | TUN device, routes, and helper | Central server process | Workspace service |

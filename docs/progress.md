@@ -9,6 +9,36 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-13 — Independent pivots and global artifact views
+
+- Removed the SOCKS/TUN lifecycle coupling in the central server and workspace
+  pivot manager. Each relay keeps its own transport manager and the Go agent
+  keeps one controller per plugin, so both channels can run for one session.
+- Replaced the separate Files, Downloads, and Pivots dialogs with an agent
+  tools dialog containing Files & Screenshots and Pivots tabs. Added global
+  Downloads and Screenshots views in the application header.
+- Added `GET /api/v1/artifacts?kind=downloads|screenshots`, including agent
+  identity, session status, artifact metadata, and authenticated artifact URLs
+  for server and workspace storage modes.
+- Updated the WebUI contract checks, focused regression tests, README, wiki
+  pages, and downloads-browser roadmap.
+
+### 2026-10-13 — Persistent WebUI configuration and local asset uploads
+
+- Fixed the Config dialog surface color so it remains opaque in both themes.
+- Added authenticated local file uploads for plugins, AI skills, and rclone
+  `.json` profile files through the existing asset API. The WebUI switches to
+  a direct `profiles.json` upload control for rclone.
+- Added `rmm_ui_state.py` and the `/api/v1/ui/config` GET/PATCH contract. Server
+  mode stores the allowlisted UI state in `RMM_UI_STATE_DB`; workspace mode
+  stores it in the existing `workspace.db` SQLite database.
+- Migrated operator preferences, skill selection, agent generator values, AI
+  provider state, shell history, event cursors, and theme synchronization to
+  the authenticated SQLite state while keeping the API token as a browser
+  login credential.
+- Made the AI Skills section open by default and marked default/always skills
+  in the visible catalog. Documentation and WebUI contract checks were updated.
+
 ### 2026-10-13 — Dynamic RMM-Profiles and operator asset management
 
 - Split the administration listener from the agent beacon listener. The
@@ -537,6 +567,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 | Download file | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Cloud exfil (rclone) | ✅ | ✅ `exfil` | ✅ | ✅ `queue_exfil` | ✅ profile select | ✅ `exfil` |
 | List session downloads | ✅ | ❌ | ❌ | ✅ `list_session_downloads` | ✅ | ❌ |
+| Global downloads and screenshots | ✅ | ✅ client method | ❌ | ✅ `list_artifacts` | ✅ | ❌ |
 | Session history (archived) | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
 | Delete archived history | ✅ | ❌ | ❌ | ✅ `delete_history` | ✅ per row | ❌ |
 | Clear all archived history | ✅ | ❌ | ❌ | ✅ `clear_history` | ✅ header button | ❌ |

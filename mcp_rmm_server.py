@@ -46,6 +46,7 @@ from rmm_tools import (
     tool_install_persistence,
     tool_kill_session,
     tool_list_history,
+    tool_list_artifacts,
     tool_list_session_downloads,
     tool_list_socks,
     tool_list_tun,
@@ -353,6 +354,12 @@ def clear_history() -> str:
 def list_session_downloads(session_ref: str) -> str:
     """List files downloaded from the agent for a live session."""
     return tool_list_session_downloads(_client(), session_ref)
+
+
+@mcp.tool()
+def list_artifacts(kind: str = "downloads") -> str:
+    """List downloads or screenshots from every agent."""
+    return tool_list_artifacts(_client(), kind)
 
 
 @mcp.tool()

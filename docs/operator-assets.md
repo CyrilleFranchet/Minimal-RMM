@@ -1,8 +1,9 @@
 # Operator-managed assets
 
 Operators can install plugins, AI skills, and rclone profile files from an
-HTTP(S) URL. The same feature is available in the WebUI, CLI, MCP, and REST
-API. This is the extension point for personal or private operator content.
+HTTP(S) URL or a local WebUI file upload. The same URL feature is available in
+the WebUI, CLI, MCP, and REST API. This is the extension point for personal or
+private operator content.
 
 ## Asset kinds
 
@@ -51,6 +52,7 @@ runtime copy to the central server.
 | `GET` | `/api/v1/assets` | — | List URL-managed assets |
 | `GET` | `/api/v1/assets/{kind}` | — | Filter by `plugins`, `skills`, or `rclone` |
 | `POST` | `/api/v1/assets/{kind}` | `{ "url": "https://…", "name": "optional.ext", "enabled": true }` | Download and store an asset |
+| `POST` | `/api/v1/assets/{kind}` | `{ "content_b64": "…", "name": "file.ext", "enabled": true }` | Upload and store local file bytes |
 | `PATCH` | `/api/v1/assets/{kind}/{name}` | `{ "enabled": false }` | Enable or disable an asset |
 | `DELETE` | `/api/v1/assets/{kind}/{name}` | — | Remove an asset |
 
@@ -85,8 +87,10 @@ local URL and using its local token.
 
 Open **Config → Runtime assets and beacon transport**. Select the asset kind,
 paste an HTTP(S) URL, optionally set a filename, and choose **Install URL**.
-The list provides enable, disable, and remove controls. Skill changes refresh
-the AI skill selector without a server restart.
+For a local file, choose **Upload file**. When `rclone profiles` is selected,
+the UI switches to **Upload profiles.json** and uses the selected `.json` file
+name automatically. The list provides enable, disable, and remove controls.
+Skill changes refresh the AI skill selector without a server restart.
 
 The same panel selects and starts an installed RMM-Profile, shows the current
 agent beacon URL, and refreshes the generated PowerShell and Go agent forms.
@@ -111,8 +115,10 @@ Instructions injected into the AI system prompt.
 
 The `id` is the merge key. `default` controls the initial selection and
 `always` keeps a skill in the prompt even when the request selects specific
-skill IDs. The WebUI stores selection state in the browser session and also
-persists enablement through the asset API.
+skill IDs. Built-in skills are returned by `GET /api/v1/ai/skills` alongside
+uploaded skills and are shown in the expanded **AI → Skills** section. The
+selection follows the server/workspace SQLite UI state, while the asset API
+persists enablement for built-in and uploaded skills.
 
 ## rclone profile format
 
@@ -160,6 +166,7 @@ rclone file.
 | `normalize_asset_kind` | Map aliases to `plugins`, `skills`, or `rclone` |
 | `validate_asset_name` | Enforce a safe basename and kind-specific extension |
 | `download_asset` | Fetch a bounded HTTP(S) response body |
+| `decode_asset_content` | Decode a bounded base64 WebUI file upload |
 | `AssetStore` | Persist asset bytes and metadata below one owner-controlled root |
 | `AssetStore.add_bytes` / `add_url` | Atomically install local or remote content |
 | `AssetStore.list` / `read` | Inventory assets and read enabled bytes |

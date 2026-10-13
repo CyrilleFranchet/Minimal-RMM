@@ -31,7 +31,10 @@ The file lives next to `meta.json` and `events.jsonl` for the same session. Up t
 
 When no RMM session is selected in the sidebar, chat stays **in-memory only** in the browser (welcome message only after reload).
 
-AI provider API keys, validation state, model choice, Exegol MCP settings, and skill checkboxes remain in `sessionStorage` (tab-scoped). Keys are never persisted in `RMM_logs/`.
+AI provider API keys, validation state, model choice, Exegol MCP settings, and
+skill checkboxes are synchronized to the authenticated server/workspace
+SQLite UI state. The API token remains tab-scoped because it is needed to
+authenticate the state request. Keep the selected SQLite database owner-only.
 
 ### Workspace mode
 

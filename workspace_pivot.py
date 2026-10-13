@@ -53,8 +53,6 @@ class WorkspacePivotManager:
         bind_host: str = DEFAULT_BIND_HOST,
     ) -> dict[str, Any]:
         """Start the workspace-local public SOCKS5 listener."""
-        if self.tun_active(session_id):
-            self.stop_tun(session_id)
         bridge = self.socks.start(session_id, port=port, bind_host=bind_host)
         return {
             "session_id": session_id,
@@ -83,8 +81,6 @@ class WorkspacePivotManager:
     def start_tun(self, session_id: str, config: dict[str, Any]) -> dict[str, Any]:
         """Start a local TUN helper and route target traffic through the broker."""
         normalized = normalize_tun_config(config)
-        if self.socks_active(session_id):
-            self.stop_socks(session_id)
         if self.tun_active(session_id):
             raise TunError("TUN relay is already active")
         relay = ServerTunRelay(

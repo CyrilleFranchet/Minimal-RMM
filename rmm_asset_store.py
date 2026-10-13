@@ -8,6 +8,7 @@ truth and can republish that copy after a restart.
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -110,6 +111,22 @@ def validate_asset_name(kind: str, name: str) -> str:
 def _sha256(data: bytes) -> str:
     """Return the SHA-256 digest for asset bytes."""
     return hashlib.sha256(data).hexdigest()
+
+
+def decode_asset_content(encoded: str, *, max_bytes: int | None = None) -> bytes:
+    """Decode one bounded base64 asset upload from an operator request."""
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise AssetError("asset content is missing")
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise AssetError("asset content is not valid base64") from exc
+    limit = max_bytes if max_bytes is not None else _max_bytes()
+    if not content:
+        raise AssetError("asset body is empty")
+    if len(content) > limit:
+        raise AssetError(f"asset exceeds the {limit}-byte upload limit")
+    return content
 
 
 def download_asset(url: str, *, max_bytes: int | None = None, timeout: float = 30.0) -> bytes:

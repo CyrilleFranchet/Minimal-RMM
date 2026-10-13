@@ -161,7 +161,8 @@ Per row:
 
 Refresh when a new `file_upload` event arrives on the operator WebSocket (no manual reload).
 
-Optional v2: global **All downloads** view across sessions (filter by hostname).
+Implemented: global **Downloads** and **Screenshots** views across sessions,
+with the originating agent and active or archived session state shown per row.
 
 ### Downloads browser — server `RMM_logs/downloads/{hashPrefix}_{originalName}`; served at `GET /api/v1/artifacts/downloads/{basename}` with bearer token (or `?token=` query param for `<a href>`).
 
@@ -202,20 +203,23 @@ Optional: `DELETE /api/v1/sessions/{id}/downloads/{artifact}` to remove server-s
 
 ### Downloads browser — web client
 
-- On session select: fetch `GET …/downloads`, render table/list in tools panel.
+- The application header opens global artifact views; the selected agent's
+  Files & Screenshots tab remains the control surface for queuing operations.
+- Fetch `GET /api/v1/artifacts?kind=downloads` or
+  `GET /api/v1/artifacts?kind=screenshots` and render the global table.
 - Reuse `artifactSrc()` for authenticated download/preview URLs.
-- On WS `file_upload` event (or any event with `artifact_url` under `downloads/`), prepend row or refetch list.
+- On `file_upload` or `screenshot` events, refetch an open global list.
 - Keep transcript link behavior for backward compatibility; list is the durable entry point.
 
-### CLI & MCP (optional, post-v1)
+### CLI & MCP
 
 | Surface | Action |
 |---------|--------|
-| `rmm_cli.py` | `downloads list [session]` — table of staged files + paths |
-| `rmm_tools.py` | `list_session_downloads(session_ref)` — shipped; see `docs/mcp-parity.md` |
-| `mcp_rmm_server.py` | `list_session_downloads` tool — shipped |
+| `rmm_cli.py` | `RmmApiClient.list_artifacts(kind)` — global artifact inventory |
+| `rmm_tools.py` | `list_artifacts(kind)` and `list_session_downloads(session_ref)` — shipped; see `docs/mcp-parity.md` |
+| `mcp_rmm_server.py` | `list_artifacts` and `list_session_downloads` tools — shipped |
 
-Not required for first ship if web UI is the primary ask; REST list endpoint is enough for automation.
+The CLI and MCP paths return the same agent identity and artifact URLs as the WebUI.
 
 ### Downloads browser — security notes
 
@@ -234,7 +238,8 @@ Artifact URLs continue to require token.
 
 ### Downloads browser — acceptance criteria
 
-- After `__DOWNLOAD__` completes, the file appears in the session Downloads panel without a full page reload
+- After `__DOWNLOAD__` completes, the file appears in the global Downloads list without a full page reload
+- After a screenshot completes, it appears in the global Screenshots list with its originating agent
 - Clicking **Download** saves the correct file via the browser
 - List shows remote path and size, not only the hashed server filename
 - Sessions cannot see another session’s downloads

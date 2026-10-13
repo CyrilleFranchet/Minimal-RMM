@@ -508,13 +508,11 @@ class PivotInventoryTests(unittest.TestCase):
         self.assertIsNot(server.socks, server.tun_transport)
         self.assertIs(server.tun.socks_manager, server.tun_transport)
 
-    def test_starting_tun_stops_public_socks_first(self):
+    def test_starting_tun_keeps_public_socks_active(self):
         session = SimpleNamespace(id="session-1")
         server = object.__new__(server_rmm.RMMServer)
         server.get_session = Mock(return_value=session)
         server.tun_plugin_error = Mock(return_value=None)
-        server.socks_active = Mock(return_value=True)
-        server.stop_socks = Mock()
         relay = SimpleNamespace(status=Mock(return_value={"session_id": session.id}))
         server.tun = SimpleNamespace(start=Mock(return_value=relay))
         server.record_operator_action = Mock()
@@ -526,20 +524,17 @@ class PivotInventoryTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"session_id": session.id})
-        server.stop_socks.assert_called_once_with(session.id)
         server.tun.start.assert_called_once()
 
-    def test_socks_inventory_hides_tun_private_bridge(self):
+    def test_socks_inventory_remains_visible_when_tun_is_active(self):
         server = object.__new__(server_rmm.RMMServer)
-        private_session = "private-session"
         public_session = "public-session"
         server.socks = SimpleNamespace(
             list_relays=lambda: [
-                {"session_id": private_session, "port": 41001},
                 {"session_id": public_session, "port": 1080},
             ]
         )
-        server.tun_active = lambda session_id: session_id == private_session
+        server.tun_active = lambda _session_id: True
         server.get_session = lambda session_id: SimpleNamespace(
             hostname=session_id,
             username="user",
@@ -549,6 +544,79 @@ class PivotInventoryTests(unittest.TestCase):
         rows = server.list_socks_status()
 
         self.assertEqual([row["session_id"] for row in rows], [public_session])
+
+    def test_public_socks_stop_does_not_stop_tun(self):
+        session = SimpleNamespace(id="session-1")
+        server = object.__new__(server_rmm.RMMServer)
+        server.socks = SimpleNamespace(stop=Mock(return_value=True))
+        server.tun_active = Mock(return_value=True)
+        server.get_session = Mock(return_value=session)
+        server.record_operator_action = Mock()
+        server._record_event = Mock()
+        server.workspace_socks_configs = {}
+
+        self.assertTrue(server.stop_socks(session.id))
+        server.socks.stop.assert_called_once_with(session.id)
+        server.tun_active.assert_not_called()
+
+
+class ArtifactInventoryTests(unittest.TestCase):
+    """Verify global artifact rows retain the originating agent identity."""
+
+    def test_global_artifact_api_route_selects_kind(self):
+        server = SimpleNamespace(
+            list_artifacts=Mock(return_value=[{"kind": "screenshots", "agent_label": "alice@target-01"}])
+        )
+        handler = FakeApiHandler(server_instance=server)
+
+        RMMHandler._handle_api_get(
+            handler,
+            f"{API_PREFIX}/artifacts",
+            {"kind": ["screenshots"]},
+        )
+
+        status, body = handler.responses[-1]
+        self.assertEqual(status, 200)
+        self.assertEqual(body["kind"], "screenshots")
+        self.assertEqual(body["count"], 1)
+        server.list_artifacts.assert_called_once_with("screenshots", workspace_id=None)
+
+    def test_server_artifacts_include_active_agent_metadata(self):
+        session_id = "12345678-1234-1234-1234-123456789012"
+        session = server_rmm.Session(session_id, "target-01", "alice")
+        prefix = server_rmm.safe_session_storage_prefix(session_id)
+        download_name = f"{prefix}_report.txt"
+        screenshot_name = f"{prefix}_20261013_160000.png"
+        session.download_artifacts.append(
+            {
+                "artifact": download_name,
+                "remote_path": "C:/Temp/report.txt",
+                "size": 7,
+                "received_at": "2026-10-13T16:00:00",
+            }
+        )
+        server = object.__new__(server_rmm.RMMServer)
+        server.storage_mode = "server"
+        server.sessions = {session_id: session}
+        server.session_lock = threading.Lock()
+        server.list_session_history = lambda: []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "downloads"))
+            os.makedirs(os.path.join(tmp, "screenshots"))
+            with open(os.path.join(tmp, "downloads", download_name), "wb") as handle:
+                handle.write(b"report\n")
+            with open(os.path.join(tmp, "screenshots", screenshot_name), "wb") as handle:
+                handle.write(b"png")
+            with patch("server_rmm.LOG_DIR", tmp):
+                downloads = server.list_artifacts("downloads")
+                screenshots = server.list_artifacts("screenshots")
+
+        self.assertEqual(downloads[0]["agent_label"], "alice@target-01")
+        self.assertEqual(downloads[0]["session_id"], session_id)
+        self.assertEqual(downloads[0]["remote_path"], "C:/Temp/report.txt")
+        self.assertEqual(screenshots[0]["agent_label"], "alice@target-01")
+        self.assertEqual(screenshots[0]["session_id"], session_id)
 
 
 if __name__ == "__main__":

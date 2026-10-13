@@ -5,8 +5,8 @@ for the deployment topology and privilege boundary. This page focuses on the
 agent-side plugin packages and their task protocol.
 
 SOCKS5 is the first pivot type exposed by the WebUI. The server keeps the
-operator-side listener in `rmm_socks.py`; the agent-side relay is loaded only
-while the server reports `socks_active: true`.
+operator-side listener in `rmm_socks.py`; each agent-side relay is loaded only
+while the server reports its corresponding `socks_active` or `tun_active` flag.
 
 ## Plugin packages
 
@@ -112,7 +112,8 @@ The default local runtime store is `RMM_logs/plugins/`; Docker deployments
 mount the persistent `/app/plugins` volume. A public SOCKS relay requires the Go
 `socks-plugin` capability and `socks.dll`; a TUN relay requires `tun-plugin`
 and `tun.dll`. Existing `/socks` REST, CLI, MCP, and WebUI controls remain
-stable; the WebUI exposes TUN routing inside the Pivots dialog.
+stable; the WebUI exposes TUN routing in the Pivots tab of the agent tools
+dialog. SOCKS5 and TUN use separate plugin controllers and can run together.
 
 ## Security and logging
 

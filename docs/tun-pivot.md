@@ -72,9 +72,9 @@ runtime plugin store. `make tun-build` writes `tools/rmm-tun`; set
 
 ## WebUI workflow
 
-The WebUI exposes TUN routing inside the **Pivots** dialog in the selected live
-session header. Before opening it, install `tun.dll` from the external plugin
-repository and build the helper with `make tun-build`. In server mode, the helper and
+The WebUI exposes TUN routing in the **Pivots** tab of the agent tools dialog in
+the selected live session header. Before opening it, install `tun.dll` from the
+external plugin repository and build the helper with `make tun-build`. In server mode, the helper and
 interface run in the RMM server namespace. In workspace mode, they run in the
 local workspace namespace. In the TUN section, configure:
 
@@ -167,7 +167,8 @@ and the agent's beacon latency.
   `tun.dll`, and an executable `rmm-tun` helper in the namespace that owns the
   TUN device.
 - The server refuses a second TUN relay for the same session until the first
-  one is stopped. A normal SOCKS listener cannot replace an active TUN relay.
+  one is stopped. A normal SOCKS listener and a TUN relay are independent and
+  can run at the same time for one session.
 - Stopping the TUN relay removes the configured routes, stops the helper, and
   stops the private SOCKS bridge. Killing the session performs the same
   cleanup.

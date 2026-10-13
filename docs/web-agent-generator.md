@@ -42,7 +42,9 @@ The Web UI uses this endpoint; operators can also fetch the template with curl f
 3. Save as `client_rmm.ps1` on the Windows lab host.
 4. Run: `powershell -ExecutionPolicy Bypass -File .\client_rmm.ps1`
 
-Form values are stored in `sessionStorage` for this browser tab only. The generated script is built in the browser; only the template fetch hits the server.
+Form values are synchronized to the authenticated server/workspace SQLite UI
+state. Browser storage remains a short-lived cache. The generated script is
+built in the browser; only the template fetch hits the server.
 
 ## Go agent build
 

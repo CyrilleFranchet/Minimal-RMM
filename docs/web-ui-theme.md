@@ -7,7 +7,7 @@ The operator console at `/ui/` supports **dark** (default) and **light** themes 
 - **Login screen** — sun / moon toggle in the card header (sun while dark → switch to light).
 - **Connected** — same control in the app header (before **AI**).
 
-Click toggles between themes (☀ in dark mode, ☽ in light mode). Preference is stored in **`localStorage`** key `rmm_theme` (`dark` | `light`). Default when unset: **`dark`**.
+Click toggles between themes (☀ in dark mode, ☽ in light mode). Preference is mirrored in **`localStorage`** key `rmm_theme` (`dark` | `light`) and persisted in the authenticated server or workspace SQLite state. Default when unset: **`dark`**.
 
 ## Implementation
 
@@ -21,5 +21,7 @@ Semantic tokens (`--bg`, `--surface`, `--text`, `--overlay`, status backgrounds,
 
 ## Notes
 
-- Theme preference is per browser profile (localStorage), not synced with the API token in sessionStorage.
+- The browser mirror is read before the page renders to avoid a flash of the
+  wrong theme. After authentication, SQLite is authoritative and updates the
+  mirror; the API token remains a separate login credential.
 - Native form controls follow `color-scheme` on `html` for scrollbars and inputs where supported.

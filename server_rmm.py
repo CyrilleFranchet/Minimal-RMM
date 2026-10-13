@@ -54,8 +54,9 @@ from rmm_socks import (
 )
 from rmm_tun import TunError, TunManager, normalize_tun_config
 from rmm_workspace import WorkspaceEventBroker, WorkspaceRegistry, valid_workspace_id
-from rmm_asset_store import AssetError, AssetStore
+from rmm_asset_store import AssetError, AssetStore, decode_asset_content
 from rmm_profile import ProfileError, ProfileManager, profile_directory
+from rmm_ui_state import UiStateError, UiStateStore
 from rmm_rclone import (
     RcloneConfigError,
     get_rclone_max_bytes,
@@ -97,6 +98,7 @@ GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
 # here from the external Minimal-RMM-plugins repository.
 PLUGINS_DIR = os.environ.get("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
 ASSETS_DIR = os.environ.get("RMM_ASSETS_DIR", "").strip() or os.path.join(LOG_DIR, "assets")
+UI_STATE_DB = os.environ.get("RMM_UI_STATE_DB", "").strip() or os.path.join(LOG_DIR, "ui-state.db")
 PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PLUGIN_ARTIFACT_EXTENSIONS = {".dll", ".ps1"}
 PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
@@ -866,8 +868,23 @@ class RMMServer:
         self.workspace_tun_configs = {}
         self._sessions_broadcast_lock = threading.Lock()
         self._sessions_broadcast_timer = None
+        self._ui_state_store: UiStateStore | None = None
         if self.storage_mode == "server":
             self._archive_orphaned_sessions_on_startup()
+
+    def ui_state(self) -> UiStateStore:
+        """Return the lazily opened SQLite store for server-mode UI state."""
+        if self._ui_state_store is None:
+            self._ui_state_store = UiStateStore(UI_STATE_DB)
+        return self._ui_state_store
+
+    def get_ui_state(self) -> dict[str, dict[str, str]] | None:
+        """Load the persisted server-mode operator UI state."""
+        return self.ui_state().get("server")
+
+    def set_ui_state(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist the server-mode operator UI state in SQLite."""
+        return self.ui_state().set("server", payload)
 
     def set_listener_ports(self, admin_port: int, beacon_port: int) -> None:
         """Record the bound administration and beacon ports for generated agents."""
@@ -1443,6 +1460,96 @@ class RMMServer:
                 if str(e.get("artifact", "")).startswith(f"{prefix}_")
             ]
         rows.sort(key=lambda e: e.get("received_at") or "", reverse=True)
+        return rows
+
+    def _artifact_session_metadata(self, workspace_id: str | None = None) -> dict[str, dict[str, Any]]:
+        """Build an artifact-prefix index for active and archived sessions."""
+        records: dict[str, dict[str, Any]] = {}
+        with self.session_lock:
+            active = list(self.sessions.values())
+        for session in active:
+            if workspace_id and getattr(session, "workspace_id", None) != workspace_id:
+                continue
+            record = session.to_dict()
+            record["session_id"] = session.id
+            record["active"] = True
+            records[safe_session_storage_prefix(session.id)] = record
+        for record in self.list_session_history():
+            session_id = str(record.get("session_id") or record.get("id") or "")
+            if not session_id or (workspace_id and record.get("workspace_id") != workspace_id):
+                continue
+            records.setdefault(safe_session_storage_prefix(session_id), record)
+        return records
+
+    def list_artifacts(self, kind: str, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """List downloaded files or screenshots across the operator's agents."""
+        if kind not in {"downloads", "screenshots"}:
+            raise ValueError("artifact kind must be downloads or screenshots")
+        if self.storage_mode == "workspace":
+            return []
+
+        metadata = self._artifact_session_metadata(workspace_id)
+        download_index: dict[str, dict[str, Any]] = {}
+        if kind == "downloads":
+            with self.session_lock:
+                active = list(self.sessions.values())
+            for session in active:
+                if workspace_id and getattr(session, "workspace_id", None) != workspace_id:
+                    continue
+                self.backfill_download_artifacts(session)
+                with self.session_lock:
+                    entries = list(session.download_artifacts)
+                for entry in entries:
+                    artifact = str(entry.get("artifact") or "")
+                    if artifact:
+                        download_index[artifact] = entry
+
+        directory = os.path.join(LOG_DIR, kind)
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            return []
+        rows: list[dict[str, Any]] = []
+        for name in names:
+            if name.endswith(".part"):
+                continue
+            try:
+                safe_name = safe_storage_filename(name, "")
+                path = safe_join_under(directory, safe_name)
+            except ValueError:
+                continue
+            if not safe_name or not os.path.isfile(path):
+                continue
+            prefix = safe_name.split("_", 1)[0]
+            session = metadata.get(prefix, {})
+            if workspace_id and not session:
+                continue
+            indexed = download_index.get(safe_name, {}) if kind == "downloads" else {}
+            try:
+                size = os.path.getsize(path)
+                received_at = datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+            except OSError:
+                size = 0
+                received_at = datetime.now().isoformat()
+            session_id = str(session.get("session_id") or session.get("id") or "") or None
+            hostname = str(session.get("hostname") or "?")
+            username = str(session.get("username") or "?")
+            rows.append(
+                {
+                    "kind": kind,
+                    "artifact": safe_name,
+                    "remote_path": str(indexed.get("remote_path") or "") if kind == "downloads" else "",
+                    "size": size,
+                    "received_at": str(indexed.get("received_at") or received_at),
+                    "artifact_url": f"{API_PREFIX}/artifacts/{kind}/{urllib.parse.quote(safe_name)}",
+                    "session_id": session_id,
+                    "hostname": hostname,
+                    "username": username,
+                    "agent_label": f"{username}@{hostname}",
+                    "active": bool(session.get("active", False)),
+                }
+            )
+        rows.sort(key=lambda row: row.get("received_at") or "", reverse=True)
         return rows
 
     def queue_agent_download(self, session, remote_path: str) -> str:
@@ -2065,9 +2172,6 @@ class RMMServer:
         session = self.get_session(session_id)
         if not session:
             return False
-        if self.tun_active(session.id):
-            self.log(f"SOCKS cannot replace active TUN relay for {session.id[:8]}", "ERROR")
-            return False
         plugin_error = self.pivot_plugin_error(session)
         if plugin_error:
             self.log(f"SOCKS pivot unavailable for {session.id[:8]}: {plugin_error}", "ERROR")
@@ -2118,8 +2222,6 @@ class RMMServer:
         return None
 
     def stop_socks(self, session_id: str) -> bool:
-        if self.tun_active(session_id):
-            return self.stop_tun(session_id)
         stopped = self.socks.stop(session_id)
         getattr(self, "workspace_socks_configs", {}).pop(session_id, None)
         session = self.get_session(session_id)
@@ -2140,10 +2242,6 @@ class RMMServer:
             relays = self.socks.list_relays()
         rows = []
         for relay in relays:
-            # A TUN relay uses a private SOCKS bridge as its egress. Keep that
-            # implementation detail out of the public SOCKS inventory.
-            if self.tun_active(relay["session_id"]):
-                continue
             row = dict(relay)
             session = self.get_session(relay["session_id"])
             if session:
@@ -2180,8 +2278,6 @@ class RMMServer:
         if plugin_error:
             raise TunError(plugin_error)
         normalized = normalize_tun_config(config)
-        if self.socks_active(session.id):
-            self.stop_socks(session.id)
         if self.storage_mode == "workspace":
             self.tun_transport.start_external(
                 session.id,
@@ -3243,6 +3339,23 @@ class RMMHandler(BaseHTTPRequestHandler):
             )
             return True
 
+        if parts == ["ui", "config"]:
+            try:
+                config = srv.get_ui_state()
+            except UiStateError as exc:
+                self._json(500, {"error": "ui_state_invalid", "detail": str(exc)})
+                return True
+            self._json(
+                200,
+                {
+                    "config": config or {},
+                    "exists": config is not None,
+                    "storage": "sqlite",
+                    "scope": "server",
+                },
+            )
+            return True
+
         if parts == ["agent", "script"]:
             script_path = os.path.realpath(CLIENT_SCRIPT)
             repo_root = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
@@ -3412,6 +3525,15 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"session_id": session_id, "events": events})
             return True
 
+        if parts == ["artifacts"]:
+            kind = (qs.get("kind", ["downloads"])[0] or "downloads").strip().lower()
+            if kind not in {"downloads", "screenshots"}:
+                self._json(400, {"error": "invalid_artifact_kind"})
+                return True
+            artifacts = srv.list_artifacts(kind, workspace_id=workspace_id)
+            self._json(200, {"kind": kind, "count": len(artifacts), "artifacts": artifacts})
+            return True
+
         if len(parts) == 3 and parts[0] == "artifacts":
             if workspace_id and parts[1] != "agent-builds":
                 self._json(404, {"error": "not_found"})
@@ -3548,17 +3670,30 @@ class RMMHandler(BaseHTTPRequestHandler):
         elif parts == ["rclone", "profiles"]:
             asset_kind = "rclone"
         if asset_kind:
-            url = str(body.get("url") or "").strip()
-            if not url:
-                self._json(400, {"error": "missing_url"})
-                return True
             try:
-                row = asset_store().add_url(
-                    asset_kind,
-                    url,
-                    name=str(body.get("name") or "").strip(),
-                    enabled=bool(body.get("enabled", True)),
-                )
+                name = str(body.get("name") or "").strip()
+                content_b64 = body.get("content_b64")
+                if content_b64 is not None:
+                    content = decode_asset_content(content_b64, max_bytes=MAX_BODY_BYTES)
+                    if not name:
+                        raise AssetError("uploaded asset name is required")
+                    row = asset_store().add_bytes(
+                        asset_kind,
+                        name,
+                        content,
+                        enabled=bool(body.get("enabled", True)),
+                    )
+                else:
+                    url = str(body.get("url") or "").strip()
+                    if not url:
+                        self._json(400, {"error": "missing_url_or_content"})
+                        return True
+                    row = asset_store().add_url(
+                        asset_kind,
+                        url,
+                        name=name,
+                        enabled=bool(body.get("enabled", True)),
+                    )
                 if asset_kind == "plugins":
                     content = asset_store().read("plugins", row["name"], enabled_only=False)
                     write_atomic_bytes(safe_join_under(plugin_directory(), row["name"]), content)
@@ -3959,6 +4094,24 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts is None:
             return False
         srv = self.server_instance
+
+        if parts == ["ui", "config"]:
+            try:
+                result = srv.set_ui_state(body.get("config", body))
+            except UiStateError as exc:
+                self._json(400, {"error": "invalid_ui_state", "detail": str(exc)})
+                return True
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "config": result["state"],
+                    "updated_at": result["updated_at"],
+                    "storage": "sqlite",
+                    "scope": "server",
+                },
+            )
+            return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "config":
             session = _resolve_api_session(self, parts[1])

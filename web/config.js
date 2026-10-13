@@ -20,7 +20,31 @@
     "rmm_mistral_api_key",
     "rmm_exegol_mcp_token",
   ];
+  // These settings are synchronized to the authenticated server or workspace
+  // SQLite store. The API token stays tab-local because it authenticates this
+  // synchronization request.
+  const PERSISTED_SESSION_KEYS = [
+    "rmm_sidebar_width",
+    "rmm_agent_gen_prefs",
+    "rmm_go_agent_prefs",
+    "rmm_ai_panel_open",
+    "rmm_ai_provider_state",
+    "rmm_ai_provider",
+    "rmm_exegol_mcp_enabled",
+    "rmm_exegol_mcp_url",
+    "rmm_ai_skills_enabled",
+    "rmm_shell_history",
+    "rmm_event_cursors",
+    "rmm_openai_api_key",
+    "rmm_anthropic_api_key",
+    "rmm_mistral_api_key",
+    "rmm_exegol_mcp_token",
+  ];
+  const PERSISTED_LOCAL_KEYS = ["rmm_theme"];
   const $ = (selector) => document.querySelector(selector);
+  let persistentStateReady = false;
+  let persistTimer = null;
+  let persistInFlight = null;
 
   function setStatus(message, error = false) {
     const status = $("#ui-config-status");
@@ -29,14 +53,83 @@
     status.classList.toggle("error-msg", error);
   }
 
-  function readStorage(keys) {
+  function readStorage(keys, storage = sessionStorage) {
     const values = {};
     for (const key of keys) {
-      const value = sessionStorage.getItem(key);
+      const value = storage.getItem(key);
       if (value !== null) values[key] = value;
     }
     return values;
   }
+
+  function readPersistentState() {
+    return {
+      storage: {
+        session: readStorage(PERSISTED_SESSION_KEYS),
+        local: readStorage(PERSISTED_LOCAL_KEYS, localStorage),
+      },
+    };
+  }
+
+  function applyPersistentState(config) {
+    const storage = config?.storage || config || {};
+    const session = storage.session;
+    const local = storage.local;
+    if (session && typeof session === "object") {
+      for (const key of PERSISTED_SESSION_KEYS) {
+        if (typeof session[key] === "string") sessionStorage.setItem(key, session[key]);
+        else sessionStorage.removeItem(key);
+      }
+    }
+    if (local && typeof local === "object") {
+      for (const key of PERSISTED_LOCAL_KEYS) {
+        if (typeof local[key] === "string") localStorage.setItem(key, local[key]);
+        else localStorage.removeItem(key);
+      }
+    }
+  }
+
+  async function persistNow() {
+    if (!persistentStateReady || !window.rmmApi) return;
+    if (persistInFlight) {
+      window.persistRmmUiConfig();
+      return;
+    }
+    persistInFlight = window.rmmApi("/ui/config", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(readPersistentState()),
+    }).finally(() => {
+      persistInFlight = null;
+    });
+    await persistInFlight;
+  }
+
+  function schedulePersist() {
+    if (!persistentStateReady) return;
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      persistNow().catch(() => {});
+    }, 250);
+  }
+
+  async function loadPersistentConfiguration() {
+    if (!window.rmmApi || (!window.rmmState?.token && !window.RMM_WORKSPACE_MODE)) return false;
+    const result = await window.rmmApi("/ui/config");
+    if (result.status !== 200 || !result.data) return false;
+    persistentStateReady = true;
+    if (result.data.exists && result.data.config) {
+      applyPersistentState(result.data.config);
+      window.dispatchEvent(new Event("rmm-config-imported"));
+    } else {
+      await persistNow();
+    }
+    return true;
+  }
+
+  window.loadRmmUiConfig = loadPersistentConfiguration;
+  window.persistRmmUiConfig = schedulePersist;
 
   function readConfiguration(includeSecrets) {
     const session = readStorage(SESSION_KEYS);
@@ -166,6 +259,7 @@
       }
     }
     window.dispatchEvent(new Event("rmm-config-imported"));
+    schedulePersist();
   }
 
   function chooseConfigurationFile() {

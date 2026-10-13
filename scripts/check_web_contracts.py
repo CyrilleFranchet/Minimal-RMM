@@ -82,6 +82,8 @@ def _check_configuration_contract(errors: list[str]) -> None:
         "ui-config-export",
         "ui-config-import",
         "ui-config-file",
+        "asset-upload",
+        "asset-file",
     }
     missing_ids = [element_id for element_id in sorted(required_ids) if f'id="{element_id}"' not in html]
     if missing_ids:
@@ -97,6 +99,8 @@ def _check_configuration_contract(errors: list[str]) -> None:
         errors.append("docs/web-ui-configuration.md must document the configuration allowlists")
     if "readConfiguration" not in config or "importConfiguration" not in config:
         errors.append("web/config.js must define both export and import paths")
+    if "PERSISTED_SESSION_KEYS" not in config or "/ui/config" not in config:
+        errors.append("web/config.js must wire the SQLite-backed UI state endpoint")
 
 
 def _check_socks_contract(errors: list[str]) -> None:
@@ -104,7 +108,8 @@ def _check_socks_contract(errors: list[str]) -> None:
     html = _read("web/index.html")
     required_ids = {
         "open-socks-dialog",
-        "socks-dialog",
+        "agent-tools-dialog",
+        "agent-tools-panel-pivots",
         "socks-port",
         "socks-bind-host",
         "socks-start",
@@ -126,6 +131,10 @@ def _check_socks_contract(errors: list[str]) -> None:
             errors.append(f"WebUI SOCKS function missing from web/app.js: {function_name}")
     if 'api("/socks")' not in app:
         errors.append("WebUI SOCKS inventory must call GET /api/v1/socks")
+    if 'id="agent-tools-panel-pivots"' not in html:
+        errors.append("WebUI SOCKS controls must live inside the Pivots tab")
+    if "independent channels" not in html:
+        errors.append("WebUI must explain that SOCKS5 and TUN can run together")
 
 
 def _check_tun_contract(errors: list[str]) -> None:
@@ -147,9 +156,9 @@ def _check_tun_contract(errors: list[str]) -> None:
     if missing_ids:
         errors.append(f"WebUI TUN controls missing from web/index.html: {missing_ids}")
     if 'id="open-tun-dialog"' in html or 'id="tun-dialog"' in html:
-        errors.append("WebUI TUN controls must live inside the Pivots dialog")
-    if 'id="socks-dialog"' not in html or 'id="tun-section-title"' not in html:
-        errors.append("WebUI Pivots dialog must contain the TUN routing section")
+        errors.append("WebUI TUN controls must live inside the Pivots tab")
+    if 'id="agent-tools-panel-pivots"' not in html or 'id="tun-section-title"' not in html:
+        errors.append("WebUI Pivots tab must contain the TUN routing section")
     if "Workspace or server device" not in html or "target-side TCP and UDP sockets" not in html:
         errors.append("WebUI must explain TUN ownership and the privilege-free agent transport")
     for function_name in ("refreshTunRelays", "startSelectedTun", "stopTunRelay"):
@@ -161,18 +170,41 @@ def _check_tun_contract(errors: list[str]) -> None:
         errors.append("WebUI TUN controls must call the per-session /tun endpoint")
 
 
+def _check_artifact_contract(errors: list[str]) -> None:
+    app = _read("web/app.js")
+    html = _read("web/index.html")
+    required_ids = {
+        "open-downloads-dialog",
+        "open-screenshots-dialog",
+        "artifacts-dialog",
+        "artifact-tab-downloads",
+        "artifact-tab-screenshots",
+        "global-artifacts-list",
+        "global-artifacts-preview",
+    }
+    missing_ids = [element_id for element_id in sorted(required_ids) if f'id="{element_id}"' not in html]
+    if missing_ids:
+        errors.append(f"WebUI global artifact controls missing from web/index.html: {missing_ids}")
+    if "/artifacts?kind=" not in app:
+        errors.append("WebUI global artifact inventory must call GET /api/v1/artifacts?kind=...")
+    for function_name in ("refreshGlobalArtifacts", "openGlobalArtifactsDialog", "renderGlobalArtifactsList"):
+        if not re.search(rf"function\s+{function_name}\s*\(", app):
+            errors.append(f"WebUI artifact function missing from web/app.js: {function_name}")
+
+
 def main() -> int:
     errors: list[str] = []
     _check_shell_contract(errors)
     _check_configuration_contract(errors)
     _check_socks_contract(errors)
     _check_tun_contract(errors)
+    _check_artifact_contract(errors)
     if errors:
         print("WebUI contract check FAILED:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("WebUI contract check OK: shell, configuration, and pivot controls")
+    print("WebUI contract check OK: shell, configuration, pivot, and artifact controls")
     return 0
 
 

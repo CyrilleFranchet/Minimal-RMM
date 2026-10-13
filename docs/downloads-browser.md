@@ -1,14 +1,16 @@
-# Downloaded files browser (web UI)
+# Agent artifact browser (web UI)
 
-Operators can browse files pulled from agents (`__DOWNLOAD__`) in the web console without digging through the shell transcript or `RMM_logs/downloads/` on disk.
+Operators can browse files pulled from agents (`__DOWNLOAD__`) and screenshots
+in the web console without digging through the shell transcript or the artifact
+directories on disk.
 
 ## Surfaces
 
 | Surface | Support |
 |---------|---------|
-| Web UI | **Downloads from agent** panel (per session) |
-| REST API | `GET /api/v1/sessions/{id}/downloads` |
-| CLI / MCP | MCP: `list_session_downloads` (CLI subcommand not in v1) |
+| Web UI | Global **Downloads** and **Screenshots** lists in the application header |
+| REST API | `GET /api/v1/artifacts?kind=downloads` or `?kind=screenshots` |
+| CLI / MCP | `RmmApiClient.list_artifacts(kind)` and MCP: `list_artifacts` (per-session `list_session_downloads` remains available) |
 
 ## User flow
 
@@ -18,8 +20,11 @@ Operators can browse files pulled from agents (`__DOWNLOAD__`) in the web consol
 4. Server indexes the file on `session.download_artifacts`.
 
 **Large files (> 2 GB):** the agent uses `[long]` offsets and sizes in `Send-RmmFileDownload` so ISOs and other multi-gigabyte files are not limited by .NET `Int32` in progress math.
-5. Web UI lists remote path, size, received time; **Download** and optional **Preview** (text ≤ 1 MB, images).
-6. On new `file_upload` events (WebSocket or poll), the list refreshes automatically.
+5. Web UI lists the originating agent, session status, remote path or screenshot
+   name, size, and received time; **Download** and optional **Preview** (text ≤
+   1 MB, images) are available.
+6. On new `file_upload` or `screenshot` events (WebSocket or poll), an open
+   global list refreshes automatically.
 
 ### Chunk pacing (agent)
 
@@ -67,6 +72,44 @@ The web UI uses `fetch` with `Authorization: Bearer` (same token as the rest of 
 
 ## REST API
 
+Global artifact inventory:
+
+```http
+GET /api/v1/artifacts?kind=downloads
+GET /api/v1/artifacts?kind=screenshots
+Authorization: Bearer $RMM_API_TOKEN
+```
+
+Both responses use the same row shape:
+
+```json
+{
+  "kind": "downloads",
+  "count": 1,
+  "artifacts": [
+    {
+      "artifact": "a1b2c3d4e5f6_report.pdf",
+      "remote_path": "C:\\Users\\x\\report.pdf",
+      "size": 1258291,
+      "received_at": "2026-06-01T12:05:00",
+      "artifact_url": "/api/v1/artifacts/downloads/a1b2c3d4e5f6_report.pdf",
+      "session_id": "…",
+      "hostname": "target-01",
+      "username": "alice",
+      "agent_label": "alice@target-01",
+      "active": true
+    }
+  ]
+}
+```
+
+`remote_path` is populated for downloads when the server has the ingest index;
+screenshots use the stored artifact name. The `agent_label`, session ID, and
+`active` flag let an operator distinguish artifacts from multiple agents and
+archived sessions.
+
+The existing per-session endpoint remains available:
+
 ```http
 GET /api/v1/sessions/{id}/downloads
 Authorization: Bearer $RMM_API_TOKEN
@@ -108,6 +151,7 @@ Files are served at `GET /api/v1/artifacts/downloads/{artifact}` with bearer tok
 | `register_download_artifact(session, filepath, remote_path)` | Append/replace index row after reassembly |
 | `backfill_download_artifacts(session)` | Scan `RMM_logs/downloads/` for `{hashPrefix}_*` on register |
 | `list_session_downloads(session_id_or_prefix)` | Return rows scoped to session hash prefix |
+| `list_artifacts(kind, workspace_id=None)` | Return global download or screenshot rows with agent metadata |
 
 ### Agent metadata
 
@@ -120,6 +164,14 @@ Files are served at `GET /api/v1/artifacts/downloads/{artifact}` with bearer tok
 
 ## Web client
 
-- `web/index.html` — **Downloads from agent** `<details>` panel.
-- `web/app.js` — `fetchSessionDownloads()`, `renderDownloadsList()`, WS refresh on `file_upload`.
+- `web/index.html` — global **Downloads** and **Screenshots** buttons plus the
+  artifact dialog.
+- `web/app.js` — `refreshGlobalArtifacts()`, `renderGlobalArtifactsList()`, and
+  refresh-on-event behavior.
 - `web/style.css` — table and preview styles.
+
+The WebUI helpers are split by responsibility: `artifactAgentLabel()` formats
+the originating agent, `artifactDisplayName()` selects a remote path or stored
+name, `setGlobalArtifactTab()` switches the global collection,
+`openGlobalArtifactsDialog()` opens it, and
+`refreshGlobalArtifactsIfOpen()` keeps an already open collection current.

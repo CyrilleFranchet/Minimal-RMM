@@ -30,7 +30,7 @@
     const rows = data?.assets || [];
     list.replaceChildren();
     if (!rows.length) {
-      list.innerHTML = '<p class="ai-hint">No URL-installed assets.</p>';
+      list.innerHTML = '<p class="ai-hint">No managed uploads.</p>';
       return;
     }
     for (const row of rows) {
@@ -122,6 +122,72 @@
       $("#asset-name").value = "";
       await refreshAssets();
       if (kind === "skills" && typeof window.fetchAiSkills === "function") window.fetchAiSkills();
+      if (kind === "rclone") window.refreshRmmExfilStatus?.();
+    } catch (error) {
+      setText("#asset-status", error.message, true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  function syncAssetForm() {
+    const kind = $("#asset-kind")?.value || "plugins";
+    const url = $("#asset-url");
+    const install = $("#asset-add");
+    const file = $("#asset-file");
+    const upload = $("#asset-upload");
+    const rclone = kind === "rclone";
+    url?.classList.toggle("hidden", rclone);
+    install?.classList.toggle("hidden", rclone);
+    if (url) {
+      url.placeholder = rclone ? "Upload a profiles.json file" : "https://example.invalid/release.dll";
+      url.value = rclone ? "" : url.value;
+    }
+    if (file) {
+      file.accept = rclone ? ".json,application/json" : kind === "skills" ? ".md,text/markdown" : ".dll,.ps1";
+    }
+    if (upload) upload.textContent = rclone ? "Upload profiles.json" : "Upload file";
+  }
+
+  function fileToBase64(file) {
+    return file.arrayBuffer().then((buffer) => {
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      return btoa(binary);
+    });
+  }
+
+  async function uploadAsset() {
+    const kind = $("#asset-kind")?.value || "plugins";
+    const file = $("#asset-file")?.files?.[0];
+    const name = $("#asset-name")?.value.trim() || file?.name || "";
+    if (!file) {
+      setText("#asset-status", "Choose a file first.", true);
+      return;
+    }
+    if (!name) {
+      setText("#asset-status", "The uploaded file needs a name.", true);
+      return;
+    }
+    const button = $("#asset-upload");
+    if (button) button.disabled = true;
+    setText("#asset-status", `Uploading ${name}…`);
+    try {
+      const result = await api()(`/assets/${kind}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, content_b64: await fileToBase64(file), enabled: true }),
+      });
+      if (![200, 201].includes(result.status)) throw new Error(result.data?.error || `HTTP ${result.status}`);
+      setText("#asset-status", `Uploaded ${result.data?.asset?.name || name}.`);
+      $("#asset-file").value = "";
+      $("#asset-name").value = "";
+      await refreshAssets();
+      if (kind === "skills") window.fetchAiSkills?.();
+      if (kind === "rclone") window.refreshRmmExfilStatus?.();
     } catch (error) {
       setText("#asset-status", error.message, true);
     } finally {
@@ -152,9 +218,13 @@
 
   function bind() {
     $("#asset-add")?.addEventListener("click", installAsset);
+    $("#asset-upload")?.addEventListener("click", () => $("#asset-file")?.click());
+    $("#asset-file")?.addEventListener("change", uploadAsset);
+    $("#asset-kind")?.addEventListener("change", syncAssetForm);
     $("#asset-profile-refresh")?.addEventListener("click", () => Promise.all([refreshAssets(), refreshTransport()]));
     $("#asset-profile-start")?.addEventListener("click", startProfile);
     $("#asset-profile-stop")?.addEventListener("click", stopProfile);
+    syncAssetForm();
   }
 
   window.refreshAssets = refreshAssets;

@@ -31,7 +31,8 @@ const state = {
   wsReconnectTimer: null,
   /** Serialize live event rendering so REST hydration preserves WS event order. */
   liveEventQueue: Promise.resolve(),
-  sessionDownloads: [],
+  globalArtifacts: { downloads: [], screenshots: [] },
+  globalArtifactKind: "downloads",
   socksRelays: [],
   socksBusy: false,
   tunRelays: [],
@@ -192,6 +193,7 @@ async function retryServerConnection() {
     await refreshExfilStatus();
     await refreshSocksRelays();
     await refreshTunRelays();
+    await refreshGlobalArtifactsIfOpen();
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -321,56 +323,73 @@ function canPreviewDownload(entry) {
   return null;
 }
 
-function renderDownloadsList(downloads) {
-  const container = $("#downloads-list");
+function artifactAgentLabel(entry) {
+  const label = String(entry?.agent_label || "").trim();
+  if (label) return label;
+  const user = String(entry?.username || "").trim();
+  const host = String(entry?.hostname || "").trim();
+  if (user && host) return `${user}@${host}`;
+  if (host) return host;
+  const sessionId = String(entry?.session_id || "").trim();
+  return sessionId ? `session ${sessionId.slice(0, 8)}` : "Unknown agent";
+}
+
+function artifactDisplayName(entry, kind) {
+  if (kind === "downloads" && entry?.remote_path) return String(entry.remote_path);
+  return suggestedDownloadFilename(entry);
+}
+
+function renderGlobalArtifactsList(artifacts, kind = state.globalArtifactKind) {
+  const container = $("#global-artifacts-list");
   if (!container) return;
-  state.sessionDownloads = downloads || [];
-  if (!state.sessionDownloads.length) {
-    container.innerHTML = '<p class="downloads-empty">No files downloaded yet.</p>';
+  const entries = Array.isArray(artifacts) ? artifacts : [];
+  state.globalArtifacts[kind] = entries;
+  if (!entries.length) {
+    container.innerHTML = `<p class="downloads-empty">No ${kind === "screenshots" ? "screenshots" : "downloads"} received yet.</p>`;
     return;
   }
-  const rows = state.sessionDownloads
-    .map((d, i) => {
-      const previewKind = canPreviewDownload(d);
+  const rows = entries
+    .map((entry, i) => {
+      const previewKind = canPreviewDownload(entry);
       const previewBtn = previewKind
-        ? `<button type="button" class="secondary btn-dl-preview" data-idx="${i}">Preview</button>`
+        ? `<button type="button" class="secondary btn-artifact-preview" data-idx="${i}">Preview</button>`
         : "";
+      const stateLabel = entry.active ? "active" : "archived";
+      const sessionId = String(entry.session_id || "");
+      const sessionMeta = sessionId ? `${sessionId.slice(0, 8)} · ${stateLabel}` : stateLabel;
+      const displayName = artifactDisplayName(entry, kind);
       return `<tr>
-        <td class="path" title="${escapeHtml(d.remote_path || "")}">${escapeHtml(d.remote_path || d.artifact)}</td>
-        <td>${escapeHtml(formatFileSize(d.size))}</td>
-        <td>${escapeHtml(formatAgoFromIso(d.received_at))}</td>
+        <td><strong>${escapeHtml(artifactAgentLabel(entry))}</strong><br><span class="artifact-session-meta">${escapeHtml(sessionMeta)}</span></td>
+        <td class="path" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</td>
+        <td>${escapeHtml(formatFileSize(entry.size))}</td>
+        <td>${escapeHtml(formatAgoFromIso(entry.received_at))}</td>
         <td><div class="downloads-actions">
-          <button type="button" class="secondary btn-dl-download" data-idx="${i}">Download</button>
+          <button type="button" class="secondary btn-artifact-download" data-idx="${i}">Download</button>
           ${previewBtn}
         </div></td>
       </tr>`;
     })
     .join("");
-  container.innerHTML = `<table class="downloads-table">
-    <thead><tr><th>Remote path</th><th>Size</th><th>Received</th><th>Actions</th></tr></thead>
+  container.innerHTML = `<table class="downloads-table artifacts-table">
+    <thead><tr><th>Agent</th><th>${kind === "screenshots" ? "Screenshot" : "Remote path"}</th><th>Size</th><th>Received</th><th>Actions</th></tr></thead>
     <tbody>${rows}</tbody>
-  </table>
-  <div id="downloads-preview" class="downloads-preview hidden"></div>`;
-  container.querySelectorAll(".btn-dl-download").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const idx = Number(btn.dataset.idx);
-      const entry = state.sessionDownloads[idx];
+  </table>`;
+  container.querySelectorAll(".btn-artifact-download").forEach((button) => {
+    button.addEventListener("click", () => {
+      const entry = state.globalArtifacts[kind]?.[Number(button.dataset.idx)];
       if (!entry) return;
       downloadArtifactEntry(entry).catch((err) => {
         appendShellError(err.message || String(err));
       });
     });
   });
-  container.querySelectorAll(".btn-dl-preview").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const idx = Number(btn.dataset.idx);
-      const entry = state.sessionDownloads[idx];
+  container.querySelectorAll(".btn-artifact-preview").forEach((button) => {
+    button.addEventListener("click", () => {
+      const entry = state.globalArtifacts[kind]?.[Number(button.dataset.idx)];
       if (!entry) return;
-      const kind = canPreviewDownload(entry);
-      previewDownload(entry.artifact_url, kind, entry.remote_path || entry.artifact).catch(
-        (err) => {
-          appendShellError(err.message || String(err));
-        }
+      const previewKind = canPreviewDownload(entry);
+      previewDownload(entry.artifact_url, previewKind, artifactDisplayName(entry, kind), "#global-artifacts-preview").catch(
+        (err) => appendShellError(err.message || String(err))
       );
     });
   });
@@ -386,17 +405,53 @@ function formatAgoFromIso(iso) {
   }
 }
 
-async function fetchSessionDownloads() {
-  if (!state.selectedId) return;
-  const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/downloads`
-  );
+async function refreshGlobalArtifacts(kind = state.globalArtifactKind) {
+  if (!state.token && !WORKSPACE_MODE) return;
+  const normalized = kind === "screenshots" ? "screenshots" : "downloads";
+  const { status, data } = await api(`/artifacts?kind=${encodeURIComponent(normalized)}`);
   if (status === 401) {
     disconnect();
     return;
   }
   if (status !== 200) return;
-  renderDownloadsList(data.downloads || []);
+  state.globalArtifacts[normalized] = Array.isArray(data.artifacts) ? data.artifacts : [];
+  if (state.globalArtifactKind === normalized) {
+    renderGlobalArtifactsList(state.globalArtifacts[normalized], normalized);
+  }
+}
+
+function refreshGlobalArtifactsIfOpen(kind = state.globalArtifactKind) {
+  if (!$("#artifacts-dialog")?.open) return Promise.resolve();
+  return refreshGlobalArtifacts(kind);
+}
+
+function setGlobalArtifactTab(kind) {
+  const normalized = kind === "screenshots" ? "screenshots" : "downloads";
+  state.globalArtifactKind = normalized;
+  document.querySelectorAll(".artifact-tab").forEach((button) => {
+    const active = button.dataset.artifactKind === normalized;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  const title = $("#artifacts-dialog-title");
+  if (title) title.textContent = normalized === "screenshots" ? "Screenshots from all agents" : "Downloads from all agents";
+  const hint = $("#artifacts-scope-hint");
+  if (hint) hint.textContent = normalized === "screenshots"
+    ? "Screenshots returned by every agent in this server or workspace."
+    : "Files returned by every agent in this server or workspace.";
+  renderGlobalArtifactsList(state.globalArtifacts[normalized] || [], normalized);
+  const preview = $("#global-artifacts-preview");
+  if (preview) {
+    preview.classList.add("hidden");
+    preview.innerHTML = "";
+  }
+}
+
+function openGlobalArtifactsDialog(kind = "downloads") {
+  setGlobalArtifactTab(kind);
+  const dialog = $("#artifacts-dialog");
+  if (dialog?.showModal && !dialog.open) dialog.showModal();
+  refreshGlobalArtifacts(state.globalArtifactKind).catch(() => {});
 }
 
 function selectedSocksRelay(sessionId = state.selectedId) {
@@ -734,20 +789,49 @@ async function refreshSocksRelays() {
   updateSocksUi();
 }
 
-function openSocksDialog() {
+function setAgentToolsTab(tab) {
+  const normalized = tab === "pivots" ? "pivots" : "files";
+  document.querySelectorAll(".agent-tools-tab").forEach((button) => {
+    const active = button.dataset.agentToolsTab === normalized;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  $("#agent-tools-panel-files")?.classList.toggle("hidden", normalized !== "files");
+  $("#agent-tools-panel-pivots")?.classList.toggle("hidden", normalized !== "pivots");
+}
+
+function openAgentToolsDialog(tab = "files") {
   if (!state.selectedId || state.viewMode !== "live") return;
-  const relay = selectedSocksRelay();
-  const port = $("#socks-port");
-  const bindHost = $("#socks-bind-host");
-  if (port) port.value = String(relay?.port || 1080);
-  if (bindHost) bindHost.value = String(relay?.bind_host || "127.0.0.1");
-  setSocksActionStatus("");
-  prepareTunControls();
-  updateSocksUi();
-  const dialog = $("#socks-dialog");
+  const normalized = tab === "pivots" ? "pivots" : "files";
+  setAgentToolsTab(normalized);
+  const session = state.sessions.find((item) => item.id === state.selectedId);
+  const sessionLabel = session
+    ? `Selected session: ${session.username}@${session.hostname} · ${session.id.slice(0, 8)}`
+    : "No live session selected";
+  const filesLabel = $("#files-selected-session");
+  if (filesLabel) filesLabel.textContent = sessionLabel;
+  if (normalized === "pivots") {
+    const relay = selectedSocksRelay();
+    const port = $("#socks-port");
+    const bindHost = $("#socks-bind-host");
+    if (port) port.value = String(relay?.port || 1080);
+    if (bindHost) bindHost.value = String(relay?.bind_host || "127.0.0.1");
+    setSocksActionStatus("");
+    prepareTunControls();
+    updateSocksUi();
+  } else {
+    refreshExfilStatus().catch(() => {});
+  }
+  const dialog = $("#agent-tools-dialog");
   if (dialog?.showModal && !dialog.open) dialog.showModal();
-  refreshSocksRelays().catch(() => {});
-  refreshTunRelays().catch(() => {});
+  if (normalized === "pivots") {
+    refreshSocksRelays().catch(() => {});
+    refreshTunRelays().catch(() => {});
+  }
+}
+
+function openSocksDialog() {
+  openAgentToolsDialog("pivots");
 }
 
 async function startSelectedSocks() {
@@ -807,8 +891,8 @@ async function stopSocksRelay(sessionId = state.selectedId) {
   }
 }
 
-async function previewDownload(url, kind, name) {
-  const panel = $("#downloads-preview");
+async function previewDownload(url, kind, name, panelSelector = "#global-artifacts-preview") {
+  const panel = $(panelSelector);
   if (!panel) return;
   panel.classList.remove("hidden");
   panel.innerHTML = `<p class="downloads-empty">Loading ${escapeHtml(name)}…</p>`;
@@ -913,6 +997,8 @@ function startSessionPolling() {
     fetchSessionHistory().catch(() => {});
     refreshSocksRelays().catch(() => {});
     refreshTunRelays().catch(() => {});
+    refreshGlobalArtifactsIfOpen("downloads").catch(() => {});
+    refreshGlobalArtifactsIfOpen("screenshots").catch(() => {});
   };
   tick();
   state.sessionPollTimer = setInterval(tick, 5000);
@@ -1842,6 +1928,7 @@ function loadShellHistoryStore() {
 function saveShellHistoryStore(store) {
   try {
     sessionStorage.setItem(SHELL_HISTORY_KEY, JSON.stringify(store));
+    window.persistRmmUiConfig?.();
   } catch {
     /* quota */
   }
@@ -2138,12 +2225,13 @@ function operatorCommandFromBody(body) {
 function renderEventBodyHtml(ev) {
   const body = String(ev.body || "");
   if (ev.type === "screenshot" && ev.artifact_url) {
+    refreshGlobalArtifactsIfOpen("screenshots").catch(() => {});
     const src = artifactSrc(ev.artifact_url);
     const name = suggestedDownloadFilename({ artifact: ev.artifact });
     return `<div class="screenshot-preview"><img class="screenshot-image" src="${escapeHtml(src)}" alt="Screenshot"><button type="button" class="screenshot-download" data-artifact-url="${escapeHtml(ev.artifact_url)}" data-download-name="${escapeHtml(name)}">Download</button></div>`;
   }
   if (ev.type === "file_upload" && ev.artifact_url) {
-    fetchSessionDownloads().catch(() => {});
+    refreshGlobalArtifactsIfOpen("downloads").catch(() => {});
     const name = suggestedDownloadFilename({ remote_path: body.split(" → ")[0], artifact: ev.artifact });
     return `${escapeHtml(body)}<br><a class="artifact-link artifact-download" href="#" data-artifact-url="${escapeHtml(ev.artifact_url)}" data-download-name="${escapeHtml(name)}">Download file</a>`;
   }
@@ -2189,6 +2277,7 @@ function initSidebarResize() {
     body.style.setProperty("--sidebar-width", `${w}px`);
     resizer.setAttribute("aria-valuenow", String(w));
     sessionStorage.setItem(STORAGE_KEY, String(w));
+    window.persistRmmUiConfig?.();
   }
 
   const saved = parseInt(sessionStorage.getItem(STORAGE_KEY), 10);
@@ -2197,6 +2286,11 @@ function initSidebarResize() {
   } else {
     resizer.setAttribute("aria-valuenow", String(currentWidth()));
   }
+
+  window.addEventListener("rmm-config-imported", () => {
+    const persisted = parseInt(sessionStorage.getItem(STORAGE_KEY), 10);
+    if (!Number.isNaN(persisted)) setWidth(persisted);
+  });
 
   let startX = 0;
   let startW = 0;
@@ -2269,6 +2363,9 @@ async function connect() {
     return;
   }
   if (token) sessionStorage.setItem(STORAGE_KEY, token);
+  if (typeof window.loadRmmUiConfig === "function") {
+    await window.loadRmmUiConfig().catch(() => false);
+  }
   showApp();
   if (typeof window.refreshAgentScriptTemplate === "function") {
     window.refreshAgentScriptTemplate();
@@ -2436,7 +2533,6 @@ async function selectSession(id) {
       saveEventCursor(id, state.lastEventId);
     }
   }
-  await fetchSessionDownloads();
   await refreshSocksRelays();
   await refreshTunRelays();
 }
@@ -2455,10 +2551,6 @@ function showEmptyConsole() {
   show($("#empty-state"));
   hide($("#console-panel"));
   $("#shell-input").value = "";
-  const dl = $("#downloads-list");
-  if (dl) {
-    dl.innerHTML = '<p class="downloads-empty">No files downloaded yet.</p>';
-  }
   updateSocksUi();
   updateTunUi();
   renderSessionList();
@@ -2484,6 +2576,7 @@ function saveEventCursor(sessionId, eventId) {
   const cursors = loadEventCursors();
   cursors[sessionId] = Math.max(cursors[sessionId] || 0, eventId);
   sessionStorage.setItem(EVENT_CURSORS_KEY, JSON.stringify(cursors));
+  window.persistRmmUiConfig?.();
 }
 
 function appendEvent(ev, { local = false, history = false, allowPast = false } = {}) {
@@ -3148,6 +3241,7 @@ async function killSession(id) {
 
 window.rmmApi = api;
 window.rmmState = state;
+window.refreshRmmExfilStatus = refreshExfilStatus;
 
 document.addEventListener("DOMContentLoaded", () => {
   if (typeof window.initAiPanel === "function") {
@@ -3159,15 +3253,19 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
   $("#console-close")?.addEventListener("click", closeConsole);
-  $("#open-files-dialog")?.addEventListener("click", () => {
-    const dialog = $("#files-dialog");
-    if (dialog?.showModal && !dialog.open) dialog.showModal();
-  });
-  $("#open-downloads-dialog")?.addEventListener("click", () => {
-    const dialog = $("#downloads-dialog");
-    if (dialog?.showModal && !dialog.open) dialog.showModal();
-  });
+  $("#open-files-dialog")?.addEventListener("click", () => openAgentToolsDialog("files"));
+  $("#open-downloads-dialog")?.addEventListener("click", () => openGlobalArtifactsDialog("downloads"));
+  $("#open-screenshots-dialog")?.addEventListener("click", () => openGlobalArtifactsDialog("screenshots"));
   $("#open-socks-dialog")?.addEventListener("click", openSocksDialog);
+  document.querySelectorAll(".agent-tools-tab").forEach((button) => {
+    button.addEventListener("click", () => openAgentToolsDialog(button.dataset.agentToolsTab || "files"));
+  });
+  document.querySelectorAll(".artifact-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      setGlobalArtifactTab(button.dataset.artifactKind || "downloads");
+      refreshGlobalArtifacts(state.globalArtifactKind).catch(() => {});
+    });
+  });
   $("#socks-start")?.addEventListener("click", () => {
     startSelectedSocks().catch((err) => setSocksActionStatus(err.message || String(err), true));
   });

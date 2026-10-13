@@ -30,6 +30,7 @@
     document.documentElement.setAttribute("data-theme", t);
     localStorage.setItem(STORAGE_KEY, t);
     updateToggleButtons(t);
+    window.persistRmmUiConfig?.();
   }
 
   function initThemeToggle() {

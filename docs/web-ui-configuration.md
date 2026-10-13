@@ -1,6 +1,38 @@
-# Web UI configuration export
+# Web UI configuration and persistence
 
-The **Config** button in the web UI opens an export/import panel. It saves supported browser settings to a versioned JSON document and restores them into `sessionStorage` (and the theme into `localStorage`). Importing a file refreshes the current UI without a page reload.
+The **Config** button in the web UI opens an export/import panel. It saves
+supported settings to a versioned JSON document and restores them without a
+page reload. After authentication, the same operator settings are synchronized
+automatically to SQLite so they survive a browser restart and follow the
+current server or workspace environment.
+
+The API token remains a login credential in the browser. It is not loaded from
+the state database because the UI needs that token to authenticate the first
+state request.
+
+## SQLite ownership
+
+| Deployment | Database | Namespace |
+| --- | --- | --- |
+| Server mode | `RMM_UI_STATE_DB`, default `RMM_logs/ui-state.db` | `server` |
+| Workspace mode | `RMM_WORKSPACE_DATA/workspace.db` | `workspace` |
+
+The server database and workspace database are owner-readable (`0600`), and
+the containing directories are owner-only where the operating system permits
+it. Provider API keys, Exegol MCP tokens, and agent generator secrets are part
+of this operator state because the workspace or server is already the selected
+storage owner. Do not place the database on a shared, untrusted volume.
+
+The REST endpoint is authenticated like the other operator routes:
+
+```http
+GET   /api/v1/ui/config
+PATCH /api/v1/ui/config
+```
+
+The PATCH body is `{ "storage": { "session": { ... }, "local": { ... } } }`.
+The server applies an allowlist and ignores the API token. Workspace mode
+serves the same path locally from its existing SQLite database.
 
 ## File format
 
@@ -22,7 +54,7 @@ Exports omit secrets by default. The explicit **Include API keys and other secre
 
 When importing a file without secrets, existing secrets in the current tab are left unchanged and missing secrets remain missing. Imported provider validation state is marked stale, so each provider must be validated again before it becomes available.
 
-## Current allowlists
+## Export allowlists
 
 `web/config.js` currently exports these session settings:
 
@@ -44,16 +76,51 @@ When secrets are explicitly included, it exports these direct secret keys:
 - `rmm_mistral_api_key`
 - `rmm_exegol_mcp_token`
 
-The PowerShell and Go Beacon secrets are nested in their respective agent preference objects and are exported under `rmm_agent_gen_prefs.beaconSecret` and `rmm_go_agent_prefs.beaconSecret`.
+The PowerShell and Go beacon secrets are nested in their respective agent
+preference objects and are exported under
+`rmm_agent_gen_prefs.beaconSecret` and `rmm_go_agent_prefs.beaconSecret`.
+
+## Automatically persisted state
+
+The automatic SQLite state allowlist is maintained as `PERSISTED_SESSION_KEYS`
+in `web/config.js` and includes the settings above plus:
+
+- `rmm_shell_history`
+- `rmm_event_cursors`
+- `rmm_openai_api_key`
+- `rmm_anthropic_api_key`
+- `rmm_mistral_api_key`
+- `rmm_exegol_mcp_token`
+
+The theme (`rmm_theme`) is persisted in the SQLite `local` object. The
+browser's `sessionStorage` and `localStorage` values are only a short-lived UI
+cache while the authenticated deployment state is being loaded or updated.
+
+Chat transcripts are not part of this configuration blob. They remain in the
+existing server history files or workspace `ai_chats` table.
 
 ## Maintainer guide
 
-The allowlists and schema version live in `web/config.js`. `make check-web-contracts` verifies that the allowlisted keys are documented and that the export/import controls remain wired into the page. When adding a new setting:
+The export/import allowlists, schema version, and automatic persistence keys
+live in `web/config.js`. `make check-web-contracts` verifies that the
+allowlisted export keys are documented and that the import, upload, and SQLite
+state controls remain wired into the page. When adding a new setting:
 
 1. Decide whether it is a normal setting or a secret.
-2. Add its storage key to `SESSION_KEYS` or `SECRET_KEYS`.
-3. For nested secrets, remove them from the normal export and add an explicit secret field, following `rmm_agent_gen_prefs.beaconSecret` and `rmm_go_agent_prefs.beaconSecret`.
-4. Update this document and add an import/export test or manual checklist item.
-5. Bump `VERSION` only when the format meaning changes; keep old migration code when practical.
+2. Add its storage key to `SESSION_KEYS` or `SECRET_KEYS` for export/import.
+3. Add it to `PERSISTED_SESSION_KEYS` if it must follow the server/workspace.
+4. For nested secrets, keep the explicit secret export behavior used by
+   `rmm_agent_gen_prefs.beaconSecret` and `rmm_go_agent_prefs.beaconSecret`.
+5. Update this document and add an import/export or persistence test.
+6. Bump `VERSION` only when the file format meaning changes; keep old
+   migration code when practical.
 
-The feature intentionally excludes shell history, event cursors, and chat transcripts. Those are runtime/session data rather than UI configuration.
+## Code reference
+
+| Symbol | Role |
+| --- | --- |
+| `UiStateStore` | SQLite persistence for server-mode UI state namespaces |
+| `normalize_ui_state` | Apply the server-side UI state allowlist and size limit |
+| `WorkspaceStore.get_ui_state` / `set_ui_state` | Persist workspace UI state in `workspace.db` |
+| `loadRmmUiConfig` | Load state after authentication and refresh the WebUI |
+| `persistRmmUiConfig` | Debounce UI changes into the authenticated state endpoint |

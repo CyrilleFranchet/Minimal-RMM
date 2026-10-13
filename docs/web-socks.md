@@ -4,11 +4,15 @@ See the [documentation wiki](README.md) and the
 [architecture overview](architecture.md) for system-wide placement and
 privilege boundaries.
 
-The WebUI exposes SOCKS5 and TUN routing inside the **Pivots** dialog for the
-selected live session console. Listener and device ownership follows the
+The WebUI exposes **Files & Screenshots** and **Pivots** as tabs in one agent
+tools dialog for the selected live session console. Listener and device ownership follows the
 storage mode: the central server owns them in server mode, while the local
 workspace service owns them in workspace mode. See
 [`docs/tun-pivot.md`](tun-pivot.md) for TUN configuration and lifecycle.
+
+SOCKS5 and TUN are independent relays. Starting or stopping one does not stop
+the other, so both can be active for the same agent. The agent has a separate
+plugin controller and authenticated transport channel for each relay.
 
 ## Start a relay
 
@@ -78,3 +82,26 @@ The TUN frontend uses its private relay's SOCKS5 `UDP ASSOCIATE` support for
 datagram flows and its dedicated `/tun` agent channel. The relay is separate
 from rclone exfiltration:
 `rmm_rclone.py` manages cloud upload profiles and does not configure SOCKS.
+
+## Global downloads and screenshots
+
+**Downloads** and **Screenshots** are global controls in the application header.
+They list artifacts from all agents in the current server or workspace. Each
+row shows the originating agent, a short session ID, whether that session is
+active or archived, the artifact name or remote path, size, and received time.
+Rows provide authenticated download actions and previews for supported text and
+image files.
+
+The lists use:
+
+- `GET /api/v1/artifacts?kind=downloads`
+- `GET /api/v1/artifacts?kind=screenshots`
+
+The existing per-session `GET /api/v1/sessions/{id}/downloads` endpoint remains
+available for automation and compatibility. Artifact files continue to use
+`GET /api/v1/artifacts/{kind}/{filename}`.
+
+The agent tools tabs are controlled by `setAgentToolsTab()` and
+`openAgentToolsDialog()` in `web/app.js`; `openSocksDialog()` selects the Pivots
+tab for the existing session-header button. These helpers preserve one modal
+surface while keeping the file and pivot controls independent.

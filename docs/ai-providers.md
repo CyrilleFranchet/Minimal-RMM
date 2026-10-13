@@ -1,6 +1,12 @@
 # Web AI providers
 
-The web AI panel supports OpenAI, Anthropic, and Mistral. An operator enters a provider key in the browser and validates it before the provider becomes selectable. Keys, validation state, selected provider, and selected model remain in sessionStorage for the browser tab. They are never written to RMM_logs.
+The web AI panel supports OpenAI, Anthropic, and Mistral. An operator enters a
+provider key in the browser and validates it before the provider becomes
+selectable. After connection, keys, validation state, selected provider, and
+selected model are synchronized to the authenticated server/workspace SQLite
+UI state so the operator does not have to re-enter them after a browser
+restart. Keep that database owner-only; the RMM API token remains a login
+credential in the browser.
 
 ## API
 

@@ -73,6 +73,7 @@
 
   function saveProviderState(state) {
     sessionStorage.setItem(PROVIDER_STATE_STORAGE, JSON.stringify(state));
+    window.persistRmmUiConfig?.();
   }
 
   function getProviderKey(provider) {
@@ -162,6 +163,7 @@
     }
     if (!select.value && select.options.length) select.selectedIndex = 0;
     sessionStorage.setItem(PROVIDER_STORAGE, select.value || "");
+    window.persistRmmUiConfig?.();
     populateModelSelect();
     restoreModelSelection();
   }
@@ -208,6 +210,7 @@
         return;
       }
       sessionStorage.setItem(`rmm_${provider}_api_key`, key);
+      window.persistRmmUiConfig?.();
       const state = getProviderState();
       state[provider] = { valid: true, models: Array.isArray(data.models) ? data.models : [] };
       saveProviderState(state);
@@ -241,7 +244,7 @@
       setProviderStatus(
         provider,
         state[provider]?.valid && getProviderKey(provider)
-          ? "Previously validated for this browser tab."
+          ? "Previously validated for this server or workspace."
           : "Not configured.",
         Boolean(state[provider]?.valid && getProviderKey(provider))
       );
@@ -261,6 +264,7 @@
     sessionStorage.setItem(EXEGOL_ENABLED_STORAGE, enabled ? "1" : "0");
     sessionStorage.setItem(EXEGOL_URL_STORAGE, url);
     sessionStorage.setItem(EXEGOL_TOKEN_STORAGE, token);
+    window.persistRmmUiConfig?.();
   }
 
   function loadEnabledSkillIds() {
@@ -280,6 +284,7 @@
 
   function persistEnabledSkillIds(ids) {
     sessionStorage.setItem(AI_SKILLS_ENABLED_STORAGE, JSON.stringify(ids));
+    window.persistRmmUiConfig?.();
   }
 
   function getEnabledSkillIds() {
@@ -323,7 +328,8 @@
       const text = document.createElement("span");
       text.className = "ai-skill-label";
       text.title = skill.description || skill.id;
-      text.textContent = skill.title || skill.id;
+      const marker = skill.always ? " · always" : skill.default ? " · default" : "";
+      text.textContent = `${skill.title || skill.id}${marker}`;
       label.appendChild(input);
       label.appendChild(text);
       container.appendChild(label);
@@ -360,6 +366,7 @@
     body.classList.toggle("ai-open", open);
     btn?.classList.toggle("active", open);
     sessionStorage.setItem(AI_PANEL_OPEN_STORAGE, open ? "1" : "0");
+    window.persistRmmUiConfig?.();
   }
 
   function renderToolCalls(toolCalls) {
@@ -574,7 +581,7 @@
       }
       const status = $(`#${provider}-provider-status`);
       if (getProviderState()[provider]?.valid) {
-        setProviderStatus(provider, "Previously validated for this browser tab.", true);
+        setProviderStatus(provider, "Previously validated for this server or workspace.", true);
       } else if (status) {
         setProviderStatus(provider, "Not configured.");
       }
@@ -584,6 +591,7 @@
     }
     $("#ai-provider-select")?.addEventListener("change", () => {
       sessionStorage.setItem(PROVIDER_STORAGE, getActiveProvider());
+      window.persistRmmUiConfig?.();
       populateModelSelect();
       restoreModelSelection();
     });
@@ -605,7 +613,13 @@
         saveProviderState(state);
       });
     }
-    window.addEventListener("rmm-config-imported", refreshProviderInputs);
+    window.addEventListener("rmm-config-imported", () => {
+      refreshProviderInputs();
+      if (exegolEnabled) exegolEnabled.checked = sessionStorage.getItem(EXEGOL_ENABLED_STORAGE) === "1";
+      if (exegolUrl) exegolUrl.value = sessionStorage.getItem(EXEGOL_URL_STORAGE) || DEFAULT_EXEGOL_MCP_URL;
+      if (exegolToken) exegolToken.value = sessionStorage.getItem(EXEGOL_TOKEN_STORAGE) || "";
+      setAiPanelOpen(sessionStorage.getItem(AI_PANEL_OPEN_STORAGE) === "1");
+    });
 
     const exegolEnabled = $("#exegol-mcp-enabled");
     const exegolUrl = $("#exegol-mcp-url-input");
