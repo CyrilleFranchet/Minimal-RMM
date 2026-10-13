@@ -129,10 +129,16 @@ class _BaseMcpSession:
 class McpRmmSession(_BaseMcpSession):
     """One stdio MCP connection to mcp_rmm_server.py (lifetime of a single AI chat)."""
 
-    def __init__(self, rmm_base_url: str, rmm_token: str):
+    def __init__(
+        self,
+        rmm_base_url: str,
+        rmm_token: str,
+        extra_headers: dict[str, str] | None = None,
+    ):
         super().__init__()
         self.rmm_base_url = rmm_base_url.rstrip("/")
         self.rmm_token = rmm_token
+        self.extra_headers = dict(extra_headers or {})
         self._stdio_stack: Any = None
 
     async def __aenter__(self) -> McpRmmSession:
@@ -146,6 +152,11 @@ class McpRmmSession(_BaseMcpSession):
             env["RMM_API_TOKEN"] = token
         else:
             env.pop("RMM_API_TOKEN", None)
+        workspace_id = self.extra_headers.get("X-RMM-Workspace", "").strip()
+        workspace_token = self.extra_headers.get("X-RMM-Workspace-Token", "").strip()
+        if workspace_id and workspace_token:
+            env["RMM_WORKSPACE_ID"] = workspace_id
+            env["RMM_WORKSPACE_TOKEN"] = workspace_token
         env.pop("RMM_BASE_URL", None)
 
         params = StdioServerParameters(
@@ -262,6 +273,7 @@ def run_with_mcp_session(
     rmm_token: str,
     fn: Callable[[McpBackend], Awaitable[T]],
     *,
+    extra_headers: dict[str, str] | None = None,
     exegol_enabled: bool | None = None,
     exegol_mcp_url: str | None = None,
     exegol_mcp_token: str | None = None,
@@ -273,7 +285,7 @@ def run_with_mcp_session(
     )
 
     async def _run() -> T:
-        backends: list[Any] = [McpRmmSession(rmm_base_url, rmm_token)]
+        backends: list[Any] = [McpRmmSession(rmm_base_url, rmm_token, extra_headers)]
         if enabled:
             backends.append(McpHttpSession(exegol_url, exegol_token))
 

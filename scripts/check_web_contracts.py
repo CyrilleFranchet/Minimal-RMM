@@ -150,8 +150,8 @@ def _check_tun_contract(errors: list[str]) -> None:
         errors.append("WebUI TUN controls must live inside the Pivots dialog")
     if 'id="socks-dialog"' not in html or 'id="tun-section-title"' not in html:
         errors.append("WebUI Pivots dialog must contain the TUN routing section")
-    if "Server-owned device" not in html or "target-side TCP and UDP sockets" not in html:
-        errors.append("WebUI must explain that the TUN device belongs to the server")
+    if "Workspace or server device" not in html or "target-side TCP and UDP sockets" not in html:
+        errors.append("WebUI must explain TUN ownership and the privilege-free agent transport")
     for function_name in ("refreshTunRelays", "startSelectedTun", "stopTunRelay"):
         if not re.search(rf"function\s+{function_name}\s*\(", app):
             errors.append(f"WebUI TUN function missing from web/app.js: {function_name}")

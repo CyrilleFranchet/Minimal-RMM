@@ -5,6 +5,31 @@
 
 ## Current Status
 
+### 2026-10-13 — Multi-operator workspace deployment
+
+- Added `RMM_STORAGE_MODE=workspace` with central workspace authentication,
+  exclusive session claims, scoped REST access, and bounded transient event
+  delivery. The legacy server-owned storage mode remains the default.
+- Added `workspace_service.py` and `workspace_pivot.py`. Each operator's
+  workspace service persists sessions, transcripts, AI chat, downloads,
+  screenshots, and keylogs in a local SQLite/filesystem store. It owns the
+  local SOCKS listener and TUN helper, so `/dev/net/tun` and `CAP_NET_ADMIN`
+  stay out of the central control-plane container.
+- Added central transport-only SOCKS/TUN bridges with task requeue on failed
+  workspace handoff, local listener restoration, and stale relay cleanup.
+- Forwarded workspace headers through direct and stdio MCP AI tool clients so
+  workspace-scoped AI actions cannot escape the claimed session set.
+- Added `Dockerfile`, `.dockerignore`, `.env.example`, and
+  `docker-compose.yml` for a control-plane service plus an optional privileged
+  workspace sidecar. The image builds the checked-in Go plugins and `rmm-tun`.
+- Added workspace unit coverage for registry authentication, event cursor
+  overflow, local chunk reassembly, artifact/chat persistence, session claims,
+  central payload routing, and transport-only bridges.
+- Documented the architecture and operational procedures in
+  `docs/workspace-deployment.md`, `docs/server-startup.md`, `docs/tun-pivot.md`,
+  `docs/pivot-plugins.md`, `docs/session-history.md`,
+  `docs/web-ai-chat-memory.md`, `README.md`, and this plan.
+
 ### 2026-10-12 — Multiple TUN routes and host diagnostics
 
 - Added canonical `routes[]` support across the REST API, CLI, MCP tools, and

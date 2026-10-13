@@ -1,0 +1,53 @@
+---
+services:
+  rmm-control:
+    build: .
+    environment:
+      RMM_API_TOKEN: ${RMM_API_TOKEN:?set RMM_API_TOKEN}
+      RMM_BEACON_SECRET: ${RMM_BEACON_SECRET:?set RMM_BEACON_SECRET}
+      RMM_WORKSPACES: ${RMM_WORKSPACES:?set RMM_WORKSPACES}
+      RMM_STORAGE_MODE: ${RMM_STORAGE_MODE:-workspace}
+      RMM_PLUGINS_DIR: /app/plugins
+    command: ["python3", "server_rmm.py", "8080", "--bind", "0.0.0.0"]
+    ports:
+      - "${RMM_PORT:-8080}:8080"
+    volumes:
+      - rmm-control-state:/app/RMM_logs
+    networks:
+      - rmm-control
+    restart: unless-stopped
+
+  workspace:
+    build: .
+    profiles: ["workspace"]
+    depends_on:
+      - rmm-control
+    environment:
+      RMM_C2_URL: http://rmm-control:8080
+      RMM_WORKSPACE_ID: ${RMM_WORKSPACE_ID:?set RMM_WORKSPACE_ID}
+      RMM_WORKSPACE_TOKEN: ${RMM_WORKSPACE_TOKEN:?set RMM_WORKSPACE_TOKEN}
+      RMM_WORKSPACE_LOCAL_TOKEN: >-
+        ${RMM_WORKSPACE_LOCAL_TOKEN:?set RMM_WORKSPACE_LOCAL_TOKEN}
+      RMM_WORKSPACE_DATA: /workspace/data
+      RMM_WORKSPACE_BIND: 0.0.0.0
+      RMM_WORKSPACE_PORT: 8787
+      RMM_WORKSPACE_TUN_HELPER: /app/tools/rmm-tun
+    command: ["python3", "workspace_service.py"]
+    ports:
+      - "${RMM_WORKSPACE_PORT:-8787}:8787"
+    volumes:
+      - rmm-workspace-data:/workspace/data
+    devices:
+      - "/dev/net/tun:/dev/net/tun"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - rmm-control
+    restart: unless-stopped
+
+volumes:
+  rmm-control-state:
+  rmm-workspace-data:
+
+networks:
+  rmm-control:

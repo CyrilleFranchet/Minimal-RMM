@@ -20,7 +20,7 @@
         <h1>Minimal RMM</h1>
         <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
       </div>
-      <p>Web console for the operator API. Enter the same token as <code>RMM_API_TOKEN</code>.</p>
+      <p>Web console for the operator API. Enter the configured local token when this workspace requires one.</p>
       <label for="token-input">API token</label>
       <input type="password" id="token-input" placeholder="Bearer token" autocomplete="current-password">
       <button type="button" id="connect-btn">Connect</button>
@@ -472,8 +472,8 @@
           </div>
         </div>
         <p class="tun-protocol" role="note">
-          <span class="tun-protocol-label">Server-owned device</span>
-          <span>The TUN interface and routes are created on the RMM server. The Go agent only opens target-side TCP and UDP sockets.</span>
+          <span class="tun-protocol-label">Workspace or server device</span>
+          <span>The TUN interface and routes are created by the process that owns this deployment namespace. The Go agent only opens target-side TCP and UDP sockets.</span>
         </p>
         <div class="tun-actions">
           <button type="button" id="tun-start">Start TUN routing</button>
@@ -482,8 +482,8 @@
         </div>
         <p id="tun-status" class="tools-hint" role="status" aria-live="polite"></p>
         <p id="tun-action-status" class="tools-hint" role="status" aria-live="polite"></p>
-        <p class="tools-hint">Use narrow target routes such as <code>10.10.0.0/16</code>, one per line. The server needs the built <code>rmm-tun</code> helper, a built <code>tun.dll</code>, and permission to configure the host TUN device.</p>
-        <h3 class="tun-relays-title">Active server TUN relays</h3>
+        <p class="tools-hint">Use narrow target routes such as <code>10.10.0.0/16</code>, one per line. The owning process needs the built <code>rmm-tun</code> helper, a built <code>tun.dll</code>, and permission to configure the local TUN device.</p>
+        <h3 class="tun-relays-title">Active TUN relays</h3>
         <div id="tun-relays-list" class="tun-relays-list">
           <p class="downloads-empty">No active TUN relays.</p>
         </div>
@@ -506,6 +506,7 @@
 
   <script src="theme.js"></script>
   <script src="config.js"></script>
+  <script src="workspace-config.js"></script>
   <script src="app.js"></script>
   <script src="agent-gen.js"></script>
   <script src="go-agent.js"></script>

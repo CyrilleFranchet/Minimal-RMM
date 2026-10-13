@@ -1,6 +1,9 @@
 # Session history (web UI + REST)
 
-Operators can browse **archived transcripts** from ended sessions in the web console without SSH access to the RMM host.
+Operators can browse **archived transcripts** from ended sessions in the web
+console without SSH access to the RMM host. The storage owner depends on the
+deployment mode: server mode keeps the archive under `RMM_logs`; workspace mode
+keeps it in the operator's local workspace database and artifact directory.
 
 ## Surfaces
 
@@ -12,6 +15,8 @@ Operators can browse **archived transcripts** from ended sessions in the web con
 
 ## Storage
 
+### Server mode
+
 Under `RMM_logs/history/{session_id}/`:
 
 | File | Content |
@@ -21,6 +26,28 @@ Under `RMM_logs/history/{session_id}/`:
 | `ai_chat.json` | Operator AI chat for this session (see `docs/web-ai-chat-memory.md`) |
 
 Events append on every `_record_event` while the session is active. On **kill**, the server sets `ended_at` / `end_reason` before removing the live session. On **server restart**, sessions that were live before shutdown but are not in the new in-memory registry are finalized with `end_reason: server_restart` (from `sessions.json` and/or existing history directories). New agent registrations write initial `meta.json` and persist to `sessions.json` so beacon-only sessions can be archived too.
+
+### Workspace mode
+
+When `RMM_STORAGE_MODE=workspace`, the central server does not write
+`events.jsonl`, history metadata, AI chat, downloads, screenshots, or keylogs.
+It publishes result events to a bounded per-workspace queue. The matching
+`workspace_service.py` consumes those events and stores them in
+`RMM_WORKSPACE_DATA/workspace.db`:
+
+| SQLite table / directory | Content |
+| --- | --- |
+| `sessions` | Active and ended session metadata received from the central broker |
+| `events` | Local transcript events |
+| `ai_chats` | Per-session AI messages |
+| `artifacts/downloads` | Reassembled file downloads |
+| `artifacts/screenshots` | PNG screenshots |
+| `artifacts/keylogs` | Keylog text files |
+
+The workspace service exposes the same history routes. Its event cursor is
+stored in the `metadata` table. If the central transient queue overflows while
+the service is offline, it reports `reset_required` and the local transcript
+contains an explicit gap rather than silently claiming completeness.
 
 ## REST API
 
@@ -41,7 +68,12 @@ GET /api/v1/history/{id}/events?since=0&limit=500
 DELETE /api/v1/history/{id}
 ```
 
-Removes `RMM_logs/history/{id}/` from disk, drops the session from `sessions.json`, and deletes matching files under `RMM_logs/downloads/`, `screenshots/`, and `keylogs/` (12-char hash prefix derived from session id). Returns `409 session_still_active` if the session is still live. Response may include `artifacts_purged` counts.
+Removes the archived session and its artifacts from the active storage owner.
+In server mode this removes `RMM_logs/history/{id}/`, the `sessions.json` row,
+and matching files under `RMM_logs/downloads/`, `screenshots/`, and
+`keylogs/`. In workspace mode it removes the local SQLite row and
+session-prefixed files. Returns `409 session_still_active` if the session is
+still live.
 
 ```http
 DELETE /api/v1/history
@@ -60,11 +92,11 @@ Removes **all** ended archived sessions (same filter as `GET /history`). Also pu
 
 | Method | Role |
 |--------|------|
-| `_history_append_event` | Append event to `events.jsonl` |
+| `_history_append_event` | Append event to `events.jsonl` in server mode; no-op in workspace mode |
 | `_history_write_meta` | Write/update `meta.json` |
-| `_finalize_session_history` | Mark session ended (on kill or restart) |
-| `_archive_orphaned_sessions_on_startup` | Finalize stale/offline sessions after server restart |
-| `list_session_history` | Scan history dir for archived rows |
+| `_finalize_session_history` | Mark session ended in server mode; workspace mode receives the ended row through sync |
+| `_archive_orphaned_sessions_on_startup` | Finalize stale/offline sessions after server restart in server mode |
+| `list_session_history` | Scan server history dir or return no central archive in workspace mode |
 | `get_history_meta` / `get_history_events` | Read archive for API / web |
 | `purge_session_artifacts` | Delete session-scoped files in downloads / screenshots / keylogs |
 | `delete_history_session` | Remove archived transcript, `sessions.json` row, and session artifacts |
@@ -74,7 +106,11 @@ Removes **all** ended archived sessions (same filter as `GET /history`). Also pu
 
 ## Troubleshooting lost history
 
-**History is not in git.** Transcripts live under `RMM_logs/history/{session_id}/` on the machine where the server runs. `git pull` does not move or delete that folder unless you run something like `git clean`.
+**History is not in git.** In server mode, transcripts live under
+`RMM_logs/history/{session_id}/` on the machine where the server runs. In
+workspace mode, they live under the operator's `RMM_WORKSPACE_DATA` directory.
+`git pull` does not move or delete either location unless you run something
+like `git clean`.
 
 **Working directory matters.** `RMM_logs` is relative to the process cwd when you start `server_rmm.py`. If you restart from a different directory, the server creates a fresh empty `RMM_logs` and prior transcripts stay in the old path.
 

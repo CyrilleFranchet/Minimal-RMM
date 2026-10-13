@@ -57,12 +57,13 @@ continues polling `/cmd` while the pivot is active. Cancelling the agent also
 cancels the child process. This plugin is started only for the public SOCKS
 pivot and only while `socks_active` is true.
 
-The server-owned TUN frontend has a separate `agent-plugins/tun/` package and
+The RMM-owned TUN frontend has a separate `agent-plugins/tun/` package and
 `tun.dll`. When `/cmd` reports `tun_active: true`, the beacon starts that DLL
 in a separate cancellable child process. It polls `/tun` and owns the target
-TCP and UDP sockets for the server TUN relay. The TUN device and user-space IP
-stack stay on the server. The TUN child is not started for a public SOCKS
-relay, and the SOCKS child is not started for a TUN relay.
+TCP and UDP sockets for the server or workspace TUN relay. The TUN device and
+user-space IP stack stay with the process that owns the configured storage
+mode. The TUN child is not started for a public SOCKS relay, and the SOCKS
+child is not started for a TUN relay.
 
 Both plugins use the same in-memory JSON task framing (`connect`, `send`,
 `close`, `udp_send`, and `udp_close`) but have separate binaries and HTTP
@@ -233,11 +234,11 @@ New Python functions:
 | `RmmApiClient.list_plugins` | `rmm_cli.py` | `GET /api/v1/plugins` |
 | `RmmApiClient.queue_pe_load` | `rmm_cli.py` | `POST /api/v1/sessions/{id}/pe` |
 | `RmmApiClient.build_plugin` | `rmm_cli.py` | `POST /api/v1/plugins/build` |
-| `RmmApiClient.start_tun` / `stop_tun` / `list_tun` | `rmm_cli.py` | Server-owned TUN lifecycle REST methods |
+| `RmmApiClient.start_tun` / `stop_tun` / `list_tun` | `rmm_cli.py` | TUN lifecycle REST methods; device ownership follows storage mode |
 | `tool_list_plugins` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
 | `tool_queue_pe_load` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
 | `tool_build_plugin` | `rmm_tools.py` | Shared MCP/web-AI tool implementation |
-| `tool_start_tun` / `tool_stop_tun` / `tool_list_tun` | `rmm_tools.py` | Shared server-owned TUN operator tools |
+| `tool_start_tun` / `tool_stop_tun` / `tool_list_tun` | `rmm_tools.py` | Shared TUN operator tools; device ownership follows storage mode |
 
 ## Security notes
 

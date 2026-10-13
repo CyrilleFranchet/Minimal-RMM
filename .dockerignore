@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+RMM_logs
+docker-data
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.dll
+tools/rmm-tun
+tools/rclone/profiles.json
+tools/rclone/rclone.exe
+agent-go/minimal-rmm-agent*

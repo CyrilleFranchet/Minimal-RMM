@@ -1,7 +1,9 @@
-# Web UI — SOCKS pivot
+# Web UI — SOCKS and TUN pivots
 
-The WebUI exposes SOCKS5 and server-owned TUN routing inside the **Pivots**
-dialog for the selected live session console. See
+The WebUI exposes SOCKS5 and TUN routing inside the **Pivots** dialog for the
+selected live session console. Listener and device ownership follows the
+storage mode: the central server owns them in server mode, while the local
+workspace service owns them in workspace mode. See
 [`docs/tun-pivot.md`](tun-pivot.md) for TUN configuration and lifecycle.
 
 ## Start a relay
@@ -11,15 +13,16 @@ dialog for the selected live session console. See
 3. Set the listener port and bind host if needed. The defaults are
    `127.0.0.1:1080`.
 4. Click **Start SOCKS5 pivot**.
-5. Configure tools on the machine running the RMM server with the displayed
-   `socks5://host:port` URL.
+5. Configure tools in the namespace that owns the listener with the displayed
+   `socks5://host:port` URL. In workspace mode, this is the operator's Exegol
+   container.
 
 The connection exits through the selected agent host. The session sidebar
 shows the listener port beside sessions with an active relay.
 
 The listener implements **SOCKS5 with no authentication** and the TCP
-`CONNECT` command for regular operator clients. The server-owned TUN frontend
-also uses `UDP ASSOCIATE`. Configure clients with `socks5`; SOCKS4 and HTTP
+`CONNECT` command for regular operator clients. The TUN frontend also uses
+`UDP ASSOCIATE`. Configure clients with `socks5`; SOCKS4 and HTTP
 proxy configuration are not supported. For example, the proxy entry in
 `proxychains.conf` must use:
 
@@ -43,10 +46,12 @@ in a plugin so the normal command loop stays small:
 The current plugins use the HTTP `/socks` poll path. The server WebSocket
 endpoint remains available for compatible future pivot plugins.
 
-The relay keeps the SOCKS protocol and tunnel state on the server. It accepts
-fragmented TCP handshake reads, buffers remote bytes that arrive while the
-local client is receiving its success reply, caps large send batches at 32
-chunks per poll, and retries close tasks until the agent acknowledges them.
+The central or workspace relay keeps the SOCKS protocol and tunnel state,
+depending on storage mode. In workspace mode the central process retains only
+the transport bridge. The relay accepts fragmented TCP handshake reads,
+buffers remote bytes that arrive while the local client is receiving its
+success reply, caps large send batches at 32 chunks per poll, and retries close
+tasks until the agent acknowledges them.
 The public SOCKS agent plugins bound target connect time to 20 seconds and
 retain response batches across transient HTTP POST failures.
 
@@ -66,7 +71,7 @@ The controls call the existing operator endpoints:
 - `POST /api/v1/sessions/{id}/socks` with `{"stop": true}` to stop it.
 
 The regular operator SOCKS path carries TCP `CONNECT` traffic through the agent.
-The server-owned TUN frontend uses its private relay's SOCKS5 `UDP ASSOCIATE`
-support for datagram flows and its dedicated `/tun` agent channel. The relay is
-separate from rclone exfiltration:
+The TUN frontend uses its private relay's SOCKS5 `UDP ASSOCIATE` support for
+datagram flows and its dedicated `/tun` agent channel. The relay is separate
+from rclone exfiltration:
 `rmm_rclone.py` manages cloud upload profiles and does not configure SOCKS.

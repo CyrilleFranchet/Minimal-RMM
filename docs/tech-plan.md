@@ -741,11 +741,15 @@ Archive:
 
 ## 12. Docker deployment (RMM server + Exegol MCP)
 
-**Status:** planned — **deferred** (not in current delivery scope; spec only)  
-**Surfaces:** `Dockerfile`, `docker-compose.yml`, `docs/docker-deploy.md`, `.env.example`, optional `Makefile` targets  
-**Goal:** Package the **operator stack** (RMM server, web UI, AI/MCP, persisted logs and rclone config) for reproducible lab deployment without local Python venvs; wire **Exegol MCP** and **SOCKS** over Docker networking instead of ad hoc `127.0.0.1` / `host.docker.internal` setup.
+**Status:** implemented for the central broker plus per-operator workspace sidecars.
+**Surfaces:** `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, `workspace_service.py`, `workspace_pivot.py`, `rmm_workspace.py`, `docs/workspace-deployment.md`, and `Makefile` targets.
+**Goal:** Package the operator control plane without a local Python virtualenv while keeping each operator's durable data and TUN namespace inside that operator's Exegol workspace.
 
-**Rationale for deferral:** Docker touches networking (bind addresses, SOCKS, agent reachability), secrets, volumes, and cross-platform compose behaviour — too many moving parts for a quick “facilitate deploy” change. **Current workaround:** run RMM manually (host or inside an Exegol container) as today. Pick this up as a dedicated milestone when delivery bandwidth allows.
+The implementation deliberately separates the control plane from the data
+plane. The central server routes beacons, commands, results, and transient
+pivot tasks. A workspace service owns SQLite history, artifacts, AI chat, the
+operator SOCKS listener, and the TUN device. The default server storage mode
+remains available for single-user deployments.
 
 ### Docker deploy — problem
 
@@ -755,8 +759,8 @@ Today deployment is manual:
 - Typical lab start (e.g. inside Exegol):  
   `python server_rmm.py --rclone-profiles tools/rclone/profiles.json --rclone-max-bytes 0 --token … --beacon-secret … 8081`
 - Default HTTP bind is `127.0.0.1` — fine on host, **insufficient inside a container** (agents and port publishing need `--bind 0.0.0.0`)
-- Exegol MCP is optional HTTP (`RMM_EXEGOL_MCP_URL`, default `http://127.0.0.1:8000/mcp`) — works when RMM and Exegol MCP share the host, breaks easily when either runs in a container
-- `rmm_cli.py` already hints at Docker (`host.docker.internal` for `RMM_SERVER_URL`) but there is **no** `Dockerfile` or compose file in the repo
+- Exegol MCP remains optional HTTP (`RMM_EXEGOL_MCP_URL`); it can run in the
+  workspace network or be reached through the workspace container
 
 The **Windows agent** (`client_rmm.ps1`) is deployed separately on managed hosts and is **not** containerized — Docker targets the operator/server side only.
 
@@ -766,10 +770,10 @@ The **Windows agent** (`client_rmm.ps1`) is deployed separately on managed hosts
 |------|---------|
 | RMM server + web UI | One `docker compose up`; pinned Python + MCP deps; no venv per machine |
 | Secrets | `.env` / Docker secrets for API and beacon tokens |
-| Persistence | Volumes for `RMM_logs/` (sessions, history, AI chat, downloads, screenshots, keylogs), rclone profiles + `rclone.exe` |
+| Persistence | Control-plane volume for `sessions.json` and build artifacts; one workspace volume per operator for SQLite history, AI chat, and artifacts |
 | Exegol MCP ↔ RMM AI | Shared Docker network; `RMM_EXEGOL_MCP_URL=http://exegol-mcp:8000/mcp` |
-| Exegol operator tools | Attach existing Exegol container to compose network → `http://rmm:8081`, `socks5://rmm:1080` (cleaner than `host.docker.internal`) |
-| Operator CLI on host | `RMM_SERVER_URL=http://127.0.0.1:8081` with published port |
+| Exegol operator tools | Run `workspace_service.py` in the Exegol namespace; use its local UI, CLI, SOCKS, and TUN |
+| Operator CLI on host | Point `RMM_SERVER_URL` at the published workspace service or central API, depending on the storage mode |
 
 ### What Docker does not simplify
 
@@ -780,27 +784,28 @@ The **Windows agent** (`client_rmm.ps1`) is deployed separately on managed hosts
 | Full Exegol environment | Exegol is a separate pentest stack; only **Exegol MCP** (HTTP) is in scope for compose wiring |
 | Lab security | `--insecure` and `--bind 0.0.0.0` remain lab-only; Docker adds no isolation by itself |
 
-### Target architecture
+### Delivered architecture
 
 ```text
-┌─────────────────────────────────────────────────────────┐
-│  docker compose — network rmm-lab (operator host)       │
-│                                                         │
-│  ┌──────────────┐     HTTP MCP      ┌──────────────┐   │
-│  │  rmm-server  │◄─────────────────►│  exegol-mcp  │   │
-│  │  :8081 /ui/  │  (optional profile)│  :8000/mcp   │   │
-│  │  SOCKS :1080 │                   └──────────────┘   │
-│  └──────┬───────┘                                       │
-│         │ volumes: docker-data/RMM_logs, tools/rclone   │
-└─────────┼───────────────────────────────────────────────┘
-          │ HTTP beacon (/register, /cmd, /result)
-          ▼
-   ┌──────────────┐          ┌──────────────────────────┐
-   │ Agent Windows│          │ Exegol (existing container)│
-   │ (LAN)        │          │ docker network connect …   │
-   └──────────────┘          │ API → rmm:8081, SOCKS → rmm:1080 │
-                             └──────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Docker Compose                                             │
+│                                                            │
+│  ┌────────────────────┐     workspace HTTP     ┌────────┐ │
+│  │ rmm-control        │◄───────────────────────│ alice  │ │
+│  │ API + beacon       │                        │ Exegol │ │
+│  │ no TUN capability  │                        │ TUN    │ │
+│  └─────────┬──────────┘                        └───┬────┘ │
+│            │ authenticated beacon                     │    │
+└────────────┼──────────────────────────────────────────┼────┘
+             ▼                                          ▼
+      Windows / Go agents                    native Exegol tools
+                                              use local TUN/SOCKS
 ```
+
+The `workspace` Compose profile is one example workspace. In a shared setup,
+run one workspace service per operator or attach an existing Exegol container
+to the Compose network and run the service there. Only the workspace service
+receives `/dev/net/tun` and `CAP_NET_ADMIN`.
 
 ### Reference command (container equivalent)
 
@@ -815,10 +820,10 @@ python server_rmm.py \
   8081
 ```
 
-Target container `CMD` (secrets via `.env`, not hard-coded):
+Target control-plane command (secrets via `.env`, not hard-coded):
 
 ```bash
-python server_rmm.py 8081 \
+python server_rmm.py 8080 \
   --bind 0.0.0.0 \
   --rclone-profiles /app/tools/rclone/profiles.json \
   --rclone-max-bytes 0
@@ -830,77 +835,57 @@ python server_rmm.py 8081 \
 
 | Option | Layout | When to use |
 |--------|--------|-------------|
-| **A — RMM only** (ship first) | Single `rmm` service; Exegol MCP on host | Minimal impact; fastest path to “no venv” |
-| **B — Compose integrated** | `rmm` + `exegol-mcp` on shared network `rmm-lab` | AI panel + Exegol MCP without host port juggling |
-| **C — Exegol operator (today)** | RMM inside or on host; CLI/tools in Exegol | Document `host.docker.internal`; migrate to A/B later |
+| **A — Central control plane** | `rmm-control` only | Shared agent registry and REST/beacon endpoint |
+| **B — Compose workspace** | `rmm-control` plus the `workspace` profile | Reproducible single-operator lab with local TUN capability |
+| **C — Existing Exegol workspace** | Central broker plus `workspace_service.py` in an existing container | Keep operator data and tools in the existing Exegol volume |
 
-**Migration from “RMM inside Exegol”:** stop in-container RMM → `docker compose up rmm` → `docker network connect <project>_rmm-lab <exegol-container>` → in Exegol set `RMM_SERVER_URL=http://rmm:8081` and `ALL_PROXY=socks5://rmm:1080` (or proxychains).
+**Migration from “RMM inside Exegol”:** start `rmm-control`, register a unique
+workspace token, run `workspace_service.py` inside Exegol, and set
+`RMM_SERVER_URL` to the local workspace service for the WebUI, CLI, and tools.
 
-### Compose sketch (option B)
+### Compose reference
 
-```yaml
-services:
-  rmm:
-    build: .
-    ports:
-      - "${RMM_PORT:-8081}:${RMM_PORT:-8081}"
-      - "1080:1080"   # SOCKS — host: socks5://127.0.0.1:1080
-    env_file: .env
-    environment:
-      RMM_EXEGOL_MCP_URL: http://exegol-mcp:8000/mcp
-    volumes:
-      - ./docker-data/RMM_logs:/app/RMM_logs
-      - ./tools/rclone/profiles.json:/app/tools/rclone/profiles.json:ro
-      - ./tools/rclone/rclone.exe:/app/tools/rclone/rclone.exe:ro
-    command:
-      - python
-      - server_rmm.py
-      - "${RMM_PORT:-8081}"
-      - --bind
-      - "0.0.0.0"
-      - --rclone-profiles
-      - /app/tools/rclone/profiles.json
-      - --rclone-max-bytes
-      - "0"
-    networks: [rmm-lab]
-    # Linux: extra_hosts: ["host.docker.internal:host-gateway"] if agents use host IP helpers
+The checked-in `docker-compose.yml` is the reference. It defines:
 
-  exegol-mcp:
-    profiles: [exegol]
-    # Image / command per Exegol MCP docs — placeholder until pinned
-    ports:
-      - "8000:8000"
-    networks: [rmm-lab]
+- `rmm-control`, which publishes port `8080`, persists only central control
+  state, and has no TUN device or `NET_ADMIN` capability;
+- the optional `workspace` profile, which publishes port `8787`, persists
+  `/workspace/data`, and receives `/dev/net/tun` plus `NET_ADMIN`;
+- a shared `rmm-control` network so a workspace service can use
+  `http://rmm-control:8080`.
 
-networks:
-  rmm-lab:
-```
+Optional Exegol MCP can be attached to the same network and exposed through
+`RMM_EXEGOL_MCP_URL`. Mount `ai-skills/` into whichever service runs the AI
+loop when skills need live edits.
 
-Optional: mount `./ai-skills` → `/app/ai-skills` for skill edits without rebuild.
-
-### Dockerfile (target)
+### Dockerfile (delivered)
 
 - Base: `python:3.12-slim` (repo minimum 3.10+)
 - Copy application tree; `pip install -r requirements.txt`
 - `.dockerignore`: `RMM_logs/`, `.git`, `**/.venv`, `docker-data/`
-- Expose `${RMM_PORT}` (default 8081) and document `1080` for SOCKS when mapped
-- `WORKDIR /app`; default headless server with `--bind 0.0.0.0`
-- `tools/rclone/` layout preserved; `rclone.exe` bind-mounted (served to Windows agents at `/tools/rclone.exe` even from a Linux image)
+- Build the checked-in `rmm-tun` helper and Windows amd64 Go plugins in a Go
+  builder stage, then copy them into the Python runtime image
+- Default to `RMM_STORAGE_MODE=workspace` and run the central server on
+  `0.0.0.0:8080`
+- The same image can run `workspace_service.py`; only that service receives the
+  TUN device and `NET_ADMIN` capability in Compose
 
 ### Networking notes
 
 | Consumer | URL / binding |
 |----------|----------------|
-| Web UI / CLI on host | `http://127.0.0.1:8081/ui/` (or `${RMM_PORT}`) |
-| Windows agent (LAN) | `http://<host-lan-ip>:8081` + matching `RMM_BEACON_SECRET` |
-| CLI inside Exegol (no shared network) | `RMM_SERVER_URL=http://host.docker.internal:8081` |
-| Exegol on `rmm-lab` network | `http://rmm:8081`, `socks5://rmm:1080` |
-| RMM AI → Exegol MCP (compose) | `RMM_EXEGOL_MCP_URL=http://exegol-mcp:8000/mcp` |
-| SOCKS proxy (operator on host) | `socks5://127.0.0.1:1080` with port publish |
+| Central API / agent beacon | `http://<host-lan-ip>:8080` + matching `RMM_BEACON_SECRET` |
+| Workspace WebUI | `http://127.0.0.1:8787/ui/` in the example profile |
+| CLI inside a workspace | `RMM_SERVER_URL=http://127.0.0.1:8787` |
+| Workspace SOCKS proxy | `socks5://127.0.0.1:1080` in the workspace namespace |
+| Workspace TUN | `rmm0` and target routes in the workspace namespace |
+| RMM AI → Exegol MCP | `RMM_EXEGOL_MCP_URL` from the workspace or central process |
 
 Server subprocess AI (`mcp_rmm_server.py` over stdio) runs inside the RMM container — no extra service required.
 
-**SOCKS bind caveat:** `DEFAULT_BIND_HOST` is `127.0.0.1` (`rmm_socks.py`). Port publish works for the **host**; for **Exegol on `rmm-lab`**, validate `socks5://rmm:1080` in phase 2 — may require binding SOCKS on `0.0.0.0` (env or `bind_host` on `POST …/socks`) if inter-container connect fails.
+**Namespace rule:** In workspace mode, tools must run in the same network
+namespace as the workspace service to use its loopback TUN or SOCKS listener.
+The central container does not expose an operator SOCKS port.
 
 ### Secrets & volumes
 
@@ -909,7 +894,9 @@ Server subprocess AI (`mcp_rmm_server.py` over stdio) runs inside the RMM contai
 | `RMM_API_TOKEN`, `RMM_BEACON_SECRET` | `.env.example` + compose `env_file`; never commit real values |
 | `RMM_RCLONE_PROFILES_FILE` | Bind-mount `tools/rclone/profiles.json` (gitignored secrets) |
 | `RMM_RCLONE_BIN` | Default `tools/rclone/rclone.exe`; bind-mount binary |
-| `RMM_logs/` | Bind-mount `./docker-data/RMM_logs` — includes `sessions.json`, `history/` (events + AI chat), artifacts |
+| `RMM_logs/` | Control-plane volume for `sessions.json` and central build artifacts |
+| `RMM_WORKSPACE_DATA` | Workspace volume for SQLite history, AI chat, downloads, screenshots, keylogs, and interrupted upload parts |
+| `RMM_WORKSPACES` | JSON mapping of workspace IDs to unique tokens |
 | `RMM_RCLONE_MAX_BYTES` | `0` = unlimited (lab); set in command or env |
 
 ### Cross-platform (Windows / Mac / Linux)
@@ -917,12 +904,12 @@ Server subprocess AI (`mcp_rmm_server.py` over stdio) runs inside the RMM contai
 | Topic | Windows | Mac | Linux |
 |-------|---------|-----|-------|
 | Runtime | Docker Desktop (WSL2) | Docker Desktop | Docker Engine + compose plugin |
-| Volume paths | Relative `./docker-data/...` | Same | Same; watch uid/gid on `RMM_logs` writes |
+| Volume paths | Compose named volumes or bind mounts | Same | Same; watch uid/gid on workspace volume writes |
 | `host.docker.internal` | Native (Desktop) | Native | Add `extra_hosts: host-gateway` on services that need it |
 | `rclone.exe` in Linux image | OK — HTTP serve to Windows agents | Same | Same |
 | Agent → RMM | Host LAN IP, not `localhost` | Same | Same |
 
-### Docker deploy — out of scope (v1)
+### Docker deploy — remaining hardening (v1)
 
 - Containerizing the Windows agent
 - Production hardening (TLS termination, non-root user, image signing) beyond lab README warnings
@@ -930,27 +917,33 @@ Server subprocess AI (`mcp_rmm_server.py` over stdio) runs inside the RMM contai
 - Kubernetes / Helm
 - Cloudflared in compose (document port mapping only)
 
-### Implementation order (phased — reduce delivery risk)
+### Delivered implementation
 
-**Phase 1 — RMM only (MVP):** `Dockerfile`, `docker-compose.yml` (single service), `.env.example`, `docs/docker-deploy.md`, volumes for `RMM_logs` + rclone; smoke test UI + health.
-
-**Phase 2 — Exegol + SOCKS:** explicit `rmm-lab` network; doc `docker network connect`; validate SOCKS from Exegol; patch SOCKS bind if needed.
-
-**Phase 3 — Exegol MCP:** compose profile `exegol` + `exegol-mcp` service; pin image in docs; test web AI merged tools.
-
-**Phase 4 — Polish:** `Makefile` targets (`docker-build`, `docker-up`), README link, optional CI `docker build`.
+- `Dockerfile` builds the TUN helper and all checked-in Windows amd64 Go
+  plugins, then runs the Python control plane.
+- `docker-compose.yml` keeps the control plane separate from the optional
+  workspace sidecar and grants TUN privileges only to the sidecar.
+- `workspace_service.py` stores transcripts, artifacts, history, and AI chat
+  locally and proxies the existing operator API.
+- `workspace_pivot.py` owns local SOCKS/TUN listeners and requeues failed task
+  handoffs.
+- `make check`, `make check-parity`, and the workspace unit tests validate the
+  Python and operator-surface contract.
 
 ### Docker deploy — acceptance criteria
 
-- `docker compose up` starts RMM server; web UI loads at mapped port with API token auth
-- `RMM_logs/` and rclone profiles survive container restart via volumes
+- `docker compose up` starts the control plane; workspace profile starts the
+  local UI and data plane
+- Control-plane session metadata and workspace SQLite/artifacts survive their
+  respective container restarts via volumes
 - Windows agent on LAN registers when `$env:RMM_BASE_URL` points at host IP and beacon secret matches
-- SOCKS: `socks5://127.0.0.1:1080` on host relays through mapped container port
-- From Exegol on `rmm-lab`: API and SOCKS reach `rmm` by service name
-- AI chat works in container (MCP stdio spawn); with Exegol MCP profile, merged tools visible when enabled
+- SOCKS and TUN run in the workspace namespace, while the central broker holds
+  only the agent transport
+- Workspace-scoped AI tool calls preserve the workspace headers through direct
+  and MCP clients
 - Documented clearly that agents stay outside Docker; Win / Mac / Linux notes included
 
-### Interim deploy (until Docker ships)
+### Non-Docker server mode
 
 No repo change required — operators continue with:
 
@@ -975,7 +968,9 @@ Items tracked in `docs/progress.md` **Up Next** but not spec’d here yet:
 - Automated tests
 - `docs/prd.md`
 
-Docker operator deployment is spec’d in [§12](#12-docker-deployment-rmm-server--exegol-mcp).
+The current workspace deployment is documented in
+[`docs/workspace-deployment.md`](workspace-deployment.md). The default
+non-Docker server mode remains available for single-user operation.
 
 Operator surface alignment (REST / MCP / web shell) is enforced by **`make check-parity`** — see `docs/mcp-parity.md`.
 

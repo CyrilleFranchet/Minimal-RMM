@@ -2,6 +2,7 @@
  * Minimal RMM web operator UI — shell-style console, REST + WebSocket.
  */
 const STORAGE_KEY = "rmm_api_token";
+const WORKSPACE_MODE = Boolean(window.RMM_WORKSPACE_MODE);
 const EVENT_CURSORS_KEY = "rmm_event_cursors";
 const SHELL_HISTORY_KEY = "rmm_shell_history";
 const SHELL_HISTORY_MAX = 100;
@@ -57,7 +58,7 @@ const state = {
 const $ = (sel) => document.querySelector(sel);
 
 function isAppActive() {
-  return Boolean(state.token) && !$("#app").classList.contains("hidden");
+  return (Boolean(state.token) || WORKSPACE_MODE) && !$("#app").classList.contains("hidden");
 }
 
 function isServerUnreachableDialogOpen() {
@@ -119,6 +120,10 @@ function scheduleWebSocketReconnect(delayMs = 3000) {
 
 function ensureWebSocketConnected() {
   if (!isAppActive()) return;
+  if (WORKSPACE_MODE) {
+    setWsStatus(false);
+    return;
+  }
   if (wsIsConnectedOrConnecting()) return;
   connectWebSocket();
 }
@@ -444,7 +449,7 @@ function renderTunRelayList() {
     .join("");
 
   container.innerHTML = `<table class="socks-table tun-table">
-    <caption class="sr-only">Active server TUN relays</caption>
+    <caption class="sr-only">Active TUN relays</caption>
     <thead><tr><th scope="col">Agent</th><th scope="col">Device and routes</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
@@ -475,11 +480,11 @@ function updateTunUi() {
       const routes = tunRelayRoutes(relay);
       const route = routes.join(", ") || "no target route";
       const helper = relay.helper_alive ? "helper running" : "helper stopped";
-      status.textContent = `Active server TUN · ${relay.device} · routes ${route} · ${helper}`;
+      status.textContent = `Active TUN · ${relay.device} · routes ${route} · ${helper}`;
       status.classList.add("tun-active");
     } else {
       status.textContent = state.selectedId
-        ? "No server TUN routing for the selected session."
+        ? "No TUN routing for the selected session."
         : "Select a live session to configure TUN routing.";
       status.classList.remove("tun-active");
     }
@@ -496,7 +501,7 @@ function updateTunUi() {
 }
 
 async function refreshTunRelays() {
-  if (!state.token) return;
+  if (!state.token && !WORKSPACE_MODE) return;
   const { status, data } = await api("/tun");
   if (status === 401) {
     disconnect();
@@ -550,7 +555,7 @@ async function startSelectedTun() {
   }
   state.tunBusy = true;
   updateTunUi();
-  setTunActionStatus("Starting server TUN routing…");
+  setTunActionStatus("Starting TUN routing…");
   try {
     const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}/tun`, {
       method: "POST",
@@ -574,7 +579,7 @@ async function startSelectedTun() {
     const activeRoutes = tunRelayRoutes(relay);
     const activeRoute = activeRoutes.join(", ") || routes.join(", ") || "no target route";
     setTunActionStatus(`TUN routing active on ${activeDevice} · routes ${activeRoute}`);
-    appendShellMeta(`Server TUN routing enabled on ${activeDevice} · routes ${activeRoute}`);
+    appendShellMeta(`TUN routing enabled on ${activeDevice} · routes ${activeRoute}`);
     await refreshTunRelays();
     await refreshSocksRelays();
   } finally {
@@ -587,7 +592,7 @@ async function stopTunRelay(sessionId = state.selectedId) {
   if (!sessionId) return;
   state.tunBusy = true;
   updateTunUi();
-  setTunActionStatus("Stopping server TUN routing…");
+  setTunActionStatus("Stopping TUN routing…");
   try {
     const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}/tun`, {
       method: "POST",
@@ -599,9 +604,9 @@ async function stopTunRelay(sessionId = state.selectedId) {
       return;
     }
     if (sessionId === state.selectedId) {
-      appendShellMeta("Server TUN routing stopped");
+      appendShellMeta("TUN routing stopped");
     }
-    setTunActionStatus("Server TUN routing stopped");
+    setTunActionStatus("TUN routing stopped");
     await refreshTunRelays();
     await refreshSocksRelays();
   } finally {
@@ -718,7 +723,7 @@ function updateSocksUi() {
 }
 
 async function refreshSocksRelays() {
-  if (!state.token) return;
+  if (!state.token && !WORKSPACE_MODE) return;
   const { status, data } = await api("/socks");
   if (status === 401) {
     disconnect();
@@ -923,7 +928,7 @@ function startStatusTick() {
 }
 
 async function fetchSessionHistory() {
-  if (!state.token) return;
+  if (!state.token && !WORKSPACE_MODE) return;
   const { status, data } = await api("/history");
   if (status === 401) {
     disconnect();
@@ -1145,6 +1150,10 @@ function wsUrl() {
 }
 
 function connectWebSocket() {
+  if (WORKSPACE_MODE) {
+    setWsStatus(false);
+    return;
+  }
   disconnectWebSocket();
   if (!state.token) return;
 
@@ -1243,7 +1252,7 @@ function stopEventPolling() {
 }
 
 async function pollSessionEvents() {
-  if (!state.selectedId || !state.token) return;
+  if (!state.selectedId || (!state.token && !WORKSPACE_MODE)) return;
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(state.selectedId)}/events?since=${state.lastEventId}&limit=100`
   );
@@ -2259,7 +2268,7 @@ async function connect() {
     showLogin(data.detail || data.error || `Health check failed (${status})`);
     return;
   }
-  sessionStorage.setItem(STORAGE_KEY, token);
+  if (token) sessionStorage.setItem(STORAGE_KEY, token);
   showApp();
   if (typeof window.refreshAgentScriptTemplate === "function") {
     window.refreshAgentScriptTemplate();
@@ -3237,7 +3246,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   initSidebarResize();
 
-  if (state.token) {
+  if (state.token || WORKSPACE_MODE) {
     $("#token-input").value = state.token;
     connect();
   } else {

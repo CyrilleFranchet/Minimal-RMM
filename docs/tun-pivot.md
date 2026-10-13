@@ -1,14 +1,16 @@
-# Server-owned TUN pivot
+# RMM-owned TUN pivot
 
-The TUN device belongs to the RMM server. The agent remains an ordinary
-user-mode Go process and opens target-side TCP and UDP sockets through a
-dedicated authenticated TUN channel.
+In the default server storage mode, the TUN device belongs to the RMM server.
+In workspace mode, the central server keeps the authenticated agent transport
+while the per-operator workspace service creates and owns the TUN device. The
+agent remains an ordinary user-mode Go process and opens target-side TCP and
+UDP sockets through a dedicated authenticated TUN channel.
 
 ```text
 Exegol tool
     │ native connect()/UDP socket
     ▼
-RMM server TUN device
+Server or workspace TUN device
     │
     ▼
 rmm-tun (user-space IP/TCP/UDP stack)
@@ -31,19 +33,23 @@ required.
 
 ## Requirements
 
-- The RMM server must run on Linux or macOS and have permission to create and
-  configure a TUN device and routes.
-- On Linux, `/dev/net/tun` must be available and the server needs the permission
-  to create network interfaces. A container needs `/dev/net/tun` plus
-  `CAP_NET_ADMIN`.
+- The process that owns the TUN device must run on Linux or macOS and have
+  permission to create and configure a TUN device and routes.
+- On Linux, `/dev/net/tun` must be available and the owning process needs the
+  permission to create network interfaces. A workspace container needs
+  `/dev/net/tun` plus `CAP_NET_ADMIN`; the central control-plane container does
+  not.
 - On macOS, use an explicit `utun<N>` device name such as `utun4`. Linux names
   such as `rmm0` are not valid for the macOS helper.
 - The server needs Go 1.26.3 or newer to build `rmm-tun`.
 - A Windows amd64 Go agent must advertise `tun-plugin` and the server must
   have a built `tun.dll`. The current TUN lifecycle intentionally rejects
   other agent types until their transport capabilities are implemented.
-- The Exegol container must share the network namespace that owns the server
-  TUN device, or the route must be added in the namespace where the tools run.
+- In server mode, the Exegol container must share the network namespace that
+  owns the server TUN device, or the route must be added in the namespace where
+  the tools run.
+- In workspace mode, the workspace service and the Exegol tools must share the
+  workspace network namespace.
 
 The target agent does not need administrator rights for this feature. It does
 not create an interface, add routes, or open a listening socket on the target.
@@ -65,12 +71,15 @@ plugins. `make tun-build` writes `tools/rmm-tun`; set
 
 The WebUI exposes TUN routing inside the **Pivots** dialog in the selected live
 session header. Before opening it, build `tun.dll` from **Deploy plugins (Go)**
-and build the server helper with `make tun-build`. In the TUN section, configure:
+and build the helper with `make tun-build`. In server mode, the helper and
+interface run in the RMM server namespace. In workspace mode, they run in the
+local workspace namespace. In the TUN section, configure:
 
-- the server TUN device, such as `tun://rmm0` on Linux or `utun4` on macOS;
+- the TUN device, such as `tun://rmm0` on Linux or `utun4` on macOS, in the
+  namespace where the workspace or server service runs;
 - the narrow target routes, one IPv4 CIDR per line, such as
   `10.10.0.0/16` and `10.20.0.0/16`;
-- the server TUN address, egress interface, MTU, and UDP idle timeout.
+- the TUN address, egress interface, MTU, and UDP idle timeout.
 
 Click **Start TUN routing** to create the device, configure the address and
 routes, and start the server helper. The dialog shows active relays, helper
@@ -81,9 +90,9 @@ only provides the unprivileged TCP and UDP transport.
 
 ## Start a relay
 
-Choose a TUN device name that is free on the server and route only the target
-network needed for the operation. The server refuses to reuse an existing
-Linux interface so it does not overwrite another tunnel's address. Linux
+Choose a TUN device name that is free in the owning namespace and route only
+the target network needed for the operation. The service refuses to reuse an
+existing Linux interface so it does not overwrite another tunnel's address. Linux
 example:
 
 ```bash
@@ -98,13 +107,13 @@ python rmm_cli.py tun start SESSION utun4 \
   --route 10.10.0.0/16 --route 10.20.0.0/16 --interface en0
 ```
 
-The default address assigned to the server TUN is `198.18.0.1/15`. It is a
+The default address assigned to the TUN device is `198.18.0.1/15`. It is a
 private test range and is separate from the target route. Override it with
 `--address` only when it does not overlap with the Exegol or target networks.
 The default MTU is 1500 and the default UDP idle timeout is 300 seconds.
 
-The server starts a private SOCKS listener on an ephemeral loopback port,
-starts `rmm-tun`, configures the interface, and then reports the relay as
+The owning process starts a private SOCKS listener on an ephemeral loopback
+port, starts `rmm-tun`, configures the interface, and then reports the relay as
 active. `tun list` shows the helper state and configured routes:
 
 ```bash
@@ -129,7 +138,8 @@ Stop with `{"stop":true}`. The same lifecycle is exposed as MCP tools
 ## Using Exegol
 
 After the relay starts, verify that the routes are present in the namespace
-that runs the tools:
+that runs the tools. In workspace mode, run these checks inside the workspace
+container:
 
 ```bash
 ip addr show rmm0
@@ -151,7 +161,8 @@ and the agent's beacon latency.
 ## Lifecycle and failure handling
 
 - `tun start` requires the Go agent's `tun-plugin` capability, the built
-  `tun.dll`, and an executable `rmm-tun` helper.
+  `tun.dll`, and an executable `rmm-tun` helper in the namespace that owns the
+  TUN device.
 - The server refuses a second TUN relay for the same session until the first
   one is stopped. A normal SOCKS listener cannot replace an active TUN relay.
 - Stopping the TUN relay removes the configured routes, stops the helper, and

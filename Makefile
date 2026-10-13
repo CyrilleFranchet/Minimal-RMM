@@ -2,12 +2,13 @@ SHELL := /bin/bash
 PYTHON ?= python3
 
 PY_MODULES := server_rmm.py run_server.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
-	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_run_on_host.py rmm_kill_host_sessions.py
+	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_run_on_host.py rmm_kill_host_sessions.py \
+	rmm_workspace.py workspace_pivot.py workspace_service.py
 
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-parity check-web-contracts check go-test tun-build
+.PHONY: help install-lint lint-md lint-yaml lint test check-parity check-web-contracts check go-test tun-build workspace-service docker-build docker-up
 
 help:
 	@printf "Available targets:\n"
@@ -21,6 +22,9 @@ help:
 	@printf "  make check         test + check-parity + lint\n"
 	@printf "  make go-test       Cross-build the Go agent and test the pivot components\n"
 	@printf "  make tun-build     Build the server-side TUN helper\n"
+	@printf "  make workspace-service  Start the local Exegol workspace service\n"
+	@printf "  make docker-build  Build the control-plane/workspace image\n"
+	@printf "  make docker-up     Start the central control plane with Compose\n"
 
 go-test:
 	@cd agent-go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./...
@@ -32,6 +36,15 @@ go-test:
 tun-build:
 	@mkdir -p tools
 	@cd server-tun && go build -trimpath -ldflags "-s -w" -o ../tools/rmm-tun .
+
+workspace-service:
+	@$(PYTHON) workspace_service.py
+
+docker-build:
+	docker build -t minimal-rmm:local .
+
+docker-up:
+	docker compose up --build
 
 install-lint:
 	$(PYTHON) -m pip install pymarkdownlnt yamllint

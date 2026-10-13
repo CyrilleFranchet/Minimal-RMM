@@ -79,13 +79,15 @@ bounded per poll; UDP close tasks are retried until the plugin returns
 
 ## RMM-owned TUN relay
 
-The server-owned TUN frontend uses the dedicated Go `tun` plugin as its
-authenticated transport. The server creates the TUN device and runs the
-user-space IP stack; the target-side Go plugin opens ordinary TCP and UDP
+The TUN frontend uses the dedicated Go `tun` plugin as its authenticated
+transport. In server mode, the server creates the TUN device and runs the
+user-space IP stack. In workspace mode, the workspace service creates the
+device and runs the stack locally while the central server keeps only the
+agent-side transport. The target-side Go plugin opens ordinary TCP and UDP
 sockets without creating a device or requiring administrator privileges. It is
 controlled through `GET /api/v1/tun` and `POST /api/v1/sessions/{id}/tun`, with
-matching CLI and MCP tools. See `docs/tun-pivot.md` for setup, routing, and
-current protocol limits.
+matching CLI and MCP tools. See `docs/tun-pivot.md` and
+`docs/workspace-deployment.md` for setup, routing, and current protocol limits.
 
 SOCKS and TUN are separate Go plugin packages, DLLs, lifecycle flags, child
 processes, and beacon endpoints. The TUN plugin reuses the same task framing
@@ -106,7 +108,8 @@ POST /api/v1/plugins/build
 ```
 
 The default outputs are `RMM_logs/plugins/socks.dll` and
-`RMM_logs/plugins/tun.dll`. A public SOCKS relay requires the Go
+`RMM_logs/plugins/tun.dll` in server mode. Container builds place them in the
+image's `/app/plugins` directory. A public SOCKS relay requires the Go
 `socks-plugin` capability and `socks.dll`; a TUN relay requires `tun-plugin`
 and `tun.dll`. Existing `/socks` REST, CLI, MCP, and WebUI controls remain
 stable; the WebUI exposes TUN routing inside the Pivots dialog.
@@ -118,3 +121,13 @@ server logs plugin delivery metadata and operator pivot actions. Agent-side
 plugin input, output, URLs, and credentials are not written to the target log.
 Use these plugins only on systems you own or are explicitly authorized to
 manage.
+
+## Workspace data plane
+
+When `RMM_STORAGE_MODE=workspace`, the central server starts a transport-only
+bridge for each active SOCKS or TUN relay. It does not bind the operator SOCKS
+port or create the TUN device. `workspace_service.py` starts those local
+components and exchanges task batches through the authenticated workspace
+endpoints. If the central handoff is temporarily unavailable, local pending
+tasks are requeued; the workspace service restores local listeners after a
+restart when the central relay is still active.

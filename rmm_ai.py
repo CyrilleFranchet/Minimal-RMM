@@ -374,6 +374,7 @@ def _run_ai_chat_mcp(
     *,
     rmm_base_url: str,
     rmm_token: str,
+    rmm_headers: dict[str, str] | None = None,
     provider: str,
     api_key: str,
     messages: list[dict],
@@ -411,6 +412,7 @@ def _run_ai_chat_mcp(
             rmm_base_url,
             rmm_token,
             chat,
+            extra_headers=rmm_headers,
             exegol_enabled=exegol_mcp_enabled,
             exegol_mcp_url=exegol_mcp_url,
             exegol_mcp_token=exegol_mcp_token,
@@ -426,6 +428,7 @@ def _run_ai_chat_direct(
     *,
     rmm_base_url: str,
     rmm_token: str,
+    rmm_headers: dict[str, str] | None = None,
     provider: str,
     api_key: str,
     messages: list[dict],
@@ -435,7 +438,7 @@ def _run_ai_chat_direct(
     skill_ids: list[str] | None = None,
 ) -> dict:
     """Run a provider chat loop with direct in-process RMM tool execution."""
-    client = make_client(rmm_base_url, rmm_token)
+    client = make_client(rmm_base_url, rmm_token, extra_headers=rmm_headers)
     system = compose_system_prompt(
         SYSTEM_PROMPT,
         skill_ids=skill_ids,
@@ -464,6 +467,7 @@ def run_ai_chat(
     *,
     rmm_base_url: str,
     rmm_token: str,
+    rmm_headers: dict[str, str] | None = None,
     provider: str = "openai",
     api_key: str = "",
     messages: list[dict],
@@ -484,9 +488,13 @@ def run_ai_chat(
     if not api_key:
         raise ValueError("missing_api_key")
     rmm_token = (rmm_token or "").strip()
-    if not rmm_token:
+    if not rmm_token and not (
+        isinstance(rmm_headers, dict)
+        and rmm_headers.get("X-RMM-Workspace")
+        and rmm_headers.get("X-RMM-Workspace-Token")
+    ):
         raise ValueError(
-            "RMM API token required for tool calls (same as RMM_API_TOKEN / web UI login)"
+            "RMM API or workspace token required for tool calls"
         )
     resolved_model = (model or "").strip() or DEFAULT_MODELS[provider]
 
@@ -495,6 +503,7 @@ def run_ai_chat(
     common = {
         "rmm_base_url": rmm_base_url,
         "rmm_token": rmm_token,
+        "rmm_headers": rmm_headers,
         "provider": provider,
         "api_key": api_key,
         "messages": messages,

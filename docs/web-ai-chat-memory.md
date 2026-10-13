@@ -1,10 +1,25 @@
 # Web AI — chat memory
 
-The AI assistant panel keeps a **per-session conversation history** on the **RMM server** so operators do not lose context when reloading the page, switching browsers, or reconnecting from another machine.
+The AI assistant panel keeps a **per-session conversation history** in the
+active storage owner so operators do not lose context when reloading the page,
+switching browsers, or reconnecting from another machine. In server mode this
+is the RMM server. In workspace mode it is the operator's local workspace
+service.
 
-The providers do not own this history for the current integration. Each request sends the relevant message history from `RMM_logs/history/{session_id}/ai_chat.json` to the selected provider. An API key identifies authorization and billing; it is not a portable conversation-history lookup key. OpenAI Chat Completions, Anthropic Messages, and Mistral Chat Completions are used as stateless request/response APIs here. Provider products may offer separate conversation or workspace storage, but those objects are not the same as this RMM transcript and are not queried by this UI.
+The providers do not own this history for the current integration. Each
+request sends the relevant history from the active storage owner to the
+selected provider: `RMM_logs/history/{session_id}/ai_chat.json` in server mode
+or the workspace `ai_chats` table in workspace mode. An API key identifies
+authorization and billing; it is not a portable conversation-history lookup
+key. OpenAI Chat Completions, Anthropic Messages, and Mistral Chat
+Completions are used as stateless request/response APIs here. Provider
+products may offer separate conversation or workspace storage, but those
+objects are not the same as this RMM transcript and are not queried by this
+UI.
 
 ## Storage
+
+### Server mode
 
 | File | Location | Content |
 |------|----------|---------|
@@ -18,6 +33,15 @@ When no RMM session is selected in the sidebar, chat stays **in-memory only** in
 
 AI provider API keys, validation state, model choice, Exegol MCP settings, and skill checkboxes remain in `sessionStorage` (tab-scoped). Keys are never persisted in `RMM_logs/`.
 
+### Workspace mode
+
+When `RMM_STORAGE_MODE=workspace`, the central server skips `ai_chat.json` and
+the workspace service stores normalized messages in the `ai_chats` table in
+`RMM_WORKSPACE_DATA/workspace.db`. The local service exposes the same GET,
+POST, and DELETE API paths to the workspace WebUI. Workspace-scoped tool calls
+forward `X-RMM-Workspace` and `X-RMM-Workspace-Token` to the internal direct or
+MCP RMM client, so AI tools see the same session scope as the browser.
+
 ## REST API
 
 ```http
@@ -30,13 +54,17 @@ Returns `{ "session_id", "messages", "count" }`. Works for **live** and **archiv
 DELETE /api/v1/sessions/{id}/ai/chat
 ```
 
-Removes `ai_chat.json` for that session. Returns `{ "ok": true, "session_id" }`.
+Removes the session chat from the active storage owner. In server mode this is
+`ai_chat.json`; in workspace mode it is the local `ai_chats` row. Returns
+`{ "ok": true, "session_id" }`.
 
 ```http
 POST /api/v1/ai/chat
 ```
 
-Unchanged request shape. On success, when `selected_session_id` is set, the server appends the assistant reply to the posted `messages` array and writes `ai_chat.json`.
+Unchanged request shape. On success, when `selected_session_id` is set, the
+active storage owner appends the assistant reply to the posted `messages`
+array and persists it.
 
 ## Web UI
 
@@ -58,9 +86,9 @@ The web UI clears the panel when the current session is killed or deleted.
 
 | Method | Purpose |
 |--------|---------|
-| `get_ai_chat(session_id_or_prefix)` | Load messages from disk |
-| `save_ai_chat(session_id, messages)` | Write `ai_chat.json` |
-| `clear_ai_chat(session_id)` | Delete `ai_chat.json` |
+| `get_ai_chat(session_id_or_prefix)` | Load messages from server disk or return the central workspace-mode placeholder |
+| `save_ai_chat(session_id, messages)` | Write server `ai_chat.json`; workspace service writes SQLite |
+| `clear_ai_chat(session_id)` | Delete server `ai_chat.json`; workspace service deletes the SQLite row |
 
 ## JavaScript (`web/ai.js`)
 

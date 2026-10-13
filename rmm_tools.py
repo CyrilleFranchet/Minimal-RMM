@@ -19,13 +19,21 @@ DEFAULT_RMM_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
 def make_client(
     base_url: str | None = None,
     token: str | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> RmmApiClient:
     resolved_token = DEFAULT_RMM_TOKEN if token is None else str(token).strip()
     if not resolved_token:
         resolved_token = DEFAULT_RMM_TOKEN
+    headers = dict(extra_headers or {})
+    workspace_id = os.environ.get("RMM_WORKSPACE_ID", "").strip()
+    workspace_token = os.environ.get("RMM_WORKSPACE_TOKEN", "").strip()
+    if workspace_id and workspace_token:
+        headers.setdefault("X-RMM-Workspace", workspace_id)
+        headers.setdefault("X-RMM-Workspace-Token", workspace_token)
     return RmmApiClient(
         (base_url or DEFAULT_RMM_URL).rstrip("/"),
         resolved_token,
+        extra_headers=headers,
     )
 
 

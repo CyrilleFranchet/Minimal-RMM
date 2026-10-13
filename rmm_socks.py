@@ -55,12 +55,18 @@ class SessionSocksBridge:
         port: int,
         on_log=None,
         udp_idle_timeout: float = RELAY_IDLE_TIMEOUT,
+        external: bool = False,
     ):
         self.session_id = session_id
         self.bind_host = bind_host
         self.port = port
         self.on_log = on_log or (lambda _msg, _level="INFO": None)
         self.udp_idle_timeout = max(1.0, float(udp_idle_timeout))
+        # External bridges are used by the workspace architecture. They keep
+        # the agent-side task queue in the central broker but do not bind a
+        # central SOCKS listener. A workspace service supplies the local
+        # listener and exchanges raw responses through the workspace API.
+        self.external_mode = bool(external)
         self.lock = threading.Lock()
         self.task_queue: deque[dict[str, Any]] = deque()
         self.connect_events: dict[str, threading.Event] = {}
@@ -77,6 +83,7 @@ class SessionSocksBridge:
         self.udp_tunnels: dict[str, dict[str, Any]] = {}
         self._agent_ws: Any = None
         self._agent_ws_lock = threading.Lock()
+        self._external_responses: deque[dict[str, Any]] = deque()
 
     def log(self, msg: str, level: str = "INFO"):
         self.on_log(msg, level)
@@ -121,6 +128,15 @@ class SessionSocksBridge:
             f"SOCKS5 listening on {self.bind_host}:{self.port} (session {self.session_id[:8]})",
             "SUCCESS",
         )
+
+    def start_external(self) -> None:
+        """Start a task-only bridge without binding a central listener."""
+        with self.lock:
+            if self._running:
+                return
+            self.external_mode = True
+            self._running = True
+        self.log(f"External SOCKS transport active for session {self.session_id[:8]}", "SUCCESS")
 
     def agent_ws_connected(self) -> bool:
         with self._agent_ws_lock:
@@ -173,6 +189,7 @@ class SessionSocksBridge:
             self.connect_errors.clear()
             self._pending_sends.clear()
             self._queued_udp_tasks = 0
+            self._external_responses.clear()
             udp_sock = self._udp_sock
             udp_control_sock = self._udp_control_sock
             self._udp_sock = None
@@ -325,6 +342,9 @@ class SessionSocksBridge:
         return self._drain_task_queue()
 
     def submit_responses(self, responses: list[dict[str, Any]]) -> None:
+        if self.external_mode:
+            self._submit_external_responses(responses)
+            return
         for resp in responses:
             if not isinstance(resp, dict):
                 continue
@@ -403,6 +423,73 @@ class SessionSocksBridge:
                     tunnel = self.tunnels.pop(cid, None)
                 if tunnel:
                     self._close_tunnel(tunnel, notify_client=False)
+
+    def submit_external_tasks(self, tasks: list[dict[str, Any]]) -> bool:
+        """Queue local workspace SOCKS tasks for the central agent channel."""
+        if not self.external_mode or not isinstance(tasks, list):
+            return False
+        with self.lock:
+            if not self._running:
+                return False
+            for task in tasks:
+                if not isinstance(task, dict) or not task.get("op") or not task.get("id"):
+                    continue
+                if task.get("op") == "udp_send":
+                    if self._queued_udp_tasks >= MAX_QUEUED_UDP_TASKS:
+                        continue
+                    self._queued_udp_tasks += 1
+                self.task_queue.append(dict(task))
+        return True
+
+    def requeue_tasks(self, tasks: list[dict[str, Any]]) -> None:
+        """Put a failed workspace task batch back without duplicating retained controls."""
+        if not self.external_mode or not isinstance(tasks, list):
+            return
+        with self.lock:
+            for task in reversed(tasks):
+                if not isinstance(task, dict) or not task.get("op") or not task.get("id"):
+                    continue
+                if task in self.task_queue:
+                    continue
+                if task.get("op") == "udp_send":
+                    if self._queued_udp_tasks >= MAX_QUEUED_UDP_TASKS:
+                        continue
+                    self._queued_udp_tasks += 1
+                self.task_queue.appendleft(dict(task))
+
+    def _submit_external_responses(self, responses: list[dict[str, Any]]) -> None:
+        """Retain raw agent responses for the workspace data-plane relay."""
+        if not isinstance(responses, list):
+            return
+        for response in responses:
+            if not isinstance(response, dict) or not response.get("id"):
+                continue
+            op = response.get("op")
+            cid = str(response.get("id"))
+            if op == "ok":
+                self._drop_tasks(cid, "connect")
+            elif op == "error":
+                self._drop_tasks(cid, "connect")
+            elif op == "udp_closed":
+                self._drop_tasks(cid, "udp_close")
+            elif op in ("closed", "close"):
+                for task_op in ("connect", "send", "close"):
+                    self._drop_tasks(cid, task_op)
+            with self.lock:
+                if self._running:
+                    self._external_responses.append(dict(response))
+
+    def drain_external_responses(self, limit: int = 1000) -> list[dict[str, Any]]:
+        """Return and remove raw agent responses destined for a workspace."""
+        try:
+            limit = max(1, min(5000, int(limit)))
+        except (TypeError, ValueError):
+            limit = 1000
+        with self.lock:
+            rows = []
+            while self._external_responses and len(rows) < limit:
+                rows.append(self._external_responses.popleft())
+            return rows
 
     def _close_tunnel(self, tunnel: dict[str, Any], *, notify_client: bool = True) -> None:
         sock = tunnel.get("client")
@@ -865,6 +952,30 @@ class SocksManager:
             self.bridges[session_id] = bridge
             return bridge
 
+    def start_external(
+        self,
+        session_id: str,
+        port: int = 0,
+        bind_host: str = DEFAULT_BIND_HOST,
+        udp_idle_timeout: float = RELAY_IDLE_TIMEOUT,
+    ) -> SessionSocksBridge:
+        """Start a task-only bridge for a workspace-local listener."""
+        with self.lock:
+            existing = self.bridges.pop(session_id, None)
+            if existing:
+                existing.stop()
+            bridge = SessionSocksBridge(
+                session_id,
+                bind_host,
+                port,
+                on_log=lambda m, lvl="INFO": self._log(m, lvl),
+                udp_idle_timeout=udp_idle_timeout,
+                external=True,
+            )
+            bridge.start_external()
+            self.bridges[session_id] = bridge
+            return bridge
+
     def stop(self, session_id: str) -> bool:
         with self.lock:
             bridge = self.bridges.pop(session_id, None)
@@ -921,6 +1032,26 @@ class SocksManager:
             return False
         bridge.submit_responses(responses)
         return True
+
+    def submit_external_tasks(self, session_id: str, tasks: list[dict[str, Any]]) -> bool:
+        """Queue workspace-generated tasks on a central external bridge."""
+        bridge = self.get(session_id)
+        if not bridge:
+            return False
+        return bridge.submit_external_tasks(tasks)
+
+    def requeue_tasks(self, session_id: str, tasks: list[dict[str, Any]]) -> None:
+        """Restore a workspace task batch when the central HTTP handoff fails."""
+        bridge = self.get(session_id)
+        if bridge:
+            bridge.requeue_tasks(tasks)
+
+    def drain_external_responses(self, session_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        """Drain raw agent responses from a central external bridge."""
+        bridge = self.get(session_id)
+        if not bridge:
+            return []
+        return bridge.drain_external_responses(limit=limit)
 
     def attach_agent_ws(self, session_id: str, ws: Any) -> bool:
         bridge = self.get(session_id)

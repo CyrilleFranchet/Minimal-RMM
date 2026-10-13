@@ -98,14 +98,17 @@ EVENT_POLL_INTERVAL = 1.0
 
 
 class RmmApiClient:
-    def __init__(self, base_url: str, token: str = ""):
+    def __init__(self, base_url: str, token: str = "", extra_headers: dict | None = None):
         self.base_url = base_url.rstrip("/")
         self.token = token.strip()
+        self.extra_headers = dict(extra_headers or {})
 
     def _headers(self, extra: dict | None = None) -> dict:
         h = {"Accept": "application/json"}
         if self.token:
             h["Authorization"] = f"Bearer {self.token}"
+        if self.extra_headers:
+            h.update(self.extra_headers)
         if extra:
             h.update(extra)
         return h

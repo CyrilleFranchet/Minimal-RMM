@@ -5,6 +5,7 @@ MCP server for Minimal-RMM — exposes operator API tools to Claude Desktop / Cu
 Environment:
   RMM_SERVER_URL / RMM_BASE_URL  — RMM server base URL
   RMM_API_TOKEN                  — operator API token
+  RMM_WORKSPACE_ID / RMM_WORKSPACE_TOKEN — optional scoped workspace credentials
 
 Run:
   pip install mcp

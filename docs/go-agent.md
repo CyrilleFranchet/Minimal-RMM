@@ -56,13 +56,14 @@ isolated PE plugin loading (`__PE_LOAD__`, see
 amd64: the beacon observes `socks_active`, then starts the server-managed
 `socks.dll` plugin in a cancellable child process. Build that plugin with
 `POST /api/v1/plugins/build` and `{"name":"socks"}` before starting a pivot.
-The server-owned TUN frontend is a separate persistent plugin: the beacon
+The RMM-owned TUN frontend is a separate persistent plugin: the beacon
 observes `tun_active`, then starts `tun.dll` in another cancellable child
 process. Build the required plugin with `POST /api/v1/plugins/build` and
 `{"name":"socks"}` or `{"name":"tun"}` before starting the corresponding
-pivot. The TUN device and user-space IP stack stay on the RMM server; the Go
-agent opens ordinary target-side TCP and UDP sockets and does not need a TUN
-device or administrator privileges. See `docs/tun-pivot.md`.
+pivot. The TUN device and user-space IP stack stay in the namespace selected by
+the storage mode; the Go agent opens ordinary target-side TCP and UDP sockets
+and does not need a TUN device or administrator privileges. See
+`docs/tun-pivot.md`.
 If rclone is absent, the agent bootstraps it through the authenticated
 `/tools/rclone.exe` endpoint. Linux returns explicit unsupported results for
 the Windows desktop features and does not advertise the Windows PE pivot
