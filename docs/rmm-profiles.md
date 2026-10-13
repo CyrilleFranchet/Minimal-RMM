@@ -120,9 +120,9 @@ is not desired.
 
 ## Startup and operations
 
-`run_server.py` builds `tools/rmm-tun`, reports installed agent plugins and
-profiles, then starts the server. It does not compile agent plugins or fetch
-trusted profile executables.
+`run_server.py` ensures that `tools/rmm-tun` is available, reports installed
+agent plugins and profiles, then starts the server. It does not compile agent
+plugins or fetch trusted profile executables.
 
 With `RMM_PROFILE_AUTOSTART=1` (the default), the selected
 `RMM_PROFILE_NAME` starts after the listeners bind. If it is not installed or

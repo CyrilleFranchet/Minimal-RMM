@@ -9,7 +9,7 @@ COPY server-tun ./server-tun
 
 RUN mkdir -p /out/tools \
     && cd server-tun \
-    && go build -trimpath -ldflags "-s -w" -o /out/tools/rmm-tun .
+    && go build -buildvcs=false -trimpath -ldflags "-s -w" -o /out/tools/rmm-tun .
 
 FROM python:3.12-slim AS runtime
 

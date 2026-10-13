@@ -75,7 +75,7 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt   # required for rmm_cli interactive; optional for server --cli
 export RMM_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-python3 run_server.py             # build the server TUN helper, then start on 8080/8081
+python3 run_server.py             # ensure the server TUN helper, then start on 8080/8081
 python3 run_server.py --admin-port 9000 --beacon-port 9001 --bind 0.0.0.0 \
   --beacon-bind 0.0.0.0                         # expose listeners deliberately
 # Optional rclone exfil (see docs/rclone-exfil.md):

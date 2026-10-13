@@ -12,12 +12,26 @@ python3 run_server.py
 
 The wrapper performs these steps from the repository root:
 
-1. Runs `make tun-build`, which writes the server-side helper to
-   `tools/rmm-tun`.
+1. Ensures that the server-side helper at `tools/rmm-tun` exists and is
+   executable. It reuses an up-to-date helper and rebuilds only when the
+   helper is missing, a `server-tun` source or module file is newer, or a
+   rebuild is explicitly requested.
 2. Reports the deployed artifacts found in `RMM_PLUGINS_DIR`.
 3. Reports the installed RMM-Profile bundles found in `RMM_PROFILES_DIR`.
 4. Replaces the wrapper process with `server_rmm.py`, passing through all
    server arguments.
+
+Force a helper rebuild when changing the Go toolchain or dependencies:
+
+```bash
+python3 run_server.py --rebuild-tun
+RMM_TUN_REBUILD=1 python3 run_server.py
+```
+
+`--rebuild-tun` is consumed by the wrapper and is not passed to
+`server_rmm.py`. The `RMM_TUN_HELPER` environment variable selects a helper at
+a custom path; when that helper needs a rebuild, the wrapper builds directly
+to that path.
 
 The wrapper does not build agent plugins. Build and test those plugins in the
 private [external plugin repository](plugin-repository.md), then install its
@@ -135,3 +149,14 @@ Point `RMM_SERVER_URL` at the local workspace service when using
 `rmm_cli.py`. If `RMM_WORKSPACE_LOCAL_TOKEN` is set, pass that value as the
 CLI's `RMM_API_TOKEN`; the local service forwards its own workspace credentials
 to the central server.
+
+## Startup helper functions
+
+| Function | Role |
+| --- | --- |
+| `_truthy` | Parse the environment switch used by the rebuild override. |
+| `_wrapper_arguments` | Separate wrapper-only rebuild flags from server arguments. |
+| `_tun_source_files` | Enumerate Go source and module files used by the helper build. |
+| `_tun_helper_path` | Resolve the default or configured helper path. |
+| `_tun_helper_needs_build` | Compare helper state and source timestamps. |
+| `_ensure_tun_helper` | Rebuild or reuse the helper, including custom output paths, and validate the executable. |

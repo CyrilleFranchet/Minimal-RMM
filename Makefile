@@ -33,7 +33,7 @@ go-test:
 
 tun-build:
 	@mkdir -p tools
-	@cd server-tun && go build -trimpath -ldflags "-s -w" -o ../tools/rmm-tun .
+	@cd server-tun && go build -buildvcs=false -trimpath -ldflags "-s -w" -o ../tools/rmm-tun .
 
 workspace-service:
 	@$(PYTHON) workspace_service.py
