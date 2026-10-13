@@ -360,6 +360,7 @@ class SessionSocksBridge:
                             "id": cid,
                             "client_lock": threading.Lock(),
                             "pending_data": deque(),
+                            "remote_closed": False,
                         }
                     ev = self.connect_events.get(cid)
                 if ev:
@@ -386,6 +387,8 @@ class SessionSocksBridge:
                 with self.lock:
                     tunnel = self.tunnels.get(cid)
                 if tunnel and payload:
+                    if tunnel.get("remote_closed"):
+                        continue
                     sock = tunnel.get("client")
                     if not sock:
                         with self.lock:
@@ -419,6 +422,16 @@ class SessionSocksBridge:
                 self._drop_tasks(cid, "send")
                 self._drop_tasks(cid, "close")
                 with self.lock:
+                    tunnel = self.tunnels.get(cid)
+                    if tunnel and not tunnel.get("client"):
+                        # Keep a successful CONNECT alive until the SOCKS
+                        # client receives its success reply. A fast remote
+                        # close can arrive in the same agent response batch as
+                        # "ok"; deleting the tunnel here would turn that
+                        # successful connection into a false SOCKS refusal.
+                        tunnel["remote_closed"] = True
+                        self._pending_sends.pop(cid, None)
+                        continue
                     self._pending_sends.pop(cid, None)
                     tunnel = self.tunnels.pop(cid, None)
                 if tunnel:
@@ -614,6 +627,11 @@ class SessionSocksBridge:
                 self._close_tunnel(tunnel)
                 return
             if not self._attach_client(tunnel, client_sock):
+                return
+            with self.lock:
+                remote_closed = bool(tunnel.get("remote_closed"))
+            if remote_closed:
+                self._close_tunnel(tunnel, notify_client=False)
                 return
             self._relay_local_to_remote(tunnel)
         except Exception as exc:

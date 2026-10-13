@@ -1,11 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
+	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	M "github.com/xjasonlyu/tun2socks/v2/metadata"
@@ -92,4 +99,127 @@ func TestMetadataFromID(t *testing.T) {
 	if metadata.Network != M.TCP || metadata.SourceAddress() != "198.18.0.7:40123" || metadata.DestinationAddress() != "10.10.10.20:443" {
 		t.Fatalf("metadataFromID returned unexpected metadata: %+v", metadata)
 	}
+}
+
+// testProxy records metadata and returns an in-memory stream for TCP tests.
+type testProxy struct {
+	err    error
+	dialed chan *M.Metadata
+	peers  []net.Conn
+}
+
+// DialContext records a TCP proxy attempt and returns a test stream.
+func (p *testProxy) DialContext(_ context.Context, metadata *M.Metadata) (net.Conn, error) {
+	if p.dialed != nil {
+		p.dialed <- metadata
+	}
+	if p.err != nil {
+		return nil, p.err
+	}
+	local, peer := net.Pipe()
+	p.peers = append(p.peers, peer)
+	return local, nil
+}
+
+// DialUDP is unused by the TCP forwarding tests.
+func (p *testProxy) DialUDP(*M.Metadata) (net.PacketConn, error) {
+	return nil, errors.New("UDP is not used by this test")
+}
+
+// closePeers releases the peer ends kept open by successful test dials.
+func (p *testProxy) closePeers() {
+	for _, peer := range p.peers {
+		_ = peer.Close()
+	}
+}
+
+// TestTCPForwarderWaitsForProxyResult verifies the SYN-proxy behavior.
+func TestTCPForwarderWaitsForProxyResult(t *testing.T) {
+	tests := []struct {
+		name       string
+		proxyError error
+		wantFlags  header.TCPFlags
+	}{
+		{name: "proxy success", wantFlags: header.TCPFlagSyn | header.TCPFlagAck},
+		{name: "proxy failure", proxyError: errors.New("target refused"), wantFlags: header.TCPFlagRst},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			proxy := &testProxy{
+				err:    test.proxyError,
+				dialed: make(chan *M.Metadata, 1),
+			}
+			link := channel.New(8, 1500, "")
+			handler := &relayHandler{proxy: proxy, udpTimeout: time.Minute}
+			stackInstance, err := createStack(link, handler)
+			if err != nil {
+				t.Fatalf("createStack: %v", err)
+			}
+			defer func() {
+				stackInstance.Close()
+				stackInstance.Wait()
+				proxy.closePeers()
+			}()
+
+			injectTCPsyn(t, link)
+			select {
+			case metadata := <-proxy.dialed:
+				if got := metadata.DestinationAddress(); got != "10.10.10.20:443" {
+					t.Fatalf("proxy destination = %q, want 10.10.10.20:443", got)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("forwarder did not attempt the proxy connection")
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			packet := link.ReadContext(ctx)
+			if packet == nil {
+				t.Fatal("forwarder did not produce a TCP response")
+			}
+			defer packet.DecRef()
+			flags := header.TCP(packet.TransportHeader().Slice()).Flags()
+			if !flags.Contains(test.wantFlags) {
+				t.Fatalf("TCP response flags = %s, want %s", flags, test.wantFlags)
+			}
+		})
+	}
+}
+
+// injectTCPsyn sends one valid IPv4 SYN into the in-memory link endpoint.
+func injectTCPsyn(t *testing.T, link *channel.Endpoint) {
+	t.Helper()
+	src := tcpip.AddrFrom4([4]byte{198, 18, 0, 7})
+	dst := tcpip.AddrFrom4([4]byte{10, 10, 10, 20})
+	raw := make([]byte, header.IPv4MinimumSize+header.TCPMinimumSize)
+	ipHeader := header.IPv4(raw[:header.IPv4MinimumSize])
+	ipHeader.Encode(&header.IPv4Fields{
+		TotalLength: uint16(len(raw)),
+		ID:          1,
+		TTL:         64,
+		Protocol:    uint8(header.TCPProtocolNumber),
+		SrcAddr:     src,
+		DstAddr:     dst,
+	})
+	ipHeader.SetChecksum(^ipHeader.CalculateChecksum())
+	tcpHeader := header.TCP(raw[header.IPv4MinimumSize:])
+	tcpHeader.Encode(&header.TCPFields{
+		SrcPort:    40123,
+		DstPort:    443,
+		SeqNum:     100,
+		DataOffset: header.TCPMinimumSize,
+		Flags:      header.TCPFlagSyn,
+		WindowSize: 65535,
+	})
+	partial := header.PseudoHeaderChecksum(
+		header.TCPProtocolNumber,
+		src,
+		dst,
+		uint16(len(tcpHeader)),
+	)
+	tcpHeader.SetChecksum(^tcpHeader.CalculateChecksum(partial))
+
+	packet := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(raw)})
+	link.InjectInbound(ipv4.ProtocolNumber, packet)
+	packet.DecRef()
 }

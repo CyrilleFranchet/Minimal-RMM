@@ -179,6 +179,9 @@ beacon latency.
 - The server logs relay start, stop, and setup failures. The target agent log
   does not receive TUN configuration, plugin input, plugin output, URLs, or
   credentials.
+- The private SOCKS bridge keeps a successful CONNECT pending until the local
+  helper receives its SOCKS success reply. This preserves accurate open-port
+  results when the target closes immediately after accepting a connection.
 
 ## Function reference
 
@@ -190,6 +193,7 @@ The server-side implementation is split across these functions and classes:
 | `_device_name` / `_run_system_command` | `rmm_tun.py` | Parse safe device names and execute fixed network command argument lists |
 | `ServerTunRelay` | `rmm_tun.py` | Own one helper process, interface, routes, and private relay bridge |
 | `ServerTunRelay.start` / `stop` | `rmm_tun.py` | Configure and tear down one relay |
+| `ServerTunRelay._read_helper_log` | `rmm_tun.py` | Forward helper diagnostics to the server log |
 | `ServerTunRelay.alive` / `status` | `rmm_tun.py` | Report helper health and safe operator state |
 | `ServerTunRelay._prepare_linux_device` / `_configure_interface` / `_remove_route` | `rmm_tun.py` | Apply platform-specific TUN and route operations |
 | `TunManager` | `rmm_tun.py` | Thread-safe registry for active relays |

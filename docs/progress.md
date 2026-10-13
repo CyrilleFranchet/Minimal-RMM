@@ -30,6 +30,17 @@ implementation log.
 - Added focused tests for TUN device parsing and endpoint metadata conversion,
   and documented relay latency and the remaining raw-packet limitation.
 
+### 2026-10-13 — TUN relay close race and helper diagnostics
+
+- Kept a successful private SOCKS `CONNECT` pending until the helper receives
+  its success reply when the agent reports `ok` and `closed` in one poll. This
+  preserves open-port results for targets that close immediately after
+  accepting a TCP connection.
+- Forwarded server-helper stderr to the server operator log so failed agent
+  `CONNECT` attempts are visible instead of being discarded.
+- Added regression coverage for the fast-close relay state and the gVisor TCP
+  SYN-ACK/reset decision.
+
 ### 2026-10-13 — Independent pivots and global artifact views
 
 - Removed the SOCKS/TUN lifecycle coupling in the central server and workspace

@@ -36,6 +36,12 @@ class RecordingSocket:
     def sendall(self, payload):
         self.sent.append(bytes(payload))
 
+    def shutdown(self, _how):
+        pass
+
+    def close(self):
+        pass
+
 
 class RecordingDatagramSocket:
     """Socket-shaped test double for UDP packets returned to the TUN stack."""
@@ -198,6 +204,23 @@ class SocksBridgeTests(unittest.TestCase):
         self.assertTrue(bridge._attach_client(tunnel, client))
         self.assertEqual(client.sent, [b"hello"])
         self.assertIs(tunnel["client"], client)
+
+    def test_remote_close_after_connect_waits_for_socks_success_reply(self):
+        bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
+        bridge._running = True
+        bridge.submit_responses(
+            [
+                {"id": "fast-close", "op": "ok"},
+                {"id": "fast-close", "op": "closed"},
+            ]
+        )
+
+        tunnel = bridge.tunnels["fast-close"]
+        self.assertTrue(tunnel["remote_closed"])
+        client = RecordingSocket()
+        self.assertTrue(bridge._attach_client(tunnel, client))
+        self.assertIs(tunnel["client"], client)
+        bridge._close_tunnel(tunnel, notify_client=False)
 
     def test_failed_start_does_not_mark_bridge_running_or_register_it(self):
         bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)

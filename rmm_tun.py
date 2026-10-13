@@ -175,6 +175,7 @@ class ServerTunRelay:
         self.socks_manager = socks_manager
         self.log_fn = log_fn or (lambda _message, _level="INFO": None)
         self.process: subprocess.Popen | None = None
+        self._helper_log_thread: threading.Thread | None = None
         self.socks_port: int | None = None
         self._created_linux_device = False
         self._configured_routes: list[str] = []
@@ -224,9 +225,18 @@ class ServerTunRelay:
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
                 start_new_session=(os.name != "nt"),
             )
+            self._helper_log_thread = threading.Thread(
+                target=self._read_helper_log,
+                args=(self.process,),
+                name=f"tun-log-{self.session_id[:8]}",
+                daemon=True,
+            )
+            self._helper_log_thread.start()
             time.sleep(0.15)
             if self.process.poll() is not None:
                 raise TunError(f"TUN helper exited with status {self.process.returncode}")
@@ -248,6 +258,9 @@ class ServerTunRelay:
             self.log(str(exc), "WARNING")
         process = self.process
         self.process = None
+        helper_log_thread = self._helper_log_thread
+        self._helper_log_thread = None
+        helper_stderr = getattr(process, "stderr", None) if process else None
         if process and process.poll() is None:
             try:
                 if os.name != "nt":
@@ -260,6 +273,13 @@ class ServerTunRelay:
                     process.kill()
                 except OSError:
                     pass
+        if helper_stderr is not None:
+            try:
+                helper_stderr.close()
+            except OSError:
+                pass
+        if helper_log_thread and helper_log_thread.is_alive():
+            helper_log_thread.join(timeout=1)
         if system == "linux" and self._created_linux_device:
             try:
                 _run_system_command(["ip", "link", "set", "dev", self.config["device_name"], "down"])
@@ -268,6 +288,19 @@ class ServerTunRelay:
                 self.log(str(exc), "WARNING")
             self._created_linux_device = False
         self.socks_manager.stop(self.session_id)
+
+    def _read_helper_log(self, process: subprocess.Popen) -> None:
+        """Forward safe helper diagnostics to the server operator log."""
+        stream = getattr(process, "stderr", None)
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                message = str(line).strip()
+                if message:
+                    self.log(f"TUN helper: {message}", "WARNING")
+        except (OSError, ValueError):
+            return
 
     def alive(self) -> bool:
         """Return whether the user-space stack process is still running."""
