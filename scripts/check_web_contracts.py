@@ -107,9 +107,7 @@ def _check_socks_contract(errors: list[str]) -> None:
     app = _read("web/app.js")
     html = _read("web/index.html")
     required_ids = {
-        "open-socks-dialog",
-        "agent-tools-dialog",
-        "agent-tools-panel-pivots",
+        "workspace-panel-pivots",
         "socks-port",
         "socks-bind-host",
         "socks-start",
@@ -120,8 +118,10 @@ def _check_socks_contract(errors: list[str]) -> None:
     missing_ids = [element_id for element_id in sorted(required_ids) if f'id="{element_id}"' not in html]
     if missing_ids:
         errors.append(f"WebUI SOCKS controls missing from web/index.html: {missing_ids}")
-    if 'id="open-socks-dialog">Pivots<' not in html:
-        errors.append("WebUI session header must expose the pivot control as Pivots")
+    if 'data-workspace-tab="pivots"' not in html:
+        errors.append("WebUI workspace tabs must expose the pivot view")
+    if 'id="agent-tools-dialog"' in html or 'id="open-socks-dialog"' in html:
+        errors.append("WebUI pivot controls must use the main workspace tabs")
     if "SOCKS5" not in html or "SOCKS4 is not supported" not in html:
         errors.append("WebUI must identify SOCKS5 and state that SOCKS4 is unsupported")
     if "socks5" not in html:
@@ -131,7 +131,7 @@ def _check_socks_contract(errors: list[str]) -> None:
             errors.append(f"WebUI SOCKS function missing from web/app.js: {function_name}")
     if 'api("/socks")' not in app:
         errors.append("WebUI SOCKS inventory must call GET /api/v1/socks")
-    if 'id="agent-tools-panel-pivots"' not in html:
+    if 'id="workspace-panel-pivots"' not in html:
         errors.append("WebUI SOCKS controls must live inside the Pivots tab")
     if "independent channels" not in html:
         errors.append("WebUI must explain that SOCKS5 and TUN can run together")
@@ -157,7 +157,7 @@ def _check_tun_contract(errors: list[str]) -> None:
         errors.append(f"WebUI TUN controls missing from web/index.html: {missing_ids}")
     if 'id="open-tun-dialog"' in html or 'id="tun-dialog"' in html:
         errors.append("WebUI TUN controls must live inside the Pivots tab")
-    if 'id="agent-tools-panel-pivots"' not in html or 'id="tun-section-title"' not in html:
+    if 'id="workspace-panel-pivots"' not in html or 'id="tun-section-title"' not in html:
         errors.append("WebUI Pivots tab must contain the TUN routing section")
     if "Workspace or server device" not in html or "target-side TCP and UDP sockets" not in html:
         errors.append("WebUI must explain TUN ownership and the privilege-free agent transport")
@@ -174,11 +174,8 @@ def _check_artifact_contract(errors: list[str]) -> None:
     app = _read("web/app.js")
     html = _read("web/index.html")
     required_ids = {
-        "open-downloads-dialog",
-        "open-screenshots-dialog",
-        "artifacts-dialog",
-        "artifact-tab-downloads",
-        "artifact-tab-screenshots",
+        "workspace-panel-artifacts",
+        "global-artifacts-title",
         "global-artifacts-list",
         "global-artifacts-preview",
     }
@@ -187,7 +184,11 @@ def _check_artifact_contract(errors: list[str]) -> None:
         errors.append(f"WebUI global artifact controls missing from web/index.html: {missing_ids}")
     if "/artifacts?kind=" not in app:
         errors.append("WebUI global artifact inventory must call GET /api/v1/artifacts?kind=...")
-    for function_name in ("refreshGlobalArtifacts", "openGlobalArtifactsDialog", "renderGlobalArtifactsList"):
+    if 'data-workspace-tab="downloads"' not in html or 'data-workspace-tab="screenshots"' not in html:
+        errors.append("WebUI workspace tabs must expose global Downloads and Screenshots views")
+    if 'id="artifacts-dialog"' in html or 'id="open-downloads-dialog"' in html:
+        errors.append("WebUI global artifacts must use the main workspace tabs")
+    for function_name in ("refreshGlobalArtifacts", "setWorkspaceTab", "renderGlobalArtifactsList"):
         if not re.search(rf"function\s+{function_name}\s*\(", app):
             errors.append(f"WebUI artifact function missing from web/app.js: {function_name}")
 

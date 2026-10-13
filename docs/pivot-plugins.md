@@ -112,8 +112,8 @@ The default local runtime store is `RMM_logs/plugins/`; Docker deployments
 mount the persistent `/app/plugins` volume. A public SOCKS relay requires the Go
 `socks-plugin` capability and `socks.dll`; a TUN relay requires `tun-plugin`
 and `tun.dll`. Existing `/socks` REST, CLI, MCP, and WebUI controls remain
-stable; the WebUI exposes TUN routing in the Pivots tab of the agent tools
-dialog. SOCKS5 and TUN use separate plugin controllers and can run together.
+stable; the WebUI exposes TUN routing in the Pivots tab of the main workspace.
+SOCKS5 and TUN use separate plugin controllers and can run together.
 
 ## Security and logging
 

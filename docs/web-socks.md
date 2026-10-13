@@ -4,10 +4,12 @@ See the [documentation wiki](README.md) and the
 [architecture overview](architecture.md) for system-wide placement and
 privilege boundaries.
 
-The WebUI exposes **Files & Screenshots** and **Pivots** as tabs in one agent
-tools dialog for the selected live session console. Listener and device ownership follows the
-storage mode: the central server owns them in server mode, while the local
-workspace service owns them in workspace mode. See
+The WebUI exposes **Shell**, **Files & Screenshots**, **Pivots**, **Downloads**,
+and **Screenshots** as tabs in the main workspace. Files and pivots operate on
+the selected live session. Downloads and screenshots are global across all
+agents. Listener and device ownership follows the storage mode: the central
+server owns them in server mode, while the local workspace service owns them in
+workspace mode. See
 [`docs/tun-pivot.md`](tun-pivot.md) for TUN configuration and lifecycle.
 
 SOCKS5 and TUN are independent relays. Starting or stopping one does not stop
@@ -17,7 +19,7 @@ plugin controller and authenticated transport channel for each relay.
 ## Start a relay
 
 1. Select a live session.
-2. Click **Pivots** in the session header.
+2. Select the **Pivots** tab in the main workspace.
 3. Set the listener port and bind host if needed. The defaults are
    `127.0.0.1:1080`.
 4. Click **Start SOCKS5 pivot**.
@@ -64,7 +66,7 @@ retain response batches across transient HTTP POST failures.
 
 ## Manage active relays
 
-The dialog refreshes the global pivot inventory from `GET /api/v1/socks` and
+The **Pivots** tab refreshes the global pivot inventory from `GET /api/v1/socks` and
 shows the agent, proxy URL, agent channel, active tunnel count, beacon status,
 and listener state. The list refreshes periodically while the WebUI is
 connected. Use **Copy** to copy a proxy URL or **Stop** to tear down any listed
@@ -85,8 +87,8 @@ from rclone exfiltration:
 
 ## Global downloads and screenshots
 
-**Downloads** and **Screenshots** are global controls in the application header.
-They list artifacts from all agents in the current server or workspace. Each
+The **Downloads** and **Screenshots** tabs are global views in the main
+workspace. They list artifacts from all agents in the current server or workspace. Each
 row shows the originating agent, a short session ID, whether that session is
 active or archived, the artifact name or remote path, size, and received time.
 Rows provide authenticated download actions and previews for supported text and
@@ -101,7 +103,6 @@ The existing per-session `GET /api/v1/sessions/{id}/downloads` endpoint remains
 available for automation and compatibility. Artifact files continue to use
 `GET /api/v1/artifacts/{kind}/{filename}`.
 
-The agent tools tabs are controlled by `setAgentToolsTab()` and
-`openAgentToolsDialog()` in `web/app.js`; `openSocksDialog()` selects the Pivots
-tab for the existing session-header button. These helpers preserve one modal
-surface while keeping the file and pivot controls independent.
+The workspace tabs are controlled by `setWorkspaceTab()` in `web/app.js`.
+`setGlobalArtifactTab()` changes the Downloads or Screenshots collection while
+the selected live session remains available in the sidebar.

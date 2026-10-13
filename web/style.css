@@ -708,6 +708,7 @@ body.sidebar-resizing iframe {
 }
 
 .console-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -716,7 +717,12 @@ body.sidebar-resizing iframe {
 }
 
 .empty-state {
-  flex: 1;
+  position: absolute;
+  z-index: 2;
+  top: 3rem;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -766,6 +772,59 @@ body.sidebar-resizing iframe {
   color: var(--muted);
   margin-top: 0.25rem;
   font-family: var(--mono);
+}
+
+.workspace-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.25rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0 0.75rem;
+}
+
+.workspace-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 0.65rem 0.75rem;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.workspace-tab:hover,
+.workspace-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.workspace-tab-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem 1.25rem;
+}
+
+.workspace-tab-panel[data-workspace-panel="shell"] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.workspace-tab-panel[data-workspace-panel="artifacts"] {
+  overflow: auto;
+}
+
+.global-artifacts-header h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+
+.global-artifacts-header .tools-hint {
+  margin-top: 0;
 }
 
 @media (max-width: 600px) {
@@ -1002,79 +1061,6 @@ body.sidebar-resizing iframe {
   max-width: 100%;
   max-height: 200px;
   border-radius: 4px;
-}
-
-.session-tools-dialog {
-  width: min(72rem, calc(100vw - 2rem));
-  height: min(82vh, 52rem, calc(100vh - 2rem));
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow-modal);
-}
-
-.session-tools-dialog::backdrop {
-  background: var(--overlay);
-}
-
-.session-tools-card {
-  height: 100%;
-  box-sizing: border-box;
-  overflow: auto;
-  padding: 1rem 1.15rem 1.1rem;
-  margin: 0;
-}
-
-.session-tools-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-}
-
-.session-tools-header h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.session-tools-header button {
-  flex-shrink: 0;
-  padding: 0.25rem 0.55rem;
-  font-size: 1.1rem;
-  line-height: 1;
-}
-
-.agent-tools-tabs,
-.artifact-tabs {
-  display: flex;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.agent-tools-tab,
-.artifact-tab {
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  padding: 0.45rem 0.7rem;
-  background: transparent;
-  color: var(--muted);
-}
-
-.agent-tools-tab:hover,
-.artifact-tab:hover,
-.agent-tools-tab.active,
-.artifact-tab.active {
-  border-bottom-color: var(--accent);
-  color: var(--text);
-}
-
-.agent-tools-panel {
-  min-height: 0;
 }
 
 .artifact-session-meta {

@@ -203,8 +203,10 @@ Optional: `DELETE /api/v1/sessions/{id}/downloads/{artifact}` to remove server-s
 
 ### Downloads browser — web client
 
-- The application header opens global artifact views; the selected agent's
-  Files & Screenshots tab remains the control surface for queuing operations.
+- The main workspace exposes Shell, Files & Screenshots, Pivots, Downloads, and
+  Screenshots as tabs. The selected agent's Files & Screenshots tab remains
+  the control surface for queuing operations, while the last two tabs are
+  global artifact views.
 - Fetch `GET /api/v1/artifacts?kind=downloads` or
   `GET /api/v1/artifacts?kind=screenshots` and render the global table.
 - Reuse `artifactSrc()` for authenticated download/preview URLs.

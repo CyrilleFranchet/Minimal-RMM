@@ -20,6 +20,7 @@ const state = {
   selectedId: null,
   selectedHistoryId: null,
   viewMode: "live",
+  workspaceTab: "shell",
   lastEventId: 0,
   localEventSeq: 0,
   ws: null,
@@ -421,19 +422,16 @@ async function refreshGlobalArtifacts(kind = state.globalArtifactKind) {
 }
 
 function refreshGlobalArtifactsIfOpen(kind = state.globalArtifactKind) {
-  if (!$("#artifacts-dialog")?.open) return Promise.resolve();
+  if (state.workspaceTab !== "downloads" && state.workspaceTab !== "screenshots") {
+    return Promise.resolve();
+  }
   return refreshGlobalArtifacts(kind);
 }
 
 function setGlobalArtifactTab(kind) {
   const normalized = kind === "screenshots" ? "screenshots" : "downloads";
   state.globalArtifactKind = normalized;
-  document.querySelectorAll(".artifact-tab").forEach((button) => {
-    const active = button.dataset.artifactKind === normalized;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", active ? "true" : "false");
-  });
-  const title = $("#artifacts-dialog-title");
+  const title = $("#global-artifacts-title");
   if (title) title.textContent = normalized === "screenshots" ? "Screenshots from all agents" : "Downloads from all agents";
   const hint = $("#artifacts-scope-hint");
   if (hint) hint.textContent = normalized === "screenshots"
@@ -447,11 +445,44 @@ function setGlobalArtifactTab(kind) {
   }
 }
 
-function openGlobalArtifactsDialog(kind = "downloads") {
-  setGlobalArtifactTab(kind);
-  const dialog = $("#artifacts-dialog");
-  if (dialog?.showModal && !dialog.open) dialog.showModal();
-  refreshGlobalArtifacts(state.globalArtifactKind).catch(() => {});
+function setWorkspaceTab(tab) {
+  const allowed = new Set(["shell", "files", "pivots", "downloads", "screenshots"]);
+  const normalized = allowed.has(tab) ? tab : "shell";
+  state.workspaceTab = normalized;
+  const session = state.sessions.find((item) => item.id === state.selectedId);
+  const filesLabel = $("#files-selected-session");
+  if (filesLabel) {
+    filesLabel.textContent = session
+      ? `Selected session: ${session.username}@${session.hostname} · ${session.id.slice(0, 8)}`
+      : "Select a live session to use file operations";
+  }
+  document.querySelectorAll(".workspace-tab").forEach((button) => {
+    const active = button.dataset.workspaceTab === normalized;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll(".workspace-tab-panel").forEach((panel) => {
+    const panelTab = normalized === "downloads" || normalized === "screenshots" ? "artifacts" : normalized;
+    panel.classList.toggle("hidden", panel.dataset.workspacePanel !== panelTab);
+  });
+  if (normalized === "downloads" || normalized === "screenshots" || state.selectedId || state.selectedHistoryId) {
+    hide($("#empty-state"));
+  } else {
+    show($("#empty-state"));
+  }
+
+  if (normalized === "files") {
+    refreshExfilStatus().catch(() => {});
+  } else if (normalized === "pivots") {
+    prepareTunControls();
+    updateSocksUi();
+    updateTunUi();
+    refreshSocksRelays().catch(() => {});
+    refreshTunRelays().catch(() => {});
+  } else if (normalized === "downloads" || normalized === "screenshots") {
+    setGlobalArtifactTab(normalized);
+    refreshGlobalArtifacts(normalized).catch(() => {});
+  }
 }
 
 function selectedSocksRelay(sessionId = state.selectedId) {
@@ -789,51 +820,6 @@ async function refreshSocksRelays() {
   updateSocksUi();
 }
 
-function setAgentToolsTab(tab) {
-  const normalized = tab === "pivots" ? "pivots" : "files";
-  document.querySelectorAll(".agent-tools-tab").forEach((button) => {
-    const active = button.dataset.agentToolsTab === normalized;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", active ? "true" : "false");
-  });
-  $("#agent-tools-panel-files")?.classList.toggle("hidden", normalized !== "files");
-  $("#agent-tools-panel-pivots")?.classList.toggle("hidden", normalized !== "pivots");
-}
-
-function openAgentToolsDialog(tab = "files") {
-  if (!state.selectedId || state.viewMode !== "live") return;
-  const normalized = tab === "pivots" ? "pivots" : "files";
-  setAgentToolsTab(normalized);
-  const session = state.sessions.find((item) => item.id === state.selectedId);
-  const sessionLabel = session
-    ? `Selected session: ${session.username}@${session.hostname} · ${session.id.slice(0, 8)}`
-    : "No live session selected";
-  const filesLabel = $("#files-selected-session");
-  if (filesLabel) filesLabel.textContent = sessionLabel;
-  if (normalized === "pivots") {
-    const relay = selectedSocksRelay();
-    const port = $("#socks-port");
-    const bindHost = $("#socks-bind-host");
-    if (port) port.value = String(relay?.port || 1080);
-    if (bindHost) bindHost.value = String(relay?.bind_host || "127.0.0.1");
-    setSocksActionStatus("");
-    prepareTunControls();
-    updateSocksUi();
-  } else {
-    refreshExfilStatus().catch(() => {});
-  }
-  const dialog = $("#agent-tools-dialog");
-  if (dialog?.showModal && !dialog.open) dialog.showModal();
-  if (normalized === "pivots") {
-    refreshSocksRelays().catch(() => {});
-    refreshTunRelays().catch(() => {});
-  }
-}
-
-function openSocksDialog() {
-  openAgentToolsDialog("pivots");
-}
-
 async function startSelectedSocks() {
   const sessionId = state.selectedId;
   if (!sessionId || state.viewMode !== "live") return;
@@ -965,11 +951,14 @@ function setConsoleReadOnly(readonly) {
   const input = $("#shell-input");
   panel.classList.toggle("readonly-mode", readonly);
   banner.classList.toggle("hidden", !readonly);
+  document.querySelectorAll(".workspace-tab").forEach((button) => {
+    const scoped = button.dataset.workspaceTab === "files" || button.dataset.workspaceTab === "pivots";
+    button.disabled = readonly && scoped;
+  });
   if (input) {
     input.disabled = readonly;
   }
   if (readonly) {
-    document.querySelectorAll(".session-tools-dialog[open]").forEach((dialog) => dialog.close());
     resetShellHistoryNav();
     const hint = $("#shell-completion-hint");
     if (hint) hint.classList.add("hidden");
@@ -1157,7 +1146,8 @@ async function selectHistorySession(id) {
   }
   const s = data.session || {};
   hide($("#empty-state"));
-  show($("#console-panel"));
+  show($("#console-header"));
+  setWorkspaceTab("shell");
   setConsoleReadOnly(true);
 
   $("#console-title").textContent = `${s.username || "?"}@${s.hostname || "?"}`;
@@ -2496,13 +2486,13 @@ async function selectSession(id) {
   state.echoedCommands.clear();
   state.pendingCommandBlocks = [];
   state.renderedEventIds.clear();
-  document.querySelectorAll(".session-tools-dialog[open]").forEach((dialog) => dialog.close());
   renderSessionList();
   const s = state.sessions.find((x) => x.id === id);
   if (!s) return;
 
   hide($("#empty-state"));
-  show($("#console-panel"));
+  show($("#console-header"));
+  setWorkspaceTab("shell");
 
   $("#console-title").textContent = `${s.username}@${s.hostname}`;
   $("#console-detail").textContent = `${s.id} · last seen ${formatTime(s.last_seen)}`;
@@ -2543,14 +2533,15 @@ function showEmptyConsole() {
   state.selectedHistoryId = null;
   state.viewMode = "live";
   state.renderedEventIds.clear();
-  document.querySelectorAll(".session-tools-dialog[open]").forEach((dialog) => dialog.close());
   if (typeof window.syncAiChatWithSession === "function") {
     window.syncAiChatWithSession(null);
   }
   setConsoleReadOnly(false);
+  setWorkspaceTab("shell");
   show($("#empty-state"));
-  hide($("#console-panel"));
+  hide($("#console-header"));
   $("#shell-input").value = "";
+  $("#shell-input").disabled = true;
   updateSocksUi();
   updateTunUi();
   renderSessionList();
@@ -3253,17 +3244,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#disconnect-btn").addEventListener("click", disconnect);
   $("#console-close")?.addEventListener("click", closeConsole);
-  $("#open-files-dialog")?.addEventListener("click", () => openAgentToolsDialog("files"));
-  $("#open-downloads-dialog")?.addEventListener("click", () => openGlobalArtifactsDialog("downloads"));
-  $("#open-screenshots-dialog")?.addEventListener("click", () => openGlobalArtifactsDialog("screenshots"));
-  $("#open-socks-dialog")?.addEventListener("click", openSocksDialog);
-  document.querySelectorAll(".agent-tools-tab").forEach((button) => {
-    button.addEventListener("click", () => openAgentToolsDialog(button.dataset.agentToolsTab || "files"));
-  });
-  document.querySelectorAll(".artifact-tab").forEach((button) => {
+  document.querySelectorAll(".workspace-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      setGlobalArtifactTab(button.dataset.artifactKind || "downloads");
-      refreshGlobalArtifacts(state.globalArtifactKind).catch(() => {});
+      setWorkspaceTab(button.dataset.workspaceTab || "shell");
     });
   });
   $("#socks-start")?.addEventListener("click", () => {

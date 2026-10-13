@@ -8,7 +8,7 @@ directories on disk.
 
 | Surface | Support |
 |---------|---------|
-| Web UI | Global **Downloads** and **Screenshots** lists in the application header |
+| Web UI | Global **Downloads** and **Screenshots** tabs in the main workspace |
 | REST API | `GET /api/v1/artifacts?kind=downloads` or `?kind=screenshots` |
 | CLI / MCP | `RmmApiClient.list_artifacts(kind)` and MCP: `list_artifacts` (per-session `list_session_downloads` remains available) |
 
@@ -164,14 +164,12 @@ Files are served at `GET /api/v1/artifacts/downloads/{artifact}` with bearer tok
 
 ## Web client
 
-- `web/index.html` — global **Downloads** and **Screenshots** buttons plus the
-  artifact dialog.
+- `web/index.html` — the main workspace tabs and global artifact panel.
 - `web/app.js` — `refreshGlobalArtifacts()`, `renderGlobalArtifactsList()`, and
   refresh-on-event behavior.
 - `web/style.css` — table and preview styles.
 
 The WebUI helpers are split by responsibility: `artifactAgentLabel()` formats
 the originating agent, `artifactDisplayName()` selects a remote path or stored
-name, `setGlobalArtifactTab()` switches the global collection,
-`openGlobalArtifactsDialog()` opens it, and
-`refreshGlobalArtifactsIfOpen()` keeps an already open collection current.
+name, `setGlobalArtifactTab()` switches the global collection, and
+`refreshGlobalArtifactsIfOpen()` keeps the active global tab current.
