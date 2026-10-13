@@ -9,14 +9,35 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-13 — Unified workspace tabs
+
+- Moved Shell, Files & Screenshots, Pivots, Downloads, and Screenshots into one
+  main workspace tab bar. Files and pivot operations remain scoped to the
+  selected live agent; Downloads and Screenshots remain global across agents.
+- Removed the modal agent-tools and artifact dialogs so operators can move
+  between the live session and global artifact views without leaving the main
+  workspace.
+- Updated the WebUI contract checks and operator documentation.
+
+### 2026-10-13 — TUN TCP scan false-positive fix
+
+- Replaced the stock tun2socks TCP forwarder in `server-tun/rmm-tun` with a
+  gVisor forwarder that performs the agent-side SOCKS `CONNECT` before sending
+  the local SYN-ACK. Failed target connections now produce a local TCP reset
+  instead of a successful handshake for every port.
+- Kept the Go agent privilege-free and preserved the separate TCP and UDP TUN
+  transport. The helper still does not forward target raw packets or ICMP.
+- Added focused tests for TUN device parsing and endpoint metadata conversion,
+  and documented relay latency and the remaining raw-packet limitation.
+
 ### 2026-10-13 — Independent pivots and global artifact views
 
 - Removed the SOCKS/TUN lifecycle coupling in the central server and workspace
   pivot manager. Each relay keeps its own transport manager and the Go agent
   keeps one controller per plugin, so both channels can run for one session.
-- Replaced the separate Files, Downloads, and Pivots dialogs with an agent
-  tools dialog containing Files & Screenshots and Pivots tabs. Added global
-  Downloads and Screenshots views in the application header.
+- Replaced the separate Files, Downloads, and Pivots dialogs with a main
+  workspace tab bar containing Files & Screenshots, Pivots, Downloads, and
+  Screenshots views.
 - Added `GET /api/v1/artifacts?kind=downloads|screenshots`, including agent
   identity, session status, artifact metadata, and authenticated artifact URLs
   for server and workspace storage modes.
