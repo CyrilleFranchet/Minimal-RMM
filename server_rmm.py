@@ -433,7 +433,17 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None) -> 
     ldflags = " ".join(shlex.quote(flag) for flag in linker_flags)
     try:
         completed = subprocess.run(
-            [go_bin, "build", "-trimpath", "-ldflags", ldflags, "-o", binary_path, "."],
+            [
+                go_bin,
+                "build",
+                "-buildvcs=false",
+                "-trimpath",
+                "-ldflags",
+                ldflags,
+                "-o",
+                binary_path,
+                ".",
+            ],
             cwd=root,
             env=env,
             capture_output=True,

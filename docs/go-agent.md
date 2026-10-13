@@ -27,7 +27,10 @@ listed above. Each successful build returns its byte count and SHA-256 digest.
 
 The server must have the Go toolchain installed and available as `go`. The
 build request has a 120-second timeout and does not execute shell text supplied
-by the browser.
+by the browser. The server passes `-buildvcs=false` because source trees
+mounted into Exegol or Docker can contain Git metadata that is unavailable or
+owned by a different container user; the agent does not need embedded Git
+revision metadata.
 
 ## Runtime configuration
 
