@@ -72,8 +72,8 @@ historical notes in `progress.md`.
 
 | Capability | Page |
 | --- | --- |
-| Isolated rclone Go plugin and exfiltration modes | [Agent exfil plugin](agent-plugin-exfil.md) and [rclone exfil](rclone-exfil.md) |
-| PowerShell and Go screenshots | [Screenshot plugins](screenshot-plugin.md) |
+| rclone exfiltration modes | [rclone exfil](rclone-exfil.md) |
+| PowerShell and Go screenshots | [Go agent](go-agent.md) and [External plugin repository](plugin-repository.md) |
 | Downloaded files browser | [Downloads browser](downloads-browser.md) |
 
 ## WebUI and AI

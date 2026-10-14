@@ -297,8 +297,8 @@ New Python functions:
 
 | Plugin | Role | Doc |
 |--------|------|-----|
-| `rclone-exfil` | rclone engine isolated in a plugin child process | `docs/agent-plugin-exfil.md` |
-| `screenshot` | Native GDI screenshot capture in a plugin child process | `docs/screenshot-plugin.md` |
+| `rclone-exfil` | rclone engine isolated in a plugin child process | [External plugin repository](plugin-repository.md) |
+| `screenshot` | Native GDI screenshot capture in a plugin child process | [External plugin repository](plugin-repository.md) |
 | `socks` | Persistent SOCKS5 pivot channel for Windows amd64 Go agents | this document |
 | `tun` | Persistent TUN TCP/UDP transport for Windows amd64 Go agents | this document |
 
@@ -306,7 +306,7 @@ New Python functions:
 
 | Plugin | Role | Doc |
 |--------|------|-----|
-| `screenshot.ps1` | Primary display capture for PowerShell agents | `docs/screenshot-plugin.md` |
+| `screenshot.ps1` | Primary display capture for PowerShell agents | [External plugin repository](plugin-repository.md) |
 | `socks.ps1` | Persistent SOCKS5 pivot channel for PowerShell agents | `docs/web-socks.md` |
 
 The server selects this plugin for `mode=auto` exfil requests only when the

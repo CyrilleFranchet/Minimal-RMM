@@ -137,9 +137,8 @@ implementation log.
   generic agent-host repository; agent plugin sources and release builds move
   to a separate plugin repository.
 - Created the private
-  `CyrilleFranchet/Minimal-RMM-plugins` repository by preserving the
-  `agent-plugins/` history, then added its manifest, bundle builder, tests, and
-  CI workflow.
+  `CyrilleFranchet/Minimal-RMM-plugins` repository for plugin source,
+  manifests, bundle builds, tests, and CI.
 - Removed agent plugin sources, server-side plugin compilation, and the Go
   plugin build panel from Minimal-RMM. The server now inventories and serves
   only artifacts installed in `RMM_PLUGINS_DIR`.
@@ -176,7 +175,8 @@ implementation log.
   workspace-scoped AI actions cannot escape the claimed session set.
 - Added `Dockerfile`, `.dockerignore`, `.env.example`, and
   `docker-compose.yml` for a control-plane service plus an optional privileged
-  workspace sidecar. The image builds the checked-in Go plugins and `rmm-tun`.
+  workspace sidecar. The image builds only the server-side `rmm-tun` helper;
+  agent plugin artifacts are mounted from the runtime store.
 - Added workspace unit coverage for registry authentication, event cursor
   overflow, local chunk reassembly, artifact/chat persistence, session claims,
   central payload routing, and transport-only bridges.
@@ -214,8 +214,8 @@ implementation log.
   `socks.dll` plugin and `/socks` channel.
 - Moved the server-side `rmm-tun` build output to `tools/rmm-tun`, keeping
   `RMM_logs/` for runtime data and logs.
-- Added `run_server.py` to build all checked-in Go plugins and the TUN helper
-  before starting `server_rmm.py`.
+- Added `run_server.py` to build the server-side TUN helper and report runtime
+  plugin artifacts before starting `server_rmm.py`.
 - Added WebUI contract coverage and a regression test for private bridge
   filtering.
 
@@ -236,13 +236,13 @@ implementation log.
 
 ### 2026-10-12 — PowerShell screenshot plugin
 
-- Moved the PowerShell screenshot capture implementation into the checked-in
-  `agent-plugins/screenshot-powershell/screenshot.ps1` script plugin.
-- The agent now fetches the script through the authenticated plugin endpoint,
+- Moved the PowerShell screenshot capture implementation into the private
+  external plugin repository.
+- The agent fetches the deployed artifact through the authenticated plugin endpoint,
   evaluates it once, and preserves the existing screenshot result and operator
   API behavior.
-- Added server delivery coverage and documented the PowerShell and Go plugin
-  paths in `docs/screenshot-plugin.md` and `docs/go-agent-plugins.md`.
+- Added server delivery coverage and documented the runtime contract in
+  `docs/go-agent-plugins.md`.
 
 ### 2026-10-12 — Make SOCKS protocol explicit in the WebUI
 
@@ -273,14 +273,14 @@ implementation log.
 
 - Renamed the WebUI session control to **Pivots** while keeping SOCKS5 as the
   first technical pivot type and preserving the `/socks` API for compatibility.
-- Moved the Go agent SOCKS relay into the persistent `agent-plugins/socks`
-  plugin. Windows amd64 Go agents start it from the `socks_active` lifecycle
-  flag and can cancel it without blocking the beacon loop.
-- Moved the PowerShell relay implementation into the checked-in
-  `agent-plugins/socks-powershell/socks.ps1` plugin, fetched through the
-  authenticated plugin endpoint and run in its dedicated worker runspace.
-- Added plugin readiness checks so a Go pivot cannot start until the default
-  `socks.dll` artifact is built. See `docs/web-socks.md` and
+- Moved the Go agent SOCKS relay into the private external plugin repository.
+  Windows amd64 Go agents start it from the `socks_active` lifecycle flag and
+  can cancel it without blocking the beacon loop.
+- Moved the PowerShell relay implementation into the private external plugin
+  repository, fetched through the authenticated plugin endpoint and run in its
+  dedicated worker runspace.
+- Added plugin readiness checks so a Go pivot cannot start until the required
+  `socks.dll` artifact is installed. See `docs/web-socks.md` and
   `docs/go-agent-plugins.md`.
 
 ### 2026-10-12 — WebUI pivot controls
@@ -327,19 +327,20 @@ implementation log.
 
 ### 2026-10-09 — Server-side plugin builds and organized deploy UI
 
-- Added `POST /api/v1/plugins/build`: the server cross-compiles checked-in `agent-plugins/<name>/` sources (windows/amd64 CGO c-shared, `-trimpath -ldflags "-s -w"`) straight into the plugin directory. Free output DLL name, mingw-w64 compiler requirement (`RMM_PLUGIN_CC`), 600-second default timeout (`RMM_PLUGIN_BUILD_TIMEOUT`), Go caches under `RMM_logs/`. Only repository sources are ever built — no browser-supplied code.
-- `GET /api/v1/plugins` now also reports buildable `targets` and `toolchain` availability; the parity chain gained `build_plugin` (REST → CLI `pe build` → MCP) and the web shell gained the `pe` meta verb.
-- Deploy UI reorganized by language/OS: PowerShell panel unchanged (generate/download, not compiled), Go agent panel now compile-only (source viewer removed), new **Deploy plugins (Go)** panel (target selection, output naming, toolchain status, plugin inventory with sizes/SHA-256).
+- Moved plugin compilation and release packaging to the private external
+  plugin repository. Minimal-RMM only inventories deployed artifacts and
+  serves them through the authenticated plugin endpoint.
+- The operator surfaces retain plugin inventory and loading; plugin-specific
+  build tooling and source browsing are no longer part of this repository.
 - Exfil mode selection now supports `auto`, `plugin`, and `binary`. Windows amd64 Go agents advertise `pe` and `rclone-plugin` capabilities; `auto` prefers an available `rclone-exfil*.dll`, while other Go targets, PowerShell agents, and explicit `binary` mode retain the executable fallback.
-- Tests: `POST /plugins/build` validation, toolchain-missing mapping, unsafe output names; `GET /plugins` response shape. Docs updated (`go-agent-plugins.md`, `agent-plugin-exfil.md`, `mcp-parity.md`, `go-agent.md`, README, this log).
+- Tests: plugin inventory and artifact delivery coverage. Docs updated for the
+  external repository and runtime artifact contract.
 
 ### 2026-10-09 — In-process rclone exfil plugin
 
-- Added `agent-plugins/rclone-exfil/`: a Go c-shared plugin that embeds the rclone engine (v1.75.x) as a library and exposes exfil through the Go agent plugin ABI (`Run(input, output, cap)`). No rclone child process, command line, config file, or on-disk binary; memory-only config; in-process `obscure.Reveal` for credentials (see `docs/agent-plugin-exfil.md`).
-- Own JSON option schema (`source`/`account`/`backend`/`target`/`settings`/`make_link`/`link_hours`/`max_minutes`) — deliberately not rclone CLI flag names. Output mirrors the existing cloud upload result shape and flows back as a normal output event.
-- Validated: `go test` covers file copy, directory sync, obscured settings, and validation against the `local` backend; the c-shared export ABI was smoke-tested end to end through `ctypes` (return 0, JSON result, file transferred).
-- Windows amd64 DLL build requires mingw-w64 (`build.sh`); Go allocates its TLS at runtime via `TlsAlloc`, so a Go DLL does not depend on OS-loader TLS processing — still flagged for live PE-loader validation on a lab VM.
-- No new operator surface: the exfil command is `pe load <dll> Run <json>` through the existing plugin parity chain.
+- Moved the rclone exfil plugin source and build metadata into the private
+  external plugin repository. Minimal-RMM retains the operator API and the
+  generic artifact delivery contract.
 
 ### 2026-10-09 — Isolated Go plugin execution
 
@@ -353,7 +354,8 @@ implementation log.
 
 ### 2026-10-09 — Screenshot plugin
 
-- Moved Go Windows screenshot capture into `agent-plugins/screenshot/`.
+- Moved Go Windows screenshot capture into the private external plugin
+  repository.
 - `__SCREENSHOT__` now loads `screenshot.dll` through the authenticated,
   isolated child-process plugin path and preserves the existing PNG result
   handling and operator surfaces.
@@ -423,7 +425,7 @@ implementation log.
 |------|-----------------|------|
 | `server_rmm.py` | ~2k | Threaded HTTP server: beacon + `/api/v1` operator API + embedded `--cli` |
 | `agent-powershell/client_rmm.ps1` | ~2k | Windows PowerShell beacon, command execution, pivot plugin host |
-| `agent-plugins/` | — | Checked-in Go PE plugins and the PowerShell SOCKS5 pivot script |
+| `RMM_PLUGINS_DIR` | runtime store | Operator-installed plugin artifacts from the private external repository |
 | `rmm_cli.py` | ~1.3k | Operator CLI (`RmmApiClient`), interactive REPL + subcommands |
 | `rmm_socks.py` | ~570 | SOCKS5 listener on server; task queue; TCP/UDP relay via pivot plugin |
 | `rmm_ws.py` | ~210 | Stdlib WebSocket (operator event hub + agent SOCKS channel) |
