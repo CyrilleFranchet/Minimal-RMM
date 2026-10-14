@@ -9,6 +9,17 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-13 — Complete agent and pivot shutdown
+
+- Routed the embedded CLI `kill` command through `RMMServer.kill_session`, so
+  it now stops active SOCKS/TUN relays, clears persisted session state, and
+  finalizes session history just like the REST path.
+- Made Go plugin child shutdown wait for the child runner after cancellation,
+  and made persistent plugin downloads context-cancellable.
+- Added explicit cleanup for the server's public SOCKS and transport managers
+  during process shutdown.
+- Added regression coverage for the CLI termination path.
+
 ### 2026-10-13 — Unified workspace tabs
 
 - Moved Shell, Files & Screenshots, and Pivots into one main agent workspace
@@ -40,6 +51,17 @@ implementation log.
   `CONNECT` attempts are visible instead of being discarded.
 - Added regression coverage for the fast-close relay state and the gVisor TCP
   SYN-ACK/reset decision.
+
+### 2026-10-13 — TUN flow diagnostics and return-path coverage
+
+- Changed the server helper's default log level to `info`, with the
+  `RMM_TUN_LOG_LEVEL` environment variable available for `debug` or `warn`.
+- Added explicit server-side TCP connect-attempt and target-connect messages so
+  a filtered scan can be separated from a missing agent response.
+- Added an in-memory end-to-end test proving target TCP response bytes return
+  through the gVisor stack to the TUN link after the local handshake.
+- Documented that TCP connect scans (`nmap -sT`) are the reliable validation for
+  the current socket-based transport; raw SYN scans are timing-sensitive.
 
 ### 2026-10-13 — Independent pivots and global artifact views
 

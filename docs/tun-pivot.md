@@ -115,6 +115,9 @@ The default address assigned to the TUN device is `198.18.0.1/15`. It is a
 private test range and is separate from the target route. Override it with
 `--address` only when it does not overlap with the Exegol or target networks.
 The default MTU is 1500 and the default UDP idle timeout is 300 seconds.
+The helper starts with informational flow logging. Set `RMM_TUN_LOG_LEVEL=debug`
+before starting the server for additional diagnostics, or use `warn` to reduce
+the output after the relay is working.
 
 The owning process starts a private SOCKS listener on an ephemeral loopback
 port, starts `rmm-tun`, configures the interface, and then reports the relay as
@@ -155,9 +158,11 @@ without proxy configuration. Examples include `curl`, `ssh`, `smbclient`,
 Impacket protocols that use TCP, and TCP port scans. For TCP, the helper waits
 for the agent-side `CONNECT` result before it completes the local handshake, so
 closed target ports are reset instead of being acknowledged as open by the
-local stack. Scan timing includes the beacon and relay latency; a scanner with
-a shorter timeout can report a reachable port as filtered. Keep the route
-narrow so unrelated traffic does not enter the pivot.
+local stack. Use a TCP connect scan such as `nmap -sT`; raw SYN scans depend on
+packet timing and are not a reliable validation of this socket-based transport.
+Scan timing includes the beacon and relay latency; a scanner with a shorter
+timeout can report a reachable port as filtered. Keep the route narrow so
+unrelated traffic does not enter the pivot.
 
 The transport still carries TCP and UDP socket flows rather than target raw
 packets. ICMP echo requests, `ping`, and tools that need target-side raw packet

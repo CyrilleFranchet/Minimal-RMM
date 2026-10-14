@@ -281,6 +281,7 @@ func (h *relayHandler) HandleUDP(conn adapter.UDPConn) {
 func (h *relayHandler) handleTCPRequest(request *tcp.ForwarderRequest) {
 	id := request.ID()
 	metadata := metadataFromID(id, M.TCP)
+	log.Infof("[TCP] connect %s -> %s", metadata.SourceAddress(), metadata.DestinationAddress())
 	ctx, cancel := context.WithTimeout(context.Background(), tcpConnectTimeout)
 	remoteConn, err := h.proxy.DialContext(ctx, metadata)
 	cancel()
@@ -290,6 +291,7 @@ func (h *relayHandler) handleTCPRequest(request *tcp.ForwarderRequest) {
 		return
 	}
 	defer remoteConn.Close()
+	log.Infof("[TCP] connected %s -> %s", metadata.SourceAddress(), metadata.DestinationAddress())
 
 	var queue waiter.Queue
 	endpoint, tcpErr := request.CreateEndpoint(&queue)

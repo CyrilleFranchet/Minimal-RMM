@@ -99,8 +99,10 @@ runtime configuration over stdin:
 The plugin polls the existing `/socks` endpoint, owns the remote TCP and UDP
 connections, and exits when the server clears the relay. The normal beacon
 continues polling `/cmd` while the pivot is active. Cancelling the agent also
-cancels the child process. This plugin is started only for the public SOCKS
-pivot and only while `socks_active` is true.
+cancels the child process, and the parent waits for that child to finish before
+exiting. The artifact download uses the same cancellation context. This plugin
+is started only for the public SOCKS pivot and only while `socks_active` is
+true.
 
 The RMM-owned TUN frontend has a separate `tun.dll` transport artifact from
 the external plugin repository. When `/cmd` reports `tun_active: true`, the beacon starts that DLL
@@ -108,7 +110,8 @@ in a separate cancellable child process. It polls `/tun` and owns the target
 TCP and UDP sockets for the server or workspace TUN relay. The TUN device and
 user-space IP stack stay with the process that owns the configured storage
 mode. The TUN child is not started for a public SOCKS relay, and the SOCKS
-child is not started for a TUN relay.
+child is not started for a TUN relay. Agent shutdown waits for this child after
+cancellation.
 
 Both plugins use the same in-memory JSON task framing (`connect`, `send`,
 `close`, `udp_send`, and `udp_close`) but have separate binaries and HTTP
@@ -121,6 +124,8 @@ standard library:
 
 1. **Fetch** — the plugin bytes are downloaded through the same authenticated
    `request()` helper as every other beacon call (`X-RMM-Beacon-Token` header).
+   Persistent plugin fetches use a cancellation context so shutdown can abort a
+   stalled download.
 2. **Run** — the parent starts itself with `--plugin-child` and frames the DLL
    bytes and input over stdin.
 3. **Map** — the child manually maps the PE into private allocations, applies

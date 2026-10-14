@@ -121,6 +121,7 @@ type pluginController struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+	done    chan struct{}
 	path    string
 }
 
@@ -139,10 +140,13 @@ func (p *pluginController) syncActive(active bool, client *http.Client, cfg *con
 			return
 		}
 		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
 		p.running = true
 		p.cancel = cancel
+		p.done = done
 		p.mu.Unlock()
 		go func() {
+			defer close(done)
 			input, _ := json.Marshal(map[string]string{
 				"base_url":      cfg.BaseURL,
 				"beacon_secret": cfg.BeaconSecret,
@@ -151,8 +155,11 @@ func (p *pluginController) syncActive(active bool, client *http.Client, cfg *con
 			})
 			_, _ = loadPluginPEContext(ctx, client, cfg, p.path, "Run", string(input))
 			p.mu.Lock()
-			p.running = false
-			p.cancel = nil
+			if p.done == done {
+				p.running = false
+				p.cancel = nil
+				p.done = nil
+			}
 			p.mu.Unlock()
 		}()
 		return
@@ -165,11 +172,33 @@ func (p *pluginController) syncActive(active bool, client *http.Client, cfg *con
 }
 
 func (p *pluginController) stop() {
+	p.stopAndWait(5 * time.Second)
+}
+
+// stopAndWait cancels a persistent plugin and waits for its child runner to
+// finish. The wait is bounded so a broken plugin cannot block agent shutdown.
+func (p *pluginController) stopAndWait(timeout time.Duration) bool {
 	p.mu.Lock()
 	cancel := p.cancel
+	done := p.done
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if done == nil {
+		return true
+	}
+	if timeout <= 0 {
+		<-done
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -663,12 +692,21 @@ func cloudUploadResultWithLink(job exfilJob, success bool, size int64, failure, 
 }
 
 func request(client *http.Client, cfg *config, method, endpoint string, query url.Values, body []byte) ([]byte, error) {
+	return requestContext(context.Background(), client, cfg, method, endpoint, query, body)
+}
+
+// requestContext performs one authenticated beacon request and lets a
+// persistent plugin cancel an in-flight artifact download during shutdown.
+func requestContext(ctx context.Context, client *http.Client, cfg *config, method, endpoint string, query url.Values, body []byte) ([]byte, error) {
 	u := cfg.BaseURL + endpoint + "?" + query.Encode()
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequest(method, u, reader)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, reader)
 	if err != nil {
 		return nil, err
 	}

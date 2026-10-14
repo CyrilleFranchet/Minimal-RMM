@@ -186,6 +186,135 @@ func TestTCPForwarderWaitsForProxyResult(t *testing.T) {
 	}
 }
 
+// TestTCPForwarderRelaysRemoteData verifies that bytes received after the
+// local three-way handshake are written back to the TUN link endpoint.
+func TestTCPForwarderRelaysRemoteData(t *testing.T) {
+	proxy := &testProxy{dialed: make(chan *M.Metadata, 1)}
+	link := channel.New(32, 1500, "")
+	handler := &relayHandler{proxy: proxy, udpTimeout: time.Minute}
+	stackInstance, err := createStack(link, handler)
+	if err != nil {
+		t.Fatalf("createStack: %v", err)
+	}
+	defer func() {
+		stackInstance.Close()
+		stackInstance.Wait()
+		proxy.closePeers()
+	}()
+
+	injectTCPsyn(t, link)
+	select {
+	case <-proxy.dialed:
+	case <-time.After(time.Second):
+		t.Fatal("forwarder did not attempt the proxy connection")
+	}
+
+	synAck := readTCPPacket(t, link)
+	serverSequence := header.TCP(synAck.TransportHeader().Slice()).SequenceNumber()
+	synAck.DecRef()
+
+	injectTCPPacket(t, link, tcpPacketFields{
+		SrcPort: 40123,
+		DstPort: 443,
+		SeqNum:  101,
+		AckNum:  serverSequence + 1,
+		Flags:   header.TCPFlagAck,
+		Payload: nil,
+	})
+
+	if len(proxy.peers) != 1 {
+		t.Fatalf("proxy peer count = %d, want 1", len(proxy.peers))
+	}
+	if _, err := proxy.peers[0].Write([]byte("target-response")); err != nil {
+		t.Fatalf("write proxy response: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		packet := readTCPPacketWithTimeout(link, 100*time.Millisecond)
+		if packet == nil {
+			continue
+		}
+		payload, ok := packet.Data().PullUp(packet.Data().Size())
+		if !ok {
+			packet.DecRef()
+			continue
+		}
+		if string(payload) == "target-response" {
+			packet.DecRef()
+			return
+		}
+		packet.DecRef()
+	}
+	t.Fatal("target response did not reach the TUN link endpoint")
+}
+
+type tcpPacketFields struct {
+	SrcPort uint16
+	DstPort uint16
+	SeqNum  uint32
+	AckNum  uint32
+	Flags   header.TCPFlags
+	Payload []byte
+}
+
+// readTCPPacket returns the next packet or fails the test after one second.
+func readTCPPacket(t *testing.T, link *channel.Endpoint) *stack.PacketBuffer {
+	t.Helper()
+	packet := readTCPPacketWithTimeout(link, time.Second)
+	if packet == nil {
+		t.Fatal("timed out waiting for TCP packet")
+	}
+	return packet
+}
+
+// readTCPPacketWithTimeout returns nil when the in-memory link has no packet.
+func readTCPPacketWithTimeout(link *channel.Endpoint, timeout time.Duration) *stack.PacketBuffer {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return link.ReadContext(ctx)
+}
+
+// injectTCPPacket sends a valid IPv4 TCP segment into the in-memory link.
+func injectTCPPacket(t *testing.T, link *channel.Endpoint, fields tcpPacketFields) {
+	t.Helper()
+	src := tcpip.AddrFrom4([4]byte{198, 18, 0, 7})
+	dst := tcpip.AddrFrom4([4]byte{10, 10, 10, 20})
+	raw := make([]byte, header.IPv4MinimumSize+header.TCPMinimumSize+len(fields.Payload))
+	ipHeader := header.IPv4(raw[:header.IPv4MinimumSize])
+	ipHeader.Encode(&header.IPv4Fields{
+		TotalLength: uint16(len(raw)),
+		ID:          2,
+		TTL:         64,
+		Protocol:    uint8(header.TCPProtocolNumber),
+		SrcAddr:     src,
+		DstAddr:     dst,
+	})
+	ipHeader.SetChecksum(^ipHeader.CalculateChecksum())
+	tcpHeader := header.TCP(raw[header.IPv4MinimumSize:])
+	tcpHeader.Encode(&header.TCPFields{
+		SrcPort:    fields.SrcPort,
+		DstPort:    fields.DstPort,
+		SeqNum:     fields.SeqNum,
+		AckNum:     fields.AckNum,
+		DataOffset: header.TCPMinimumSize,
+		Flags:      fields.Flags,
+		WindowSize: 65535,
+	})
+	copy(raw[header.IPv4MinimumSize+header.TCPMinimumSize:], fields.Payload)
+	partial := header.PseudoHeaderChecksum(
+		header.TCPProtocolNumber,
+		src,
+		dst,
+		uint16(len(tcpHeader)),
+	)
+	tcpHeader.SetChecksum(^tcpHeader.CalculateChecksum(partial))
+
+	packet := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(raw)})
+	link.InjectInbound(ipv4.ProtocolNumber, packet)
+	packet.DecRef()
+}
+
 // injectTCPsyn sends one valid IPv4 SYN into the in-memory link endpoint.
 func injectTCPsyn(t *testing.T, link *channel.Endpoint) {
 	t.Helper()

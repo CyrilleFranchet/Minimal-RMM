@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestPluginCommandEnvelope(t *testing.T) {
@@ -25,5 +26,26 @@ func TestPluginCommandEnvelope(t *testing.T) {
 func TestPluginCommandEnvelopeRejectsOversizeInput(t *testing.T) {
 	if _, err := pluginCommandEnvelope("scan", string(make([]byte, 4096))); err == nil {
 		t.Fatal("expected oversized plugin command input to fail")
+	}
+}
+
+func TestPluginControllerStopWaitsForWorker(t *testing.T) {
+	controller := newPluginController("/tools/plugins/tun.dll")
+	done := make(chan struct{})
+	cancelled := make(chan struct{})
+	controller.mu.Lock()
+	controller.cancel = func() {
+		close(cancelled)
+	}
+	controller.done = done
+	controller.mu.Unlock()
+
+	go func() {
+		<-cancelled
+		close(done)
+	}()
+
+	if !controller.stopAndWait(time.Second) {
+		t.Fatal("stopAndWait timed out while the worker was shutting down")
 	}
 }

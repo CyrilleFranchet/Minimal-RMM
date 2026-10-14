@@ -73,7 +73,7 @@ func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, 
 	if runtime.GOARCH != "amd64" {
 		return "", errors.New("PE plugins require the windows/amd64 agent build")
 	}
-	data, err := request(client, cfg, http.MethodGet, url, values(cfg), nil)
+	data, err := requestContext(ctx, client, cfg, http.MethodGet, url, values(cfg), nil)
 	if err != nil {
 		return "", fmt.Errorf("plugin download failed: %w", err)
 	}

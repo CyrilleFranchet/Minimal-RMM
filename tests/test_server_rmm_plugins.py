@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import server_rmm
 from rmm_tun import normalize_tun_config
-from server_rmm import API_PREFIX, RMMHandler
+from server_rmm import API_PREFIX, CommandInterface, RMMHandler
 
 
 def _fake_session(session_id="12345678-1234-1234-1234-123456789012"):
@@ -444,6 +444,23 @@ class PluginLifecycleTests(unittest.TestCase):
         self.assertTrue(any(message.startswith("Plugin dispatched:") for message in messages))
         self.assertTrue(any(message.startswith("Plugin completed:") for message in messages))
         self.assertNotIn(secret_input, "\n".join(messages))
+
+
+class CommandShutdownTests(unittest.TestCase):
+    """Verify CLI session termination uses the complete server cleanup path."""
+
+    def test_kill_delegates_to_server_cleanup(self):
+        session = SimpleNamespace(id="12345678-1234-1234-1234-123456789012")
+        server = SimpleNamespace(
+            current_session=session.id,
+            kill_session=Mock(return_value=(True, session.id)),
+            tty_print=Mock(),
+        )
+
+        self.assertTrue(CommandInterface(server).execute_command("kill 12345678"))
+
+        server.kill_session.assert_called_once_with("12345678")
+        self.assertIn("terminated", server.tty_print.call_args.args[0])
 
 
 class PivotPluginReadinessTests(unittest.TestCase):

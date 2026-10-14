@@ -20,7 +20,8 @@ The normal `/register`, `/cmd`, and `/result` beacon remains the lifecycle
 control path. The PowerShell plugin runs in its own runspace. The Go plugin
 runs in a cancellable child process. Stopping the operator relay clears the
 server state; the plugin observes the inactive poll response and closes its
-TCP connections.
+TCP connections. Agent shutdown waits for persistent Go plugin children after
+cancellation, including cancellation of an in-flight plugin download.
 
 ## Go plugin input
 

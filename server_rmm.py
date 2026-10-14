@@ -4581,17 +4581,9 @@ class CommandInterface:
         elif cmd == "kill":
             if args:
                 session_id_or_prefix = args[0]
-                session = self.server.get_session(session_id_or_prefix)
-                if not session:
-                    session = self.server.find_session_by_prefix(session_id_or_prefix)
-
-                if session:
-                    with self.server.session_lock:
-                        self.server.killed_sessions.add(session.id)
-                        del self.server.sessions[session.id]
-                        self.server.tty_print(f"{Colors.GREEN}Session {session.id[:8]} terminated (client will exit on next beacon){Colors.END}")
-                        if self.server.current_session == session.id:
-                            self.server.current_session = None
+                ok, detail = self.server.kill_session(session_id_or_prefix)
+                if ok:
+                    self.server.tty_print(f"{Colors.GREEN}Session {detail[:8]} terminated (client will exit on next beacon){Colors.END}")
                 else:
                     self.server.tty_print(f"{Colors.RED}Session not found: {session_id_or_prefix}{Colors.END}")
             else:
@@ -5050,6 +5042,8 @@ def main():
             print(f"\n{Colors.YELLOW}Shutting down...{Colors.END}")
         server.stop_profile()
         server.tun.stop_all()
+        server.tun_transport.stop_all()
+        server.socks.stop_all()
         for http_server in http_servers:
             http_server.shutdown()
             http_server.server_close()
@@ -5078,6 +5072,8 @@ def main():
         readline.write_history_file(HISTORY_FILE)
     server.stop_profile()
     server.tun.stop_all()
+    server.tun_transport.stop_all()
+    server.socks.stop_all()
     for http_server in http_servers:
         http_server.shutdown()
         http_server.server_close()
