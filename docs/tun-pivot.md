@@ -131,7 +131,9 @@ python rmm_cli.py tun stop SESSION
 The external `tun.dll` completes target TCP CONNECT attempts independently. A
 filtered port can remain in flight without delaying the response for a
 successful port from the same poll batch. Replace the plugin artifact and
-restart the active TUN relay when deploying this behavior.
+restart the active TUN relay when deploying this behavior. Each target-side TCP
+CONNECT has a five-second timeout; a timeout produces no success response and
+leaves the port filtered.
 
 The corresponding REST calls are:
 

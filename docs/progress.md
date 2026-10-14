@@ -9,6 +9,16 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-14 — Align TUN TCP timeout with Ligolo-ng
+
+- Set the external `tun.dll` target-side TCP CONNECT timeout to five seconds,
+  matching Ligolo-ng's agent behavior. A timeout produces no success response,
+  so the local socket scanner continues to see the port as filtered.
+- Updated the plugin and TUN pivot documentation and added a regression check
+  for the timeout value.
+- Validation: plugin host tests, TUN race tests, TUN vet, and `git diff --check`
+  pass.
+
 ### 2026-10-13 — Complete agent and pivot shutdown
 
 - Routed the embedded CLI `kill` command through `RMMServer.kill_session`, so
