@@ -9,6 +9,16 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
+
+- Added the default `exegol-rmm-pivot` AI skill to distinguish RMM agent
+  control from Exegol command execution and to select SOCKS5 or TUN when an
+  Exegol tool needs access to an agent-reachable network.
+- Documented live Exegol tool discovery, namespace ownership, agent plugin
+  prerequisites, current TCP/UDP-only TUN behavior, and temporary pivot
+  cleanup.
+- Validation: AI skill loading test and `git diff --check` pass.
+
 ### 2026-10-15 — Align Go agent command dispatch
 
 - Matched the Go Windows agent with the PowerShell agent for CMD dispatch:

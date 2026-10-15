@@ -87,6 +87,7 @@ another click. Default and always-enabled skills are marked in the list.
 | `ai-skills/windows-identity-and-groups.md` | **Default.** Identity and groups via `whoami` / token; do not use `net user %USERNAME%` on domain accounts. |
 | `ai-skills/windows-ad-recon-stealth.md` | **Default.** Prefer **ADWS** (`Get-AD*`) over direct LDAP and `net.exe` RPC recon. |
 | `ai-skills/windows-user-profile-path.md` | Do not assume `C:\Users\<username>`; resolve profile path on the agent before file ops. |
+| `ai-skills/exegol-rmm-pivot.md` | **Default.** Route work between Minimal-RMM and Exegol MCP; choose RMM control tools, Exegol execution tools, and SOCKS5/TUN based on where the operation must run. |
 | `ai-skills/task-completion-report.md` | **Always enabled.** End every task with a concise work report; the server appends authoritative UTC start and completion timestamps. |
 
 ### Why `PS:` matters for the AI
