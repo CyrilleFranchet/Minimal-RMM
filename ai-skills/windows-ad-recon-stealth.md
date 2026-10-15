@@ -9,7 +9,7 @@ default: true
 
 On domain-joined Windows hosts, **how** you enumerate users and groups affects **detection**. The beacon runs in the operator's authorized lab — prefer **quieter** paths unless the operator explicitly asks for legacy/noisy tooling.
 
-Use **`PS:`** for PowerScript below (see **agent-command-dispatch**). For identity of the **current token**, see **windows-identity-and-groups** (`whoami /groups` is appropriate and is not a substitute for full AD enumeration).
+Use **`PS:`** for PowerShell below (see **agent-command-dispatch**); this syntax works with both the PowerShell and Go Windows agents. For identity of the **current token**, see **windows-identity-and-groups** (`whoami /groups` is appropriate and is not a substitute for full AD enumeration).
 
 ## Noisy — RPC / legacy recon (avoid by default)
 

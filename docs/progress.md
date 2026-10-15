@@ -9,6 +9,16 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-15 — Align Go agent command dispatch
+
+- Matched the Go Windows agent with the PowerShell agent for CMD dispatch:
+  exact `ls` maps to `dir`, `cmd:` is explicit, and `PS:` / `powershell:` /
+  `pwsh:` accept optional whitespace.
+- Added the Windows `pwsh` fallback to `powershell.exe`, WebUI completion
+  spacing, command-dispatch regression tests, and updated operator/AI guidance.
+- Validation: Go agent tests, WebUI contract checks, Python compilation, and
+  `git diff --check` pass.
+
 ### 2026-10-14 — Align TUN TCP timeout with Ligolo-ng
 
 - Set the external `tun.dll` target-side TCP CONNECT timeout to five seconds,
@@ -696,7 +706,7 @@ Runtime artifacts: `RMM_logs/{downloads,screenshots,keylogs}`, `~/.rmm_cli_state
 - Agent `file_upload` JSON may include `remote_path` (full agent path) alongside `filename`.
 - SOCKS uses a custom JSON task protocol over HTTP poll for the shipped pivot plugins, not a generic byte-stream tunnel. The server WebSocket adapter remains available for compatible future plugins.
 - Embedded `server_rmm.py --cli` remains alongside `rmm_cli.py` (duplicate UX).
-- Keylog + persistence exist on client and embedded CLI but are intentionally absent from MCP/web.
+- Keylog + persistence exist on the client and embedded CLI; keylog and persistence wrappers are also exposed through MCP, while the WebUI has no dedicated controls.
 
 ---
 

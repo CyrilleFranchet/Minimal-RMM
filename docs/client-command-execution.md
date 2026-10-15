@@ -2,6 +2,9 @@
 
 User commands on the Windows agent run through `Invoke-RmmUserCommand` in `client_rmm.ps1`. Default execution uses **cmd.exe**; operators can prefix with `PS:` / `powershell:`, `pwsh:`, or `cmd:`.
 
+The Go Windows agent follows the same dispatch contract. Its implementation and
+platform-specific behavior are documented in [Go agent command dispatch](go-agent.md#command-dispatch).
+
 ## Hidden window behavior
 
 CMD and PowerShell child processes are launched with `System.Diagnostics.ProcessStartInfo`:

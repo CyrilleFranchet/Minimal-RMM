@@ -44,6 +44,18 @@ def _check_shell_contract(errors: list[str]) -> None:
         errors.append(str(error))
         return
 
+    try:
+        prefixes = _quoted_array(app, "SHELL_DISPATCH_PREFIXES")
+    except ValueError as error:
+        errors.append(str(error))
+        return
+    expected_prefixes = {"cmd: ", "PS: ", "powershell: ", "pwsh: "}
+    if prefixes != expected_prefixes:
+        errors.append(
+            "web shell dispatch prefixes must include a trailing space: "
+            f"expected {sorted(expected_prefixes)}, got {sorted(prefixes)}"
+        )
+
     documented = _shell_meta_docs(docs)
     missing_docs = commands - documented
     stale_docs = documented - commands

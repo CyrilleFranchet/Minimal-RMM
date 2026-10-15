@@ -24,7 +24,7 @@ A hint line under the input shows the top completion match or match count.
 ## Tab completion sources
 
 - Session command history (most recent first in candidate list)
-- Static agent dispatch prefixes: `cmd:`, `PS:`, `powershell:`, `pwsh:`
+- Static agent dispatch prefixes: `cmd:`, `PS:`, `powershell:`, `pwsh:`; Tab completion inserts the trailing space
 - Operator meta commands: `help`, `?`, `exfil`, `download`, `screenshot`, `pe`
 
 Agent-side path completion is out of scope (tech plan §4 v2).

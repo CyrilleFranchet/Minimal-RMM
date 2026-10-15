@@ -7,8 +7,8 @@ const EVENT_CURSORS_KEY = "rmm_event_cursors";
 const SHELL_HISTORY_KEY = "rmm_shell_history";
 const SHELL_HISTORY_MAX = 100;
 
-/** Agent dispatch prefixes (client_rmm.ps1 Invoke-RmmUserCommand). */
-const SHELL_DISPATCH_PREFIXES = ["cmd:", "PS:", "powershell:", "pwsh:"];
+/** Agent dispatch prefixes shared by the PowerShell and Go Windows agents. */
+const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
 const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe"];
@@ -2852,7 +2852,7 @@ async function dispatchShellMetaCommand(cmd) {
   pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
 
 Any other command is sent to the selected agent. Prefix commands with
-cmd:, PS:, powershell:, or pwsh: to choose the agent-side interpreter.</pre>`
+cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side interpreter.</pre>`
     );
     return true;
   }

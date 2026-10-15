@@ -48,9 +48,24 @@ The Go binary reads these environment variables on the target host:
 The agent registers before each command cycle, polls `/cmd`, executes shell
 commands, posts `/result`, and accepts `__CONFIG__`. Downloads are sent in
 2 MiB resumable chunks using the server's existing `upload_id` and `offset`
-protocol. On Windows it supports `cmd.exe`, `PS:`,
-`powershell:`, and `pwsh:` dispatch. On Linux it uses `/bin/sh` and can use
-`pwsh` when installed.
+protocol. On Windows it supports `cmd.exe`, `cmd:`, `PS:`, `powershell:`, and
+`pwsh:` dispatch. On Linux it uses `/bin/sh` and can use `pwsh` when installed.
+
+## Command dispatch
+
+The shared router is implemented by `buildCommandInvocation` in
+`agent-go/main.go`.
+
+| Input | Windows behavior | Linux behavior |
+|-------|------------------|----------------|
+| Bare command | Runs with `cmd.exe /d /c`; an exact `ls` is normalized to `dir` | Runs with `/bin/sh -c` |
+| `cmd: <command>` | Runs with `cmd.exe /d /c`; an exact `ls` is normalized to `dir` | Returns an unsupported-platform result |
+| `PS:` / `powershell:` | Runs with `powershell.exe -NoProfile -NonInteractive -Command` | Returns an unsupported-platform result |
+| `pwsh:` | Uses PowerShell 7 when `pwsh.exe` is available, otherwise falls back to `powershell.exe` | Uses `pwsh` when installed |
+
+Prefix matching is case-insensitive and accepts optional whitespace before and
+after the colon. A prefix must be followed by a command body, for example
+`pwsh: Get-Date` or `PS:Get-Date`.
 
 ## Feature parity
 

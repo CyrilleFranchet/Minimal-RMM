@@ -71,6 +71,7 @@ var (
 )
 
 var pluginCommandPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,127}$`)
+var commandPrefixPattern = regexp.MustCompile(`(?i)^(ps|powershell|pwsh|cmd)\s*:\s*(.*)$`)
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--plugin-child" {
@@ -439,23 +440,61 @@ func pluginCommandEnvelope(command, input string) (string, error) {
 	return string(payload), nil
 }
 
-func runCommand(command string) (string, string) {
-	var name string
-	var args []string
-	switch {
-	case strings.HasPrefix(command, "PS: ") || strings.HasPrefix(command, "powershell: "):
-		if runtime.GOOS != "windows" {
-			return "PowerShell is unavailable on this target.", "output"
+// buildCommandInvocation translates the shared operator dispatch syntax into a
+// child-process invocation. The target platform and pwsh availability are
+// explicit so the routing can be tested without running a target shell.
+func buildCommandInvocation(command, goos string, pwshAvailable bool) (string, []string, error) {
+	raw := strings.TrimSpace(command)
+	mode := ""
+	body := raw
+	if match := commandPrefixPattern.FindStringSubmatch(raw); match != nil {
+		mode = strings.ToLower(match[1])
+		body = strings.TrimSpace(match[2])
+		if body == "" {
+			return "", nil, fmt.Errorf("empty command after %s:", match[1])
 		}
-		name, args = "powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", command[strings.Index(command, ":")+1:]}
-	case strings.HasPrefix(command, "pwsh: "):
-		name, args = "pwsh", []string{"-NoProfile", "-NonInteractive", "-Command", command[6:]}
+	}
+
+	switch mode {
+	case "ps", "powershell":
+		if goos != "windows" {
+			return "", nil, errors.New("PowerShell is unavailable on this target.")
+		}
+		return "powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", body}, nil
+	case "pwsh":
+		name := "pwsh"
+		if goos == "windows" && !pwshAvailable {
+			name = "powershell.exe"
+		}
+		return name, []string{"-NoProfile", "-NonInteractive", "-Command", body}, nil
+	case "cmd":
+		if goos != "windows" {
+			return "", nil, errors.New("CMD is unavailable on this target.")
+		}
+		if strings.EqualFold(body, "ls") {
+			body = "dir"
+		}
+		return "cmd.exe", []string{"/d", "/c", body}, nil
 	default:
-		if runtime.GOOS == "windows" {
-			name, args = "cmd.exe", []string{"/d", "/c", command}
-		} else {
-			name, args = "/bin/sh", []string{"-c", command}
+		if goos == "windows" {
+			if strings.EqualFold(body, "ls") {
+				body = "dir"
+			}
+			return "cmd.exe", []string{"/d", "/c", body}, nil
 		}
+		return "/bin/sh", []string{"-c", body}, nil
+	}
+}
+
+func runCommand(command string) (string, string) {
+	pwshAvailable := true
+	if runtime.GOOS == "windows" {
+		_, err := exec.LookPath("pwsh.exe")
+		pwshAvailable = err == nil
+	}
+	name, args, err := buildCommandInvocation(command, runtime.GOOS, pwshAvailable)
+	if err != nil {
+		return err.Error(), "output"
 	}
 	out, err := newCommand(name, args...).CombinedOutput()
 	if err != nil {

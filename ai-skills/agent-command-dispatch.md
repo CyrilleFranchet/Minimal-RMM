@@ -7,7 +7,7 @@ default: true
 
 # Agent command dispatch (CMD vs PowerShell)
 
-Commands sent with **`exec_command`** or **`queue_command`** are executed on the Windows agent by `Invoke-RmmUserCommand` in `client_rmm.ps1`. This is **not** a native PowerShell or SSH shell — each line is dispatched through a small router.
+Commands sent with **`exec_command`** or **`queue_command`** are executed on the Windows agent by a small dispatch router. The PowerShell agent implements it in `Invoke-RmmUserCommand`; the Go Windows agent implements the same prefix and CMD alias behavior in `buildCommandInvocation`. This is **not** a native PowerShell or SSH shell — each line is dispatched through a small router.
 
 ## Dispatch modes
 
@@ -19,6 +19,9 @@ Commands sent with **`exec_command`** or **`queue_command`** are executed on the
 | `cmd:` | **cmd.exe** (explicit) | Force CMD when the line could be ambiguous |
 
 **Default is CMD.** A bare line never runs in PowerShell.
+
+The Go Windows agent follows these same Windows rules. `pwsh:` prefers
+PowerShell 7 and falls back to `powershell.exe` when `pwsh.exe` is unavailable.
 
 ## Critical rule — PowerShell must use `PS:`
 
@@ -66,7 +69,7 @@ cmd: net user
 
 CMD tips:
 
-- `ls` is mapped to `dir` on the agent.
+- An exact bare `ls` is mapped to `dir` on Windows CMD agents, including `cmd: ls`.
 - Simple `'single-quoted'` segments are converted to CMD double quotes.
 - **`net group`:** name before `/domain` — `net group "Domain Admins" /domain` (not `net group /domain …`).
 - Paths with spaces may need CMD quoting; for complex logic, use `PS:` instead.
