@@ -2,7 +2,7 @@
 id: exegol-rmm-pivot
 title: Exegol tools and RMM pivots
 description: Route authorized security tasks between Minimal-RMM agents and Exegol MCP; choose SOCKS5 or TUN when Exegol must reach an agent network.
-default: true
+default: false
 ---
 
 # Exegol tools and RMM pivots
