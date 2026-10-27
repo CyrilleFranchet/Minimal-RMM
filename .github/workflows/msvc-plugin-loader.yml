@@ -23,9 +23,12 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64
+      - name: Compile the exception image-base bridge
+        shell: cmd
+        run: cl /nologo /c /MT /O2 agent-go\testdata\msvc_throw.c /Fo:msvc_throw.obj
       - name: Build the standalone MSVC plugin
         shell: cmd
-        run: cl /nologo /LD /MT /EHsc /O2 /DYNAMICBASE agent-go\testdata\msvc_plugin.cpp /link /OUT:msvc_plugin.dll
+        run: cl /nologo /LD /MT /EHsc /O2 /DYNAMICBASE agent-go\testdata\msvc_plugin.cpp msvc_throw.obj /link /OUT:msvc_plugin.dll
       - name: Check runtime dependencies
         shell: pwsh
         run: |

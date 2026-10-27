@@ -12,22 +12,6 @@ struct Initializer {
 
 static Initializer initializer;
 
-extern "C" IMAGE_DOS_HEADER __ImageBase;
-
-// MSVC's static CRT cannot discover a manually mapped image with
-// RtlPcToFileHeader. Supply the image base in the C++ exception record.
-extern "C" __declspec(noreturn) void __stdcall _CxxThrowException(
-    void *object, _ThrowInfo *throwInfo) noexcept {
-    const ULONG_PTR parameters[] = {
-        0x19930520,
-        reinterpret_cast<ULONG_PTR>(object),
-        reinterpret_cast<ULONG_PTR>(throwInfo),
-        reinterpret_cast<ULONG_PTR>(&__ImageBase),
-    };
-    RaiseException(0xE06D7363, EXCEPTION_NONCONTINUABLE, 4, parameters);
-    __assume(0);
-}
-
 extern "C" __declspec(dllexport) int Run(const char *input, char *output, int outputCap) {
     if (output == nullptr || outputCap < 32) {
         return 1;

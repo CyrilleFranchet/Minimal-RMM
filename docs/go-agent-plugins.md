@@ -218,8 +218,9 @@ test, not yet a test of ONNX Runtime or model inference. The constructor and
 unwind lookup pass in Windows CI; the exception case currently fails with
 `0xe06d7363`. The manual mapper is therefore not yet suitable for an
 exception-using MSVC library even when the DLL has no VC runtime import.
-The fixture now experiments with a plugin-local `_CxxThrowException` override
-that supplies its own image base; CI must confirm whether this is sufficient.
+The fixture now experiments with a plugin-local `_CxxThrowException` bridge in
+`agent-go/testdata/msvc_throw.c` that supplies its own image base; CI must
+confirm whether this is sufficient. Its function is used only by this fixture.
 
 `registerPluginUnwind` registers the PE exception directory in the child
 before `DllMain` runs. It rejects directories whose size is not a multiple of
