@@ -27,7 +27,12 @@ implementation log.
   MSVC `/MT` DLL. Explicitly starting the Go runtime from its exported entry
   point passed both normal `LoadLibrary` and this agent's in-memory mapper.
   This preserves a possible route to reuse the existing Go document pipeline
-  in a single native DLL; the ONNX bridge is still unimplemented.
+  in a single native DLL. The plugin repository now has an ONNX C++ bridge,
+  Go autonomous build tag, and Windows combined-DLL workflow. The first
+  static ONNX Runtime link succeeded in CI; mapped inference and the combined
+  document workflow still require Windows CI validation.
+- Extended the mapped-plugin fixture test to accept a JSON result substring
+  and a three-minute timeout for the public-model end-to-end check.
 
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 

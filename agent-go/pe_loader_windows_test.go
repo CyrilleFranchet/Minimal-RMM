@@ -47,13 +47,23 @@ func TestMSVCPluginChild(t *testing.T) {
 			}
 			frame.Write(plugin)
 			frame.WriteString(tc.input)
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			timeout := 30 * time.Second
+			if os.Getenv("RMM_MSVC_TEST_CONTAINS") != "" {
+				timeout = 3 * time.Minute
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, agentPath, "--plugin-child", "Run")
 			cmd.Stdin = &frame
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("plugin child failed: %v: %s", err, output)
+			}
+			if expected := os.Getenv("RMM_MSVC_TEST_CONTAINS"); expected != "" {
+				if !strings.Contains(string(output), expected) {
+					t.Fatalf("plugin output = %q, missing %q", output, expected)
+				}
+				return
 			}
 			if got := strings.TrimSpace(string(output)); got != tc.want {
 				t.Fatalf("plugin output = %q, want %q", got, tc.want)
