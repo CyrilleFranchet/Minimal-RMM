@@ -43,6 +43,12 @@ implementation log.
   current-thread PE TLS template and callback setup to the mapper; the
   diagnostic workflow is validating the already-built DLL without rebuilding
   ONNX Runtime.
+- The validation-only mapped request now reaches the embedded Go pipeline.
+  A real model request exposed a second null static-TLS slot after Go entered
+  its download path. The plugin branch now restores the mapped TLS block at
+  each native ONNX boundary and locks Go execution to one OS thread. Its
+  MSVC helper compiled in a short Windows job; the full DLL rebuild and
+  model-inference retest are pending.
 
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 
