@@ -25,7 +25,10 @@ implementation log.
 - Added metadata bounds tests and Windows tests for native thread TLS,
   exceptions, cancellation, error cleanup, and a legacy unmarked DLL. The
   real-model test checks normalized MiniLM embeddings and classification
-  through the authenticated parent/child path. Windows validation is pending.
+  through the authenticated parent/child path. Windows lifecycle and legacy
+  fixture tests passed in run 40552719824. Local Go tests, Windows amd64/arm64
+  and Linux cross-builds, 700k marker fuzz inputs, Python source-manifest tests,
+  and `make check` passed. The full ONNX DLL rebuild remains in progress.
 
 ### 2026-10-27 — Prototype an MSVC plugin loader test
 

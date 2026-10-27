@@ -84,14 +84,7 @@ func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, 
 	if err != nil {
 		return "", err
 	}
-	var frame bytes.Buffer
-	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
-	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(input)))
-	_, _ = frame.Write(data)
-	_, _ = frame.WriteString(input)
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "--plugin-child", exportName)
-	cmd.Stdin = &frame
+	var cmd *exec.Cmd
 	if useWindowsLoader {
 		path, cleanup, err := stageWindowsPlugin(data)
 		if err != nil {
@@ -100,6 +93,14 @@ func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, 
 		defer func() { resultErr = errors.Join(resultErr, cleanup()) }()
 		cmd = exec.CommandContext(ctx, os.Args[0], "--plugin-library-child", exportName, path)
 		cmd.Stdin = strings.NewReader(input)
+	} else {
+		var frame bytes.Buffer
+		_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
+		_ = binary.Write(&frame, binary.LittleEndian, uint32(len(input)))
+		_, _ = frame.Write(data)
+		_, _ = frame.WriteString(input)
+		cmd = exec.CommandContext(ctx, os.Args[0], "--plugin-child", exportName)
+		cmd.Stdin = &frame
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

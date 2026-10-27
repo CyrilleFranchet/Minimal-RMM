@@ -223,9 +223,10 @@ abrupt native exit, and cancellation after the DLL has loaded.
 `RMM_MSVC_TEST_DLL` and `RMM_MSVC_TEST_AGENT` to locate Windows artifacts.
 
 `TestDocumentEmbeddingsPlugin` additionally uses `RMM_MSVC_TEST_INPUT` for a
-pinned public MiniLM request, validates a 384-dimensional normalized vector
-and strategic label, and checks cleanup after both inference and invalid
-input. The plugin repository runs this against its full static ONNX build.
+pinned public MiniLM request, validates 384-dimensional normalized vectors
+for two documents and a strategic label, isolates a missing document's error,
+and checks cleanup after both inference and invalid input. The plugin
+repository runs this against its full static ONNX build.
 The earlier manual TLS and exception experiments have been removed from the
 agent; the standard loader supplies those features for marked DLLs.
 

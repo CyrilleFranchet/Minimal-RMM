@@ -142,14 +142,33 @@ func TestDocumentEmbeddingsPlugin(t *testing.T) {
 		t.Skip("set RMM_MSVC_TEST_INPUT to a public-model request")
 	}
 	invoke, root := pluginTestHost(t)
+	var request map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(input), &request); err != nil {
+		t.Fatal(err)
+	}
+	var documents []string
+	if err := json.Unmarshal(request["documents"], &documents); err != nil || len(documents) != 1 {
+		t.Fatal("real-model fixture needs one strategic document")
+	}
+	reference := filepath.Join(filepath.Dir(root), "reference.txt")
+	if err := os.WriteFile(reference, []byte("General reference notes about everyday office supplies."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	documents = append(documents, reference, filepath.Join(filepath.Dir(root), "missing.txt"))
+	request["documents"], _ = json.Marshal(documents)
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	result, err := invoke(ctx, "Run", input)
+	result, err := invoke(ctx, "Run", string(requestBytes))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var response struct {
 		Results []struct {
+			Path           string    `json:"path"`
 			Embedding      []float64 `json:"embedding"`
 			Error          string    `json:"error"`
 			Classification *struct {
@@ -161,20 +180,31 @@ func TestDocumentEmbeddingsPlugin(t *testing.T) {
 	if err := json.Unmarshal([]byte(result), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Results) != 1 {
+	if len(response.Results) != len(documents) {
 		t.Fatalf("got %d document results", len(response.Results))
 	}
+	for i, doc := range response.Results {
+		if doc.Path != documents[i] {
+			t.Fatal("document result order or path changed")
+		}
+		if i == 2 {
+			if doc.Error == "" || len(doc.Embedding) != 0 || doc.Classification != nil {
+				t.Fatal("missing document did not produce an isolated error")
+			}
+			continue
+		}
+		if doc.Error != "" || len(doc.Embedding) != 384 {
+			t.Fatalf("embedding dimension=%d error=%q", len(doc.Embedding), doc.Error)
+		}
+		var norm float64
+		for _, value := range doc.Embedding {
+			norm += value * value
+		}
+		if math.IsNaN(norm) || math.Abs(norm-1) > 1e-4 {
+			t.Fatalf("embedding squared norm=%g", norm)
+		}
+	}
 	doc := response.Results[0]
-	if doc.Error != "" || len(doc.Embedding) != 384 {
-		t.Fatalf("embedding dimension=%d error=%q", len(doc.Embedding), doc.Error)
-	}
-	var norm float64
-	for _, value := range doc.Embedding {
-		norm += value * value
-	}
-	if math.IsNaN(norm) || math.Abs(norm-1) > 1e-4 {
-		t.Fatalf("embedding squared norm=%g", norm)
-	}
 	if doc.Classification == nil || doc.Classification.Label != "strategic" || math.IsNaN(doc.Classification.Score) || math.Abs(doc.Classification.Score) > 1.0001 {
 		t.Fatalf("unexpected classification: %+v", doc.Classification)
 	}
