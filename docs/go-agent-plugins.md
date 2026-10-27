@@ -213,7 +213,8 @@ DLL does not import a VC runtime DLL, and passes its bytes to
 drives the real framed protocol;
 it skips outside that CI job unless `RMM_MSVC_TEST_DLL` and
 `RMM_MSVC_TEST_AGENT` point to built artifacts. `RMM_MSVC_TEST_EXPECT` replaces
-the fixture checks with one exact expected output from another DLL. This is a loader compatibility
+the fixture checks with one exact expected output from another DLL, with
+`RMM_MSVC_TEST_INPUT` as its optional input. This is a loader compatibility
 test, not yet a test of ONNX Runtime or model inference. Windows CI confirms
 that the constructor and unwind lookup work. The manual image has no loader
 module entry, so its ordinary MSVC C++ throw terminates the child with

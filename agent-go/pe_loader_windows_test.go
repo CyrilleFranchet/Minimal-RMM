@@ -34,7 +34,7 @@ func TestMSVCPluginChild(t *testing.T) {
 		{"exception", "throw", "caught"},
 	}
 	if expected := os.Getenv("RMM_MSVC_TEST_EXPECT"); expected != "" {
-		cases = []struct{ name, input, want string }{{"runtime", "", expected}}
+		cases = []struct{ name, input, want string }{{"runtime", os.Getenv("RMM_MSVC_TEST_INPUT"), expected}}
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
