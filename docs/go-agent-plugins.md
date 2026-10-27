@@ -208,10 +208,12 @@ Test plugins in the lab before queuing them against live sessions.
 The Windows CI job in `.github/workflows/msvc-plugin-loader.yml` builds
 `agent-go/testdata/msvc_plugin.cpp` with MSVC `/MT`, checks that the resulting
 DLL does not import a VC runtime DLL, and passes its bytes to
-`agent.exe --plugin-child Run`. The fixture checks a C++ global constructor and
-a caught C++ exception. `TestMSVCPluginChild` drives the real framed protocol;
+`agent.exe --plugin-child Run`. The fixture checks a C++ global constructor,
+`RtlLookupFunctionEntry`, and a caught C++ exception. `TestMSVCPluginChild`
+drives the real framed protocol;
 it skips outside that CI job unless `RMM_MSVC_TEST_DLL` and
-`RMM_MSVC_TEST_AGENT` point to built artifacts. This is a loader compatibility
+`RMM_MSVC_TEST_AGENT` point to built artifacts. `RMM_MSVC_TEST_EXPECT` replaces
+the fixture checks with one exact expected output from another DLL. This is a loader compatibility
 test, not yet a test of ONNX Runtime or model inference.
 
 `registerPluginUnwind` registers the PE exception directory in the child

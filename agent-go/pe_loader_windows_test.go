@@ -25,12 +25,17 @@ func TestMSVCPluginChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
+	cases := []struct {
 		name, input, want string
 	}{
 		{"constructor", "hello", "msvc-ready"},
+		{"unwind", "unwind", "registered"},
 		{"exception", "throw", "caught"},
-	} {
+	}
+	if expected := os.Getenv("RMM_MSVC_TEST_EXPECT"); expected != "" {
+		cases = []struct{ name, input, want string }{{"runtime", "", expected}}
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var frame bytes.Buffer
 			if err := binary.Write(&frame, binary.LittleEndian, uint32(len(plugin))); err != nil {

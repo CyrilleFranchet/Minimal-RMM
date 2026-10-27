@@ -2,6 +2,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <windows.h>
 
 static std::string greeting;
 
@@ -16,6 +17,14 @@ extern "C" __declspec(dllexport) int Run(const char *input, char *output, int ou
         return 1;
     }
     try {
+        if (input != nullptr && std::strcmp(input, "unwind") == 0) {
+            DWORD64 imageBase = 0;
+            const auto entry = RtlLookupFunctionEntry(
+                reinterpret_cast<DWORD64>(&Run), &imageBase, nullptr);
+            std::snprintf(output, static_cast<size_t>(outputCap), "%s",
+                          entry != nullptr ? "registered" : "missing");
+            return 0;
+        }
         if (input != nullptr && std::strcmp(input, "throw") == 0) {
             throw std::runtime_error("caught");
         }
