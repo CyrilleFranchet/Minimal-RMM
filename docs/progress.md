@@ -48,7 +48,9 @@ implementation log.
   its download path. The plugin branch now restores the mapped TLS block at
   each native ONNX boundary and locks Go execution to one OS thread. Its
   MSVC helper compiled in a short Windows job; the full DLL rebuild and
-  model-inference retest are pending.
+  model-inference retest are pending. A separate short Windows fixture
+  deliberately replaced the thread TLS vector; the helper restored a
+  thread-local value through the actual agent mapper.
 
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 
