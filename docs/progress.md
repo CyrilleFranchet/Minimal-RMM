@@ -15,8 +15,12 @@ implementation log.
   the agent's in-memory PE mapper, including a C++ constructor and exception.
 - Registered x64 unwind metadata with `RtlAddFunctionTable` before the mapped
   DLL's entry point runs. Corrected the documented mapper limitations.
-- Local cross-compilation is possible; Windows execution and a statically
-  linked ONNX Runtime plugin remain to be validated by the CI job.
+- Local cross-compilation passed; the statically linked ONNX Runtime probe
+  remains to be validated by its separate Windows CI job.
+- Windows CI confirmed the `/MT` fixture has no VC runtime DLL import and its
+  global constructor runs. `RtlLookupFunctionEntry` finds mapped unwind data,
+  but a caught C++ throw still terminates the child with `0xe06d7363`.
+  The manual image is not registered for MSVC CRT module-base lookup.
 
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 

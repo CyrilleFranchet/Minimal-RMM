@@ -193,7 +193,7 @@ clang -shared -o hello.dll plugin.c
 | Architecture | Only PE32+ amd64 images; other plugins fail with an explicit error |
 | Relocations | The manual mapper handles `IMAGE_REL_BASED_DIR64`; other relocation types fail |
 | Loader registration | The image is not registered with the Windows loader; calls such as `GetModuleHandle` on the plugin itself are unsupported |
-| Exceptions | The mapper registers the x64 exception directory with `RtlAddFunctionTable`; language runtimes with additional loader requirements still need testing |
+| Exceptions | The mapper registers x64 unwind metadata, but MSVC C++ throws still fail because the CRT cannot find the manually mapped image base; treat C++ exceptions as unsupported |
 | TLS | Implicit TLS and TLS callbacks are not initialized by the mapper |
 | CFG | Control Flow Guard metadata is not registered by the mapper; build a plugin without CFG until supported |
 | Dependencies | Normal imports resolve through `LoadLibraryA`; every imported DLL must already be available on the target |
@@ -209,12 +209,17 @@ The Windows CI job in `.github/workflows/msvc-plugin-loader.yml` builds
 `agent-go/testdata/msvc_plugin.cpp` with MSVC `/MT`, checks that the resulting
 DLL does not import a VC runtime DLL, and passes its bytes to
 `agent.exe --plugin-child Run`. The fixture checks a C++ global constructor,
-`RtlLookupFunctionEntry`, and a caught C++ exception. `TestMSVCPluginChild`
+`RtlLookupFunctionEntry`, `RtlPcToFileHeader`, and a caught C++ exception. `TestMSVCPluginChild`
 drives the real framed protocol;
 it skips outside that CI job unless `RMM_MSVC_TEST_DLL` and
 `RMM_MSVC_TEST_AGENT` point to built artifacts. `RMM_MSVC_TEST_EXPECT` replaces
 the fixture checks with one exact expected output from another DLL. This is a loader compatibility
-test, not yet a test of ONNX Runtime or model inference.
+test, not yet a test of ONNX Runtime or model inference. The constructor and
+unwind lookup pass in Windows CI; the exception case currently fails with
+`0xe06d7363`. The manual mapper is therefore not yet suitable for an
+exception-using MSVC library even when the DLL has no VC runtime import.
+The fixture now experiments with a plugin-local `_CxxThrowException` override
+that supplies its own image base; CI must confirm whether this is sufficient.
 
 `registerPluginUnwind` registers the PE exception directory in the child
 before `DllMain` runs. It rejects directories whose size is not a multiple of

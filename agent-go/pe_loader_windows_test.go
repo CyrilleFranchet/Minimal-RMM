@@ -30,6 +30,7 @@ func TestMSVCPluginChild(t *testing.T) {
 	}{
 		{"constructor", "hello", "msvc-ready"},
 		{"unwind", "unwind", "registered"},
+		{"module", "module", "unregistered"},
 		{"exception", "throw", "caught"},
 	}
 	if expected := os.Getenv("RMM_MSVC_TEST_EXPECT"); expected != "" {
