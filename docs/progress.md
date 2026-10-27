@@ -29,6 +29,10 @@ implementation log.
   fixture tests passed in run 40552719824. Local Go tests, Windows amd64/arm64
   and Linux cross-builds, 700k marker fuzz inputs, Python source-manifest tests,
   and `make check` passed. The full ONNX DLL rebuild remains in progress.
+- The real-model acceptance test now selects both MiniLM (mean pooling) and
+  a pinned quantized BGE-small graph (CLS pooling) with the same DLL. It checks
+  two document vectors, a strategic label, and a missing-document error for
+  each model, then validates invalid-input handling and staging cleanup.
 
 ### 2026-10-27 — Prototype an MSVC plugin loader test
 

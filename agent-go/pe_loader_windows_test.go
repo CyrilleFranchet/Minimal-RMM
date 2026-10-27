@@ -160,55 +160,75 @@ func TestDocumentEmbeddingsPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
-	result, err := invoke(ctx, "Run", string(requestBytes))
+	requests := []struct{ name, input string }{{"minilm_mean", string(requestBytes)}}
+	request["model"] = json.RawMessage(`{
+		"repo":"Xenova/bge-small-en-v1.5",
+		"revision":"ea104dacec62c0de699686887e3f920caeb4f3e3",
+		"onnx_file":"onnx/model_quantized.onnx",
+		"tokenizer_file":"tokenizer.json",
+		"sha256":"6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4",
+		"input_names":["input_ids","attention_mask","token_type_ids"],
+		"output_name":"last_hidden_state","pooling":"cls"
+	}`)
+	request["prompt"], request["label_prompt"] = json.RawMessage(`""`), json.RawMessage(`""`)
+	requestBytes, err = json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var response struct {
-		Results []struct {
-			Path           string    `json:"path"`
-			Embedding      []float64 `json:"embedding"`
-			Error          string    `json:"error"`
-			Classification *struct {
-				Label string  `json:"label"`
-				Score float64 `json:"score"`
-			} `json:"classification"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(result), &response); err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Results) != len(documents) {
-		t.Fatalf("got %d document results", len(response.Results))
-	}
-	for i, doc := range response.Results {
-		if doc.Path != documents[i] {
-			t.Fatal("document result order or path changed")
-		}
-		if i == 2 {
-			if doc.Error == "" || len(doc.Embedding) != 0 || doc.Classification != nil {
-				t.Fatal("missing document did not produce an isolated error")
+	requests = append(requests, struct{ name, input string }{"bge_quantized_cls", string(requestBytes)})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	for _, testRequest := range requests {
+		t.Run(testRequest.name, func(t *testing.T) {
+			result, err := invoke(ctx, "Run", testRequest.input)
+			if err != nil {
+				t.Fatal(err)
 			}
-			continue
-		}
-		if doc.Error != "" || len(doc.Embedding) != 384 {
-			t.Fatalf("embedding dimension=%d error=%q", len(doc.Embedding), doc.Error)
-		}
-		var norm float64
-		for _, value := range doc.Embedding {
-			norm += value * value
-		}
-		if math.IsNaN(norm) || math.Abs(norm-1) > 1e-4 {
-			t.Fatalf("embedding squared norm=%g", norm)
-		}
+			var response struct {
+				Results []struct {
+					Path           string    `json:"path"`
+					Embedding      []float64 `json:"embedding"`
+					Error          string    `json:"error"`
+					Classification *struct {
+						Label string  `json:"label"`
+						Score float64 `json:"score"`
+					} `json:"classification"`
+				} `json:"results"`
+			}
+			if err := json.Unmarshal([]byte(result), &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Results) != len(documents) {
+				t.Fatalf("got %d document results", len(response.Results))
+			}
+			for i, doc := range response.Results {
+				if doc.Path != documents[i] {
+					t.Fatal("document result order or path changed")
+				}
+				if i == 2 {
+					if doc.Error == "" || len(doc.Embedding) != 0 || doc.Classification != nil {
+						t.Fatal("missing document did not produce an isolated error")
+					}
+					continue
+				}
+				if doc.Error != "" || len(doc.Embedding) != 384 {
+					t.Fatalf("embedding dimension=%d error=%q", len(doc.Embedding), doc.Error)
+				}
+				var norm float64
+				for _, value := range doc.Embedding {
+					norm += value * value
+				}
+				if math.IsNaN(norm) || math.Abs(norm-1) > 1e-4 {
+					t.Fatalf("embedding squared norm=%g", norm)
+				}
+			}
+			doc := response.Results[0]
+			if doc.Classification == nil || doc.Classification.Label != "strategic" || math.IsNaN(doc.Classification.Score) || math.Abs(doc.Classification.Score) > 1.0001 {
+				t.Fatalf("unexpected classification: %+v", doc.Classification)
+			}
+			assertPluginCleanup(t, root)
+		})
 	}
-	doc := response.Results[0]
-	if doc.Classification == nil || doc.Classification.Label != "strategic" || math.IsNaN(doc.Classification.Score) || math.Abs(doc.Classification.Score) > 1.0001 {
-		t.Fatalf("unexpected classification: %+v", doc.Classification)
-	}
-	assertPluginCleanup(t, root)
 	// A rejected request must also return its error and remove the staged DLL.
 	_, err = invoke(ctx, "Run", "{}")
 	if err == nil || !strings.Contains(err.Error(), "model.repo") {
