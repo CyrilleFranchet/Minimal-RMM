@@ -51,6 +51,16 @@ implementation log.
   model-inference retest are pending. A separate short Windows fixture
   deliberately replaced the thread TLS vector; the helper restored a
   thread-local value through the actual agent mapper.
+- The rebuilt single DLL passed Windows dependency inspection: it imports only
+  Windows system DLLs and needs no separate ONNX Runtime or VC runtime DLL.
+  A pinned public MiniLM model produced an embedding and strategic label under
+  the normal Windows loader (plugin CI run 40548809398). The same request
+  crashes under the in-memory mapper at a native static-TLS access on an ONNX
+  Runtime worker thread (RVA `0xF478D7`, TLS index 4096, null block). The
+  current-thread TLS repair cannot cover threads created later. The plugin is
+  therefore a prototype, not a working Go-agent feature. The next step is a
+  loader design that initializes static TLS for every native thread, or a
+  standard Windows loader path for this DLL, followed by the real-model test.
 
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 

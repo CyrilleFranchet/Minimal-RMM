@@ -215,7 +215,7 @@ it skips outside that CI job unless `RMM_MSVC_TEST_DLL` and
 `RMM_MSVC_TEST_AGENT` point to built artifacts. `RMM_MSVC_TEST_EXPECT` replaces
 the fixture checks with one exact expected output from another DLL, with
 `RMM_MSVC_TEST_INPUT` as its optional input. This is a loader compatibility
-test, not yet a test of ONNX Runtime or model inference. Windows CI confirms
+test, not a test of ONNX Runtime or model inference. Windows CI confirms
 that the constructor and unwind lookup work. The manual image has no loader
 module entry, so its ordinary MSVC C++ throw terminates the child with
 `0xe06d7363`. Linking the fixture-local `_CxxThrowException` bridge in
@@ -226,7 +226,8 @@ plugins.
 
 `TestMappedPluginDiagnostic` is an opt-in CI diagnostic for an already-built
 DLL. With `RMM_MSVC_TEST_DLL` set, it prints the mapped image base and `Run`
-address before invoking the export with invalid JSON. A native crash then has
+address before invoking the export with `RMM_MSVC_TEST_INPUT` or invalid JSON.
+A native crash then has
 enough address context to identify the failing instruction in the PE image.
 It is not part of the target agent's logging path.
 
@@ -243,7 +244,10 @@ uses `NtQueryInformationThread` to find that thread's TEB. The
 locks its OS thread across mapping and `Run` so the initial TLS block remains
 visible. This is an experimental current-thread implementation; mapped
 plugins that access implicit TLS on newly created native threads still need
-additional loader support. The Windows document plugin CI exercises this path.
+additional loader support. The autonomous document DLL passes normal Windows
+loader inference with a pinned public model, but its mapper test crashes when
+an ONNX Runtime worker thread reads an uninitialized static TLS block at slot
+4096. It is not yet usable through the Go agent's generic PE command.
 
 ## Operator surfaces
 
