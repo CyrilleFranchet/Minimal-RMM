@@ -13,7 +13,6 @@ struct Initializer {
 static Initializer initializer;
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
-struct _ThrowInfo;
 
 // MSVC's static CRT cannot discover a manually mapped image with
 // RtlPcToFileHeader. Supply the image base in the C++ exception record.
