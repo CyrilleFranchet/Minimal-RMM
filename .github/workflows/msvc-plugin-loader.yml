@@ -19,6 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: agent-go/go.mod
+          cache: false
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64
@@ -40,4 +41,10 @@ jobs:
         run: |
           $env:RMM_MSVC_TEST_DLL = (Resolve-Path ../msvc_plugin.dll).Path
           $env:RMM_MSVC_TEST_AGENT = (Resolve-Path ../agent.exe).Path
-          go test -buildvcs=false -v -run TestMSVCPluginChild .
+          $output = go test -buildvcs=false -v -run TestMSVCPluginChild . 2>&1
+          $output | ForEach-Object { Write-Output $_ }
+          if ($LASTEXITCODE -ne 0) {
+            $detail = ($output | Out-String).Trim() -replace "`r?`n", ' | '
+            Write-Output "::error::$detail"
+            exit $LASTEXITCODE
+          }
