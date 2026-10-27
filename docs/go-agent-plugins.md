@@ -193,7 +193,7 @@ clang -shared -o hello.dll plugin.c
 | Architecture | Only PE32+ amd64 images; other plugins fail with an explicit error |
 | Relocations | The manual mapper handles `IMAGE_REL_BASED_DIR64`; other relocation types fail |
 | Loader registration | The image is not registered with the Windows loader; calls such as `GetModuleHandle` on the plugin itself are unsupported |
-| Exceptions | The mapper registers x64 unwind metadata, but MSVC C++ throws still fail because the CRT cannot find the manually mapped image base; treat C++ exceptions as unsupported |
+| Exceptions | The mapper registers x64 unwind metadata. MSVC C++ throws need a plugin-local image-base bridge; an ordinary `/MT` DLL still fails because the CRT cannot find the manually mapped image base |
 | TLS | Implicit TLS and TLS callbacks are not initialized by the mapper |
 | CFG | Control Flow Guard metadata is not registered by the mapper; build a plugin without CFG until supported |
 | Dependencies | Normal imports resolve through `LoadLibraryA`; every imported DLL must already be available on the target |
@@ -214,13 +214,14 @@ drives the real framed protocol;
 it skips outside that CI job unless `RMM_MSVC_TEST_DLL` and
 `RMM_MSVC_TEST_AGENT` point to built artifacts. `RMM_MSVC_TEST_EXPECT` replaces
 the fixture checks with one exact expected output from another DLL. This is a loader compatibility
-test, not yet a test of ONNX Runtime or model inference. The constructor and
-unwind lookup pass in Windows CI; the exception case currently fails with
-`0xe06d7363`. The manual mapper is therefore not yet suitable for an
-exception-using MSVC library even when the DLL has no VC runtime import.
-The fixture now experiments with a plugin-local `_CxxThrowException` bridge in
-`agent-go/testdata/msvc_throw.c` that supplies its own image base; CI must
-confirm whether this is sufficient. Its function is used only by this fixture.
+test, not yet a test of ONNX Runtime or model inference. Windows CI confirms
+that the constructor and unwind lookup work. The manual image has no loader
+module entry, so its ordinary MSVC C++ throw terminates the child with
+`0xe06d7363`. Linking the fixture-local `_CxxThrowException` bridge in
+`agent-go/testdata/msvc_throw.c` supplies the image base and makes its caught
+exception pass. A production C++ plugin would need the same bridge or another
+verified solution; this does not provide general exception support to other
+plugins.
 
 `registerPluginUnwind` registers the PE exception directory in the child
 before `DllMain` runs. It rejects directories whose size is not a multiple of

@@ -19,8 +19,10 @@ implementation log.
   remains to be validated by its separate Windows CI job.
 - Windows CI confirmed the `/MT` fixture has no VC runtime DLL import and its
   global constructor runs. `RtlLookupFunctionEntry` finds mapped unwind data,
-  but a caught C++ throw still terminates the child with `0xe06d7363`.
-  The manual image is not registered for MSVC CRT module-base lookup.
+  but an ordinary caught C++ throw terminated the child with `0xe06d7363`.
+  The manual image is not registered for MSVC CRT module-base lookup. A
+  fixture-local C bridge that supplies the image base made the same exception
+  test pass in Windows CI. ONNX Runtime linking and execution remain open.
 
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 
