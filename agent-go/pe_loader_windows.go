@@ -10,8 +10,8 @@
 //
 // Only PE32+ amd64 images are supported. Manually mapped modules are not
 // registered with the Windows loader, so plugins must not rely on
-// GetModuleHandle(self), implicit TLS, or CFG. x64 unwind metadata is
-// registered explicitly so C++ stack unwinding can work in the child.
+// GetModuleHandle(self) or CFG. x64 unwind metadata and static TLS for the
+// executing thread are initialized explicitly in the child.
 package main
 
 import (
@@ -55,7 +55,10 @@ var (
 	procLoadLibraryA        = kernel32Mod.NewProc("LoadLibraryA")
 	procGetProcAddress      = kernel32Mod.NewProc("GetProcAddress")
 	procVirtualProtect      = kernel32Mod.NewProc("VirtualProtect")
+	procVirtualQuery        = kernel32Mod.NewProc("VirtualQuery")
+	procGetCurrentThread    = kernel32Mod.NewProc("GetCurrentThread")
 	procRtlAddFunctionTable = syscall.NewLazyDLL("ntdll.dll").NewProc("RtlAddFunctionTable")
+	procNtQueryThread       = syscall.NewLazyDLL("ntdll.dll").NewProc("NtQueryInformationThread")
 )
 
 var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
@@ -114,6 +117,8 @@ func runPluginChild(args []string) error {
 	if len(args) != 2 || !pluginExportPattern.MatchString(args[1]) {
 		return errors.New("usage: --plugin-child <export>")
 	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	var pluginLen, inputLen uint32
 	if err := binary.Read(os.Stdin, binary.LittleEndian, &pluginLen); err != nil {
 		return fmt.Errorf("read plugin frame: %w", err)
@@ -195,6 +200,9 @@ func mapPluginPE(data []byte) (uintptr, error) {
 	if err := registerPluginUnwind(opt, rxBase); err != nil {
 		return 0, err
 	}
+	if err := initializePluginTLS(opt, rxBase); err != nil {
+		return 0, err
+	}
 	// Drop the writable staging allocation; only the protected image remains.
 	releasePluginView(rwBase)
 	committed = true
@@ -206,6 +214,118 @@ func mapPluginPE(data []byte) (uintptr, error) {
 		}
 	}
 	return rxBase, nil
+}
+
+// initializePluginTLS copies a PE static TLS template into the current
+// thread's TLS array before callbacks and DllMain run. The plugin child uses
+// this same locked OS thread for its one-shot export.
+func initializePluginTLS(opt *pe.OptionalHeader64, base uintptr) error {
+	dir := opt.DataDirectory[pe.IMAGE_DIRECTORY_ENTRY_TLS]
+	if dir.VirtualAddress == 0 || dir.Size == 0 {
+		return nil
+	}
+	if dir.Size < 40 || uint64(dir.VirtualAddress)+40 > uint64(opt.SizeOfImage) {
+		return errors.New("plugin has an invalid TLS directory")
+	}
+	fields := unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(dir.VirtualAddress))), 40)
+	start := uintptr(binary.LittleEndian.Uint64(fields[0:8]))
+	end := uintptr(binary.LittleEndian.Uint64(fields[8:16]))
+	indexAddress := uintptr(binary.LittleEndian.Uint64(fields[16:24]))
+	callbackAddress := uintptr(binary.LittleEndian.Uint64(fields[24:32]))
+	zeroFill := uintptr(binary.LittleEndian.Uint32(fields[32:36]))
+	imageEnd := base + uintptr(opt.SizeOfImage)
+	if start < base || end < start || end > imageEnd ||
+		indexAddress < base || indexAddress > imageEnd-4 ||
+		end-start+zeroFill > 8<<20 {
+		return errors.New("plugin TLS template exceeds image bounds")
+	}
+	const tlsIndex = 4096
+	const vectorBytes = (tlsIndex + 1) * 8
+	blockSize := end - start + zeroFill
+	if blockSize == 0 {
+		blockSize = 1
+	}
+	block, _, _ := procVirtualAlloc.Call(0, blockSize, memReserve|memCommit, pageReadWrite)
+	if block == 0 {
+		return errors.New("plugin TLS template allocation failed")
+	}
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(block)), int(end-start)),
+		unsafe.Slice((*byte)(unsafe.Pointer(start)), int(end-start)))
+	vector, _, _ := procVirtualAlloc.Call(0, vectorBytes, memReserve|memCommit, pageReadWrite)
+	if vector == 0 {
+		return errors.New("plugin TLS vector allocation failed")
+	}
+	teb, err := currentPluginTEB()
+	if err != nil {
+		return err
+	}
+	const tlsVectorOffset = 0x58 // TEB.ThreadLocalStoragePointer on Windows amd64.
+	oldVector := *(*uintptr)(unsafe.Pointer(teb + tlsVectorOffset))
+	if oldVector != 0 {
+		var info [48]byte // MEMORY_BASIC_INFORMATION on Windows amd64.
+		ret, _, _ := procVirtualQuery.Call(oldVector, uintptr(unsafe.Pointer(&info[0])), uintptr(len(info)))
+		if ret != uintptr(len(info)) {
+			return errors.New("plugin could not inspect existing TLS vector")
+		}
+		regionBase := uintptr(binary.LittleEndian.Uint64(info[0:8]))
+		regionSize := uintptr(binary.LittleEndian.Uint64(info[24:32]))
+		if regionBase > oldVector || regionSize > ^uintptr(0)-regionBase || regionBase+regionSize < oldVector {
+			return errors.New("plugin has an invalid existing TLS vector")
+		}
+		copyBytes := regionBase + regionSize - oldVector
+		if copyBytes > tlsIndex*8 {
+			copyBytes = tlsIndex * 8
+		}
+		copy(unsafe.Slice((*byte)(unsafe.Pointer(vector)), int(copyBytes)),
+			unsafe.Slice((*byte)(unsafe.Pointer(oldVector)), int(copyBytes)))
+	}
+	*(*uintptr)(unsafe.Pointer(vector + tlsIndex*8)) = block
+	*(*uint32)(unsafe.Pointer(indexAddress)) = tlsIndex
+	*(*uintptr)(unsafe.Pointer(teb + tlsVectorOffset)) = vector
+	if callbackAddress != 0 {
+		if callbackAddress < base || callbackAddress > imageEnd-8 {
+			return errors.New("plugin TLS callback array is outside the image")
+		}
+		for i := uintptr(0); i < 64; i++ {
+			entry := callbackAddress + i*8
+			if entry > imageEnd-8 {
+				return errors.New("plugin TLS callback array is unterminated")
+			}
+			callback := *(*uintptr)(unsafe.Pointer(entry))
+			if callback == 0 {
+				return nil
+			}
+			if callback < base || callback >= imageEnd {
+				return errors.New("plugin TLS callback is outside the image")
+			}
+			syscall.SyscallN(callback, base, 1, 0)
+		}
+		return errors.New("plugin TLS callback array exceeds 64 entries")
+	}
+	return nil
+}
+
+type pluginThreadBasicInformation struct {
+	exitStatus    int32
+	_             int32
+	tebBase       uintptr
+	clientProcess uintptr
+	clientThread  uintptr
+	affinityMask  uintptr
+	priority      int32
+	basePriority  int32
+}
+
+// currentPluginTEB locates the current x64 thread environment block for TLS.
+func currentPluginTEB() (uintptr, error) {
+	thread, _, _ := procGetCurrentThread.Call()
+	var info pluginThreadBasicInformation
+	status, _, _ := procNtQueryThread.Call(thread, 0,
+		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info), 0)
+	if status != 0 || info.tebBase == 0 {
+		return 0, errors.New("plugin could not locate its thread TLS array")
+	}
+	return info.tebBase, nil
 }
 
 // registerPluginUnwind makes x64 exception metadata visible to the Windows

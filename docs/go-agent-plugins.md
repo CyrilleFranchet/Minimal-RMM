@@ -194,7 +194,7 @@ clang -shared -o hello.dll plugin.c
 | Relocations | The manual mapper handles `IMAGE_REL_BASED_DIR64`; other relocation types fail |
 | Loader registration | The image is not registered with the Windows loader; calls such as `GetModuleHandle` on the plugin itself are unsupported |
 | Exceptions | The mapper registers x64 unwind metadata. MSVC C++ throws need a plugin-local image-base bridge; an ordinary `/MT` DLL still fails because the CRT cannot find the manually mapped image base |
-| TLS | Implicit TLS and TLS callbacks are not initialized by the mapper |
+| TLS | The mapper experimentally copies the static TLS template and calls process-attach callbacks on the one-shot plugin thread. It does not provide DLL thread-attach notifications for threads created later. |
 | CFG | Control Flow Guard metadata is not registered by the mapper; build a plugin without CFG until supported |
 | Dependencies | Normal imports resolve through `LoadLibraryA`; every imported DLL must already be available on the target |
 | Isolation | A crashing plugin terminates only the child runner; the beacon process remains alive |
@@ -234,6 +234,16 @@ It is not part of the target agent's logging path.
 before `DllMain` runs. It rejects directories whose size is not a multiple of
 the 12-byte x64 `RUNTIME_FUNCTION` entry or that extend beyond the mapped
 image. The child owns that registration until it exits.
+
+`initializePluginTLS` reads the PE TLS directory, copies its template into
+native memory, installs a slot in the executing thread's static TLS array,
+and calls process-attach TLS callbacks before `DllMain`. `currentPluginTEB`
+uses `NtQueryInformationThread` to find that thread's TEB. The
+`pluginThreadBasicInformation` structure holds the query result. The child
+locks its OS thread across mapping and `Run` so the initial TLS block remains
+visible. This is an experimental current-thread implementation; mapped
+plugins that access implicit TLS on newly created native threads still need
+additional loader support. The Windows document plugin CI exercises this path.
 
 ## Operator surfaces
 

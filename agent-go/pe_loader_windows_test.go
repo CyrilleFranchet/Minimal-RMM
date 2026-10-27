@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,8 @@ func TestMSVCPluginChild(t *testing.T) {
 // TestMappedPluginDiagnostic prints the mapped base before exercising an
 // already-built DLL, so a native crash address can be converted to an RVA.
 func TestMappedPluginDiagnostic(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	path := os.Getenv("RMM_MSVC_TEST_DLL")
 	if path == "" {
 		t.Skip("set RMM_MSVC_TEST_DLL for the mapped plugin diagnostic")

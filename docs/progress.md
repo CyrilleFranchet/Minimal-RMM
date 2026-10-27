@@ -37,6 +37,12 @@ implementation log.
   now uses the exact DLL path and is rebuilding for import and mapper tests.
 - Extended the mapped-plugin fixture test to accept a JSON result substring
   and a three-minute timeout for the public-model end-to-end check.
+- The combined DLL passed Windows import inspection with only system DLLs and
+  executed under the normal Windows loader. Its first run through the manual
+  mapper crashed in an MSVC static TLS access. Added an experimental
+  current-thread PE TLS template and callback setup to the mapper; the
+  diagnostic workflow is validating the already-built DLL without rebuilding
+  ONNX Runtime.
 
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 
