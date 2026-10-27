@@ -3,103 +3,186 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
-	"fmt"
+	"encoding/json"
+	"errors"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"os/exec"
-	"runtime"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestMSVCPluginChild verifies that a statically linked MSVC DLL executes
-// through the same framed child protocol as an operator-loaded plugin.
-func TestMSVCPluginChild(t *testing.T) {
-	pluginPath := os.Getenv("RMM_MSVC_TEST_DLL")
-	agentPath := os.Getenv("RMM_MSVC_TEST_AGENT")
+// pluginTestHost exercises the actual parent download and child launch path.
+func pluginTestHost(t *testing.T) (func(context.Context, string, string) (string, error), string) {
+	t.Helper()
+	pluginPath, agentPath := os.Getenv("RMM_MSVC_TEST_DLL"), os.Getenv("RMM_MSVC_TEST_AGENT")
 	if pluginPath == "" || agentPath == "" {
-		t.Skip("set RMM_MSVC_TEST_DLL and RMM_MSVC_TEST_AGENT to run the MSVC loader test")
+		t.Skip("set RMM_MSVC_TEST_DLL and RMM_MSVC_TEST_AGENT for Windows integration tests")
 	}
 	plugin, err := os.ReadFile(pluginPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := []struct {
-		name, input, want string
-	}{
-		{"constructor", "hello", "msvc-ready"},
-		{"unwind", "unwind", "registered"},
-		{"module", "module", "unregistered"},
-		{"exception", "throw", "caught"},
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/tools/plugins/test.dll" ||
+			r.URL.Query().Get("id") != "test-session" || r.Header.Get("X-RMM-Beacon-Token") != "test-secret" {
+			t.Error("plugin download did not preserve beacon authentication and session")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write(plugin)
+	}))
+	t.Cleanup(server.Close)
+	original := os.Args[0]
+	os.Args[0] = agentPath
+	t.Cleanup(func() { os.Args[0] = original })
+	root := filepath.Join(t.TempDir(), "staging with spaces ü")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
 	}
-	if expected := os.Getenv("RMM_MSVC_TEST_EXPECT"); expected != "" {
-		cases = []struct{ name, input, want string }{{"runtime", os.Getenv("RMM_MSVC_TEST_INPUT"), expected}}
+	t.Setenv("TEMP", root)
+	t.Setenv("TMP", root)
+	cfg := &config{BaseURL: server.URL, SessionID: "test-session", BeaconSecret: "test-secret"}
+	return func(ctx context.Context, export, input string) (string, error) {
+		return loadPluginPEContext(ctx, server.Client(), cfg, "/tools/plugins/test.dll", export, input)
+	}, root
+}
+
+// assertPluginCleanup checks both the staged DLL and its directory disappeared.
+func assertPluginCleanup(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var frame bytes.Buffer
-			if err := binary.Write(&frame, binary.LittleEndian, uint32(len(plugin))); err != nil {
-				t.Fatal(err)
-			}
-			if err := binary.Write(&frame, binary.LittleEndian, uint32(len(tc.input))); err != nil {
-				t.Fatal(err)
-			}
-			frame.Write(plugin)
-			frame.WriteString(tc.input)
-			timeout := 30 * time.Second
-			if os.Getenv("RMM_MSVC_TEST_CONTAINS") != "" {
-				timeout = 3 * time.Minute
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, agentPath, "--plugin-child", "Run")
-			cmd.Stdin = &frame
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("plugin child failed: %v: %s", err, output)
-			}
-			if expected := os.Getenv("RMM_MSVC_TEST_CONTAINS"); expected != "" {
-				if !strings.Contains(string(output), expected) {
-					t.Fatalf("plugin output = %q, missing %q", output, expected)
-				}
-				return
-			}
-			if got := strings.TrimSpace(string(output)); got != tc.want {
-				t.Fatalf("plugin output = %q, want %q", got, tc.want)
-			}
-		})
+	if len(entries) != 0 {
+		t.Fatalf("plugin staging left %d entries after child exit", len(entries))
 	}
 }
 
-// TestMappedPluginDiagnostic prints the mapped base before exercising an
-// already-built DLL, so a native crash address can be converted to an RVA.
-func TestMappedPluginDiagnostic(t *testing.T) {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	path := os.Getenv("RMM_MSVC_TEST_DLL")
-	if path == "" {
-		t.Skip("set RMM_MSVC_TEST_DLL for the mapped plugin diagnostic")
+// TestWindowsPluginLifecycle covers CRT, new-thread TLS, errors, and cancellation.
+func TestWindowsPluginLifecycle(t *testing.T) {
+	invoke, root := pluginTestHost(t)
+	cases := []struct{ name, export, input, want, failure string }{
+		{"constructor", "Run", "hello", "msvc-ready", ""},
+		{"module", "Run", "module", "registered", ""},
+		{"unwind", "Run", "unwind", "registered", ""},
+		{"exception", "Run", "throw", "caught", ""},
+		{"worker_tls", "Run", "thread", "thread-tls-ready", ""},
+		{"plugin_error", "Run", "fail", "", "fixture failure"},
+		{"missing_export", "MissingExport", "", "", "plugin export unavailable"},
+		{"native_exit", "Run", "crash", "", "plugin child failed"},
 	}
-	plugin, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			result, err := invoke(ctx, tc.export, tc.input)
+			if tc.failure != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.failure) {
+					t.Fatalf("expected %q, got %v", tc.failure, err)
+				}
+			} else if err != nil || result != tc.want {
+				t.Fatalf("result=%q error=%v, want %q", result, err, tc.want)
+			}
+			assertPluginCleanup(t, root)
+		})
 	}
-	base, err := mapPluginPE(plugin)
-	if err != nil {
-		t.Fatal(err)
+	t.Run("cancel_loaded_child", func(t *testing.T) {
+		ready := filepath.Join(filepath.Dir(root), "ready")
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { _, err := invoke(ctx, "Run", "wait:"+ready); done <- err }()
+		for {
+			if _, err := os.Stat(ready); err == nil {
+				break
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("child stopped before readiness: %v", err)
+			case <-ctx.Done():
+				t.Fatal("child never signaled readiness")
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancel error = %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("canceled child did not exit")
+		}
+		assertPluginCleanup(t, root)
+	})
+}
+
+// TestLegacyPluginLifecycle keeps unmarked DLLs on the original loader path.
+func TestLegacyPluginLifecycle(t *testing.T) {
+	invoke, root := pluginTestHost(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, err := invoke(ctx, "Run", "")
+	if err != nil || result != "legacy-ready" {
+		t.Fatalf("legacy result=%q error=%v", result, err)
 	}
-	address, err := findPluginExport(base, "Run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fmt.Fprintf(os.Stdout, "mapped base=%#x Run=%#x\n", base, address)
+	assertPluginCleanup(t, root)
+}
+
+// TestDocumentEmbeddingsPlugin verifies a real model result and staging cleanup.
+func TestDocumentEmbeddingsPlugin(t *testing.T) {
 	input := os.Getenv("RMM_MSVC_TEST_INPUT")
 	if input == "" {
-		input = "{}"
+		t.Skip("set RMM_MSVC_TEST_INPUT to a public-model request")
 	}
-	result, err := callPluginExport(base, "Run", input)
-	fmt.Fprintf(os.Stdout, "Run result=%q error=%v\n", result, err)
+	invoke, root := pluginTestHost(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	result, err := invoke(ctx, "Run", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Results []struct {
+			Embedding      []float64 `json:"embedding"`
+			Error          string    `json:"error"`
+			Classification *struct {
+				Label string  `json:"label"`
+				Score float64 `json:"score"`
+			} `json:"classification"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(result), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 1 {
+		t.Fatalf("got %d document results", len(response.Results))
+	}
+	doc := response.Results[0]
+	if doc.Error != "" || len(doc.Embedding) != 384 {
+		t.Fatalf("embedding dimension=%d error=%q", len(doc.Embedding), doc.Error)
+	}
+	var norm float64
+	for _, value := range doc.Embedding {
+		norm += value * value
+	}
+	if math.IsNaN(norm) || math.Abs(norm-1) > 1e-4 {
+		t.Fatalf("embedding squared norm=%g", norm)
+	}
+	if doc.Classification == nil || doc.Classification.Label != "strategic" || math.IsNaN(doc.Classification.Score) || math.Abs(doc.Classification.Score) > 1.0001 {
+		t.Fatalf("unexpected classification: %+v", doc.Classification)
+	}
+	assertPluginCleanup(t, root)
+	// A rejected request must also return its error and remove the staged DLL.
+	_, err = invoke(ctx, "Run", "{}")
+	if err == nil || !strings.Contains(err.Error(), "model.repo") {
+		t.Fatalf("invalid-input error=%v", err)
+	}
+	assertPluginCleanup(t, root)
 }

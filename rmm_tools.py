@@ -932,8 +932,8 @@ OPENAI_TOOLS: list[dict] = [
         "function": {
             "name": "queue_pe_load",
             "description": (
-                "Queue a diskless PE plugin load on the Go agent. The plugin is "
-                "fetched from the server and mapped in an isolated child. Use "
+                "Queue a PE plugin load on the Go agent. The plugin runs in an "
+                "isolated child; DLLs requiring the Windows loader use a temporary file. Use "
                 "command for plugin-owned dispatch through the Run export."
             ),
             "parameters": {

@@ -1008,7 +1008,7 @@ Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
 Files:    download <remote> | exfil <remote> [profile] | upload <local> <remote> | screenshot
-Plugins: pe list | pe <plugin> [export] [input]   (diskless PE load; use --command for plugin-owned dispatch)
+Plugins: pe list | pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
 Config:   rclone-config   (rclone profiles + bootstrap status)
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
           tun list | tun start <session> <device> | tun stop <session>

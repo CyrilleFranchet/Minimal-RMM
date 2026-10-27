@@ -9,6 +9,24 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-27 — Standard Windows loader for autonomous ONNX DLLs
+
+- Added opt-in `RMMRequiresWindowsLoader` export inspection before execution.
+  Marked DLLs use `LoadLibraryExW` in a separate agent child, with Windows
+  handling CRT, exceptions, static TLS, and new native threads.
+- The parent stages the DLL in a random directory with a protected Windows
+  DACL, holds a read-sharing-only file handle until child exit, and cleans up
+  after success, failure, or cancellation. Input remains on stdin. A forced
+  parent termination can leave the temporary file behind.
+- Removed the manual TLS and exception-table experiments from the production
+  mapper. Unmarked DLLs retain the existing loader path. CLI/MCP descriptions
+  now disclose temporary-file loading instead of promising all loads are
+  diskless; the command schema remains unchanged.
+- Added metadata bounds tests and Windows tests for native thread TLS,
+  exceptions, cancellation, error cleanup, and a legacy unmarked DLL. The
+  real-model test checks normalized MiniLM embeddings and classification
+  through the authenticated parent/child path. Windows validation is pending.
+
 ### 2026-10-27 — Prototype an MSVC plugin loader test
 
 - Added a Windows CI fixture built with MSVC `/MT` and a child-process test of

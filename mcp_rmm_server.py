@@ -236,7 +236,7 @@ def queue_pe_load(
     input: str = "",
     command: str = "",
 ) -> str:
-    """Queue a diskless PE plugin command; the plugin owns command dispatch."""
+    """Queue an isolated PE command; Windows-loader DLLs use a temporary file."""
     return tool_queue_pe_load(
         _client(),
         session_ref,
