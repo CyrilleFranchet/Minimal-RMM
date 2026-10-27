@@ -129,8 +129,8 @@ standard library:
 2. **Run** — the parent starts itself with `--plugin-child` and frames the DLL
    bytes and input over stdin.
 3. **Map** — the child manually maps the PE into private allocations, applies
-   relocations and imports, sets per-section protections, and invokes the
-   requested export.
+   relocations and imports, sets per-section protections, registers x64 unwind
+   metadata when present, and invokes the requested export.
 4. **Cleanup** — the parent waits up to ten minutes and returns stdout as the
    plugin result. No plugin file is created.
 
@@ -191,16 +191,33 @@ clang -shared -o hello.dll plugin.c
 | Limitation | Detail |
 |------------|--------|
 | Architecture | Only PE32+ amd64 images; other plugins fail with an explicit error |
-| Relocations | Standard Windows DLL relocations are handled by `LoadLibrary` |
-| Loader registration | The child uses the normal Windows loader, so standard module lookup and DLL initialization are available |
-| Exceptions | Plugin language runtimes may use their normal Windows loader requirements inside the child |
-| CFG | Follow the normal compiler and loader requirements for the plugin toolchain |
-| Dependencies | DLL dependencies must be available to the child through the normal Windows loader search rules |
+| Relocations | The manual mapper handles `IMAGE_REL_BASED_DIR64`; other relocation types fail |
+| Loader registration | The image is not registered with the Windows loader; calls such as `GetModuleHandle` on the plugin itself are unsupported |
+| Exceptions | The mapper registers the x64 exception directory with `RtlAddFunctionTable`; language runtimes with additional loader requirements still need testing |
+| TLS | Implicit TLS and TLS callbacks are not initialized by the mapper |
+| CFG | Control Flow Guard metadata is not registered by the mapper; build a plugin without CFG until supported |
+| Dependencies | Normal imports resolve through `LoadLibraryA`; every imported DLL must already be available on the target |
 | Isolation | A crashing plugin terminates only the child runner; the beacon process remains alive |
 | Blocking | One-shot plugins can occupy the command cycle for up to ten minutes; the persistent pivot runs in a separate child and does not block beacon polling |
 | .NET | Managed assemblies are out of scope; build AOT native binaries instead |
 
 Test plugins in the lab before queuing them against live sessions.
+
+### MSVC loader proof
+
+The Windows CI job in `.github/workflows/msvc-plugin-loader.yml` builds
+`agent-go/testdata/msvc_plugin.cpp` with MSVC `/MT`, checks that the resulting
+DLL does not import a VC runtime DLL, and passes its bytes to
+`agent.exe --plugin-child Run`. The fixture checks a C++ global constructor and
+a caught C++ exception. `TestMSVCPluginChild` drives the real framed protocol;
+it skips outside that CI job unless `RMM_MSVC_TEST_DLL` and
+`RMM_MSVC_TEST_AGENT` point to built artifacts. This is a loader compatibility
+test, not yet a test of ONNX Runtime or model inference.
+
+`registerPluginUnwind` registers the PE exception directory in the child
+before `DllMain` runs. It rejects directories whose size is not a multiple of
+the 12-byte x64 `RUNTIME_FUNCTION` entry or that extend beyond the mapped
+image. The child owns that registration until it exits.
 
 ## Operator surfaces
 

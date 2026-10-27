@@ -9,6 +9,15 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-27 — Prototype an MSVC plugin loader test
+
+- Added a Windows CI fixture built with MSVC `/MT` and a child-process test of
+  the agent's in-memory PE mapper, including a C++ constructor and exception.
+- Registered x64 unwind metadata with `RtlAddFunctionTable` before the mapped
+  DLL's entry point runs. Corrected the documented mapper limitations.
+- Local cross-compilation is possible; Windows execution and a statically
+  linked ONNX Runtime plugin remain to be validated by the CI job.
+
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 
 - Added the default `exegol-rmm-pivot` AI skill to distinguish RMM agent

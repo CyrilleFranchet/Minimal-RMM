@@ -10,7 +10,8 @@
 //
 // Only PE32+ amd64 images are supported. Manually mapped modules are not
 // registered with the Windows loader, so plugins must not rely on
-// GetModuleHandle(self), implicit TLS, C++ exceptions, or CFG.
+// GetModuleHandle(self), implicit TLS, or CFG. x64 unwind metadata is
+// registered explicitly so C++ stack unwinding can work in the child.
 package main
 
 import (
@@ -48,12 +49,13 @@ const (
 )
 
 var (
-	kernel32Mod        = syscall.NewLazyDLL("kernel32.dll")
-	procVirtualAlloc   = kernel32Mod.NewProc("VirtualAlloc")
-	procVirtualFree    = kernel32Mod.NewProc("VirtualFree")
-	procLoadLibraryA   = kernel32Mod.NewProc("LoadLibraryA")
-	procGetProcAddress = kernel32Mod.NewProc("GetProcAddress")
-	procVirtualProtect = kernel32Mod.NewProc("VirtualProtect")
+	kernel32Mod             = syscall.NewLazyDLL("kernel32.dll")
+	procVirtualAlloc        = kernel32Mod.NewProc("VirtualAlloc")
+	procVirtualFree         = kernel32Mod.NewProc("VirtualFree")
+	procLoadLibraryA        = kernel32Mod.NewProc("LoadLibraryA")
+	procGetProcAddress      = kernel32Mod.NewProc("GetProcAddress")
+	procVirtualProtect      = kernel32Mod.NewProc("VirtualProtect")
+	procRtlAddFunctionTable = syscall.NewLazyDLL("ntdll.dll").NewProc("RtlAddFunctionTable")
 )
 
 var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
@@ -190,6 +192,9 @@ func mapPluginPE(data []byte) (uintptr, error) {
 	// Copy it into the execution allocation before tightening protections.
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(rxBase)), int(opt.SizeOfImage)), unsafe.Slice((*byte)(unsafe.Pointer(rwBase)), int(opt.SizeOfImage)))
 	applyPluginProtections(rxBase, file, opt)
+	if err := registerPluginUnwind(opt, rxBase); err != nil {
+		return 0, err
+	}
 	// Drop the writable staging allocation; only the protected image remains.
 	releasePluginView(rwBase)
 	committed = true
@@ -201,6 +206,23 @@ func mapPluginPE(data []byte) (uintptr, error) {
 		}
 	}
 	return rxBase, nil
+}
+
+// registerPluginUnwind makes x64 exception metadata visible to the Windows
+// unwinder. Manually mapped images are not registered by the OS loader.
+func registerPluginUnwind(opt *pe.OptionalHeader64, base uintptr) error {
+	dir := opt.DataDirectory[pe.IMAGE_DIRECTORY_ENTRY_EXCEPTION]
+	if dir.VirtualAddress == 0 || dir.Size == 0 {
+		return nil
+	}
+	if dir.Size%12 != 0 || uint64(dir.VirtualAddress)+uint64(dir.Size) > uint64(opt.SizeOfImage) {
+		return errors.New("plugin has an invalid x64 exception directory")
+	}
+	ret, _, _ := procRtlAddFunctionTable.Call(base+uintptr(dir.VirtualAddress), uintptr(dir.Size/12), base)
+	if ret == 0 {
+		return errors.New("RtlAddFunctionTable failed for plugin image")
+	}
+	return nil
 }
 
 // mapPluginViews allocates separate writable staging and execution images.

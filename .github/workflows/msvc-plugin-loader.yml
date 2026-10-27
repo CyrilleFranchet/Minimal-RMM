@@ -1,0 +1,43 @@
+name: MSVC plugin loader
+
+on:
+  push:
+    paths:
+      - .github/workflows/msvc-plugin-loader.yml
+      - agent-go/**
+  pull_request:
+    paths:
+      - .github/workflows/msvc-plugin-loader.yml
+      - agent-go/**
+  workflow_dispatch:
+
+jobs:
+  msvc-plugin:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent-go/go.mod
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+      - name: Build the standalone MSVC plugin
+        shell: cmd
+        run: cl /nologo /LD /MT /EHsc /O2 /DYNAMICBASE agent-go\testdata\msvc_plugin.cpp /link /OUT:msvc_plugin.dll
+      - name: Check runtime dependencies
+        shell: pwsh
+        run: |
+          $imports = dumpbin /dependents msvc_plugin.dll | Out-String
+          Write-Output $imports
+          if ($imports -match '(?i)(vcruntime|msvcp|onnxruntime)\w*\.dll') { throw 'Unexpected external runtime dependency' }
+      - name: Build the agent
+        working-directory: agent-go
+        run: go build -buildvcs=false -o ../agent.exe .
+      - name: Execute through the manual mapper
+        working-directory: agent-go
+        shell: pwsh
+        run: |
+          $env:RMM_MSVC_TEST_DLL = (Resolve-Path ../msvc_plugin.dll).Path
+          $env:RMM_MSVC_TEST_AGENT = (Resolve-Path ../agent.exe).Path
+          go test -buildvcs=false -v -run TestMSVCPluginChild .
