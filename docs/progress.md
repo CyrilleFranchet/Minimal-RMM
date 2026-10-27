@@ -23,6 +23,11 @@ implementation log.
   The manual image is not registered for MSVC CRT module-base lookup. A
   fixture-local C bridge that supplies the image base made the same exception
   test pass in Windows CI. ONNX Runtime linking and execution remain open.
+- A separate plugin-repository Windows probe linked a Go C archive into an
+  MSVC `/MT` DLL. Explicitly starting the Go runtime from its exported entry
+  point passed both normal `LoadLibrary` and this agent's in-memory mapper.
+  This preserves a possible route to reuse the existing Go document pipeline
+  in a single native DLL; the ONNX bridge is still unimplemented.
 
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 
