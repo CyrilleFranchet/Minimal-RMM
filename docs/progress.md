@@ -28,11 +28,21 @@ implementation log.
   through the authenticated parent/child path. Windows lifecycle and legacy
   fixture tests passed in run 40552719824. Local Go tests, Windows amd64/arm64
   and Linux cross-builds, 700k marker fuzz inputs, Python source-manifest tests,
-  and `make check` passed. The full ONNX DLL rebuild remains in progress.
+  and `make check` passed. The full ONNX DLL build and real-agent acceptance
+  passed in [plugin run 40553323301](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/actions/runs/40553323301)
+  with plugin revision `fb963ab` and agent revision `6f18910`.
 - The real-model acceptance test now selects both MiniLM (mean pooling) and
   a pinned quantized BGE-small graph (CLS pooling) with the same DLL. It checks
   two document vectors, a strategic label, and a missing-document error for
   each model, then validates invalid-input handling and staging cleanup.
+- Both real-model cases passed on Windows: MiniLM in 1.97 seconds and BGE in
+  2.38 seconds. Import inspection confirmed only Windows system DLLs. The
+  [validated DLL artifact](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/actions/runs/40553323301/artifacts/12763491713)
+  is 36,232,192 bytes, with SHA-256
+  `a08000ab452a475f708293743f91231ca5f31317f4690b98cb41464841aae2e6`.
+  Validation used the actual Go agent process in Windows CI; deployment to a
+  managed host is separate. The DLL needs the updated agent and temporary
+  on-disk staging, but no separate ONNX Runtime, VC runtime, or Python install.
 
 ### 2026-10-27 — Prototype an MSVC plugin loader test
 
