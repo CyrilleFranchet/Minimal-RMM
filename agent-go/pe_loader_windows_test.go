@@ -96,6 +96,10 @@ func TestMappedPluginDiagnostic(t *testing.T) {
 		t.Fatal(err)
 	}
 	fmt.Fprintf(os.Stdout, "mapped base=%#x Run=%#x\n", base, address)
-	result, err := callPluginExport(base, "Run", "{}")
+	input := os.Getenv("RMM_MSVC_TEST_INPUT")
+	if input == "" {
+		input = "{}"
+	}
+	result, err := callPluginExport(base, "Run", input)
 	fmt.Fprintf(os.Stdout, "Run result=%q error=%v\n", result, err)
 }
