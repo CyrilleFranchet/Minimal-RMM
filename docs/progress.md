@@ -30,7 +30,11 @@ implementation log.
   in a single native DLL. The plugin repository now has an ONNX C++ bridge,
   Go autonomous build tag, and Windows combined-DLL workflow. The first
   static ONNX Runtime link succeeded in CI; mapped inference and the combined
-  document workflow still require Windows CI validation.
+  document workflow still require Windows CI validation. A subsequent
+  Windows job successfully linked the Go archive and static ONNX Runtime
+  into `document-embeddings-autonomous.dll`. Its artifact upload failed while
+  traversing an unrelated protected `_deps` directory; the plugin workflow
+  now uses the exact DLL path and is rebuilding for import and mapper tests.
 - Extended the mapped-plugin fixture test to accept a JSON result substring
   and a three-minute timeout for the public-model end-to-end check.
 
