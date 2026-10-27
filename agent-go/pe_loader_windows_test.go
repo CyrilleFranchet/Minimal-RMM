@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -70,4 +71,28 @@ func TestMSVCPluginChild(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMappedPluginDiagnostic prints the mapped base before exercising an
+// already-built DLL, so a native crash address can be converted to an RVA.
+func TestMappedPluginDiagnostic(t *testing.T) {
+	path := os.Getenv("RMM_MSVC_TEST_DLL")
+	if path == "" {
+		t.Skip("set RMM_MSVC_TEST_DLL for the mapped plugin diagnostic")
+	}
+	plugin, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := mapPluginPE(plugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := findPluginExport(base, "Run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(os.Stdout, "mapped base=%#x Run=%#x\n", base, address)
+	result, err := callPluginExport(base, "Run", "{}")
+	fmt.Fprintf(os.Stdout, "Run result=%q error=%v\n", result, err)
 }

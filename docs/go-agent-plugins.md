@@ -224,6 +224,12 @@ exception pass. A production C++ plugin would need the same bridge or another
 verified solution; this does not provide general exception support to other
 plugins.
 
+`TestMappedPluginDiagnostic` is an opt-in CI diagnostic for an already-built
+DLL. With `RMM_MSVC_TEST_DLL` set, it prints the mapped image base and `Run`
+address before invoking the export with invalid JSON. A native crash then has
+enough address context to identify the failing instruction in the PE image.
+It is not part of the target agent's logging path.
+
 `registerPluginUnwind` registers the PE exception directory in the child
 before `DllMain` runs. It rejects directories whose size is not a multiple of
 the 12-byte x64 `RUNTIME_FUNCTION` entry or that extend beyond the mapped
