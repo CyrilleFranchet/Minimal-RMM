@@ -236,7 +236,7 @@ the 12-byte x64 `RUNTIME_FUNCTION` entry or that extend beyond the mapped
 image. The child owns that registration until it exits.
 
 `initializePluginTLS` reads the PE TLS directory, copies its template into
-native memory, installs a slot in the executing thread's static TLS array,
+process-heap memory, installs a slot in the executing thread's static TLS array,
 and calls process-attach TLS callbacks before `DllMain`. `currentPluginTEB`
 uses `NtQueryInformationThread` to find that thread's TEB. The
 `pluginThreadBasicInformation` structure holds the query result. The child

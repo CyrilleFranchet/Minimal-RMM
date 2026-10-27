@@ -57,6 +57,8 @@ var (
 	procVirtualProtect      = kernel32Mod.NewProc("VirtualProtect")
 	procVirtualQuery        = kernel32Mod.NewProc("VirtualQuery")
 	procGetCurrentThread    = kernel32Mod.NewProc("GetCurrentThread")
+	procGetProcessHeap      = kernel32Mod.NewProc("GetProcessHeap")
+	procHeapAlloc           = kernel32Mod.NewProc("HeapAlloc")
 	procRtlAddFunctionTable = syscall.NewLazyDLL("ntdll.dll").NewProc("RtlAddFunctionTable")
 	procNtQueryThread       = syscall.NewLazyDLL("ntdll.dll").NewProc("NtQueryInformationThread")
 )
@@ -245,13 +247,18 @@ func initializePluginTLS(opt *pe.OptionalHeader64, base uintptr) error {
 	if blockSize == 0 {
 		blockSize = 1
 	}
-	block, _, _ := procVirtualAlloc.Call(0, blockSize, memReserve|memCommit, pageReadWrite)
+	heap, _, _ := procGetProcessHeap.Call()
+	if heap == 0 {
+		return errors.New("plugin process heap is unavailable")
+	}
+	const heapZeroMemory = 0x8
+	block, _, _ := procHeapAlloc.Call(heap, heapZeroMemory, blockSize)
 	if block == 0 {
 		return errors.New("plugin TLS template allocation failed")
 	}
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(block)), int(end-start)),
 		unsafe.Slice((*byte)(unsafe.Pointer(start)), int(end-start)))
-	vector, _, _ := procVirtualAlloc.Call(0, vectorBytes, memReserve|memCommit, pageReadWrite)
+	vector, _, _ := procHeapAlloc.Call(heap, heapZeroMemory, vectorBytes)
 	if vector == 0 {
 		return errors.New("plugin TLS vector allocation failed")
 	}
