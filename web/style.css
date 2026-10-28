@@ -1690,8 +1690,11 @@ body.sidebar-resizing iframe {
   border-radius: 0.6rem;
   color: var(--text);
   background: var(--surface);
-  max-width: 32rem;
+  max-width: 76rem;
   width: calc(100% - 2rem);
+  box-sizing: border-box;
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
 }
 
 .ui-config-dialog::backdrop {
@@ -1722,6 +1725,78 @@ body.sidebar-resizing iframe {
 .ui-config-status {
   font-size: 0.78rem;
   min-height: 1.1rem;
+}
+
+.ui-config-card h3 {
+  margin-top: 1.4rem;
+  font-size: 0.9rem;
+}
+
+.ui-config-card input:not([type="checkbox"]),
+.ui-config-card select {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.ui-config-card p {
+  overflow-wrap: anywhere;
+}
+
+.ui-config-card #plugin-release-source {
+  flex: 1 1 28rem;
+  min-width: 0;
+}
+
+.ui-config-card #plugin-release-source-editor input[type="text"] {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.ui-config-card #plugin-release-source-credential {
+  width: 100%;
+}
+
+.config-auth {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.plugin-checklist {
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.plugin-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.plugin-choice:last-child {
+  border-bottom: 0;
+}
+
+.plugin-choice:focus-within {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
+.plugin-choice input {
+  flex: 0 0 auto;
+}
+
+.plugin-choice span {
+  min-width: 0;
 }
 
 .asset-manager {

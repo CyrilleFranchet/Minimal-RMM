@@ -35,7 +35,7 @@
       <span class="spacer"></span>
       <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
       <button type="button" class="secondary" id="embedding-open">Embeddings</button>
-      <button type="button" class="secondary" id="config-toggle-btn" title="Save or restore UI configuration">Config</button>
+      <button type="button" class="secondary" id="config-toggle-btn" title="Manage plugins, assets, transport, and settings">Config</button>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
       <button type="button" class="secondary" id="open-downloads-dialog" title="Show downloads from all agents">Downloads</button>
       <button type="button" class="secondary" id="open-screenshots-dialog" title="Show screenshots from all agents">Screenshots</button>
@@ -426,34 +426,23 @@
     </div>
   </div>
 
-  <dialog id="ui-config-dialog" class="ui-config-dialog">
+  <dialog id="ui-config-dialog" class="ui-config-dialog" aria-labelledby="ui-config-title">
     <form method="dialog" class="ui-config-card">
       <div class="ui-config-header">
-        <h2>UI configuration</h2>
+        <h2 id="ui-config-title">Configuration</h2>
         <button type="submit" class="secondary" aria-label="Close configuration dialog">×</button>
       </div>
-      <p class="ai-hint">Export a versioned JSON file or import one to restore supported browser settings.</p>
-      <label class="ai-checkbox">
-        <input type="checkbox" id="ui-config-include-secrets">
-        Include API keys and other secrets
-      </label>
-      <p class="ai-hint">Leave this unchecked for a portable file. Secret-bearing files must be protected like passwords.</p>
-      <div class="ui-config-actions">
-        <button type="button" id="ui-config-export">Export configuration</button>
-        <button type="button" class="secondary" id="ui-config-import">Import configuration</button>
-        <input type="file" id="ui-config-file" accept="application/json,.json" class="hidden">
-      </div>
-      <p id="ui-config-status" class="ui-config-status" role="status" aria-live="polite"></p>
       <details class="asset-manager" open>
-        <summary>Runtime assets and beacon transport</summary>
-        <h3>Compiled plugins from GitHub</h3>
-        <p class="ai-hint">Browse a published release, then install a selected plugin into this workspace or server. GitHub credentials stay on that service. Installation does not execute the plugin on an agent.</p>
+        <summary>Plugins</summary>
+        <h3>1. Choose a source</h3>
+        <p class="ai-hint">Load the available plugins, check the ones you need, then install them into this workspace or server. GitHub credentials stay on that service. Installation does not execute the plugin on an agent.</p>
         <div class="asset-form-row">
           <label for="plugin-release-source">Source</label>
           <select id="plugin-release-source"><option value="">Load saved sources</option></select>
           <button type="button" id="plugin-release-source-refresh" class="secondary">Refresh sources</button>
           <button type="button" id="plugin-release-source-new" class="secondary">New source</button>
         </div>
+        <p id="plugin-release-source-auth" class="config-auth" role="status"></p>
         <details id="plugin-release-source-editor">
           <summary>Configure plugin repositories and branches</summary>
           <div class="asset-form-row">
@@ -471,25 +460,31 @@
           <label for="plugin-release-source-credential">Credential environment variable</label>
           <input id="plugin-release-source-credential" type="text" value="RMM_PLUGIN_GITHUB_TOKEN" autocomplete="off" spellcheck="false">
           <p class="ai-hint">Use RMM_PLUGIN_GITHUB_TOKEN or RMM_PLUGIN_TOKEN_NAME, configured on the server/workspace. Enter the variable name here, never the token.</p>
-          <p id="plugin-release-source-auth" class="ai-hint"></p>
+
           <div class="asset-form-row">
             <button type="button" id="plugin-release-source-save">Save source</button>
             <button type="button" id="plugin-release-source-remove" class="secondary" disabled>Remove source</button>
           </div>
         </details>
+        <h3>2. Load available plugins</h3>
         <div class="asset-form-row">
           <label for="plugin-release-tag">Release</label>
           <input type="text" id="plugin-release-tag" value="latest" placeholder="latest or exact release tag" autocomplete="off">
-          <button type="button" id="plugin-release-browse">Browse release</button>
+          <button type="button" id="plugin-release-browse">Load plugins</button>
         </div>
         <p id="plugin-release-info" class="ai-hint"></p>
+        <h3>3. Select and install</h3>
+        <fieldset id="plugin-release-name" class="plugin-checklist" disabled aria-label="Available plugins"></fieldset>
         <div class="asset-form-row">
-          <label for="plugin-release-name">Plugin</label>
-          <select id="plugin-release-name" disabled><option value="">Browse a release first</option></select>
-          <button type="button" id="plugin-release-install" disabled>Install selected plugin</button>
+          <button type="button" id="plugin-release-select-all" class="secondary" disabled>Select all</button>
+          <button type="button" id="plugin-release-select-none" class="secondary" disabled>Clear selection</button>
+          <button type="button" id="plugin-release-install" disabled>Install selected (0)</button>
         </div>
         <p id="plugin-release-digest" class="ai-hint"></p>
         <p id="plugin-release-status" class="ui-config-status" role="status" aria-live="polite"></p>
+      </details>
+      <details class="asset-manager">
+        <summary>Installed assets and manual uploads</summary>
         <p class="ai-hint">Install plugins and AI skills from an HTTP(S) URL or a local file. Upload an rclone <code>.json</code> profile file directly; it is stored in the current operator workspace or server.</p>
         <div class="asset-form-row">
           <select id="asset-kind" aria-label="Asset kind">
@@ -505,6 +500,9 @@
         </div>
         <p id="asset-status" class="ui-config-status" role="status" aria-live="polite"></p>
         <div id="asset-list" class="asset-list"><p class="ai-hint">Connect to load managed assets.</p></div>
+      </details>
+      <details class="asset-manager">
+        <summary>Beacon transport</summary>
         <div class="asset-transport-row">
           <label for="asset-profile-name">RMM-Profile</label>
           <input type="text" id="asset-profile-name" list="asset-profile-options" value="cloudflared" placeholder="cloudflared" autocomplete="off">
@@ -515,6 +513,21 @@
           <button type="button" class="secondary" id="asset-profile-stop">Stop profile</button>
         </div>
         <p id="asset-profile-status" class="ui-config-status" role="status" aria-live="polite"></p>
+      </details>
+      <details class="asset-manager">
+        <summary>Import and export settings</summary>
+        <p class="ai-hint">Export a versioned JSON file or import one to restore supported browser settings.</p>
+        <label class="ai-checkbox">
+          <input type="checkbox" id="ui-config-include-secrets">
+          Include API keys and other secrets
+        </label>
+        <p class="ai-hint">Leave this unchecked for a portable file. Secret-bearing files must be protected like passwords.</p>
+        <div class="ui-config-actions">
+          <button type="button" id="ui-config-export">Export configuration</button>
+          <button type="button" class="secondary" id="ui-config-import">Import configuration</button>
+          <input type="file" id="ui-config-file" accept="application/json,.json" class="hidden">
+        </div>
+        <p id="ui-config-status" class="ui-config-status" role="status" aria-live="polite"></p>
       </details>
     </form>
   </dialog>

@@ -46,7 +46,7 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
           source_revision: revision, version: '1.2', tag, plugins: [{ name: 'example.dll', size: 5, sha256: digest }] },
       };
       assert.equal(url, '/plugin-releases/install');
-      return installResponse;
+      return typeof installResponse === "function" ? installResponse(body) : installResponse;
     },
     async refreshAssets() { refreshed++; },
   };
@@ -59,6 +59,7 @@ test('latest resolves the selected source and pins tag, digest, and source revis
   const ui = fixture();
   await ui.load();
   await ui.click('browse');
+  await ui.click('select-all');
   assert.equal(ui.get('install').disabled, false);
   assert.match(ui.get('info').textContent, /version 1.2/);
   await ui.click('install');
@@ -71,12 +72,14 @@ test('changing the source or editing its configuration clears a browsed release'
   const ui = fixture();
   await ui.load();
   await ui.click('browse');
+  await ui.click('select-all');
   ui.get('source').value = 'dev';
   ui.get('source').handlers.change();
   assert.equal(ui.get('install').disabled, true);
   assert.equal(ui.get('source-repository').value, 'other/plugins');
   assert.equal(ui.get('source-branch').value, 'feature/test');
   await ui.click('browse');
+  await ui.click('select-all');
   assert.match(ui.calls.at(-1).url, /source=dev/);
   ui.get('source-branch').value = 'other';
   ui.get('source-branch').handlers.input();
@@ -124,6 +127,7 @@ test('editing the tag clears stale selections before installation', async () => 
   const ui = fixture();
   await ui.load();
   await ui.click('browse');
+  await ui.click('select-all');
   ui.get('tag').value = `plugins-${'c'.repeat(40)}`;
   ui.get('tag').handlers.input();
   assert.equal(ui.get('install').disabled, true);
@@ -135,6 +139,7 @@ test('workspace synchronization failure reports the successful local installatio
   const ui = fixture({ status: 502, data: { local_installed: true, error: 'upstream unavailable' } });
   await ui.load();
   await ui.click('browse');
+  await ui.click('select-all');
   await ui.click('install');
   assert.match(ui.get('status').textContent, /Installed locally, but server synchronization failed/);
   assert.equal(ui.refreshed(), 1);
@@ -144,6 +149,7 @@ test('failed browsing leaves no installable release', async () => {
   const ui = fixture(undefined, { status: 503, data: { error: 'GitHub credentials unavailable' } });
   await ui.load();
   await ui.click('browse');
+  await ui.click('select-all');
   assert.equal(ui.get('install').disabled, true);
   assert.equal(ui.get('browse').disabled, false);
   assert.match(ui.get('status').textContent, /credentials unavailable/);
@@ -153,6 +159,45 @@ test('a release without a configuration revision cannot be installed', async () 
   const ui = fixture(undefined, { status: 200, data: { tag, source: 'default', plugins: [{ name: 'example.dll', size: 5, sha256: digest }] } });
   await ui.load();
   await ui.click('browse');
+  await ui.click('select-all');
   assert.equal(ui.get('install').disabled, true);
   assert.match(ui.get('status').textContent, /invalid plugin release/);
+});
+
+
+test('plugins start unchecked and selection can be cleared', async () => {
+  const ui = fixture();
+  await ui.load();
+  await ui.click('browse');
+  assert.equal(ui.get('install').disabled, true);
+  await ui.click('select-all');
+  assert.equal(ui.get('install').disabled, false);
+  await ui.click('select-none');
+  assert.equal(ui.get('install').disabled, true);
+  await ui.click('install');
+  assert.equal(ui.calls.length, 2);
+});
+
+test('batch install pins each plugin and keeps only failures selected for retry', async () => {
+  let fail = true;
+  const ui = fixture((body) => ({ status: body.name === 'second.dll' && fail ? 503 : 200,
+    data: { error: 'download failed' } }), { status: 200, data: {
+      tag, source: 'default', source_revision: revision, version: '1.2',
+      plugins: [{ name: 'first.dll', size: 5, sha256: digest }, { name: 'second.dll', size: 7, sha256: 'd'.repeat(64) }],
+    } });
+  await ui.load();
+  await ui.click('browse');
+  await ui.click('select-all');
+  await ui.click('install');
+  const installs = ui.calls.filter((call) => call.url === '/plugin-releases/install');
+  assert.equal(installs.length, 2);
+  assert.equal(installs[1].body.sha256, 'd'.repeat(64));
+  assert.equal(installs[1].body.source_revision, revision);
+  assert.equal(ui.get('name').children[0].children[0].checked, false);
+  assert.equal(ui.get('name').children[1].children[0].checked, true);
+  assert.match(ui.get('status').textContent, /1 of 2 installed/);
+  fail = false;
+  await ui.click('install');
+  assert.equal(ui.calls.at(-1).body.name, 'second.dll');
+  assert.equal(ui.get('install').disabled, true);
 });

@@ -5,6 +5,7 @@
   const sourceFields = ["source-id", "source-label", "source-repository", "source-branch", "source-credential"];
   let sources = [];
   let release = null;
+  let choices = [];
   let busy = false;
   let dirty = false;
 
@@ -18,11 +19,11 @@
   }
 
   function selected() {
-    return release?.plugins?.find((row) => row.name === $("name").value);
+    return choices.filter((choice) => choice.input.checked).map((choice) => choice.row);
   }
 
   function syncControls() {
-    const row = selected();
+    const rows = selected();
     $("browse").disabled = busy || !source() || dirty;
     $("tag").disabled = busy;
     $("source").disabled = busy;
@@ -32,12 +33,15 @@
     $("source-remove").disabled = busy || !source() || dirty;
     for (const id of sourceFields) $(id).disabled = busy;
     $("name").disabled = busy || !release?.plugins?.length;
-    $("install").disabled = busy || !row || dirty;
-    $("digest").textContent = row ? `${row.size} bytes · Expected SHA-256: ${row.sha256}` : "";
+    $("install").disabled = busy || !rows.length || dirty;
+    $("install").textContent = `Install selected (${rows.length})`;
+    for (const id of ["select-all", "select-none"]) $(id).disabled = busy || !choices.length || dirty;
+    $("digest").textContent = release ? `${rows.length} of ${choices.length} selected. Each download is verified against its published SHA-256.` : "Load plugins to see the available downloads.";
   }
 
   function clearRelease() {
     release = null;
+    choices = [];
     $("name").replaceChildren();
     $("info").textContent = "";
     syncControls();
@@ -50,7 +54,7 @@
     $("source-repository").value = row?.repository || "";
     $("source-branch").value = row?.branch || "main";
     $("source-credential").value = row?.credential_env || "RMM_PLUGIN_GITHUB_TOKEN";
-    $("source-auth").textContent = row ? (row.credential_configured ? "Credential is configured on this service." : "Credential is not configured on this service; private repositories require one.") : "";
+    $("source-auth").textContent = row ? (row.credential_configured ? `GitHub credential detected in ${row.credential_env}. Repository access is checked when you load plugins.` : `GitHub credential missing. Set ${row.credential_env} on the workspace or server process, then restart that service. This field takes the variable name, not your OAuth token. Your RMM login token is separate.`) : "";
     dirty = false;
     clearRelease();
   }
@@ -163,12 +167,20 @@
       release = data;
       $("info").textContent = `${data.repository} · ${data.branch || configured.branch} · version ${data.version} · ${data.tag}`;
       for (const row of data.plugins) {
-        const option = document.createElement("option");
-        option.value = row.name;
-        option.textContent = row.name;
-        $("name").appendChild(option);
+        const label = document.createElement("label");
+        label.className = "plugin-choice";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = false;
+        input.addEventListener("change", syncControls);
+        const text = document.createElement("span");
+        text.textContent = `${row.name} · ${Math.ceil(row.size / 1024).toLocaleString()} KB`;
+        label.appendChild(input);
+        label.appendChild(text);
+        $("name").appendChild(label);
+        choices.push({ row, input });
       }
-      status(data.plugins.length ? "Select a plugin to install from this exact release." : "This release has no plugins.");
+      status(data.plugins.length ? "Check the plugins you want, then select Install selected." : "This release has no plugins.");
     } catch (error) {
       clearRelease();
       status(error.message, true);
@@ -179,28 +191,34 @@
   }
 
   async function install() {
-    const row = selected();
-    if (busy || dirty || !row) return;
+    const rows = selected();
+    if (busy || dirty || !rows.length) return;
     const { tag, source: sourceId, source_revision: sourceRevision } = release;
     busy = true;
     syncControls();
-    status(`Downloading and verifying ${row.name}…`);
+    const failures = [];
+    let installed = 0;
     try {
-      const response = await window.rmmApi("/plugin-releases/install", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: row.name, tag, sha256: row.sha256, source: sourceId, source_revision: sourceRevision }),
-      });
-      if (![200, 201].includes(response.status)) {
-        if (response.data?.local_installed) {
-          await window.refreshAssets?.();
-          throw new Error(`Installed locally, but server synchronization failed: ${response.data?.error || "retry installation to synchronize"}`);
+      for (const row of rows) {
+        status(`Downloading and verifying ${row.name} (${installed + failures.length + 1}/${rows.length})…`);
+        try {
+          const response = await window.rmmApi("/plugin-releases/install", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: row.name, tag, sha256: row.sha256, source: sourceId, source_revision: sourceRevision }),
+          });
+          if (![200, 201].includes(response.status)) {
+            const prefix = response.data?.local_installed ? "Installed locally, but server synchronization failed: " : "";
+            throw new Error(prefix + (response.data?.error || `HTTP ${response.status}`));
+          }
+          installed++;
+          choices.find((choice) => choice.row === row).input.checked = false;
+        } catch (error) {
+          failures.push(`${row.name}: ${error.message}`);
         }
-        throw new Error(response.data?.error || `HTTP ${response.status}`);
       }
-      status(`Installed ${row.name} from ${tag}. SHA-256 verified${response.data.cached ? "; reused cached bytes" : ""}.`);
-      await window.refreshAssets?.();
-    } catch (error) {
-      status(error.message, true);
+      status(`${installed} of ${rows.length} installed. SHA-256 verified for successful downloads.${failures.length ? " Retry checked items. " + failures.join("; ") : ""}`, failures.length > 0);
+      try { await window.refreshAssets?.(); }
+      catch { status("Installation finished, but the installed asset list could not refresh. " + failures.join("; "), true); }
     } finally {
       busy = false;
       syncControls();
@@ -210,7 +228,11 @@
   function bind() {
     $("browse")?.addEventListener("click", browse);
     $("install")?.addEventListener("click", install);
-    $("name")?.addEventListener("change", syncControls);
+    for (const id of ["select-all", "select-none"]) $(id)?.addEventListener("click", () => {
+      if (busy || dirty) return;
+      for (const choice of choices) choice.input.checked = id === "select-all";
+      syncControls();
+    });
     $("tag")?.addEventListener("input", clearRelease);
     $("source")?.addEventListener("change", editSource);
     $("source-refresh")?.addEventListener("click", loadSources);

@@ -9,6 +9,20 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Simplify Config and plugin selection
+
+- Follow-up: expand Config to a maximum of 76rem with viewport gutters;
+  allow source and repository controls to grow into the available space.
+- Split Config into plugins, installed assets/manual uploads, beacon transport,
+  and import/export sections; widen the dialog and constrain scrolling.
+- Replace the plugin dropdown with labeled checkboxes and sequential batch
+  installation, preserving release/checksum pins and failed items for retry.
+- Show credential presence outside the source editor and clarify that the
+  credential field takes a service environment variable name, not an OAuth token.
+- Ten plugin controller tests pass, including batch partial failure and retry.
+  `make check` also passes. Live OAuth access has not been verified, and browser
+  visual QA was unavailable because no browser connector is present.
+
 ### 2026-10-28 — Consolidate deployment guidance and fix login prerequisites
 
 - Added one [deployment guide](deployment.md) for Ubuntu central + Exegol

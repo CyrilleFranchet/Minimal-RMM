@@ -170,9 +170,9 @@ Wait for the next workspace sync, then refresh the session list. Auto-claim is
 **off by default**; enable it only when one workspace should claim all
 unassigned sessions. A session already owned by another workspace is rejected.
 
-In the **workspace UI**, open **Configuration → Compiled plugins from GitHub**.
-Save the operator's repository/branch source, browse a release, and install the
-required files. Or use `plugin sources`, `plugin releases`, and `plugin install`
+In the **workspace UI**, open **Config → Plugins**.
+Save the operator's repository/branch source, select **Load plugins**, check the
+required files, and select **Install selected**. Or use `plugin sources`, `plugin releases`, and `plugin install`
 through the local CLI. See [plugin source and release controls](plugin-releases-operator.md).
 The workspace stores the binaries and synchronizes a workspace-specific cache
 on Ubuntu. Manual copying into the shared central plugin directory is not

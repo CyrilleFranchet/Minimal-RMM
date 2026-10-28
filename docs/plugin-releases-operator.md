@@ -8,8 +8,7 @@ for storage ownership, credentials, limits, and release publication.
 
 ## WebUI
 
-Open **Configuration → Runtime assets and beacon transport → Compiled plugins
-from GitHub**. The **Source** selector lists each saved repository and branch.
+Open **Config → Plugins**. The **Source** selector lists each saved repository and branch.
 Choose one to inspect it, or select **New source** to create another:
 
 - **Source ID** identifies the saved configuration, such as `stable` or `dev`.
@@ -25,9 +24,11 @@ Select **Save source** to persist changes. **Remove source** deletes only the
 configuration; installed plugin files remain. A different source can use the
 same repository with another branch or a different repository entirely.
 
-Enter `latest` or an exact release tag and select **Browse release**. The
-resolved branch and version are displayed. Choose a plugin and select
-**Install selected plugin**. The request pins the source, source configuration
+Enter `latest` or an exact release tag and select **Load plugins**. The
+resolved branch and version are displayed. Check one or more plugins and select
+**Install selected (N)**. No plugins are checked by default. **Select all** and
+**Clear selection** apply to the loaded release. Downloads run sequentially;
+successful items are unchecked and failures remain checked for retry. The request pins the source, source configuration
 revision, exact tag, and selected file digest. Changing the source, release
 selection, or source form clears the previously browsed release. Unsaved source
 edits must be saved before browsing or installing.
@@ -107,19 +108,38 @@ installation to republish the saved file.
 | `tool_list_plugin_release`, MCP `list_plugin_release` | Share source-specific release browsing |
 | `tool_install_plugin_release`, MCP `install_plugin_release` | Share pinned installation and preserve failure details |
 | Web `status` | Render accessible status/error text |
-| Web `source`, `selected` | Resolve the selected saved source and manifest plugin |
-| Web `syncControls` | Apply busy/dirty state and show the expected digest |
+| Web `source`, `selected` | Resolve the saved source and checked manifest plugins |
+| Web `syncControls` | Apply busy/dirty state and show the selection count and checksum verification guidance |
 | Web `clearRelease` | Invalidate stale release selections |
 | Web `editSource`, `newSource` | Populate or clear the source form |
 | Web `loadSources` | Refresh persisted sources, preserving the selected ID when available |
 | Web `saveSource`, `removeSource` | Persist or delete configuration through authenticated APIs |
 | Web `browse` | Render the selected source's exact release and version |
-| Web `install` | Submit source, revision, tag, and digest; refresh installed assets |
+| Web `install` | Install checked items sequentially with source, revision, tag, and digest pins; retain failures for retry and refresh installed assets |
 | Web `bind` | Connect form controls and stale-selection handling |
 
 `tests/test_plugin_release_surfaces.py` checks source CRUD requests, branch and
 configuration pins, mutable-tag rejection, and shared-tool error propagation.
-The UI test `fixture` supplies a DOM adapter and mock persistent API; its eight
+The UI test `fixture` supplies a DOM adapter and mock persistent API; its ten
 cases cover configuration add/edit/reload/delete, stale selections, secret-value
 rejection, pinned installs, missing configuration revisions, failed browsing,
 and partial synchronization errors.
+
+## Configuration layout and authentication feedback
+
+The dialog separates **Plugins**, **Installed assets and manual uploads**,
+**Beacon transport**, and **Import and export settings**. Plugins open by
+default; the other sections start collapsed. The dialog scrolls within the
+viewport, and plugin rows use labeled native checkboxes for keyboard access.
+
+Credential presence appears above the source editor, including when the editor
+is collapsed. Presence means only that the service has a nonempty credential;
+it does not prove GitHub access. The existing browser flow does not accept an
+OAuth token directly. Configure the referenced environment variable on the
+storage-owning service and restart it after changing the environment. Source
+settings contain only the variable name. See [credential setup](plugin-releases.md#configure-the-storage-owner).
+
+The checklist tests cover explicit selection, clearing selection, per-file
+checksum pins, partial batch failures, and retrying only failed items, in
+addition to source CRUD and stale selection coverage. No live OAuth access is
+validated by these tests.
