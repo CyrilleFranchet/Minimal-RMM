@@ -120,9 +120,11 @@ is not desired.
 
 ## Startup and operations
 
-`run_server.py` ensures that `tools/rmm-tun` is available, reports installed
-agent plugins and profiles, then starts the server. It does not compile agent
-plugins or fetch trusted profile executables.
+Start the server with `python3 server_rmm.py`. Startup does not compile plugins
+or the TUN helper and does not fetch trusted profile executables. Prepare the
+helper explicitly with `make tun-build` when TUN is needed outside Docker;
+install plugin releases and trusted profile bundles separately. See
+[server startup](server-startup.md).
 
 With `RMM_PROFILE_AUTOSTART=1` (the default), the selected
 `RMM_PROFILE_NAME` starts after the listeners bind. If it is not installed or

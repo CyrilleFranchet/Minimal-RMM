@@ -330,8 +330,10 @@ behavior is not equivalent to a native Linux host.
 The Dockerfile builds only the checked-in TUN helper into the image. The
 control plane mounts `/app/plugins` from the persistent plugin volume; install
 the Windows amd64 pivot DLLs and PowerShell scripts from the external plugin
-repository before launching a pivot. `run_server.py` builds the same server
-helper outside Docker. New plugin commands stay in their plugin artifact and
+repository before launching a pivot. Outside Docker, run `make tun-build`
+explicitly on the workspace host before using TUN. Set `RMM_WORKSPACE_TUN_HELPER`
+when the helper is installed at a custom path. Startup never compiles it.
+New plugin commands stay in their plugin artifact and
 use the agent's generic isolated PE loader; the workspace service does not need
 a copy of the plugin code.
 

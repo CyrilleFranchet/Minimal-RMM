@@ -9,6 +9,19 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Retire the startup build wrapper
+
+- Removed `run_server.py`; `server_rmm.py` is the direct runtime entry point.
+  Updated quick-start, profile, plugin, and workspace instructions accordingly.
+- Native TUN helper preparation remains an explicit `make tun-build` step or
+  part of the Docker image build. Existing TUN readiness checks report a
+  missing executable when the operator requests TUN, without a startup build.
+- Added migration instructions for service commands, working directories,
+  and the removed rebuild flag/environment switch in [server startup](server-startup.md).
+- Validation: `make check`, direct server `--help`, and server/workspace
+  missing-helper checks pass. No compiler, helper process, or CI build was
+  started. Remaining wrapper references are historical notes and migration guidance.
+
 ### 2026-10-28 — Saved plugin sources and branch versions
 
 - Added UI, CLI, REST, and MCP source management for multiple repositories and

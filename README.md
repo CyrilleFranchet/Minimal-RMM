@@ -79,17 +79,20 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt   # required for rmm_cli interactive; optional for server --cli
 export RMM_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-python3 run_server.py             # ensure the server TUN helper, then start on 8080/8081
-python3 run_server.py --admin-port 9000 --beacon-port 9001 --bind 0.0.0.0 \
+python3 server_rmm.py             # start on 8080/8081; no startup compilation
+python3 server_rmm.py --admin-port 9000 --beacon-port 9001 --bind 0.0.0.0 \
   --beacon-bind 0.0.0.0                         # expose listeners deliberately
 # Optional rclone exfil (see docs/rclone-exfil.md):
 # Server mode: profiles are loaded by the RMM server.
-python3 run_server.py --rclone-profiles /path/to/profiles.json
+python3 server_rmm.py --rclone-profiles /path/to/profiles.json
 # or: export RMM_RCLONE_PROFILES_FILE="$PWD/tools/rclone/profiles.example.json"
 
-# Advanced: start without rebuilding local artifacts
-python3 server_rmm.py
 ```
+
+For TUN outside Docker, prepare the native helper explicitly with `make tun-build`
+on the machine hosting the pivot. Docker builds it into the image. Install agent
+plugins through [CLI or WebUI](docs/plugin-releases-operator.md); server startup
+does not compile them. See [startup and migration](docs/server-startup.md).
 
 ### Docker control plane and Exegol workspace
 

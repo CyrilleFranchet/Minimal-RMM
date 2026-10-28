@@ -1,53 +1,58 @@
-# Server startup wrapper
+# Server startup and explicit setup
 
 See the [documentation wiki](README.md) for navigation and the
 [architecture overview](architecture.md) for the control-plane and workspace
 topology.
 
-Use `run_server.py` when starting a development or lab server:
-
-```bash
-python3 run_server.py
-```
-
-The wrapper performs these steps from the repository root:
-
-1. Ensures that the server-side helper at `tools/rmm-tun` exists and is
-   executable. It reuses an up-to-date helper and rebuilds only when the
-   helper is missing, a `server-tun` source or module file is newer, or a
-   rebuild is explicitly requested.
-2. Reports the deployed artifacts found in `RMM_PLUGINS_DIR`.
-3. Reports the installed RMM-Profile bundles found in `RMM_PROFILES_DIR`.
-4. Replaces the wrapper process with `server_rmm.py`, passing through all
-   server arguments.
-
-Force a helper rebuild when changing the Go toolchain or dependencies:
-
-```bash
-python3 run_server.py --rebuild-tun
-RMM_TUN_REBUILD=1 python3 run_server.py
-```
-
-`--rebuild-tun` is consumed by the wrapper and is not passed to
-`server_rmm.py`. The `RMM_TUN_HELPER` environment variable selects a helper at
-a custom path; when that helper needs a rebuild, the wrapper builds directly
-to that path.
-
-The wrapper does not build agent plugins. Build and test those plugins in the
-private [external plugin repository](plugin-repository.md), then install its
-release artifacts into `RMM_PLUGINS_DIR`.
-
-It also does not fetch profile executables. Install trusted bundles from the
-private [RMM-Profile repository](rmm-profiles.md) into `RMM_PROFILES_DIR`.
-
-The server can still be started directly with:
+Start the server directly from the repository root:
 
 ```bash
 python3 server_rmm.py
 ```
 
-That direct path skips the TUN helper build and is useful when the helper and
-plugin artifacts are already present.
+Startup does not compile the TUN helper or agent plugins. The server can start
+without either; operations that need them report missing prerequisites when
+requested. Docker and Compose already use this direct entry point.
+
+## Prepare TUN only where needed
+
+Outside Docker, build the native TUN helper explicitly on the machine that
+hosts the pivot. This is the server in server mode, or the operator workspace
+host in workspace mode:
+
+```bash
+make tun-build
+```
+
+This setup command requires Go and writes `tools/rmm-tun`. Repeat it after
+changing the helper sources, toolchain, or host platform. The Docker image
+build performs this step already. A compiler is not required merely to start
+the Python service.
+
+`RMM_TUN_HELPER` (server mode) or `RMM_WORKSPACE_TUN_HELPER` (workspace mode)
+can select an existing executable at a custom path. These settings do not
+compile or install that executable. The central broker does not need a local
+TUN helper when pivots belong to workspaces.
+
+Requesting server-owned TUN without an executable helper returns an error
+with `make tun-build` and the expected path. Workspace TUN reports
+`TUN helper is unavailable` with its expected path. Neither path compiles
+automatically or prevents ordinary server startup.
+
+Install compiled agent plugins through the [CLI/WebUI release controls](plugin-releases-operator.md).
+Install trusted profile bundles and their provider executables separately;
+see [RMM-Profiles](rmm-profiles.md).
+
+## Migrate existing launch commands
+
+The former `run_server.py` wrapper has been removed. Replace it with
+`server_rmm.py` in shell commands, systemd units, and process-manager settings,
+keeping the server arguments. Set the working directory to the repository
+root, since the wrapper no longer changes it for you. Remove `--rebuild-tun`
+and `RMM_TUN_REBUILD`; use `make tun-build` as an explicit setup action instead.
+Keep the existing service environment, secrets, and persistent directories.
+For inventory, use `plugin list` and `profile status` through `rmm_cli.py`, or
+the corresponding WebUI panels.
 
 ## Listener ports and automatic profile startup
 
@@ -149,14 +154,3 @@ Point `RMM_SERVER_URL` at the local workspace service when using
 `rmm_cli.py`. If `RMM_WORKSPACE_LOCAL_TOKEN` is set, pass that value as the
 CLI's `RMM_API_TOKEN`; the local service forwards its own workspace credentials
 to the central server.
-
-## Startup helper functions
-
-| Function | Role |
-| --- | --- |
-| `_truthy` | Parse the environment switch used by the rebuild override. |
-| `_wrapper_arguments` | Separate wrapper-only rebuild flags from server arguments. |
-| `_tun_source_files` | Enumerate Go source and module files used by the helper build. |
-| `_tun_helper_path` | Resolve the default or configured helper path. |
-| `_tun_helper_needs_build` | Compare helper state and source timestamps. |
-| `_ensure_tun_helper` | Rebuild or reuse the helper, including custom output paths, and validate the executable. |

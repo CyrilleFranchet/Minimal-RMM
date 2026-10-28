@@ -118,7 +118,7 @@ The split is now implemented with these boundaries:
 | Current coupling | Target change |
 | --- | --- |
 | `Dockerfile` | Builds only the server-side `rmm-tun` helper; it has no plugin source or cross-compiler stage |
-| `run_server.py` | Builds `rmm-tun` and reports artifacts already installed in `RMM_PLUGINS_DIR` |
+| `make tun-build` / Docker image build | Explicitly prepares the native `rmm-tun` helper; runtime startup does not compile |
 | `server_rmm.py` | Inventories and serves runtime artifacts; it has no plugin compiler |
 | `plugin_script_path()` | Resolves approved PowerShell artifacts from the runtime store |
 | REST, CLI, MCP, and WebUI | Expose inventory and plugin loading; build commands live in the plugin repository |
