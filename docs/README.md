@@ -1,13 +1,15 @@
 # Minimal-RMM documentation
 
 This directory is the repository wiki for Minimal-RMM. Start with the
-[architecture overview](architecture.md), then choose the deployment and
-feature guide that matches the work you are doing.
+[deployment guide](deployment.md) for a complete installation path, then use
+the [architecture overview](architecture.md) and feature references as needed.
 
-The documentation has four roles:
+The documentation has five roles:
 
 - `architecture.md` is the canonical description of the current runtime
   topology, data flow, storage ownership, and privilege boundaries.
+- `deployment.md` is the canonical installation path, with separate native
+  central/workspace recipes and Compose/standalone alternatives.
 - Feature pages describe setup, operator behavior, protocols, and code
   ownership for one subsystem.
 - `progress.md` is the chronological work log. It records decisions and
@@ -23,9 +25,10 @@ historical notes in `progress.md`.
 
 | Goal | Page |
 | --- | --- |
+| Choose a setup and deploy without mixing server/workspace settings | [Deployment guide](deployment.md) |
 | Understand the complete system | [Architecture overview](architecture.md) |
-| Start the local server and build helpers | [Server startup](server-startup.md) |
-| Run the Docker control plane and an Exegol workspace | [Workspace deployment](workspace-deployment.md) |
+| Look up startup arguments and optional helper setup | [Server startup reference](server-startup.md) |
+| Understand workspace claims, storage, and protocol details | [Workspace reference](workspace-deployment.md) |
 | Install plugins, AI skills, and rclone files | [Operator-managed assets](operator-assets.md) |
 | Install and operate Cloudflared or another connector | [RMM-Profiles](rmm-profiles.md) |
 | Use the API, CLI, WebUI, and MCP surfaces | [Root README](../README.md) and [operator parity](mcp-parity.md) |

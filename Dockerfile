@@ -21,6 +21,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     RMM_WORKSPACE_TUN_HELPER=/app/tools/rmm-tun
 
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates iproute2 \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-mcp.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .

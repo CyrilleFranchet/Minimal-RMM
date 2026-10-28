@@ -1,156 +1,106 @@
-# Server startup and explicit setup
+# Server startup reference
 
-See the [documentation wiki](README.md) for navigation and the
-[architecture overview](architecture.md) for the control-plane and workspace
-topology.
+For a complete setup, follow the [deployment guide](deployment.md). This page
+is the argument and helper reference. Use [workspace deployment](workspace-deployment.md)
+for workspace claims, storage, and protocol details.
 
-Start the server directly from the repository root:
+## Entry points
+
+| Process | Entry point | Configuration owner |
+| --- | --- | --- |
+| Central broker or standalone server | `python3 server_rmm.py` | Central/server administrator |
+| Operator workspace | `python3 workspace_service.py` | Individual operator |
+| CLI | `python3 rmm_cli.py` | URL/token for the selected server or workspace |
+| Standalone MCP | `python3 mcp_rmm_server.py` | Same API URL/token as the CLI |
+
+Run native commands from the repository root, using the configured venv.
+Startup compiles neither agent plugins nor the native TUN helper. Docker and
+Compose use the same direct Python entry points.
+
+Neither entry point loads `.env` automatically. Use the role-specific native
+[central](../deploy/central.env.example) and [workspace](../deploy/workspace.env.example)
+templates with the explicit loading commands in the deployment guide. The
+root `.env.example` is the Compose input, not a shell startup script.
+
+## Central server arguments
+
+| Argument | Meaning |
+| --- | --- |
+| `--admin-port N` | Operator/workspace API port; `RMM_ADMIN_PORT`, default 8080 |
+| `--beacon-port N` | Agent listener port; `RMM_BEACON_PORT`, otherwise admin port + 1 |
+| `--bind ADDRESS` | Administration bind; default 127.0.0.1 |
+| `--beacon-bind ADDRESS` | Beacon bind; set explicitly for remote agents (initial default is loopback unless `RMM_BEACON_BIND` is set) |
+| `--token TOKEN` | Central administrator credential; prefer environment `RMM_API_TOKEN` |
+| `--beacon-secret SECRET` | Agent shared secret; prefer `RMM_BEACON_SECRET` |
+| `--profile NAME` | Installed beacon transport profile; `RMM_PROFILE_NAME`, default cloudflared |
+| `--cli` | Legacy embedded console; default is headless API mode |
+| `--rclone-profiles PATH` | Profile file for server-owned operation; workspace profiles belong to the workspace instead |
+| `--rclone-max-bytes N` | Server-owned transfer limit; zero means unlimited |
+| `--insecure` | Lab-only bypass of required secrets |
+| Positional `port` | Legacy alias for the admin port |
+
+`RMM_STORAGE_MODE` selects `server` or `workspace` through the environment;
+there is no corresponding CLI flag. Direct Python defaults to `server`.
+The image and shipped Compose configuration default to `workspace`.
+`RMM_WORKSPACES` maps workspace IDs to their transport tokens. It does not
+replace the administrator token or the agent beacon secret.
+
+## Transport profiles
+
+The admin listener serves the operator API. The beacon listener serves agents.
+An RMM-Profile forwards traffic to the beacon listener only. Install the trusted
+bundle in `RMM_PROFILES_DIR` and its provider executable centrally before
+setting `RMM_PROFILE_AUTOSTART=1`. Set it to `0` for direct beacon operation.
+`RMM_BEACON_PUBLIC_URL` supplies the externally reachable URL for direct or
+externally managed transport. Check the actual active URL with:
 
 ```bash
-python3 server_rmm.py
+python3 rmm_cli.py profile status
 ```
 
-Startup does not compile the TUN helper or agent plugins. The server can start
-without either; operations that need them report missing prerequisites when
-requested. Docker and Compose already use this direct entry point.
+Configure that CLI with either the central admin URL/token or the workspace
+URL/local token; the latter proxies transport status. Use the returned beacon
+URL in agents and keep workspaces pointed at the central admin API.
+See [RMM-Profiles](rmm-profiles.md) for bundle/provider installation.
 
 ## Prepare TUN only where needed
 
-Outside Docker, build the native TUN helper explicitly on the machine that
-hosts the pivot. This is the server in server mode, or the operator workspace
-host in workspace mode:
+Outside Docker, run the explicit setup command on the host that owns the pivot:
 
 ```bash
 make tun-build
 ```
 
-This setup command requires Go and writes `tools/rmm-tun`. Repeat it after
-changing the helper sources, toolchain, or host platform. The Docker image
-build performs this step already. A compiler is not required merely to start
-the Python service.
+This requires Go and writes `tools/rmm-tun`. Repeat after helper source,
+toolchain, or platform changes. The Docker image builds this executable and
+includes Linux `ip`; the central broker still does not need TUN privileges
+when operating in workspace mode.
 
-`RMM_TUN_HELPER` (server mode) or `RMM_WORKSPACE_TUN_HELPER` (workspace mode)
-can select an existing executable at a custom path. These settings do not
-compile or install that executable. The central broker does not need a local
-TUN helper when pivots belong to workspaces.
+Select an existing custom executable with `RMM_TUN_HELPER` in server mode or
+`RMM_WORKSPACE_TUN_HELPER` in workspace mode. These variables do not compile or
+install it. Linux TUN also needs `/dev/net/tun` and `CAP_NET_ADMIN` in the pivot
+owner's namespace. Requesting TUN without its helper returns the expected path;
+server mode also reports `make tun-build`. Ordinary startup remains available.
 
-Requesting server-owned TUN without an executable helper returns an error
-with `make tun-build` and the expected path. Workspace TUN reports
-`TUN helper is unavailable` with its expected path. Neither path compiles
-automatically or prevents ordinary server startup.
+## Plugin and profile stores
 
-Install compiled agent plugins through the [CLI/WebUI release controls](plugin-releases-operator.md).
-Install trusted profile bundles and their provider executables separately;
-see [RMM-Profiles](rmm-profiles.md).
+In workspace mode, install plugins from the workspace's [release controls](plugin-releases-operator.md).
+The workspace owns sources and files; the central server serves its synchronized
+workspace-specific runtime cache. The central `/app/plugins` volume can also
+hold administrator-seeded shared plugins, but it is not the operator's normal
+installation path. Server mode installs into the server-owned store instead.
+
+Compose's `RMM_PLUGIN_STORE` and `RMM_PROFILE_STORE` select host bind mounts or
+named volumes. Python's `RMM_PLUGINS_DIR` and `RMM_PROFILES_DIR` select runtime
+paths. These names are not interchangeable. Profile bundles stay centrally
+owned in both storage modes.
 
 ## Migrate existing launch commands
 
 The former `run_server.py` wrapper has been removed. Replace it with
 `server_rmm.py` in shell commands, systemd units, and process-manager settings,
-keeping the server arguments. Set the working directory to the repository
-root, since the wrapper no longer changes it for you. Remove `--rebuild-tun`
-and `RMM_TUN_REBUILD`; use `make tun-build` as an explicit setup action instead.
-Keep the existing service environment, secrets, and persistent directories.
-For inventory, use `plugin list` and `profile status` through `rmm_cli.py`, or
-the corresponding WebUI panels.
-
-## Listener ports and automatic profile startup
-
-The default listeners are:
-
-```text
-administration: 127.0.0.1:8080
-beacon:         127.0.0.1:8081
-```
-
-Set `RMM_ADMIN_PORT` and `RMM_BEACON_PORT`, or pass `--admin-port` and
-`--beacon-port`. The administration listener serves the WebUI and operator
-API. The beacon listener serves agent and pivot endpoints. `RMM_PROFILE_NAME`
-selects the installed connector and `RMM_PROFILE_AUTOSTART=1` starts it after
-the listeners bind. See [RMM-Profiles](rmm-profiles.md) for the Cloudflared
-bundle and its `trycloudflare.com` URL handshake.
-
-The server publishes the active agent URL through:
-
-```bash
-python rmm_cli.py profile status
-curl -H "Authorization: Bearer $RMM_API_TOKEN" \
-  http://127.0.0.1:8080/api/v1/transport
-```
-
-Use that beacon URL in the PowerShell or Go agent generator. Keep the
-administration URL for CLI, MCP, and WebUI access.
-
-## Docker plugin store
-
-The Compose control plane mounts `/app/plugins` from the persistent
-`rmm-plugin-store` volume. The image contains only the server-side `rmm-tun`
-helper. Install the external plugin repository's release artifacts into this
-volume before starting pivots.
-
-For direct host-side deployment, set this in `.env`:
-
-```text
-RMM_PLUGIN_STORE=./plugin-store
-```
-
-Then copy the release bundle's `*.dll` and `*.ps1` artifacts into
-`plugin-store/`. The next `GET /api/v1/plugins` request sees them, and the Go
-agent can load them through `pe load` without rebuilding or restarting the
-server. Keep the server-side TUN helper in `tools/rmm-tun`; it is not an agent
-plugin artifact.
-
-Compose also mounts `/app/profiles` from the persistent `rmm-profile-store`
-volume. Install the trusted profile bundle from `Minimal-RMM-profiles` under
-that volume. The control-plane image must contain the provider executable,
-such as `cloudflared`, in `PATH` or at the configured profile path.
-
-For a host bind mount during development:
-
-```bash
-git clone https://github.com/CyrilleFranchet/Minimal-RMM-profiles.git profiles
-mkdir -p profile-store
-cp -R profiles/cloudflared profile-store/
-RMM_PROFILE_STORE=./profile-store docker compose up --build -d rmm-control
-```
-
-## Multi-operator workspace deployment
-
-For several operators, run the central server as a control-plane broker and run
-one `workspace_service.py` instance in each operator's Exegol container. Set
-`RMM_STORAGE_MODE=workspace` and configure `RMM_WORKSPACES` with a unique token
-for every workspace. The central process keeps session ownership, command
-queues, agent transport, transient event queues, and build artifacts. Each
-workspace process owns its SQLite database, transcript, artifacts, AI chat,
-SOCKS listener, and TUN interface.
-
-The repository includes a Compose deployment:
-
-```bash
-cp .env.example .env
-# Replace every example secret in .env.
-docker compose up --build rmm-control
-docker compose --profile workspace up --build
-```
-
-The example workspace UI is published at `http://127.0.0.1:8787/ui/`. The
-control-plane service intentionally has no `/dev/net/tun` device and no
-`CAP_NET_ADMIN`. The workspace service receives both because it owns the local
-routes. See [`workspace-deployment.md`](workspace-deployment.md) for the
-container layout, claims, API headers, and Exegol attachment procedure.
-
-An existing Exegol container can run the local service directly after joining
-the Compose network:
-
-```bash
-RMM_C2_URL=http://rmm-control:8080 \
-RMM_WORKSPACE_ID=alice \
-RMM_WORKSPACE_TOKEN="$ALICE_WORKSPACE_TOKEN" \
-RMM_WORKSPACE_DATA=/workspace/.minimal-rmm \
-python3 workspace_service.py
-```
-
-Point `RMM_SERVER_URL` at the local workspace service when using
-`rmm_cli.py`. If `RMM_WORKSPACE_LOCAL_TOKEN` is set, pass that value as the
-CLI's `RMM_API_TOKEN`; the local service forwards its own workspace credentials
-to the central server.
+keeping server arguments. Set the working directory to the repository root:
+the wrapper no longer changes it for you. Remove `--rebuild-tun` and
+`RMM_TUN_REBUILD`; use `make tun-build` during setup when needed.
+Preserve existing environment files, secrets, directories, and volume ownership.
+For installed inventory, use `plugin list` and `profile status` or the UI.

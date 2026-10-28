@@ -58,7 +58,7 @@ the agent transport and ownership broker while the workspace service owns the
 operator's durable data and local pivot sockets.
 
 See [workspace deployment](workspace-deployment.md) for container setup and
-[server startup](server-startup.md) for the local wrapper and Docker entrypoint.
+[deployment guide](deployment.md) for native and Docker startup paths.
 
 ## Administration, beacon, and profile boundaries
 
@@ -221,6 +221,7 @@ raw packets or ICMP.
 | Active session metadata and ownership | Central server memory and `RMM_logs` | Central server memory and control-plane state |
 | Command queues and agent transport | Central server | Central server |
 | Plugin artifacts | `RMM_ASSETS_DIR` and runtime plugin directory | Workspace `data/assets/plugins/` plus central runtime cache |
+| Plugin repository/branch sources | `plugin-sources.json` in the server asset store | `assets/plugin-sources.json` in each workspace |
 | RMM-Profile bundles | `RMM_PROFILES_DIR` | Persistent profile volume on the control plane |
 | Operator transcripts and events | `RMM_logs/` | Workspace SQLite database |
 | Downloads, screenshots, keylogs | `RMM_logs/` | Workspace artifact directories |

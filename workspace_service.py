@@ -1478,7 +1478,7 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Location", "/ui/")
             self.end_headers()
             return True
-        if not path.startswith("/ui"):
+        if path != "/ui" and not path.startswith("/ui/"):
             return False
         rel = path[len("/ui"):].lstrip("/") or "index.html"
         if rel == "workspace-config.js":
@@ -1508,10 +1508,12 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
+        # The login page and its static assets must load before the browser can
+        # submit an API token. Operator data and actions still require auth.
+        if method == "GET" and self._static(path):
+            return
         if not self._authorized(qs):
             self._json(401, {"error": "unauthorized"})
-            return
-        if method == "GET" and self._static(path):
             return
         if path == "/api/v1/ws":
             self._json(426, {"error": "workspace_polling_only"})

@@ -9,6 +9,25 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Consolidate deployment guidance and fix login prerequisites
+
+- Added one [deployment guide](deployment.md) for Ubuntu central + Exegol
+  workspaces, with clearly separated Compose and standalone alternatives.
+  Native central/workspace environment templates preserve JSON quoting and
+  distinguish administrator, beacon, workspace, and local operator credentials.
+- Removed stale shared-plugin-copy and wrapper guidance; documented role-local
+  stores, source/version setup, manual claims, namespace access, optional Go
+  generation/providers, persistence, and update procedures.
+- Fixed workspace login bootstrapping: static GET UI assets load before local
+  token authentication, while APIs and other methods remain protected. Added
+  real HTTP regression coverage for auth and traversal boundaries.
+- Added `iproute2` and CA certificates to the runtime image for Linux TUN and
+  HTTPS downloads; image startup still performs no compilation. Corrected
+  the beacon-bind help text to match the actual loopback default.
+- Validation: `make check`, all 153 Python unit tests, Compose configuration
+  parsing, native environment shell/JSON checks, and documentation link checks
+  pass. No Docker image build, container deployment, or CI workflow was run.
+
 ### 2026-10-28 — Retire the startup build wrapper
 
 - Removed `run_server.py`; `server_rmm.py` is the direct runtime entry point.

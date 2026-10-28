@@ -1,7 +1,8 @@
-# Multi-operator workspace deployment
+# Workspace deployment reference
 
-See the [documentation wiki](README.md) and the [architecture overview](architecture.md)
-for the system-wide component map and storage boundaries.
+For installation, start with the [deployment guide](deployment.md). This page
+documents storage, authentication, claims, and workspace protocol details.
+See the [architecture overview](architecture.md) for the component map.
 
 Minimal-RMM supports a central control plane with one local operator workspace
 per Exegol container. The central server still receives agent commands and
@@ -40,9 +41,10 @@ Exegol tools use native TCP/UDP sockets through the local TUN device.
 
 The control plane does not need an inbound connection to an Exegol container.
 The workspace makes outbound authenticated HTTP requests for session sync,
-event delivery, and pivot task exchange. This works when the workspace is a
-Compose service or an existing Exegol container attached to the Compose
-network.
+event delivery, and pivot task exchange. The workspace can be a Compose
+service, an Exegol container, or a process on another reachable host. Only
+containers on the same Compose network can resolve `rmm-control`; remote
+workspaces use the central host's reachable address.
 
 The central server can observe command and result data while relaying it. The
 storage boundary is different: operator data is persisted in the workspace
@@ -85,6 +87,12 @@ The workspace service stores its data under `RMM_WORKSPACE_DATA`:
 ```text
 /workspace/data/
 ├── workspace.db                 # SQLite sessions, events, downloads, AI chat
+├── assets/
+│   ├── plugin-sources.json      # saved repository/branch/credential references
+│   ├── metadata.json            # installed asset metadata and enabled state
+│   ├── plugins/                # operator-owned compiled plugins
+│   ├── skills/
+│   └── rclone/
 ├── artifacts/
 │   ├── downloads/
 │   ├── screenshots/
@@ -132,6 +140,9 @@ Workspace service variables:
 | `RMM_WORKSPACE_TUN_HELPER` | Local `rmm-tun` path; default `tools/rmm-tun` |
 | `RMM_WORKSPACE_AUTO_CLAIM` | Claim every unassigned session when set to `1` |
 | `RMM_WORKSPACE_POLL_INTERVAL` | Session/event sync interval in seconds; default `1` |
+| `RMM_WORKSPACE_MAX_BODY` | Local upload size cap; set 128 MiB for all current plugins |
+| `RMM_ASSET_MAX_BYTES` | Local download/install size cap; set 128 MiB for all current plugins |
+| `RMM_PLUGIN_GITHUB_TOKEN`, `RMM_PLUGIN_TOKEN_<NAME>` | Private GitHub credentials referenced by saved plugin sources; never returned by the source API |
 | `RMM_RCLONE_PROFILES_FILE` | Workspace-local JSON profile file |
 | `RMM_RCLONE_DEFAULT_PROFILE` | Workspace-local default profile; default `mega-lab` |
 | `RMM_RCLONE_MAX_BYTES` | Workspace-local size cap; `0` means unlimited |
@@ -147,15 +158,15 @@ session with:
 
 ```bash
 curl -s -X POST \
-  -H "X-RMM-Workspace: alice" \
-  -H "X-RMM-Workspace-Token: $ALICE_WORKSPACE_TOKEN" \
+  -H "X-RMM-Workspace: $RMM_WORKSPACE_ID" \
+  -H "X-RMM-Workspace-Token: $RMM_WORKSPACE_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"session_id":"SESSION_ID"}' \
-  http://127.0.0.1:8080/api/v1/workspace/claims
+  "$RMM_C2_URL/api/v1/workspace/claims"
 ```
 
-The workspace service normally uses `RMM_WORKSPACE_AUTO_CLAIM=1` for a simple
-single-operator lab. In a shared deployment, leave it disabled and claim
+Auto-claim defaults to `0`. Set `RMM_WORKSPACE_AUTO_CLAIM=1` only for a simple
+lab where one workspace should claim all unassigned sessions. Otherwise claim
 sessions explicitly. A claimed session is visible only to its workspace token
 or the global operator token. A second workspace receives `409 session_claimed`.
 
@@ -183,7 +194,8 @@ Screenshots and keylogs follow the same payload path. The server keeps these
 payloads in memory only in workspace mode.
 
 The local service proxies operator actions such as command execution, uploads,
-downloads, screenshots, plugin builds, and beacon configuration. It serves
+downloads, screenshots, Go agent generation, and beacon configuration. Agent
+plugin compilation belongs to the external plugin repository. The service serves
 sessions, events, history, downloads, and artifacts from its SQLite/filesystem
 store. The existing WebUI uses its polling fallback in workspace mode because
 the local service intentionally does not proxy the central WebSocket byte
@@ -200,6 +212,8 @@ workspace service. It stores WebUI configuration in the `ui_state` table in
 `RMM_WORKSPACE_DATA/workspace.db`, including AI preferences and the local
 configuration cache. Set `RMM_WORKSPACE_LOCAL_TOKEN` whenever the local bind
 is exposed beyond loopback; the Compose example requires it.
+The static login page and UI assets are public so the browser can display its
+login form. API requests still require the configured local token.
 
 ### AI tool scope
 
@@ -208,8 +222,10 @@ the workspace headers. The central handler passes those headers to both the
 direct `rmm_tools` client and the stdio `mcp_rmm_server.py` child. The child
 therefore lists and controls only sessions claimed by the current workspace.
 The provider API key is stored in the workspace's owner-controlled SQLite UI
-state after validation and is sent only to the selected provider request. Keep
-the workspace data directory private.
+state after validation. AI requests, including the supplied provider key,
+transit the central AI handler before reaching the provider; workspace
+persistence does not make the central broker blind to this traffic. Keep the
+workspace data directory private and trust the central service accordingly.
 
 ### Rclone profile scope
 
@@ -273,7 +289,11 @@ latency. Raw packet and ICMP semantics remain outside this implementation, so
 Do not add `NET_ADMIN` or `/dev/net/tun` to the central control-plane service.
 Only the per-operator workspace that owns the local interface receives them.
 
-## Docker Compose
+## Docker Compose reference
+
+Use the [deployment guide](deployment.md) to choose between the example
+sidecar and an existing Exegol workspace. Do not run both with the same ID.
+The sidecar is a workspace service, not a full Exegol tools container.
 
 Copy `.env.example` to `.env`, replace every placeholder, and start the control
 plane:
@@ -309,13 +329,12 @@ the central beacon port; the workspace WebUI uses the returned URL when
 generating agents.
 
 The example sidecar is a workspace service image. An existing Exegol
-container can run the same `workspace_service.py` directly instead:
+container can run the same `workspace_service.py` directly instead. Load its
+workspace environment from the [deployment guide](deployment.md) first; on the
+same Compose network, override the central URL as follows:
 
 ```bash
 RMM_C2_URL=http://rmm-control:8080 \
-RMM_WORKSPACE_ID=alice \
-RMM_WORKSPACE_TOKEN="$ALICE_WORKSPACE_TOKEN" \
-RMM_WORKSPACE_DATA=/workspace/.minimal-rmm \
 RMM_RCLONE_PROFILES_FILE=/workspace/Minimal-RMM/tools/rclone/profiles.json \
 RMM_RCLONE_DEFAULT_PROFILE=mega-lab \
 RMM_RCLONE_MAX_BYTES=0 \

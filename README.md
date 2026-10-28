@@ -4,7 +4,9 @@ A minimal **remote monitoring and management (RMM)** proof of concept: a Python 
 
 **Use only on systems you own or are explicitly authorized to manage.** Misuse may violate law and policy.
 
-The repository documentation is organized as a [wiki-style index](docs/README.md).
+Start with the [deployment guide](docs/deployment.md): it separates the central
+server, operator workspaces, credentials, and optional features. The full
+documentation is organized as a [wiki-style index](docs/README.md).
 The [architecture overview](docs/architecture.md) is the canonical map of the
 control plane, Exegol workspaces, agents, plugins, pivots, storage, and
 privilege boundaries.
@@ -70,78 +72,34 @@ Set the same `RMM_BEACON_SECRET` on Windows clients (`$env:RMM_BEACON_SECRET = "
 
 ## Quick start
 
-### Server (headless, recommended)
+Choose one setup in the [deployment guide](docs/deployment.md):
 
-```bash
-cd minimal_rmm
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt   # required for rmm_cli interactive; optional for server --cli
-export RMM_API_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-export RMM_BEACON_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-python3 server_rmm.py             # start on 8080/8081; no startup compilation
-python3 server_rmm.py --admin-port 9000 --beacon-port 9001 --bind 0.0.0.0 \
-  --beacon-bind 0.0.0.0                         # expose listeners deliberately
-# Optional rclone exfil (see docs/rclone-exfil.md):
-# Server mode: profiles are loaded by the RMM server.
-python3 server_rmm.py --rclone-profiles /path/to/profiles.json
-# or: export RMM_RCLONE_PROFILES_FILE="$PWD/tools/rclone/profiles.example.json"
+| Setup | Start here |
+| --- | --- |
+| Ubuntu central server + one Exegol workspace per operator (recommended) | Native steps 1–5; separate [central](deploy/central.env.example) and [workspace](deploy/workspace.env.example) configuration templates |
+| Compose central server + optional workspace sidecar | Compose alternative; use the root [.env.example](.env.example) |
+| Shared standalone server without workspaces | Standalone alternative; explicitly select `RMM_STORAGE_MODE=server` |
 
-```
+In workspace mode, operators use the workspace URL on port **8787**; the
+workspace connects to the central admin API on **8080**; agents use the beacon
+URL on **8081** or the selected transport profile's URL. The central server
+uses `RMM_STORAGE_MODE=workspace`, while the default for direct Python startup
+remains `server`. Neither Python entry point reads `.env` automatically.
 
-For TUN outside Docker, prepare the native helper explicitly with `make tun-build`
-on the machine hosting the pivot. Docker builds it into the image. Install agent
-plugins through [CLI or WebUI](docs/plugin-releases-operator.md); server startup
-does not compile them. See [startup and migration](docs/server-startup.md).
-
-### Docker control plane and Exegol workspace
-
-The Compose deployment separates the central broker from the operator data
-plane. Copy `.env.example` to `.env`, replace all placeholder secrets, then
-start the control plane and the example workspace sidecar:
-
-```bash
-cp .env.example .env
-# Create tools/rclone/profiles.json with the operator's remotes.
-docker compose up --build -d rmm-control
-docker compose --profile workspace up --build -d
-```
-
-Open the workspace UI at **<http://127.0.0.1:8787/ui/>**. Its SQLite database,
-artifacts, history, and local TUN state live in the workspace volume. The
-control plane does not receive `/dev/net/tun` or `CAP_NET_ADMIN`. The rclone
-profile file is mounted into the workspace service only. The central control
-plane receives the selected job payload transiently and does not load the
-workspace profile file. An existing Exegol container can run
-`workspace_service.py` instead of the example sidecar; set its local
-`RMM_RCLONE_PROFILES_FILE`, `RMM_RCLONE_DEFAULT_PROFILE`, and
-`RMM_RCLONE_MAX_BYTES` values there. The full setup is in
-[`docs/workspace-deployment.md`](docs/workspace-deployment.md).
-
-The control plane mounts a persistent plugin store at `/app/plugins`. Build
-agent plugins in the private
-[`Minimal-RMM-plugins`](https://github.com/CyrilleFranchet/Minimal-RMM-plugins)
-repository, then copy the release bundle's `*.dll` and `*.ps1` artifacts into
-that directory. Set `RMM_PLUGIN_STORE=./plugin-store` in `.env` for a host bind
-mount, or copy the files into the named Docker volume. The server does not
-compile agent plugins. See
-[`docs/plugin-architecture.md`](docs/plugin-architecture.md) and
-[`docs/plugin-repository.md`](docs/plugin-repository.md).
-
-The control plane also mounts a persistent RMM-Profile store at
-`/app/profiles`. Install the trusted `cloudflared/` bundle from the private
-[`Minimal-RMM-profiles`](https://github.com/CyrilleFranchet/Minimal-RMM-profiles)
-repository and make `cloudflared` available in the control-plane image. With
-`RMM_PROFILE_AUTOSTART=1`, the server starts the profile, extracts the generated
-`trycloudflare.com` URL, and exposes it through `profile status` and the WebUI.
-Use that URL for the agent beacon. See
-[`docs/rmm-profiles.md`](docs/rmm-profiles.md).
+Install compiled plugins through the **workspace's** [release controls](docs/plugin-releases-operator.md).
+Prepare TUN only when needed, on the host owning the pivot. Docker image builds
+include the helper; process startup never compiles it. Public beacon profiles,
+Go agent generation, and rclone configuration are separate optional setup steps.
 
 ### Operator CLI
 
+In workspace mode, use the local token from the loaded workspace environment.
+For standalone server mode, use the central admin URL (usually port 8080) and
+its administrator token instead.
+
 ```bash
-export RMM_SERVER_URL="http://127.0.0.1:8080"
-export RMM_API_TOKEN="change-me"   # if server uses a token
+export RMM_SERVER_URL="http://127.0.0.1:8787"
+export RMM_API_TOKEN="$RMM_WORKSPACE_LOCAL_TOKEN"
 
 python rmm_cli.py                  # interactive console (default)
 python rmm_cli.py health
@@ -160,6 +118,8 @@ With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel UR
 
 **AI Assistant** (button **AI** in the header): opens a chat panel on the right. Configure and validate an **OpenAI**, **Anthropic**, or **Mistral** API key; only providers with a successfully validated key can be selected. Keys, validation state, model choice, Exegol MCP settings, and skill selection persist in the authenticated server or workspace SQLite UI state. The model list comes from the selected provider's API, and a custom model ID remains available. Conversation history is saved per session on the server in default mode (`RMM_logs/history/{id}/ai_chat.json`) and in the workspace SQLite database in workspace mode; use **Reset chat** to start over (see `docs/web-ai-chat-memory.md`). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools (`POST /api/v1/ai/chat`). Workspace-scoped AI tool calls forward the workspace headers to keep the same session ownership. See `docs/ai-providers.md` for the provider protocol and API details. **Skills** — built-in Markdown files and URL-installed workspace files can be enabled or disabled in the AI panel or Config panel and are injected into the system prompt (see `docs/web-ai-skills.md` and `docs/operator-assets.md`). Optionally enable **Exegol MCP** in the panel to merge tools from a running [Exegol MCP](https://docs.exegol.com/mcp/getting-started) server (HTTP, default `http://127.0.0.1:8000/mcp`). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Set `RMM_AI_USE_MCP=0` to call `rmm_tools` directly without MCP. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_AI_SKILLS_DIR`. The selected session in the sidebar is passed as context.
 
+The optional Exegol MCP connection originates from the central AI process. Its URL must be reachable from the central server; `127.0.0.1:8000` does not refer to a separate operator's Exegol container. See the [deployment guide](docs/deployment.md) for network and credential boundaries.
+
 The AI agent permits 32 tool rounds per internal checkpoint by default for multi-step tasks. The server automatically continues the existing provider conversation at each checkpoint, with an emergency ceiling of 160 total rounds. Set `RMM_AI_MAX_TOOL_ROUNDS` before starting the server to change the checkpoint size. If the emergency ceiling is reached, the web UI shows the tool-call trace from the failed request.
 
 Same-origin hosting avoids CORS; do not expose `/ui/` on the public internet without TLS and a strong API token. Sending an OpenAI key to your RMM server is only appropriate on a trusted/self-hosted instance.
@@ -170,12 +130,12 @@ Expose RMM operator actions as MCP tools for external AI clients:
 
 ```bash
 pip install -r requirements-mcp.txt
-export RMM_SERVER_URL=http://127.0.0.1:8080
-export RMM_API_TOKEN=your-operator-token
+export RMM_SERVER_URL=http://127.0.0.1:8787
+export RMM_API_TOKEN="$RMM_WORKSPACE_LOCAL_TOKEN"
 python mcp_rmm_server.py
 ```
 
-Copy `mcp.example.json` into your Cursor MCP config (`~/.cursor/mcp.json`) and fix the script path.
+Load the workspace environment first. For standalone server mode, use the central server URL and administrator API token instead. Copy `mcp.example.json` into your Cursor MCP config (`~/.cursor/mcp.json`) and adjust the script path, URL, and token for the selected topology.
 
 After changing operator tools, run `make check-parity` (see `docs/mcp-parity.md`).
 

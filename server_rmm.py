@@ -4979,7 +4979,7 @@ def main():
     parser.add_argument(
         "--beacon-bind",
         default=BEACON_BIND,
-        help="Beacon listen address (default: same as --bind)",
+        help="Beacon listen address (env: RMM_BEACON_BIND; default: 127.0.0.1)",
     )
     parser.add_argument(
         "--profile",
