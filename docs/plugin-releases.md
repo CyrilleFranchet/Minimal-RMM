@@ -21,6 +21,10 @@ Use a fine-grained GitHub token scoped to the private plugin repository with
 **Contents: read**. GitHub App installation tokens also work; the deployment
 must refresh them when they expire. RMM does not mint or rotate tokens. See
 [GitHub release asset authentication](https://docs.github.com/en/rest/releases/assets).
+The service's Python installation needs a working CA trust store. On a Mac
+where Homebrew Python points at a missing OpenSSL certificate bundle, set
+`SSL_CERT_FILE=/etc/ssl/cert.pem` in the service environment or repair that
+Python installation's CA configuration. Keep TLS verification enabled.
 The browser and CLI send only the release tag, plugin name, and optional digest.
 GitHub credentials are never sent to the agent, central broker in workspace
 mode, browser configuration, or plugin manifest.

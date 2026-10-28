@@ -26,6 +26,11 @@ implementation log.
   focused release tests, lint, and 46-tool MCP parity pass. Tests cover exact
   release selection, credential stripping, checksum failure, cache reuse,
   owner isolation, runtime publication, and partial synchronization failure.
+- Hosted [release publication](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/actions/runs/40663841398)
+  passed and skipped both compiler jobs. The first durable private release
+  contains eight plugin files. A live authenticated download through the new
+  installer verified the autonomous DLL digest and cached retry. Local Python
+  required `SSL_CERT_FILE=/etc/ssl/cert.pem`; TLS verification remained enabled.
 
 ### 2026-10-28 — Equal agent and AI panel widths
 
