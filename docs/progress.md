@@ -9,6 +9,18 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Stop redundant plugin CI builds
+
+- Removed automatic branch/PR triggers from the MSVC loader fixture. It now
+  requires explicit dispatch or a `ci-msvc-*` validation tag; `main` stays v1.
+- Plugin-repository tests and builds are manual-only, with explicit switches
+  for compilation, bounded concurrency, and retained compiled artifacts.
+- Canceled two redundant merge-triggered plugin runs and disabled the three
+  obsolete native probe workflows on GitHub.
+- Existing compiled bundle and validated ONNX DLL are cataloged with source
+  revisions, checksums, expiry, and a verified local download/cache helper.
+  Deployment can reuse these binaries without compiler or Actions usage.
+
 ### 2026-10-28 — Saved document embedding operator workflow
 
 - Added dedicated profile and result APIs, CLI commands, a WebUI editor, and

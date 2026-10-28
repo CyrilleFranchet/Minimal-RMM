@@ -146,3 +146,17 @@ protocol contracts between the server and the agent.
 - [Go agent plugin ABI](go-agent-plugins.md)
 - [Server startup and Docker store](server-startup.md)
 - [Workspace deployment](workspace-deployment.md)
+
+## Compiled artifacts and CI cost
+
+Prefer existing compiled plugin artifacts over rebuilding during RMM updates.
+The plugin repository provides a [pinned catalog and download helper](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/blob/main/docs/compiled-artifacts.md).
+Its workflows are manual-only; full bundle and native ONNX builds require an
+explicit build switch. Agent compatibility can be tested against the saved DLL.
+Actions artifacts expire, so retain approved ZIPs in durable local or artifact
+storage; the helper reuses verified cached ZIPs and never triggers a build.
+
+The MSVC fixture workflow in this repository runs only on explicit dispatch or
+an intentionally pushed `ci-msvc-*` tag. Since the default `main` is v1 and the
+workflow lives on `v2`, use a validation tag pointing at `v2` when GitHub does
+not expose manual dispatch. Normal branch pushes and PR updates do not run it.

@@ -2,19 +2,22 @@
 name: MSVC plugin loader
 
 "on":
-  push:
-    paths:
-      - .github/workflows/msvc-plugin-loader.yml
-      - agent-go/**
-  pull_request:
-    paths:
-      - .github/workflows/msvc-plugin-loader.yml
-      - agent-go/**
   workflow_dispatch:
+  push:
+    tags:
+      - 'ci-msvc-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msvc-plugin-loader
+  cancel-in-progress: false
 
 jobs:
   msvc-plugin:
     runs-on: windows-2022
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
