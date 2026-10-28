@@ -9,6 +9,14 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Equal agent and AI panel widths
+
+- Split the desktop workspace equally between the agent and AI panels when
+  AI is open, replacing the fixed 300–360 pixel AI column.
+- Preserved the session sidebar, panel divider, and stacked mobile layout.
+- Validation: reviewed CSS grid sizing and responsive overrides;
+  `git diff --check` passes. Browser visual verification remains pending.
+
 ### 2026-10-28 — Stop redundant plugin CI builds
 
 - Removed automatic branch/PR triggers from the MSVC loader fixture. It now

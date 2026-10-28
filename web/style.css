@@ -254,13 +254,7 @@ button:disabled {
 }
 
 .app-body.ai-open {
-  grid-template-columns: var(--sidebar-width) 6px 1fr 360px;
-}
-
-@media (max-width: 1100px) {
-  .app-body.ai-open {
-    grid-template-columns: var(--sidebar-width) 6px 1fr 300px;
-  }
+  grid-template-columns: var(--sidebar-width) 6px minmax(0, 1fr) minmax(0, 1fr);
 }
 
 @media (max-width: 768px) {

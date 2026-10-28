@@ -6,6 +6,11 @@ switching browsers, or reconnecting from another machine. In server mode this
 is the RMM server. In workspace mode it is the operator's local workspace
 service.
 
+On desktop, opening **AI** divides the space beside the session sidebar
+equally between the agent workspace and the AI assistant. Both panels stay
+visible side by side, separated by a border. At viewport widths of 768 pixels
+or less, the panels stack vertically.
+
 The providers do not own this history for the current integration. Each
 request sends the relevant history from the active storage owner to the
 selected provider: `RMM_logs/history/{session_id}/ai_chat.json` in server mode
