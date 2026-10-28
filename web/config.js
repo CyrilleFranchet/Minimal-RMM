@@ -46,6 +46,30 @@
   let persistTimer = null;
   let persistInFlight = null;
 
+  function renderDeploymentMode(health = {}) {
+    let label = "Mode unknown";
+    let description = "The connected service has not reported its deployment mode.";
+    if (typeof health.workspace_id === "string" && health.workspace_id) {
+      label = `Workspace: ${health.workspace_id}`;
+      description = "Operator workspace. Plugin sources, credentials, and history are stored in this workspace.";
+    } else if (health.storage_mode === "server") {
+      label = "Standalone";
+      description = "Standalone server. This service manages agents, plugin sources, credentials, and history.";
+    } else if (health.storage_mode === "workspace") {
+      label = "Central · workspace mode";
+      description = "Central server in workspace mode. Open your operator workspace UI to manage plugin sources, credentials, and history.";
+    }
+    const badge = $("#deployment-mode");
+    if (badge) {
+      badge.textContent = label;
+      badge.title = description;
+    }
+    const hint = $("#deployment-mode-description");
+    if (hint) hint.textContent = `${label}. ${description}`;
+  }
+
+  window.renderRmmDeploymentMode = renderDeploymentMode;
+
   function setStatus(message, error = false) {
     const status = $("#ui-config-status");
     if (!status) return;

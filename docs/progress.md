@@ -9,6 +9,13 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Display the connected deployment mode
+
+- Show Standalone, Central in workspace mode, or Workspace with its ID in the
+  header and explain storage ownership in Config using live health responses.
+- Refresh on connection and health probes; reset to unknown on disconnect.
+- Controller coverage verifies each mode and the unknown fallback.
+
 ### 2026-10-28 — Make source list loading explicit
 
 - Refresh sources whenever Config opens, independently of session/history

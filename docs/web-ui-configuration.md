@@ -141,3 +141,17 @@ available to assistive technology through `aria-description`. Plugin Source ID
 and Label also have visible hints associated through `aria-describedby`, so
 their definitions are available without hovering. Source ID is the unique
 reference used by CLI/API calls; Label is the friendly display name.
+
+## Deployment mode indicator
+
+The application header shows **Standalone**, **Central · workspace mode**, or
+**Workspace: ID** from the connected service's authenticated health response.
+Config repeats the mode with a description of where plugin sources, credentials,
+and history belong. A central server in workspace mode directs operators to
+their workspace UI for those settings.
+
+`renderDeploymentMode` in `web/config.js` renders the badge and Config hint from
+`storage_mode` or `workspace_id`; missing or unknown values display **Mode
+unknown**. `connect` and `probeServerHealth` update it from live responses, and
+`disconnect` resets it. The display does not infer mode from the port, browser
+storage, or environment files. Controller tests cover all four display states.

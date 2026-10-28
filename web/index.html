@@ -32,6 +32,7 @@
     <header class="app-header">
       <span id="ws-status" class="status-dot" title="WebSocket"></span>
       <h1>Minimal RMM</h1>
+      <span id="deployment-mode" class="deployment-mode" role="status" aria-live="polite">Mode unknown</span>
       <span class="spacer"></span>
       <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
       <button type="button" class="secondary" id="embedding-open">Embeddings</button>
@@ -432,6 +433,7 @@
         <h2 id="ui-config-title">Configuration</h2>
         <button type="submit" class="secondary" aria-label="Close configuration dialog">×</button>
       </div>
+      <p id="deployment-mode-description" class="ai-hint">The connected service has not reported its deployment mode.</p>
       <details class="asset-manager">
         <summary>Plugins</summary>
         <h3>1. Choose a source</h3>

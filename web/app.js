@@ -168,6 +168,7 @@ async function probeServerHealth() {
     return false;
   }
   if (status === 200) {
+    window.renderRmmDeploymentMode?.(data);
     noteServerReachable();
     return true;
   }
@@ -2380,6 +2381,7 @@ async function connect() {
     return;
   }
   if (token) sessionStorage.setItem(STORAGE_KEY, token);
+  window.renderRmmDeploymentMode?.(data);
   if (typeof window.loadRmmUiConfig === "function") {
     await window.loadRmmUiConfig().catch(() => false);
   }
@@ -2413,6 +2415,7 @@ async function connect() {
 }
 
 function disconnect() {
+  window.renderRmmDeploymentMode?.();
   hideServerUnreachableDialog();
   disconnectWebSocket();
   stopEventPolling();

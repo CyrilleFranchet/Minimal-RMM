@@ -214,6 +214,15 @@ button:disabled {
   flex: 1;
 }
 
+.deployment-mode {
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.75rem;
+  max-width: 18rem;
+  overflow-wrap: anywhere;
+}
+
 .app-header > button {
   flex-shrink: 0;
 }

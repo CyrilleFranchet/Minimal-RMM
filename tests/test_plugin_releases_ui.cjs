@@ -294,3 +294,22 @@ test('opening Config reloads sources independently and collapses sections', () =
   handlers.click();
   assert.equal(refreshes, 2);
 });
+
+test('deployment badge distinguishes standalone, central, workspace, and unknown services', () => {
+  const badge = {};
+  const hint = {};
+  const window = { addEventListener() {} };
+  const document = { querySelector(selector) {
+    return selector === '#deployment-mode' ? badge : selector === '#deployment-mode-description' ? hint : null;
+  } };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'web/config.js'), 'utf8'), { window, document });
+  window.renderRmmDeploymentMode({ storage_mode: 'server' });
+  assert.equal(badge.textContent, 'Standalone');
+  window.renderRmmDeploymentMode({ storage_mode: 'workspace' });
+  assert.equal(badge.textContent, 'Central · workspace mode');
+  assert.match(hint.textContent, /Open your operator workspace UI/);
+  window.renderRmmDeploymentMode({ workspace_id: 'alice' });
+  assert.equal(badge.textContent, 'Workspace: alice');
+  window.renderRmmDeploymentMode();
+  assert.equal(badge.textContent, 'Mode unknown');
+});
