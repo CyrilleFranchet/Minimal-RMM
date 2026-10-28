@@ -449,8 +449,37 @@
         <h3>Compiled plugins from GitHub</h3>
         <p class="ai-hint">Browse a published release, then install a selected plugin into this workspace or server. GitHub credentials stay on that service. Installation does not execute the plugin on an agent.</p>
         <div class="asset-form-row">
+          <label for="plugin-release-source">Source</label>
+          <select id="plugin-release-source"><option value="">Load saved sources</option></select>
+          <button type="button" id="plugin-release-source-refresh" class="secondary">Refresh sources</button>
+          <button type="button" id="plugin-release-source-new" class="secondary">New source</button>
+        </div>
+        <details id="plugin-release-source-editor">
+          <summary>Configure plugin repositories and branches</summary>
+          <div class="asset-form-row">
+            <label for="plugin-release-source-id">Source ID</label>
+            <input id="plugin-release-source-id" type="text" maxlength="64" placeholder="stable" autocomplete="off">
+            <label for="plugin-release-source-label">Label</label>
+            <input id="plugin-release-source-label" type="text" placeholder="Stable plugins" autocomplete="off">
+          </div>
+          <div class="asset-form-row">
+            <label for="plugin-release-source-repository">Repository</label>
+            <input id="plugin-release-source-repository" type="text" placeholder="owner/repository" autocomplete="off">
+            <label for="plugin-release-source-branch">Branch</label>
+            <input id="plugin-release-source-branch" type="text" value="main" placeholder="main" autocomplete="off">
+          </div>
+          <label for="plugin-release-source-credential">Credential environment variable</label>
+          <input id="plugin-release-source-credential" type="text" value="RMM_PLUGIN_GITHUB_TOKEN" autocomplete="off" spellcheck="false">
+          <p class="ai-hint">Use RMM_PLUGIN_GITHUB_TOKEN or RMM_PLUGIN_TOKEN_NAME, configured on the server/workspace. Enter the variable name here, never the token.</p>
+          <p id="plugin-release-source-auth" class="ai-hint"></p>
+          <div class="asset-form-row">
+            <button type="button" id="plugin-release-source-save">Save source</button>
+            <button type="button" id="plugin-release-source-remove" class="secondary" disabled>Remove source</button>
+          </div>
+        </details>
+        <div class="asset-form-row">
           <label for="plugin-release-tag">Release</label>
-          <input type="text" id="plugin-release-tag" value="latest" placeholder="latest or plugins-commit" autocomplete="off">
+          <input type="text" id="plugin-release-tag" value="latest" placeholder="latest or exact release tag" autocomplete="off">
           <button type="button" id="plugin-release-browse">Browse release</button>
         </div>
         <p id="plugin-release-info" class="ai-hint"></p>

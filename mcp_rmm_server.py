@@ -65,6 +65,9 @@ from rmm_tools import (
     tool_list_plugins,
     tool_list_plugin_release,
     tool_install_plugin_release,
+    tool_list_plugin_sources,
+    tool_save_plugin_source,
+    tool_remove_plugin_source,
     tool_list_assets,
     tool_add_asset,
     tool_set_asset_enabled,
@@ -210,15 +213,33 @@ def list_plugins() -> str:
 
 
 @mcp.tool()
-def list_plugin_release(tag: str = "latest") -> str:
-    """Inspect a compiled GitHub plugin release and resolve its exact tag."""
-    return tool_list_plugin_release(_client(), tag)
+def list_plugin_sources() -> str:
+    """List persisted plugin repositories, branches, and credential references."""
+    return tool_list_plugin_sources(_client())
 
 
 @mcp.tool()
-def install_plugin_release(name: str, tag: str, sha256: str = "") -> str:
+def save_plugin_source(source_id: str, repository: str, branch: str = "main", label: str = "", credential_env: str = "RMM_PLUGIN_GITHUB_TOKEN") -> str:
+    """Save a repository/branch source using an environment variable name, never a token."""
+    return tool_save_plugin_source(_client(), source_id, repository, branch, label, credential_env)
+
+
+@mcp.tool()
+def remove_plugin_source(source_id: str) -> str:
+    """Delete source configuration while retaining installed plugins."""
+    return tool_remove_plugin_source(_client(), source_id)
+
+
+@mcp.tool()
+def list_plugin_release(tag: str = "latest", source: str = "default") -> str:
+    """Inspect a compiled GitHub plugin release and resolve its exact tag."""
+    return tool_list_plugin_release(_client(), tag, source)
+
+
+@mcp.tool()
+def install_plugin_release(name: str, tag: str, sha256: str = "", source: str = "default", source_revision: str = "") -> str:
     """Install one verified plugin from an exact release tag without executing it."""
-    return tool_install_plugin_release(_client(), name, tag, sha256)
+    return tool_install_plugin_release(_client(), name, tag, sha256, source, source_revision)
 
 
 @mcp.tool()

@@ -301,17 +301,33 @@ class RmmApiClient:
     def list_plugins(self):
         return self.request("GET", "/api/v1/plugins")
 
-    def list_plugin_release(self, tag="latest"):
-        """Resolve a published plugin release through the active server or workspace."""
-        return self.request("GET", "/api/v1/plugin-releases?" + urllib.parse.urlencode({"tag": tag}), timeout=150)
+    def list_plugin_sources(self):
+        """List repository and branch configurations saved by the storage owner."""
+        return self.request("GET", "/api/v1/plugin-sources")
 
-    def install_plugin_release(self, name, tag, sha256=""):
+    def save_plugin_source(self, source_id, repository, branch="main", label="", credential_env="RMM_PLUGIN_GITHUB_TOKEN"):
+        """Save a named plugin source using a service-side credential reference."""
+        return self.request("POST", "/api/v1/plugin-sources/" + urllib.parse.quote(source_id, safe=""), {
+            "repository": repository, "branch": branch, "label": label or source_id, "credential_env": credential_env,
+        })
+
+    def remove_plugin_source(self, source_id):
+        """Remove source configuration without deleting installed plugins."""
+        return self.request("DELETE", "/api/v1/plugin-sources/" + urllib.parse.quote(source_id, safe=""))
+
+    def list_plugin_release(self, tag="latest", source="default"):
+        """Resolve a published plugin release through the active server or workspace."""
+        return self.request("GET", "/api/v1/plugin-releases?" + urllib.parse.urlencode({"tag": tag, "source": source}), timeout=150)
+
+    def install_plugin_release(self, name, tag, sha256="", source="default", source_revision=""):
         """Install one plugin from an explicitly selected release into the asset store."""
         if not tag or tag == "latest":
             raise ValueError("select an exact release tag with plugin releases before installing")
-        body = {"name": name, "tag": tag}
+        body = {"name": name, "tag": tag, "source": source}
         if sha256:
             body["sha256"] = sha256
+        if source_revision:
+            body["source_revision"] = source_revision
         return self.request("POST", "/api/v1/plugin-releases/install", body, timeout=240)
 
     def queue_pe_load(
@@ -808,9 +824,9 @@ def cmd_plugin_release(client: RmmApiClient, state: dict, args):
     """Browse a GitHub release or install one pinned plugin without executing it."""
     try:
         if args.plugin_action == "releases":
-            code, data = client.list_plugin_release(args.tag)
+            code, data = client.list_plugin_release(args.tag, args.source)
         else:
-            code, data = client.install_plugin_release(args.name, args.tag, args.sha256)
+            code, data = client.install_plugin_release(args.name, args.tag, args.sha256, args.source, args.source_revision)
     except ValueError as exc:
         die(str(exc))
     if code not in (200, 201):
@@ -818,12 +834,25 @@ def cmd_plugin_release(client: RmmApiClient, state: dict, args):
     if getattr(args, "json", False):
         print_json(data)
     elif args.plugin_action == "releases":
-        print(f"{data.get('repository')} release {data.get('tag')}")
+        print(f"{data.get('repository')} [{data.get('branch', '')}] version {data.get('version', '')} release {data.get('tag')}")
         for plugin in data.get("plugins", []):
             print(f"{plugin.get('name')}  {plugin.get('size')} bytes  sha256={plugin.get('sha256')}")
     else:
         asset = data.get("asset", {})
         print(f"Installed {asset.get('name')} from {args.tag}; SHA-256 verified: {asset.get('sha256')}")
+
+
+def cmd_plugin_sources(client: RmmApiClient, state: dict, args):
+    """Manage persisted repository/branch sources without exposing credentials."""
+    if args.source_action == "list":
+        code, data = client.list_plugin_sources()
+    elif args.source_action == "save":
+        code, data = client.save_plugin_source(args.id, args.repository, args.branch, args.label, args.credential_env)
+    else:
+        code, data = client.remove_plugin_source(args.id)
+    if code not in (200, 201):
+        die(f"plugin source request failed ({code}): {data}")
+    print_json(data)
 
 
 def _print_rclone_config(data: dict) -> None:
@@ -1896,12 +1925,29 @@ def build_parser() -> argparse.ArgumentParser:
     sp_plugin_sub = sp_plugin.add_subparsers(dest="plugin_action", required=True)
     sp_plugin_releases = sp_plugin_sub.add_parser("releases", parents=[shared], help="Inspect the latest or a named release")
     sp_plugin_releases.add_argument("--tag", default="latest")
+    sp_plugin_releases.add_argument("--source", default="default", help="Saved repository/branch source ID")
     sp_plugin_releases.set_defaults(func=cmd_plugin_release)
     sp_plugin_install = sp_plugin_sub.add_parser("install", parents=[shared], help="Install one plugin from an exact release tag")
     sp_plugin_install.add_argument("name")
+    sp_plugin_install.add_argument("--source", default="default", help="Saved repository/branch source ID")
+    sp_plugin_install.add_argument("--source-revision", default="", help="Source configuration revision returned when browsing (optional pin)")
     sp_plugin_install.add_argument("--tag", required=True, help="Exact tag returned by plugin releases; latest is not accepted")
     sp_plugin_install.add_argument("--sha256", default="", help="Expected digest from plugin releases (optional additional pin)")
     sp_plugin_install.set_defaults(func=cmd_plugin_release)
+    sp_plugin_sources = sp_plugin_sub.add_parser("sources", help="Manage saved repository and branch configurations")
+    sp_source_sub = sp_plugin_sources.add_subparsers(dest="source_action", required=True)
+    sp_source_list = sp_source_sub.add_parser("list", parents=[shared])
+    sp_source_list.set_defaults(func=cmd_plugin_sources)
+    sp_source_save = sp_source_sub.add_parser("save", parents=[shared])
+    sp_source_save.add_argument("id", help="Source ID (letters, digits, underscore, hyphen)")
+    sp_source_save.add_argument("--repository", required=True, help="GitHub owner/repository")
+    sp_source_save.add_argument("--branch", default="main")
+    sp_source_save.add_argument("--label", default="")
+    sp_source_save.add_argument("--credential-env", default="RMM_PLUGIN_GITHUB_TOKEN", help="Service-side environment variable name, never a token value")
+    sp_source_save.set_defaults(func=cmd_plugin_sources)
+    sp_source_remove = sp_source_sub.add_parser("remove", parents=[shared])
+    sp_source_remove.add_argument("id")
+    sp_source_remove.set_defaults(func=cmd_plugin_sources)
 
     sp_pe = sub.add_parser("pe", help="PE plugin management for the Go agent")
     sp_pe_sub = sp_pe.add_subparsers(dest="pe_cmd", required=True)

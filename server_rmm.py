@@ -58,6 +58,7 @@ from rmm_asset_store import AssetError, AssetStore, decode_asset_content
 from rmm_profile import ProfileError, ProfileManager, profile_directory
 from rmm_embeddings import EmbeddingStore, embedding_api
 from rmm_plugin_releases import plugin_release_api
+from rmm_plugin_sources import plugin_sources_api
 from rmm_ui_state import UiStateError, UiStateStore
 from rmm_rclone import (
     RcloneConfigError,
@@ -3251,7 +3252,17 @@ class RMMHandler(BaseHTTPRequestHandler):
         rest = path[len(API_PREFIX) + 1 :]
         return [p for p in rest.split("/") if p]
 
-    def _handle_plugin_releases(self, method, *, tag="latest", body=None):
+    def _handle_plugin_sources(self, method, source_id=None, body=None):
+        """Persist source configuration only at the selected operator storage owner."""
+        srv = self.server_instance
+        if srv.storage_mode != "server" or getattr(self, "_workspace_scope", lambda: None)():
+            self._json(409, {"error": "plugin_sources_are_workspace_local", "detail": "Use the local workspace API URL."})
+            return True
+        status, payload = plugin_sources_api(asset_store().root, method, source_id, body)
+        self._json(status, payload)
+        return True
+
+    def _handle_plugin_releases(self, method, *, tag="latest", source="default", body=None):
         """Keep GitHub credentials and installation at the selected storage owner."""
         srv = self.server_instance
         if srv.storage_mode != "server" or getattr(self, "_workspace_scope", lambda: None)():
@@ -3268,7 +3279,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             srv.log(f"Plugin installed: {row['name']} sha256={row['sha256']}")
             return True
 
-        status, payload = plugin_release_api(store, method, tag=tag, body=body, publish=publish)
+        status, payload = plugin_release_api(store, method, tag=tag, source=source, body=body, publish=publish)
         self._json(status, payload)
         return True
 
@@ -3313,7 +3324,9 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("GET", parts)
         if parts == ["plugin-releases"]:
-            return self._handle_plugin_releases("GET", tag=qs.get("tag", ["latest"])[0])
+            return self._handle_plugin_releases("GET", tag=qs.get("tag", ["latest"])[0], source=qs.get("source", ["default"])[0])
+        if parts == ["plugin-sources"]:
+            return self._handle_plugin_sources("GET")
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
@@ -3646,6 +3659,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             return self._handle_embeddings("POST", parts, body)
         if parts == ["plugin-releases", "install"]:
             return self._handle_plugin_releases("POST", body=body)
+        if len(parts) == 2 and parts[0] == "plugin-sources":
+            return self._handle_plugin_sources("POST", urllib.parse.unquote(parts[1]), body)
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
@@ -4236,6 +4251,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("DELETE", parts)
+        if len(parts) == 2 and parts[0] == "plugin-sources":
+            return self._handle_plugin_sources("DELETE", urllib.parse.unquote(parts[1]))
         srv = self.server_instance
 
         if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":

@@ -1,12 +1,13 @@
-/* Verify explicit release selection with a minimal DOM; no live GitHub access. */
+/* Verify persisted sources and pinned releases through a minimal DOM adapter. */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
 const root = path.join(__dirname, '..');
-const tag = `plugins-${'a'.repeat(40)}`;
+const tag = `plugins-${'a'.repeat(12)}-v1.2`;
 const digest = 'b'.repeat(64);
+const revision = 'c'.repeat(64);
 
 function fixture(installResponse = { status: 200, data: { cached: true } }, browseResponse) {
   class Element {
@@ -18,6 +19,8 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
   const html = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
   const elements = new Map([...html.matchAll(/id="(plugin-release-[^"]+)"/g)].map((m) => [m[1], new Element()]));
   const calls = [];
+  const sources = [{ id: 'default', repository: 'owner/plugins', branch: 'main', label: 'Stable', credential_env: 'RMM_PLUGIN_GITHUB_TOKEN', credential_configured: true },
+    { id: 'dev', repository: 'other/plugins', branch: 'feature/test', credential_env: 'RMM_PLUGIN_TOKEN_DEV', credential_configured: false }];
   let refreshed = 0;
   const get = (id) => elements.get(`plugin-release-${id}`);
   get('tag').value = 'latest';
@@ -28,9 +31,19 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
   };
   const window = {
     async rmmApi(url, options = {}) {
-      calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
+      const body = options.body ? JSON.parse(options.body) : null;
+      calls.push({ url, method: options.method || 'GET', body });
+      if (url === '/plugin-sources') return { status: 200, data: { sources } };
+      if (url.startsWith('/plugin-sources/')) {
+        const id = decodeURIComponent(url.split('/').pop());
+        const at = sources.findIndex((source) => source.id === id);
+        if (at !== -1) sources.splice(at, 1);
+        if (options.method === 'POST') sources.push({ id, ...body });
+        return { status: 200, data: { ok: true } };
+      }
       if (url.startsWith('/plugin-releases?')) return browseResponse || {
-        status: 200, data: { repository: 'owner/plugins', tag, plugins: [{ name: 'example.dll', size: 5, sha256: digest }] },
+        status: 200, data: { repository: 'owner/plugins', branch: 'main', source: get('source').value,
+          source_revision: revision, version: '1.2', tag, plugins: [{ name: 'example.dll', size: 5, sha256: digest }] },
       };
       assert.equal(url, '/plugin-releases/install');
       return installResponse;
@@ -38,43 +51,108 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
     async refreshAssets() { refreshed++; },
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'web/plugin-releases.js'), 'utf8'), { document, window });
-  return { get, calls, click: async (id) => get(id).handlers.click(), refreshed: () => refreshed };
+  return { get, calls, sources, load: window.refreshPluginSources,
+    click: async (id) => get(id).handlers.click(), refreshed: () => refreshed };
 }
 
-test('latest is resolved before install, and the selected checksum is sent', async () => {
+test('latest resolves the selected source and pins tag, digest, and source revision', async () => {
   const ui = fixture();
+  await ui.load();
   await ui.click('browse');
   assert.equal(ui.get('install').disabled, false);
+  assert.match(ui.get('info').textContent, /version 1.2/);
   await ui.click('install');
-  assert.deepEqual(ui.calls[1].body, { name: 'example.dll', tag, sha256: digest });
+  assert.deepEqual(ui.calls.at(-1).body, { name: 'example.dll', tag, sha256: digest, source: 'default', source_revision: revision });
   assert.equal(ui.refreshed(), 1);
   assert.match(ui.get('status').textContent, /SHA-256 verified/);
-  assert.equal(ui.get('install').disabled, false);
 });
 
-test('editing the release clears stale selections before installation', async () => {
+test('changing the source or editing its configuration clears a browsed release', async () => {
   const ui = fixture();
+  await ui.load();
+  await ui.click('browse');
+  ui.get('source').value = 'dev';
+  ui.get('source').handlers.change();
+  assert.equal(ui.get('install').disabled, true);
+  assert.equal(ui.get('source-repository').value, 'other/plugins');
+  assert.equal(ui.get('source-branch').value, 'feature/test');
+  await ui.click('browse');
+  assert.match(ui.calls.at(-1).url, /source=dev/);
+  ui.get('source-branch').value = 'other';
+  ui.get('source-branch').handlers.input();
+  assert.equal(ui.get('install').disabled, true);
+  assert.equal(ui.get('browse').disabled, true);
+  await ui.click('install');
+  assert.ok(ui.calls.every((call) => call.url !== '/plugin-releases/install'));
+});
+
+test('sources can be added, reloaded, edited, and removed with credential names only', async () => {
+  const ui = fixture();
+  await ui.load();
+  await ui.click('source-new');
+  assert.equal(ui.get('source-editor').open, true);
+  for (const [id, value] of Object.entries({ 'source-id': 'lab', 'source-label': '',
+    'source-repository': 'team/plugins', 'source-branch': 'lab/builds', 'source-credential': 'RMM_PLUGIN_TOKEN_LAB' })) {
+    ui.get(id).value = value;
+    ui.get(id).handlers.input();
+  }
+  await ui.click('source-save');
+  assert.equal(ui.get('source').value, 'lab');
+  assert.equal(ui.sources.find((source) => source.id === 'lab').label, 'lab');
+  await ui.load();
+  assert.equal(ui.get('source-branch').value, 'lab/builds');
+  ui.get('source-branch').value = 'lab/revised';
+  ui.get('source-branch').handlers.input();
+  await ui.click('source-save');
+  assert.equal(ui.sources.find((source) => source.id === 'lab').branch, 'lab/revised');
+  await ui.click('source-remove');
+  assert.ok(!ui.sources.some((source) => source.id === 'lab'));
+  assert.equal(ui.get('source').value, 'default');
+});
+
+test('literal secret values are rejected before source save', async () => {
+  const ui = fixture();
+  await ui.load();
+  ui.get('source-credential').value = 'github_pat_do_not_send';
+  ui.get('source-credential').handlers.input();
+  await ui.click('source-save');
+  assert.equal(ui.calls.length, 1);
+  assert.match(ui.get('status').textContent, /never a secret value/);
+});
+
+test('editing the tag clears stale selections before installation', async () => {
+  const ui = fixture();
+  await ui.load();
   await ui.click('browse');
   ui.get('tag').value = `plugins-${'c'.repeat(40)}`;
   ui.get('tag').handlers.input();
   assert.equal(ui.get('install').disabled, true);
   await ui.click('install');
-  assert.equal(ui.calls.length, 1);
+  assert.equal(ui.calls.length, 2);
 });
 
-test('workspace sync failure is distinguished from a failed local install', async () => {
+test('workspace synchronization failure reports the successful local installation', async () => {
   const ui = fixture({ status: 502, data: { local_installed: true, error: 'upstream unavailable' } });
+  await ui.load();
   await ui.click('browse');
   await ui.click('install');
   assert.match(ui.get('status').textContent, /Installed locally, but server synchronization failed/);
   assert.equal(ui.refreshed(), 1);
-  assert.equal(ui.get('install').disabled, false);
 });
 
-test('failed browsing cannot leave a release available for install', async () => {
+test('failed browsing leaves no installable release', async () => {
   const ui = fixture(undefined, { status: 503, data: { error: 'GitHub credentials unavailable' } });
+  await ui.load();
   await ui.click('browse');
   assert.equal(ui.get('install').disabled, true);
   assert.equal(ui.get('browse').disabled, false);
   assert.match(ui.get('status').textContent, /credentials unavailable/);
+});
+
+test('a release without a configuration revision cannot be installed', async () => {
+  const ui = fixture(undefined, { status: 200, data: { tag, source: 'default', plugins: [{ name: 'example.dll', size: 5, sha256: digest }] } });
+  await ui.load();
+  await ui.click('browse');
+  assert.equal(ui.get('install').disabled, true);
+  assert.match(ui.get('status').textContent, /invalid plugin release/);
 });

@@ -253,17 +253,35 @@ def tool_list_plugins(client: RmmApiClient) -> str:
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
-def tool_list_plugin_release(client: RmmApiClient, tag: str = "latest") -> str:
-    """List compiled plugins and resolve the exact tag for a GitHub release."""
-    code, data = client.list_plugin_release(tag)
+def tool_list_plugin_sources(client: RmmApiClient) -> str:
+    """List saved repository/branch configurations without returning credentials."""
+    code, data = client.list_plugin_sources()
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
-def tool_install_plugin_release(client: RmmApiClient, name: str, tag: str, sha256: str = "") -> str:
+def tool_save_plugin_source(client: RmmApiClient, source_id: str, repository: str, branch: str = "main", label: str = "", credential_env: str = "RMM_PLUGIN_GITHUB_TOKEN") -> str:
+    """Persist a plugin source and its service-side credential reference."""
+    code, data = client.save_plugin_source(source_id, repository, branch, label, credential_env)
+    return _json_result({"ok": code in (200, 201), "status": code, "data": data})
+
+
+def tool_remove_plugin_source(client: RmmApiClient, source_id: str) -> str:
+    """Remove source configuration while preserving installed plugin files."""
+    code, data = client.remove_plugin_source(source_id)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_list_plugin_release(client: RmmApiClient, tag: str = "latest", source: str = "default") -> str:
+    """List compiled plugins and resolve the exact tag for a GitHub release."""
+    code, data = client.list_plugin_release(tag, source)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_install_plugin_release(client: RmmApiClient, name: str, tag: str, sha256: str = "", source: str = "default", source_revision: str = "") -> str:
     """Install a verified plugin from an exact release without executing it."""
     if not tag or tag == "latest":
         return _json_result({"ok": False, "error": "exact release tag required; list_plugin_release resolves latest"})
-    code, data = client.install_plugin_release(name, tag, sha256)
+    code, data = client.install_plugin_release(name, tag, sha256, source, source_revision)
     return _json_result({"ok": code in (200, 201), "status": code, "data": data})
 
 
@@ -624,8 +642,11 @@ TOOL_HANDLERS = {
     "get_rclone_config": lambda c, a: tool_get_rclone_config(c),
     "queue_screenshot": lambda c, a: tool_queue_screenshot(c, a["session_ref"]),
     "list_plugins": lambda c, a: tool_list_plugins(c),
-    "list_plugin_release": lambda c, a: tool_list_plugin_release(c, a.get("tag", "latest")),
-    "install_plugin_release": lambda c, a: tool_install_plugin_release(c, a["name"], a["tag"], a.get("sha256", "")),
+    "list_plugin_sources": lambda c, a: tool_list_plugin_sources(c),
+    "save_plugin_source": lambda c, a: tool_save_plugin_source(c, a["source_id"], a["repository"], a.get("branch", "main"), a.get("label", ""), a.get("credential_env", "RMM_PLUGIN_GITHUB_TOKEN")),
+    "remove_plugin_source": lambda c, a: tool_remove_plugin_source(c, a["source_id"]),
+    "list_plugin_release": lambda c, a: tool_list_plugin_release(c, a.get("tag", "latest"), a.get("source", "default")),
+    "install_plugin_release": lambda c, a: tool_install_plugin_release(c, a["name"], a["tag"], a.get("sha256", ""), a.get("source", "default"), a.get("source_revision", "")),
     "list_assets": lambda c, a: tool_list_assets(c, a.get("kind", "")),
     "add_asset": lambda c, a: tool_add_asset(
         c, a["kind"], a["url"], a.get("name", ""), bool(a.get("enabled", True))
@@ -881,7 +902,7 @@ OPENAI_TOOLS: list[dict] = [
         "function": {
             "name": "list_plugin_release",
             "description": "Inspect compiled GitHub plugins and resolve latest to an exact release tag before installation.",
-            "parameters": {"type": "object", "properties": {"tag": {"type": "string", "description": "latest or an exact plugins-<commit SHA> tag"}}},
+            "parameters": {"type": "object", "properties": {"tag": {"type": "string", "description": "latest or an exact published plugin tag"}, "source": {"type": "string", "description": "Saved repository/branch source ID; default if omitted"}}},
         },
     },
     {
@@ -893,11 +914,41 @@ OPENAI_TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
-                    "tag": {"type": "string", "description": "Exact plugins-<commit SHA> release tag; latest is not accepted"},
+                    "tag": {"type": "string", "description": "Exact published plugin release tag; latest is not accepted"},
                     "sha256": {"type": "string", "description": "Optional expected digest from the selected release"},
+                    "source": {"type": "string", "description": "Saved repository/branch source ID; default if omitted"},
+                    "source_revision": {"type": "string", "description": "Optional source configuration revision returned by release browsing"},
                 },
                 "required": ["name", "tag"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_plugin_sources",
+            "description": "List saved plugin repositories, branches, and credential references in the active server/workspace.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_plugin_source",
+            "description": "Add or update a persisted plugin repository/branch source. credential_env is an environment variable name, never a secret token.",
+            "parameters": {"type": "object", "properties": {
+                "source_id": {"type": "string"}, "repository": {"type": "string"},
+                "branch": {"type": "string"}, "label": {"type": "string"},
+                "credential_env": {"type": "string", "description": "RMM_PLUGIN_GITHUB_TOKEN or RMM_PLUGIN_TOKEN_<NAME>"},
+            }, "required": ["source_id", "repository"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_plugin_source",
+            "description": "Remove a saved plugin source without deleting installed plugins.",
+            "parameters": {"type": "object", "properties": {"source_id": {"type": "string"}}, "required": ["source_id"]},
         },
     },
     {

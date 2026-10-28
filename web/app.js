@@ -2401,6 +2401,9 @@ async function connect() {
   if (typeof window.refreshAssets === "function") {
     window.refreshAssets().catch(() => {});
   }
+  if (typeof window.refreshPluginSources === "function") {
+    window.refreshPluginSources().catch(() => {});
+  }
   if (typeof window.refreshRmmTransport === "function") {
     window.refreshRmmTransport().catch(() => {});
   }

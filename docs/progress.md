@@ -9,6 +9,25 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Saved plugin sources and branch versions
+
+- Added UI, CLI, REST, and MCP source management for multiple repositories and
+  branches. Settings persist in the active workspace/server asset store;
+  dedicated credential references never include secret values.
+- Release browsing selects the configured branch's highest numeric version.
+  Installation pins the source revision, exact tag, and digest in the UI;
+  editing settings invalidates stale selections. Legacy main SHA releases
+  remain supported.
+- Plugin publication now uses independent major/minor versions per branch:
+  additions/removals/renames increment major, modifications increment minor,
+  and unchanged inputs/metadata skip publication. Non-main publication remains
+  opt-in through manual dispatch, with verified binary reuse across branches.
+- See [source configuration](plugin-releases-operator.md) and
+  [version/storage rules](plugin-releases.md).
+- Validation: 151 Python tests, eleven Node controller tests, 49-tool parity,
+  and repository lint pass. The plugin publisher has eighteen passing tests
+  covering version increments, branch isolation, reuse, and publication guards.
+
 ### 2026-10-28 — Install compiled plugins from private releases
 
 - Added shared GitHub release browsing and checksum-verified installation to

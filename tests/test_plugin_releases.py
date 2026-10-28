@@ -16,6 +16,7 @@ import urllib.request
 from rmm_asset_store import AssetStore
 from rmm_cli import RmmApiClient
 from rmm_plugin_releases import PluginReleases, ReleaseError, ReleaseRedirect, plugin_release_api
+from rmm_plugin_sources import PluginSourceStore
 from server_rmm import RMMHandler
 from workspace_service import WorkspaceRequestHandler, WorkspaceService
 
@@ -34,7 +35,8 @@ def fixture():
         {"name": "plugins.json", "id": 1, "size": len(raw)},
         {"name": "test.dll", "id": 2, "size": len(CONTENT)},
     ]}
-    return manifest, release, {"/releases/latest": json.dumps(release).encode(),
+    return manifest, release, {f"/git/matching-refs/tags/plugins-{hashlib.sha256(b'main').hexdigest()[:12]}-v": b"[]",
+                               "/releases/latest": json.dumps(release).encode(),
                                f"/releases/tags/{TAG}": json.dumps(release).encode(),
                                "/releases/assets/1": raw, "/releases/assets/2": CONTENT}
 
@@ -145,6 +147,88 @@ class PluginReleaseTests(unittest.TestCase):
         self.assertEqual(code, 502); self.assertTrue(payload["local_installed"])
         self.assertNotIn("private-secret", json.dumps(payload))
         self.assertEqual(self.store.read("plugins", "test.dll"), CONTENT)
+
+
+class BranchReleaseTests(unittest.TestCase):
+    """Keep numeric versions, source selections, and credential references separate."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = AssetStore(self.temp.name)
+        self.sources = PluginSourceStore(self.store.root)
+        self.dev = self.sources.save("dev", {"repository": "other/private", "branch": "feature/plugins",
+                                             "credential_env": "RMM_PLUGIN_TOKEN_DEV"})
+        self.key = hashlib.sha256(b"feature/plugins").hexdigest()[:12]
+        self.tag = f"plugins-{self.key}-v1.10"
+        manifest, release, _ = fixture()
+        manifest.update(version="1.10", source_branch="feature/plugins")
+        release["tag_name"] = self.tag
+        self.manifest = manifest
+        self.release = release
+        self.responses = {
+            f"/git/matching-refs/tags/plugins-{self.key}-v": json.dumps([
+                {"ref": f"refs/tags/plugins-{self.key}-v1.9"}, {"ref": f"refs/tags/{self.tag}"},
+                {"ref": "refs/tags/plugins-000000000000-v99.0"},
+            ]).encode(), "/releases/assets/2": CONTENT,
+        }
+        self.update_manifest()
+
+    def update_manifest(self):
+        """Refresh mock response digests after changing a branch manifest."""
+        raw = json.dumps(self.manifest).encode()
+        self.release["assets"][0]["size"] = len(raw)
+        self.responses["/releases/assets/1"] = raw
+        self.responses[f"/releases/tags/{self.tag}"] = json.dumps(self.release).encode()
+
+    def test_numeric_latest_uses_selected_repository_branch_and_credential(self):
+        seen = []
+
+        def request(client, endpoint, *args, **kwargs):
+            seen.append((client.repository, client.branch, client.token))
+            return self.responses[endpoint]
+
+        with patch.dict("os.environ", {"RMM_PLUGIN_TOKEN_DEV": "dev-secret", "RMM_PLUGIN_GITHUB_TOKEN": "main-secret"}), patch.object(PluginReleases, "_request", autospec=True, side_effect=request):
+            code, release = plugin_release_api(self.store, "GET", source="dev")
+            self.assertEqual(code, 200)
+            self.assertEqual((release["tag"], release["version"], release["source"]), (self.tag, "1.10", "dev"))
+            self.assertEqual(release["source_revision"], self.dev["revision"])
+            code, installed = plugin_release_api(self.store, "POST", body={"source": "dev", "source_revision": release["source_revision"], "tag": self.tag, "name": "test.dll", "sha256": DIGEST})
+            self.assertEqual(code, 200)
+            self.assertEqual(installed["release"]["branch"], "feature/plugins")
+            self.assertEqual(installed["release"]["source_commit"], SHA)
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {("other/private", "feature/plugins", "dev-secret")})
+        self.assertNotIn("dev-secret", json.dumps(release))
+
+    def test_source_edit_rejects_stale_selection_before_download(self):
+        self.sources.save("dev", {"repository": "other/replaced", "branch": "feature/plugins"})
+        with patch.object(PluginReleases, "_request") as request:
+            code, result = plugin_release_api(self.store, "POST", body={"source": "dev", "source_revision": self.dev["revision"], "tag": self.tag, "name": "test.dll"})
+        self.assertEqual(code, 400)
+        self.assertIn("source changed", result["error"])
+        request.assert_not_called()
+        self.assertEqual(self.store.list(), [])
+
+    def test_wrong_branch_version_and_commit_are_rejected(self):
+        for field, value in (("source_branch", "main"), ("version", "1.9"), ("source_commit", "main")):
+            old = self.manifest[field]
+            self.manifest[field] = value
+            self.update_manifest()
+            with patch.object(PluginReleases, "_request", side_effect=lambda endpoint, *a, **kw: self.responses[endpoint]):
+                self.assertEqual(plugin_release_api(self.store, "GET", source="dev", tag=self.tag)[0], 400)
+            self.manifest[field] = old
+
+    def test_unpublished_branch_does_not_fall_back_to_main(self):
+        self.responses[f"/git/matching-refs/tags/plugins-{self.key}-v"] = b"[]"
+        with patch.object(PluginReleases, "_request", side_effect=lambda endpoint, *a, **kw: self.responses[endpoint]) as request:
+            code, result = plugin_release_api(self.store, "GET", source="dev")
+            self.assertEqual(code, 400)
+            self.assertIn("no published plugin version", result["error"])
+            self.assertEqual(request.call_count, 1)
+        _, _, legacy = fixture()
+        with patch.object(PluginReleases, "_request", side_effect=lambda endpoint, *a, **kw: legacy[endpoint]):
+            self.assertEqual(plugin_release_api(self.store, "GET", source="dev", tag=TAG)[0], 400)
 
 
 class ReleaseTransportTests(unittest.TestCase):

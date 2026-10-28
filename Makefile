@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 PYTHON ?= python3
 
-PY_MODULES := rmm_plugin_releases.py rmm_embeddings.py server_rmm.py run_server.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
+PY_MODULES := rmm_plugin_sources.py rmm_plugin_releases.py rmm_embeddings.py server_rmm.py run_server.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
 	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_run_on_host.py rmm_kill_host_sessions.py \
 	rmm_workspace.py workspace_pivot.py workspace_service.py rmm_asset_store.py rmm_profile.py
 
