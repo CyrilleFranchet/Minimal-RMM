@@ -12,6 +12,8 @@ __pycache__/
 # Local OS / IDE files
 .DS_Store
 .idea/
+.env
+.env.local
 
 # Plugin build artifacts (agent-plugins/*)
 agent-plugins/**/*.dll

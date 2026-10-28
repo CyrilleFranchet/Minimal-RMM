@@ -253,6 +253,20 @@ def tool_list_plugins(client: RmmApiClient) -> str:
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
+def tool_list_plugin_release(client: RmmApiClient, tag: str = "latest") -> str:
+    """List compiled plugins and resolve the exact tag for a GitHub release."""
+    code, data = client.list_plugin_release(tag)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_install_plugin_release(client: RmmApiClient, name: str, tag: str, sha256: str = "") -> str:
+    """Install a verified plugin from an exact release without executing it."""
+    if not tag or tag == "latest":
+        return _json_result({"ok": False, "error": "exact release tag required; list_plugin_release resolves latest"})
+    code, data = client.install_plugin_release(name, tag, sha256)
+    return _json_result({"ok": code in (200, 201), "status": code, "data": data})
+
+
 def tool_list_assets(client: RmmApiClient, kind: str = "") -> str:
     """List operator-managed URL-installed assets."""
     code, data = client.list_assets(kind or None)
@@ -610,6 +624,8 @@ TOOL_HANDLERS = {
     "get_rclone_config": lambda c, a: tool_get_rclone_config(c),
     "queue_screenshot": lambda c, a: tool_queue_screenshot(c, a["session_ref"]),
     "list_plugins": lambda c, a: tool_list_plugins(c),
+    "list_plugin_release": lambda c, a: tool_list_plugin_release(c, a.get("tag", "latest")),
+    "install_plugin_release": lambda c, a: tool_install_plugin_release(c, a["name"], a["tag"], a.get("sha256", "")),
     "list_assets": lambda c, a: tool_list_assets(c, a.get("kind", "")),
     "add_asset": lambda c, a: tool_add_asset(
         c, a["kind"], a["url"], a.get("name", ""), bool(a.get("enabled", True))
@@ -858,6 +874,30 @@ OPENAI_TOOLS: list[dict] = [
             "name": "list_plugins",
             "description": "List PE plugins available on the RMM server for the Go agent.",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_plugin_release",
+            "description": "Inspect compiled GitHub plugins and resolve latest to an exact release tag before installation.",
+            "parameters": {"type": "object", "properties": {"tag": {"type": "string", "description": "latest or an exact plugins-<commit SHA> tag"}}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "install_plugin_release",
+            "description": "Install one checksum-verified plugin into the current server/workspace asset store without executing it. Use an exact tag from list_plugin_release.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "tag": {"type": "string", "description": "Exact plugins-<commit SHA> release tag; latest is not accepted"},
+                    "sha256": {"type": "string", "description": "Optional expected digest from the selected release"},
+                },
+                "required": ["name", "tag"],
+            },
         },
     },
     {

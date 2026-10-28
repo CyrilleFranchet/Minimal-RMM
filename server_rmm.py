@@ -57,6 +57,7 @@ from rmm_workspace import WorkspaceEventBroker, WorkspaceRegistry, valid_workspa
 from rmm_asset_store import AssetError, AssetStore, decode_asset_content
 from rmm_profile import ProfileError, ProfileManager, profile_directory
 from rmm_embeddings import EmbeddingStore, embedding_api
+from rmm_plugin_releases import plugin_release_api
 from rmm_ui_state import UiStateError, UiStateStore
 from rmm_rclone import (
     RcloneConfigError,
@@ -3250,6 +3251,27 @@ class RMMHandler(BaseHTTPRequestHandler):
         rest = path[len(API_PREFIX) + 1 :]
         return [p for p in rest.split("/") if p]
 
+    def _handle_plugin_releases(self, method, *, tag="latest", body=None):
+        """Keep GitHub credentials and installation at the selected storage owner."""
+        srv = self.server_instance
+        if srv.storage_mode != "server" or getattr(self, "_workspace_scope", lambda: None)():
+            self._json(409, {"error": "plugin_releases_are_workspace_local", "detail": "Use the local workspace API URL."})
+            return True
+        store = asset_store()
+
+        def publish(row):
+            """Atomically copy verified store bytes into the server runtime cache."""
+            content = store.read("plugins", row["name"], enabled_only=False)
+            if hashlib.sha256(content).hexdigest() != row["sha256"]:
+                return False
+            write_atomic_bytes(safe_join_under(plugin_directory(), row["name"]), content)
+            srv.log(f"Plugin installed: {row['name']} sha256={row['sha256']}")
+            return True
+
+        status, payload = plugin_release_api(store, method, tag=tag, body=body, publish=publish)
+        self._json(status, payload)
+        return True
+
     def _handle_embeddings(self, method, parts, body=None):
         """Serve embedding records only at their selected storage owner."""
         srv = self.server_instance
@@ -3290,6 +3312,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("GET", parts)
+        if parts == ["plugin-releases"]:
+            return self._handle_plugin_releases("GET", tag=qs.get("tag", ["latest"])[0])
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
@@ -3620,6 +3644,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("POST", parts, body)
+        if parts == ["plugin-releases", "install"]:
+            return self._handle_plugin_releases("POST", body=body)
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
@@ -3691,6 +3717,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "plugin_checksum_mismatch"})
                 return True
             write_atomic_bytes(target, content)
+            srv.log(f"Workspace plugin synchronized: {workspace_id}/{name} sha256={actual}")
             self._json(200, {"ok": True, "name": name, "size": len(content), "sha256": actual})
             return True
 

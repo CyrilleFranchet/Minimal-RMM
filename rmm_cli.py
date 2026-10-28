@@ -301,6 +301,19 @@ class RmmApiClient:
     def list_plugins(self):
         return self.request("GET", "/api/v1/plugins")
 
+    def list_plugin_release(self, tag="latest"):
+        """Resolve a published plugin release through the active server or workspace."""
+        return self.request("GET", "/api/v1/plugin-releases?" + urllib.parse.urlencode({"tag": tag}), timeout=150)
+
+    def install_plugin_release(self, name, tag, sha256=""):
+        """Install one plugin from an explicitly selected release into the asset store."""
+        if not tag or tag == "latest":
+            raise ValueError("select an exact release tag with plugin releases before installing")
+        body = {"name": name, "tag": tag}
+        if sha256:
+            body["sha256"] = sha256
+        return self.request("POST", "/api/v1/plugin-releases/install", body, timeout=240)
+
     def queue_pe_load(
         self,
         session_id: str,
@@ -789,6 +802,28 @@ def cmd_pe_list(client: RmmApiClient, state: dict, args):
         print("No agent plugins found in the runtime plugin store")
     for plugin in plugins:
         print(f"{plugin.get('name')}  {plugin.get('size')} bytes  sha256={plugin.get('sha256')}")
+
+
+def cmd_plugin_release(client: RmmApiClient, state: dict, args):
+    """Browse a GitHub release or install one pinned plugin without executing it."""
+    try:
+        if args.plugin_action == "releases":
+            code, data = client.list_plugin_release(args.tag)
+        else:
+            code, data = client.install_plugin_release(args.name, args.tag, args.sha256)
+    except ValueError as exc:
+        die(str(exc))
+    if code not in (200, 201):
+        die(f"plugin release request failed ({code}): {data}")
+    if getattr(args, "json", False):
+        print_json(data)
+    elif args.plugin_action == "releases":
+        print(f"{data.get('repository')} release {data.get('tag')}")
+        for plugin in data.get("plugins", []):
+            print(f"{plugin.get('name')}  {plugin.get('size')} bytes  sha256={plugin.get('sha256')}")
+    else:
+        asset = data.get("asset", {})
+        print(f"Installed {asset.get('name')} from {args.tag}; SHA-256 verified: {asset.get('sha256')}")
 
 
 def _print_rclone_config(data: dict) -> None:
@@ -1856,6 +1891,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp_exfil.add_argument("--mode", choices=("auto", "plugin", "binary"), default="auto", help="Execution mode")
     sp_exfil.add_argument("--session", "-s", default=None)
     sp_exfil.set_defaults(func=cmd_exfil)
+
+    sp_plugin = sub.add_parser("plugin", help="Browse and install compiled GitHub plugin releases")
+    sp_plugin_sub = sp_plugin.add_subparsers(dest="plugin_action", required=True)
+    sp_plugin_releases = sp_plugin_sub.add_parser("releases", parents=[shared], help="Inspect the latest or a named release")
+    sp_plugin_releases.add_argument("--tag", default="latest")
+    sp_plugin_releases.set_defaults(func=cmd_plugin_release)
+    sp_plugin_install = sp_plugin_sub.add_parser("install", parents=[shared], help="Install one plugin from an exact release tag")
+    sp_plugin_install.add_argument("name")
+    sp_plugin_install.add_argument("--tag", required=True, help="Exact tag returned by plugin releases; latest is not accepted")
+    sp_plugin_install.add_argument("--sha256", default="", help="Expected digest from plugin releases (optional additional pin)")
+    sp_plugin_install.set_defaults(func=cmd_plugin_release)
 
     sp_pe = sub.add_parser("pe", help="PE plugin management for the Go agent")
     sp_pe_sub = sp_pe.add_subparsers(dest="pe_cmd", required=True)

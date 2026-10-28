@@ -59,6 +59,7 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `POST …/screenshot` | `queue_screenshot` | Same as shell `screenshot` |
 | `GET/POST/DELETE /embeddings/profiles/*`, `/embeddings/results/*`, `POST /embeddings/run` | `embedding_profiles`, `embedding_results`, `run_embeddings` | [Saved profiles/results](document-embeddings.md); workspace operations use the local service |
 | `GET /plugins`, `POST …/pe` | `list_plugins`, `queue_pe_load` | Isolated child-process PE plugin execution on the Go agent (`__PE_LOAD__` or plugin-owned `__PLUGIN_COMMAND__`) |
+| `GET /plugin-releases`, `POST /plugin-releases/install` | `list_plugin_release`, `install_plugin_release` | [Browse and install compiled GitHub releases](plugin-releases-operator.md) in the active server/workspace |
 | `GET/POST/PATCH/DELETE /assets/*` | `list_assets`, `add_asset`, `set_asset_enabled`, `remove_asset` | URL-managed agent plugins, AI skills, and rclone profile files |
 | `GET/POST /profile` | `profile_status`, `start_profile`, `stop_profile` | Generic RMM-Profile connector and generated beacon URL |
 | `POST …/upload` | `queue_upload` | Local path on MCP host |

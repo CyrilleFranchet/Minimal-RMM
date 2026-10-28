@@ -9,6 +9,24 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Install compiled plugins from private releases
+
+- Added shared GitHub release browsing and checksum-verified installation to
+  REST, CLI, WebUI, and MCP. Installs use exact commit tags and optionally pin
+  the selected digest. GitHub credentials remain in the storage owner's process.
+- Workspace installations persist locally and republish to the workspace's
+  central runtime cache. Server mode uses its existing plugin store. Neither
+  publication nor installation automatically executes a plugin on an agent.
+- Replaced the plugin repository's temporary manual-only publication policy
+  with main-branch versioned releases and reuse of unchanged compiled inputs.
+  Minimal-RMM's own `main` stays v1; implementation remains on `v2`.
+- Added configuration, rollback, integrity, size-limit, and implementation
+  documentation in [plugin releases](plugin-releases.md).
+- Validation: 137 Python tests and seven Node controller tests pass; final
+  focused release tests, lint, and 46-tool MCP parity pass. Tests cover exact
+  release selection, credential stripping, checksum failure, cache reuse,
+  owner isolation, runtime publication, and partial synchronization failure.
+
 ### 2026-10-28 — Equal agent and AI panel widths
 
 - Split the desktop workspace equally between the agent and AI panels when

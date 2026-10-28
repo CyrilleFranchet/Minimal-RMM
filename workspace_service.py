@@ -39,6 +39,7 @@ from rmm_rclone import (
 from rmm_ai_skills import _load_all_skills_full, list_ai_skills
 from rmm_asset_store import AssetError, AssetStore, decode_asset_content
 from rmm_embeddings import EmbeddingStore, embedding_api
+from rmm_plugin_releases import plugin_release_api
 from rmm_ui_state import UiStateError, normalize_ui_state
 from workspace_pivot import WorkspacePivotManager
 
@@ -1109,6 +1110,9 @@ class WorkspaceService:
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
         if parts and parts[0] == "embeddings":
             return self._embedding_api("GET", parts)
+        if parts == ["plugin-releases"]:
+            status, payload = plugin_release_api(self.store.asset_store, "GET", tag=qs.get("tag", ["latest"])[0])
+            return status, payload, "application/json"
         if path == "/api/v1/health":
             return 200, {"status": "ok", "sessions": len(self.store.list_sessions()), "workspace_id": self.workspace_id}, "application/json"
         if parts == ["ui", "config"]:
@@ -1210,6 +1214,9 @@ class WorkspaceService:
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
         if parts and parts[0] == "embeddings":
             return self._embedding_api("POST", parts, body)
+        if parts == ["plugin-releases", "install"]:
+            status, payload = plugin_release_api(self.store.asset_store, "POST", body=body, publish=self._sync_plugin_asset)
+            return status, payload, "application/json"
         asset_kind = None
         if len(parts) == 2 and parts[0] == "assets":
             asset_kind = parts[1]

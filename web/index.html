@@ -446,6 +446,21 @@
       <p id="ui-config-status" class="ui-config-status" role="status" aria-live="polite"></p>
       <details class="asset-manager" open>
         <summary>Runtime assets and beacon transport</summary>
+        <h3>Compiled plugins from GitHub</h3>
+        <p class="ai-hint">Browse a published release, then install a selected plugin into this workspace or server. GitHub credentials stay on that service. Installation does not execute the plugin on an agent.</p>
+        <div class="asset-form-row">
+          <label for="plugin-release-tag">Release</label>
+          <input type="text" id="plugin-release-tag" value="latest" placeholder="latest or plugins-commit" autocomplete="off">
+          <button type="button" id="plugin-release-browse">Browse release</button>
+        </div>
+        <p id="plugin-release-info" class="ai-hint"></p>
+        <div class="asset-form-row">
+          <label for="plugin-release-name">Plugin</label>
+          <select id="plugin-release-name" disabled><option value="">Browse a release first</option></select>
+          <button type="button" id="plugin-release-install" disabled>Install selected plugin</button>
+        </div>
+        <p id="plugin-release-digest" class="ai-hint"></p>
+        <p id="plugin-release-status" class="ui-config-status" role="status" aria-live="polite"></p>
         <p class="ai-hint">Install plugins and AI skills from an HTTP(S) URL or a local file. Upload an rclone <code>.json</code> profile file directly; it is stored in the current operator workspace or server.</p>
         <div class="asset-form-row">
           <select id="asset-kind" aria-label="Asset kind">
@@ -576,6 +591,7 @@
   <script src="workspace-config.js"></script>
   <script src="app.js"></script>
   <script src="assets.js"></script>
+  <script src="plugin-releases.js"></script>
   <script src="embeddings.js"></script>
   <script src="agent-gen.js"></script>
   <script src="go-agent.js"></script>

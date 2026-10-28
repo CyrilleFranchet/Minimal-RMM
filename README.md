@@ -22,6 +22,7 @@ current data-flow details.
 | `server_rmm.py` | Threaded HTTP server with separate administration (`/api/v1/…`, `/ui/`) and beacon (`/register`, `/cmd`, `/result`, pivots) listeners |
 | `rmm_profile.py` | Generic external transport process manager; Cloudflared is supplied by `Minimal-RMM-profiles` |
 | `rmm_asset_store.py` | URL-installed plugin, AI skill, and rclone asset store |
+| `rmm_plugin_releases.py` | Verified private GitHub release installation through [CLI, WebUI, and MCP](docs/plugin-releases.md) |
 | `rmm_embeddings.py` | Saved embedding profiles and explicit result collections; [CLI/WebUI/MCP guide](docs/document-embeddings.md) |
 | `rmm_ui_state.py` | SQLite-backed operator WebUI configuration state |
 | `rmm_cli.py` | Operator CLI — calls the REST API (scriptable, `--json`) |

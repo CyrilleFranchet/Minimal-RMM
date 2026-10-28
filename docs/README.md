@@ -40,6 +40,7 @@ historical notes in `progress.md`.
 | Dynamic plugin volume and plugin-owned commands | [Plugin architecture](plugin-architecture.md) |
 | URL-installed plugins, AI skills, and rclone files | [Operator-managed assets](operator-assets.md) |
 | External repository for plugin source and releases | [External plugin repository](plugin-repository.md) |
+| Install compiled private releases from CLI, WebUI, or MCP | [Plugin releases](plugin-releases.md) |
 | Go agent PE loader and plugin ABI | [Go agent plugins](go-agent-plugins.md) |
 | SOCKS and TUN plugin split | [Pivot plugins](pivot-plugins.md) |
 | Multi-operator storage and Exegol ownership | [Workspace deployment](workspace-deployment.md) |

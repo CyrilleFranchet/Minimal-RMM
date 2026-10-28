@@ -63,6 +63,8 @@ from rmm_tools import (
     tool_queue_persistent,
     tool_queue_screenshot,
     tool_list_plugins,
+    tool_list_plugin_release,
+    tool_install_plugin_release,
     tool_list_assets,
     tool_add_asset,
     tool_set_asset_enabled,
@@ -205,6 +207,18 @@ def queue_screenshot(session_ref: str) -> str:
 def list_plugins() -> str:
     """List PE plugins available on the RMM server for the Go agent."""
     return tool_list_plugins(_client())
+
+
+@mcp.tool()
+def list_plugin_release(tag: str = "latest") -> str:
+    """Inspect a compiled GitHub plugin release and resolve its exact tag."""
+    return tool_list_plugin_release(_client(), tag)
+
+
+@mcp.tool()
+def install_plugin_release(name: str, tag: str, sha256: str = "") -> str:
+    """Install one verified plugin from an exact release tag without executing it."""
+    return tool_install_plugin_release(_client(), name, tag, sha256)
 
 
 @mcp.tool()

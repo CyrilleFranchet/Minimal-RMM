@@ -151,10 +151,12 @@ protocol contracts between the server and the agent.
 
 Prefer existing compiled plugin artifacts over rebuilding during RMM updates.
 The plugin repository provides a [pinned catalog and download helper](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/blob/main/docs/compiled-artifacts.md).
-Its workflows are manual-only; full bundle and native ONNX builds require an
-explicit build switch. Agent compatibility can be tested against the saved DLL.
-Actions artifacts expire, so retain approved ZIPs in durable local or artifact
-storage; the helper reuses verified cached ZIPs and never triggers a build.
+Plugin `main` publishes versioned GitHub Releases, reusing validated binaries
+when build inputs are unchanged. CLI, WebUI, and MCP can download selected
+binaries directly from the private repository; see
+[release installation](plugin-releases.md). Agent compatibility can still be
+tested against a saved DLL. Historical Actions artifacts expire; release
+assets provide the durable distribution channel. Downloading never starts a build.
 
 The MSVC fixture workflow in this repository runs only on explicit dispatch or
 an intentionally pushed `ci-msvc-*` tag. Since the default `main` is v1 and the
