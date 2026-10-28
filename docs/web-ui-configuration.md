@@ -1,6 +1,8 @@
 # Web UI configuration and persistence
 
-The **Config** button in the web UI opens an export/import panel. It saves
+The **Config** button opens sections for plugins, installed assets, beacon
+transport, and import/export. Every section starts collapsed each time the
+dialog opens; `initConfiguration` resets all nested `details` before showing it. It saves
 supported settings to a versioned JSON document and restores them without a
 page reload. After authentication, the same operator settings are synchronized
 automatically to SQLite so they survive a browser restart and follow the
@@ -130,3 +132,12 @@ state controls remain wired into the page. When adding a new setting:
 Embedding profiles and saved result collections use dedicated SQLite records,
 not the UI-state blob or Config export. Use the **Embeddings** panel to edit,
 save, import, and export them. See [document embeddings](document-embeddings.md).
+
+## Field help
+
+Configuration and common login, agent, pivot, AI, and embedding controls include
+native hover tooltips through `title` attributes. The same explanations are
+available to assistive technology through `aria-description`. Plugin Source ID
+and Label also have visible hints associated through `aria-describedby`, so
+their definitions are available without hovering. Source ID is the unique
+reference used by CLI/API calls; Label is the friendly display name.

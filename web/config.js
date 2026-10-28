@@ -282,7 +282,11 @@
 
   function initConfiguration() {
     const dialog = $("#ui-config-dialog");
-    $("#config-toggle-btn")?.addEventListener("click", () => dialog?.showModal());
+    $("#config-toggle-btn")?.addEventListener("click", () => {
+      if (!dialog) return;
+      for (const section of dialog.querySelectorAll("details")) section.open = false;
+      dialog.showModal();
+    });
     $("#ui-config-export")?.addEventListener("click", downloadConfiguration);
     $("#ui-config-import")?.addEventListener("click", chooseConfigurationFile);
     $("#ui-config-file")?.addEventListener("change", handleImport);

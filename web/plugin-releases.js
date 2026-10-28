@@ -8,10 +8,14 @@
   let choices = [];
   let busy = false;
   let dirty = false;
+  let editorPrevious = "";
+  let creating = false;
 
   function status(message, error = false) {
     $("status").textContent = message;
     $("status").classList.toggle("error", error);
+    $("source-status").textContent = message;
+    $("source-status").classList.toggle("error", error);
   }
 
   function source() {
@@ -29,9 +33,12 @@
     $("source").disabled = busy;
     $("source-refresh").disabled = busy;
     $("source-new").disabled = busy;
+    $("source-edit").disabled = busy || !source();
+    $("source-cancel").disabled = busy;
     $("source-save").disabled = busy;
     $("source-remove").disabled = busy || !source() || dirty;
     for (const id of sourceFields) $(id).disabled = busy;
+    $("source-id").readOnly = !creating;
     $("name").disabled = busy || !release?.plugins?.length;
     $("install").disabled = busy || !rows.length || dirty;
     $("install").textContent = `Install selected (${rows.length})`;
@@ -60,42 +67,67 @@
   }
 
   async function loadSources(preferred) {
-    if (busy) return;
+    if (busy || $("source-editor").open) return;
     const previous = typeof preferred === "string" ? preferred : $("source").value;
     busy = true;
     clearRelease();
     try {
       if (!window.rmmApi) throw new Error("Connect to the RMM service first.");
       const response = await window.rmmApi("/plugin-sources");
-      if (response.status !== 200) throw new Error(response.data?.error || `HTTP ${response.status}`);
+      if (response.status !== 200) throw new Error(response.data?.detail || response.data?.error || `HTTP ${response.status}`);
       sources = response.data?.sources || [];
-      $("source").replaceChildren();
-      for (const row of sources) {
-        const option = document.createElement("option");
-        option.value = row.id;
-        option.textContent = `${row.label || row.id} · ${row.repository} · ${row.branch}`;
-        $("source").appendChild(option);
-      }
-      $("source").value = sources.some((row) => row.id === previous) ? previous : sources[0]?.id || "";
+      renderSources(previous);
       editSource();
       status(sources.length ? "Choose a source and browse its published plugins." : "Add a repository and branch to get started.");
     } catch (error) {
-      sources = [];
-      $("source").replaceChildren();
-      editSource();
-      status(error.message, true);
+      status(`Could not refresh sources: ${error.message}.${sources.length ? " Previously loaded sources are still shown." : " Check the connection and try Refresh sources."}`, true);
     } finally {
       busy = false;
       syncControls();
     }
   }
 
+  function renderSources(preferred) {
+    $("source").replaceChildren();
+    for (const row of sources) {
+      const option = document.createElement("option");
+      option.value = row.id;
+      option.textContent = `${row.label || row.id} [${row.id}] · ${row.repository} · ${row.branch}`;
+      $("source").appendChild(option);
+    }
+    $("source").value = sources.some((row) => row.id === preferred) ? preferred : sources[0]?.id || "";
+  }
+
   function newSource() {
+    if (busy) return;
+    editorPrevious = $("source").value;
+    creating = true;
     $("source").value = "";
     editSource();
-    $("source-editor").open = true;
+    $("source-repository").value = "CyrilleFranchet/Minimal-RMM-plugins";
+    $("source-title").textContent = "New source";
+    $("source-editor").showModal();
     status("Enter a source ID, repository, and branch, then save the source.");
     $("source-id").focus?.();
+  }
+
+  function openSourceEditor() {
+    if (busy || !source()) return;
+    editorPrevious = $("source").value;
+    creating = false;
+    editSource();
+    $("source-title").textContent = "Edit source";
+    status("Update the source settings, then save.");
+    $("source-editor").showModal();
+  }
+
+  function cancelSourceEditor() {
+    if (busy) return;
+    $("source-editor").close();
+    $("source").value = editorPrevious;
+    creating = false;
+    editSource();
+    status("Source editing canceled. No changes saved.");
   }
 
   async function saveSource() {
@@ -107,26 +139,37 @@
       status("Enter a source ID, owner/repository, and branch.", true);
       return;
     }
+    if (creating && sources.some((row) => row.id === id)) {
+      status("That Source ID already exists. Choose another ID or cancel and use Edit source.", true);
+      return;
+    }
     if (!/^(?:RMM_PLUGIN_GITHUB_TOKEN|RMM_PLUGIN_TOKEN_[A-Z0-9_]+)$/.test(body.credential_env)) {
       status("Enter RMM_PLUGIN_GITHUB_TOKEN or RMM_PLUGIN_TOKEN_NAME, never a secret value.", true);
       return;
     }
     busy = true;
     clearRelease();
-    let saved = false;
     try {
       const response = await window.rmmApi(`/plugin-sources/${encodeURIComponent(id)}`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
-      if (![200, 201].includes(response.status)) throw new Error(response.data?.error || `HTTP ${response.status}`);
-      saved = true;
+      if (![200, 201].includes(response.status)) throw new Error(response.data?.detail || response.data?.error || `HTTP ${response.status}`);
+      const saved = response.data?.source;
+      if (!saved || saved.id !== id || saved.repository !== body.repository || saved.branch !== body.branch) {
+        throw new Error("The service did not confirm the saved source. Refresh sources to verify persistence.");
+      }
+      sources = sources.filter((row) => row.id !== id).concat(saved);
+      renderSources(id);
+      creating = false;
+      $("source-editor").close();
+      editSource();
+      status(`Saved source “${saved.label || id}” [${id}] on this service. It is now selected.`);
     } catch (error) {
       status(error.message, true);
     } finally {
       busy = false;
       syncControls();
     }
-    if (saved) await loadSources(id);
   }
 
   async function removeSource() {
@@ -137,7 +180,7 @@
     let removed = false;
     try {
       const response = await window.rmmApi(`/plugin-sources/${encodeURIComponent(row.id)}`, { method: "DELETE" });
-      if (response.status !== 200) throw new Error(response.data?.error || `HTTP ${response.status}`);
+      if (response.status !== 200) throw new Error(response.data?.detail || response.data?.error || `HTTP ${response.status}`);
       removed = true;
     } catch (error) {
       status(error.message, true);
@@ -145,7 +188,13 @@
       busy = false;
       syncControls();
     }
-    if (removed) await loadSources();
+    if (removed) {
+      $("source-editor").close();
+      sources = sources.filter((item) => item.id !== row.id);
+      renderSources();
+      editSource();
+      status(`Removed source [${row.id}]. Installed plugins are unchanged.`);
+    }
   }
 
   async function browse() {
@@ -237,7 +286,16 @@
     $("source")?.addEventListener("change", editSource);
     $("source-refresh")?.addEventListener("click", loadSources);
     $("source-new")?.addEventListener("click", newSource);
-    $("source-save")?.addEventListener("click", saveSource);
+    $("source-edit")?.addEventListener("click", openSourceEditor);
+    $("source-cancel")?.addEventListener("click", cancelSourceEditor);
+    $("source-editor")?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      cancelSourceEditor();
+    });
+    $("source-form")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      return saveSource();
+    });
     $("source-remove")?.addEventListener("click", removeSource);
     for (const id of sourceFields) $(id)?.addEventListener("input", () => {
       dirty = true;

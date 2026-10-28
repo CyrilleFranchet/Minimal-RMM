@@ -1747,9 +1747,13 @@ body.sidebar-resizing iframe {
   min-width: 0;
 }
 
-.ui-config-card #plugin-release-source-editor input[type="text"] {
+#plugin-release-source-editor input[type="text"] {
   flex: 1 1 16rem;
   min-width: 0;
+}
+
+#plugin-release-source-editor {
+  max-width: 44rem;
 }
 
 .ui-config-card #plugin-release-source-credential {

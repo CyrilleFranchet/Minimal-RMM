@@ -12,6 +12,8 @@ const revision = 'c'.repeat(64);
 function fixture(installResponse = { status: 200, data: { cached: true } }, browseResponse) {
   class Element {
     constructor() { this.value = ''; this.children = []; this.handlers = {}; this.classList = { toggle() {} }; }
+    showModal() { this.open = true; }
+    close() { this.open = false; }
     addEventListener(name, handler) { this.handlers[name] = handler; }
     replaceChildren() { this.children = []; this.value = ''; }
     appendChild(child) { this.children.push(child); if (!this.value) this.value = child.value; }
@@ -22,6 +24,8 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
   const sources = [{ id: 'default', repository: 'owner/plugins', branch: 'main', label: 'Stable', credential_env: 'RMM_PLUGIN_GITHUB_TOKEN', credential_configured: true },
     { id: 'dev', repository: 'other/plugins', branch: 'feature/test', credential_env: 'RMM_PLUGIN_TOKEN_DEV', credential_configured: false }];
   let refreshed = 0;
+  let failRefresh = false;
+  let failSave = false;
   const get = (id) => elements.get(`plugin-release-${id}`);
   get('tag').value = 'latest';
   const document = {
@@ -33,13 +37,14 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
     async rmmApi(url, options = {}) {
       const body = options.body ? JSON.parse(options.body) : null;
       calls.push({ url, method: options.method || 'GET', body });
-      if (url === '/plugin-sources') return { status: 200, data: { sources } };
+      if (url === '/plugin-sources') return failRefresh ? { status: 503, data: { error: 'offline' } } : { status: 200, data: { sources: sources.map((row) => ({ ...row })) } };
       if (url.startsWith('/plugin-sources/')) {
+        if (failSave && options.method === 'POST') return { status: 500, data: { error: 'plugin source storage failed' } };
         const id = decodeURIComponent(url.split('/').pop());
         const at = sources.findIndex((source) => source.id === id);
         if (at !== -1) sources.splice(at, 1);
         if (options.method === 'POST') sources.push({ id, ...body });
-        return { status: 200, data: { ok: true } };
+        return { status: 200, data: options.method === 'POST' ? { source: sources.find((row) => row.id === id) } : { ok: true } };
       }
       if (url.startsWith('/plugin-releases?')) return browseResponse || {
         status: 200, data: { repository: 'owner/plugins', branch: 'main', source: get('source').value,
@@ -52,7 +57,8 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'web/plugin-releases.js'), 'utf8'), { document, window });
   return { get, calls, sources, load: window.refreshPluginSources,
-    click: async (id) => get(id).handlers.click(), refreshed: () => refreshed };
+    click: async (id) => id === 'source-save' ? get('source-form').handlers.submit({ preventDefault() {} }) : get(id).handlers.click(), refreshed: () => refreshed,
+    failRefresh: () => { failRefresh = true; }, failSave: () => { failSave = true; } };
 }
 
 test('latest resolves the selected source and pins tag, digest, and source revision', async () => {
@@ -200,4 +206,52 @@ test('batch install pins each plugin and keeps only failures selected for retry'
   await ui.click('install');
   assert.equal(ui.calls.at(-1).body.name, 'second.dll');
   assert.equal(ui.get('install').disabled, true);
+});
+
+
+test('saving confirms and selects the persisted source without a second GET', async () => {
+  const ui = fixture();
+  await ui.load();
+  await ui.click('source-new');
+  assert.equal(ui.get('source-repository').value, 'CyrilleFranchet/Minimal-RMM-plugins');
+  ui.get('source-id').value = 'stable';
+  ui.failRefresh();
+  await ui.click('source-save');
+  assert.equal(ui.get('source-editor').open, false);
+  assert.equal(ui.get('source').value, 'stable');
+  assert.match(ui.get('status').textContent, /Saved source/);
+  assert.equal(ui.calls.filter((call) => call.url === '/plugin-sources').length, 1);
+  await ui.load();
+  assert.equal(ui.get('source').value, 'stable');
+  assert.match(ui.get('status').textContent, /Could not refresh/);
+});
+
+test('source dialog keeps storage errors visible and cancel restores selection', async () => {
+  const ui = fixture();
+  await ui.load();
+  await ui.click('source-new');
+  ui.get('source-id').value = 'new';
+  ui.failSave();
+  await ui.click('source-save');
+  assert.equal(ui.get('source-editor').open, true);
+  assert.match(ui.get('source-status').textContent, /storage failed/);
+  assert.equal(ui.get('source-id').value, 'new');
+  await ui.click('source-cancel');
+  assert.equal(ui.get('source').value, 'default');
+  assert.equal(ui.get('source-editor').open, false);
+});
+
+test('new source refuses duplicate IDs and editing locks the saved ID', async () => {
+  const ui = fixture();
+  await ui.load();
+  await ui.click('source-new');
+  ui.get('source-id').value = 'default';
+  await ui.click('source-save');
+  assert.match(ui.get('source-status').textContent, /already exists/);
+  assert.equal(ui.calls.length, 1);
+  await ui.click('source-cancel');
+  await ui.click('source-edit');
+  assert.equal(ui.get('source-editor').open, true);
+  assert.equal(ui.get('source-id').readOnly, true);
+  assert.equal(ui.get('source-repository').value, 'owner/plugins');
 });

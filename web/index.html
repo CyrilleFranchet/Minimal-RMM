@@ -22,7 +22,7 @@
       </div>
       <p>Web console for the operator API. Enter the configured local token when this workspace requires one.</p>
       <label for="token-input">API token</label>
-      <input type="password" id="token-input" placeholder="Bearer token" autocomplete="current-password">
+      <input type="password" id="token-input" placeholder="Bearer token" autocomplete="current-password" title="Operator API login token for the service you are connected to. This is not your GitHub token or beacon secret." aria-description="Operator API login token for the service you are connected to. This is not your GitHub token or beacon secret.">
       <button type="button" id="connect-btn">Connect</button>
       <p id="login-error" class="error-msg hidden"></p>
     </div>
@@ -63,12 +63,12 @@
 
             <label for="agent-server-url">Server URL</label>
             <div class="agent-gen-row">
-              <input type="url" id="agent-server-url" placeholder="https://your-server.example.com" autocomplete="off">
+              <input type="url" id="agent-server-url" placeholder="https://your-server.example.com" autocomplete="off" title="Agent-facing beacon URL, including the port. It must be reachable from the managed host." aria-description="Agent-facing beacon URL, including the port. It must be reachable from the managed host.">
               <button type="button" class="secondary" id="agent-use-origin" title="Use the active beacon transport URL">Use beacon URL</button>
             </div>
 
             <label for="agent-beacon-secret">Beacon secret</label>
-            <input type="password" id="agent-beacon-secret" placeholder="RMM_BEACON_SECRET (same as server)" autocomplete="off">
+            <input type="password" id="agent-beacon-secret" placeholder="RMM_BEACON_SECRET (same as server)" autocomplete="off" title="Shared beacon secret matching the server configuration. Separate from the operator API token." aria-description="Shared beacon secret matching the server configuration. Separate from the operator API token.">
 
             <fieldset class="agent-gen-fieldset">
               <legend>Session ID</legend>
@@ -89,11 +89,11 @@
             <div class="agent-gen-grid">
               <div>
                 <label for="agent-sleep">Sleep (s)</label>
-                <input type="number" id="agent-sleep" min="1" max="3600" value="60">
+                <input type="number" id="agent-sleep" min="1" max="3600" value="60" title="Base delay in seconds between agent check-ins." aria-description="Base delay in seconds between agent check-ins.">
               </div>
               <div>
                 <label for="agent-jitter">Jitter %</label>
-                <input type="number" id="agent-jitter" min="0" max="100" value="30">
+                <input type="number" id="agent-jitter" min="0" max="100" value="30" title="Percentage of variation applied to the check-in interval." aria-description="Percentage of variation applied to the check-in interval.">
               </div>
               <div>
                 <label for="agent-max-retries">Max retries</label>
@@ -156,17 +156,17 @@
             <p class="agent-gen-intro">Compile the checked-in Go agent on this RMM server for the selected OS and architecture, then download the ZIP.</p>
             <label for="agent-go-server-url">Server URL</label>
             <div class="agent-gen-row">
-              <input type="url" id="agent-go-server-url" placeholder="https://your-server.example.com" autocomplete="off">
+              <input type="url" id="agent-go-server-url" placeholder="https://your-server.example.com" autocomplete="off" title="Agent-facing beacon URL, including the port. It must be reachable from the managed host." aria-description="Agent-facing beacon URL, including the port. It must be reachable from the managed host.">
               <button type="button" class="secondary" id="agent-go-use-origin">Use beacon URL</button>
             </div>
             <label for="agent-go-beacon-secret">Beacon secret</label>
-            <input type="password" id="agent-go-beacon-secret" placeholder="RMM_BEACON_SECRET (same as server)" autocomplete="off">
+            <input type="password" id="agent-go-beacon-secret" placeholder="RMM_BEACON_SECRET (same as server)" autocomplete="off" title="Shared beacon secret matching the server configuration. Separate from the operator API token." aria-description="Shared beacon secret matching the server configuration. Separate from the operator API token.">
             <label for="agent-go-session-id">Session ID (optional)</label>
             <input type="text" id="agent-go-session-id" placeholder="Generated automatically when empty" autocomplete="off">
             <label for="agent-go-sleep">Sleep interval (seconds)</label>
-            <input type="number" id="agent-go-sleep" min="1" max="3600" value="60">
+            <input type="number" id="agent-go-sleep" min="1" max="3600" value="60" title="Base delay in seconds between agent check-ins." aria-description="Base delay in seconds between agent check-ins.">
             <label for="agent-go-jitter">Jitter (%)</label>
-            <input type="number" id="agent-go-jitter" min="0" max="100" value="30">
+            <input type="number" id="agent-go-jitter" min="0" max="100" value="30" title="Percentage of variation applied to the check-in interval." aria-description="Percentage of variation applied to the check-in interval.">
             <label for="agent-go-proxy">HTTP proxy (optional)</label>
             <input type="text" id="agent-go-proxy" placeholder="http://proxy.corp:8080" autocomplete="off">
             <div class="agent-go-options">
@@ -256,11 +256,11 @@
             <div class="file-row exfil-row">
               <input type="text" id="exfil-remote" placeholder="Remote file or folder path">
               <label class="exfil-profile-label" for="exfil-profile">Profile</label>
-              <select id="exfil-profile" title="rclone profile on server" disabled>
+              <select id="exfil-profile" disabled title="Saved rclone destination profile available to this server or workspace." aria-description="Saved rclone destination profile available to this server or workspace.">
                 <option value="">Loading…</option>
               </select>
               <label class="exfil-profile-label" for="exfil-mode">Mode</label>
-              <select id="exfil-mode" title="Exfil execution mode">
+              <select id="exfil-mode" title="Select the transfer implementation used by the managed agent." aria-description="Select the transfer implementation used by the managed agent.">
                 <option value="auto" selected>Auto</option>
                 <option value="plugin">Go plugin</option>
                 <option value="binary">rclone binary</option>
@@ -285,11 +285,11 @@
             <div class="socks-config-grid">
               <div>
                 <label for="socks-port">Listener port</label>
-                <input type="number" id="socks-port" min="1" max="65535" value="1080">
+                <input type="number" id="socks-port" min="1" max="65535" value="1080" title="Local SOCKS listener port on the server or workspace that owns the pivot." aria-description="Local SOCKS listener port on the server or workspace that owns the pivot.">
               </div>
               <div>
                 <label for="socks-bind-host">Bind host</label>
-                <input type="text" id="socks-bind-host" value="127.0.0.1" autocomplete="off" spellcheck="false">
+                <input type="text" id="socks-bind-host" value="127.0.0.1" autocomplete="off" spellcheck="false" title="Local interface address for the SOCKS listener. Loopback limits access to the owning machine." aria-description="Local interface address for the SOCKS listener. Loopback limits access to the owning machine.">
               </div>
             </div>
             <p class="socks-protocol" role="note">
@@ -374,26 +374,26 @@
             <p class="ai-hint">Keys are stored in the authenticated server or workspace SQLite state. Test each key to enable its provider and load the models available to that key.</p>
             <div class="ai-provider-config" data-provider="openai">
               <label for="openai-key-input">OpenAI API key</label>
-              <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off">
+              <input type="password" id="openai-key-input" placeholder="sk-…" autocomplete="off" title="API key used to validate access to OpenAI and load available models." aria-description="API key used to validate access to OpenAI and load available models.">
               <button type="button" class="secondary ai-provider-validate" data-provider="openai">Validate OpenAI key</button>
               <p class="ai-provider-status" id="openai-provider-status" aria-live="polite">Not configured.</p>
             </div>
             <div class="ai-provider-config" data-provider="anthropic">
               <label for="anthropic-key-input">Anthropic API key</label>
-              <input type="password" id="anthropic-key-input" placeholder="sk-ant-…" autocomplete="off">
+              <input type="password" id="anthropic-key-input" placeholder="sk-ant-…" autocomplete="off" title="API key used to validate access to Anthropic and load available models." aria-description="API key used to validate access to Anthropic and load available models.">
               <button type="button" class="secondary ai-provider-validate" data-provider="anthropic">Validate Anthropic key</button>
               <p class="ai-provider-status" id="anthropic-provider-status" aria-live="polite">Not configured.</p>
             </div>
             <div class="ai-provider-config" data-provider="mistral">
               <label for="mistral-key-input">Mistral API key</label>
-              <input type="password" id="mistral-key-input" placeholder="…" autocomplete="off">
+              <input type="password" id="mistral-key-input" placeholder="…" autocomplete="off" title="API key used to validate access to Mistral and load available models." aria-description="API key used to validate access to Mistral and load available models.">
               <button type="button" class="secondary ai-provider-validate" data-provider="mistral">Validate Mistral key</button>
               <p class="ai-provider-status" id="mistral-provider-status" aria-live="polite">Not configured.</p>
             </div>
             <label for="ai-provider-select">Provider</label>
-            <select id="ai-provider-select" disabled title="Validated AI provider"></select>
+            <select id="ai-provider-select" disabled title="AI service to use. Validate its API key before selecting it." aria-description="AI service to use. Validate its API key before selecting it."></select>
             <label for="ai-model-select">Model</label>
-            <select id="ai-model-select" disabled title="Model available to the selected provider"></select>
+            <select id="ai-model-select" disabled title="Model available from the selected AI provider." aria-description="Model available from the selected AI provider."></select>
             <input type="text" id="ai-model-custom" class="hidden" placeholder="Custom model ID" autocomplete="off" spellcheck="false">
             <p class="ai-hint">Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
           </details>
@@ -411,9 +411,9 @@
               Connect to Exegol MCP
             </label>
             <label for="exegol-mcp-url-input">Server URL</label>
-            <input type="url" id="exegol-mcp-url-input" placeholder="http://127.0.0.1:8000/mcp" autocomplete="off">
+            <input type="url" id="exegol-mcp-url-input" placeholder="http://127.0.0.1:8000/mcp" autocomplete="off" title="Exegol MCP endpoint reachable from the service running the AI assistant." aria-description="Exegol MCP endpoint reachable from the service running the AI assistant.">
             <label for="exegol-mcp-token-input">Bearer token</label>
-            <input type="password" id="exegol-mcp-token-input" placeholder="from exegol-mcp startup log" autocomplete="off">
+            <input type="password" id="exegol-mcp-token-input" placeholder="from exegol-mcp startup log" autocomplete="off" title="Bearer token issued by Exegol MCP. Separate from the RMM API token." aria-description="Bearer token issued by Exegol MCP. Separate from the RMM API token.">
             <p class="ai-hint">Run <code>pipx install exegol-mcp</code> then <code>exegol-mcp</code> on the RMM server host. Token is printed at startup. Or set <code>RMM_EXEGOL_MCP_URL</code> / <code>RMM_EXEGOL_MCP_TOKEN</code> on the server.</p>
           </details>
         </div>
@@ -432,45 +432,23 @@
         <h2 id="ui-config-title">Configuration</h2>
         <button type="submit" class="secondary" aria-label="Close configuration dialog">×</button>
       </div>
-      <details class="asset-manager" open>
+      <details class="asset-manager">
         <summary>Plugins</summary>
         <h3>1. Choose a source</h3>
         <p class="ai-hint">Load the available plugins, check the ones you need, then install them into this workspace or server. GitHub credentials stay on that service. Installation does not execute the plugin on an agent.</p>
         <div class="asset-form-row">
           <label for="plugin-release-source">Source</label>
-          <select id="plugin-release-source"><option value="">Load saved sources</option></select>
-          <button type="button" id="plugin-release-source-refresh" class="secondary">Refresh sources</button>
-          <button type="button" id="plugin-release-source-new" class="secondary">New source</button>
+          <select id="plugin-release-source" title="A saved GitHub repository, branch, and credential reference. Select one before loading plugins." aria-description="A saved GitHub repository, branch, and credential reference. Select one before loading plugins."><option value="">Load saved sources</option></select>
+          <button type="button" id="plugin-release-source-edit" class="secondary" disabled title="Edit the selected source in a separate dialog." aria-description="Edit the selected source in a separate dialog.">Edit source</button>
+          <button type="button" id="plugin-release-source-refresh" class="secondary" title="Reload saved sources from the connected service. This clears the current plugin selection." aria-description="Reload saved sources from the connected service. This clears the current plugin selection.">Refresh sources</button>
+          <button type="button" id="plugin-release-source-new" class="secondary" title="Create a separate saved repository and branch configuration." aria-description="Create a separate saved repository and branch configuration.">New source</button>
         </div>
         <p id="plugin-release-source-auth" class="config-auth" role="status"></p>
-        <details id="plugin-release-source-editor">
-          <summary>Configure plugin repositories and branches</summary>
-          <div class="asset-form-row">
-            <label for="plugin-release-source-id">Source ID</label>
-            <input id="plugin-release-source-id" type="text" maxlength="64" placeholder="stable" autocomplete="off">
-            <label for="plugin-release-source-label">Label</label>
-            <input id="plugin-release-source-label" type="text" placeholder="Stable plugins" autocomplete="off">
-          </div>
-          <div class="asset-form-row">
-            <label for="plugin-release-source-repository">Repository</label>
-            <input id="plugin-release-source-repository" type="text" placeholder="owner/repository" autocomplete="off">
-            <label for="plugin-release-source-branch">Branch</label>
-            <input id="plugin-release-source-branch" type="text" value="main" placeholder="main" autocomplete="off">
-          </div>
-          <label for="plugin-release-source-credential">Credential environment variable</label>
-          <input id="plugin-release-source-credential" type="text" value="RMM_PLUGIN_GITHUB_TOKEN" autocomplete="off" spellcheck="false">
-          <p class="ai-hint">Use RMM_PLUGIN_GITHUB_TOKEN or RMM_PLUGIN_TOKEN_NAME, configured on the server/workspace. Enter the variable name here, never the token.</p>
-
-          <div class="asset-form-row">
-            <button type="button" id="plugin-release-source-save">Save source</button>
-            <button type="button" id="plugin-release-source-remove" class="secondary" disabled>Remove source</button>
-          </div>
-        </details>
         <h3>2. Load available plugins</h3>
         <div class="asset-form-row">
           <label for="plugin-release-tag">Release</label>
-          <input type="text" id="plugin-release-tag" value="latest" placeholder="latest or exact release tag" autocomplete="off">
-          <button type="button" id="plugin-release-browse">Load plugins</button>
+          <input type="text" id="plugin-release-tag" value="latest" placeholder="latest or exact release tag" autocomplete="off" title="Use latest for the newest release on this source branch, or enter an exact published release tag." aria-description="Use latest for the newest release on this source branch, or enter an exact published release tag.">
+          <button type="button" id="plugin-release-browse" title="Fetch the published plugin list using the selected source and its service-side GitHub credential." aria-description="Fetch the published plugin list using the selected source and its service-side GitHub credential.">Load plugins</button>
         </div>
         <p id="plugin-release-info" class="ai-hint"></p>
         <h3>3. Select and install</h3>
@@ -478,7 +456,7 @@
         <div class="asset-form-row">
           <button type="button" id="plugin-release-select-all" class="secondary" disabled>Select all</button>
           <button type="button" id="plugin-release-select-none" class="secondary" disabled>Clear selection</button>
-          <button type="button" id="plugin-release-install" disabled>Install selected (0)</button>
+          <button type="button" id="plugin-release-install" disabled title="Download and verify checked plugins. Installation does not run them on an agent." aria-description="Download and verify checked plugins. Installation does not run them on an agent.">Install selected (0)</button>
         </div>
         <p id="plugin-release-digest" class="ai-hint"></p>
         <p id="plugin-release-status" class="ui-config-status" role="status" aria-live="polite"></p>
@@ -487,13 +465,13 @@
         <summary>Installed assets and manual uploads</summary>
         <p class="ai-hint">Install plugins and AI skills from an HTTP(S) URL or a local file. Upload an rclone <code>.json</code> profile file directly; it is stored in the current operator workspace or server.</p>
         <div class="asset-form-row">
-          <select id="asset-kind" aria-label="Asset kind">
+          <select id="asset-kind" aria-label="Asset kind" title="Choose whether the file is an agent plugin, an AI skill, or an rclone profile configuration." aria-description="Choose whether the file is an agent plugin, an AI skill, or an rclone profile configuration.">
             <option value="plugins">Agent plugin</option>
             <option value="skills">AI skill</option>
             <option value="rclone">rclone profiles</option>
           </select>
-          <input type="url" id="asset-url" placeholder="https://example.invalid/release.dll" autocomplete="off">
-          <input type="text" id="asset-name" placeholder="Optional filename" autocomplete="off">
+          <input type="url" id="asset-url" placeholder="https://example.invalid/release.dll" autocomplete="off" title="HTTP or HTTPS download address fetched by the connected server or workspace." aria-description="HTTP or HTTPS download address fetched by the connected server or workspace.">
+          <input type="text" id="asset-name" placeholder="Optional filename" autocomplete="off" title="Optional stored filename. Leave blank to use the filename inferred from the URL." aria-description="Optional stored filename. Leave blank to use the filename inferred from the URL.">
           <button type="button" id="asset-add">Install URL</button>
           <button type="button" class="secondary" id="asset-upload">Upload file</button>
           <input type="file" id="asset-file" accept=".dll,.ps1" class="hidden">
@@ -505,7 +483,7 @@
         <summary>Beacon transport</summary>
         <div class="asset-transport-row">
           <label for="asset-profile-name">RMM-Profile</label>
-          <input type="text" id="asset-profile-name" list="asset-profile-options" value="cloudflared" placeholder="cloudflared" autocomplete="off">
+          <input type="text" id="asset-profile-name" list="asset-profile-options" value="cloudflared" placeholder="cloudflared" autocomplete="off" title="Named beacon transport configuration, such as cloudflared. This is separate from plugin sources." aria-description="Named beacon transport configuration, such as cloudflared. This is separate from plugin sources.">
           <datalist id="asset-profile-options"></datalist>
           <span>Agent beacon URL: <code id="asset-beacon-url">not connected</code></span>
           <button type="button" class="secondary" id="asset-profile-refresh">Refresh</button>
@@ -518,13 +496,13 @@
         <summary>Import and export settings</summary>
         <p class="ai-hint">Export a versioned JSON file or import one to restore supported browser settings.</p>
         <label class="ai-checkbox">
-          <input type="checkbox" id="ui-config-include-secrets">
+          <input type="checkbox" id="ui-config-include-secrets" title="Include credentials in the exported JSON file. Leave unchecked when sharing settings." aria-description="Include credentials in the exported JSON file. Leave unchecked when sharing settings.">
           Include API keys and other secrets
         </label>
         <p class="ai-hint">Leave this unchecked for a portable file. Secret-bearing files must be protected like passwords.</p>
         <div class="ui-config-actions">
-          <button type="button" id="ui-config-export">Export configuration</button>
-          <button type="button" class="secondary" id="ui-config-import">Import configuration</button>
+          <button type="button" id="ui-config-export" title="Download supported UI settings as JSON. Saved plugin sources are stored separately on the service." aria-description="Download supported UI settings as JSON. Saved plugin sources are stored separately on the service.">Export configuration</button>
+          <button type="button" class="secondary" id="ui-config-import" title="Restore supported settings from a previously exported JSON file." aria-description="Restore supported settings from a previously exported JSON file.">Import configuration</button>
           <input type="file" id="ui-config-file" accept="application/json,.json" class="hidden">
         </div>
         <p id="ui-config-status" class="ui-config-status" role="status" aria-live="polite"></p>
@@ -532,14 +510,46 @@
     </form>
   </dialog>
 
+  <dialog id="plugin-release-source-editor" class="ui-config-dialog" aria-labelledby="plugin-release-source-title">
+    <form id="plugin-release-source-form" class="ui-config-card">
+      <div class="ui-config-header"><h2 id="plugin-release-source-title">New source</h2>
+        <button type="button" id="plugin-release-source-cancel" class="secondary">Cancel</button>
+      </div>
+      <div class="asset-form-row">
+        <label for="plugin-release-source-id">Source ID</label>
+        <input aria-describedby="plugin-source-id-help" id="plugin-release-source-id" type="text" maxlength="64" placeholder="stable" autocomplete="off" title="Unique reference used by the API and CLI, for example stable or dev. Use letters, numbers, underscores, or hyphens. A different ID creates a separate source." aria-description="Unique reference used by the API and CLI, for example stable or dev. Use letters, numbers, underscores, or hyphens. A different ID creates a separate source.">
+        <label for="plugin-release-source-label">Label</label>
+        <input aria-describedby="plugin-source-label-help" id="plugin-release-source-label" type="text" placeholder="Stable plugins" autocomplete="off" title="Friendly name shown in the source list, for example Stable plugins. If empty, the Source ID is used." aria-description="Friendly name shown in the source list, for example Stable plugins. If empty, the Source ID is used.">
+      </div>
+      <p class="ai-hint" id="plugin-source-id-help"><strong>Source ID:</strong> unique reference, such as <code>stable</code> or <code>dev</code>. A new ID creates a separate source.</p>
+      <p class="ai-hint" id="plugin-source-label-help"><strong>Label:</strong> display name, such as “Stable plugins.” Defaults to the Source ID.</p>
+      <div class="asset-form-row">
+        <label for="plugin-release-source-repository">Repository</label>
+        <input id="plugin-release-source-repository" type="text" placeholder="owner/repository" autocomplete="off" title="GitHub owner/repository, for example team/plugins. Enter the repository name, not its URL." aria-description="GitHub owner/repository, for example team/plugins. Enter the repository name, not its URL.">
+        <label for="plugin-release-source-branch">Branch</label>
+        <input id="plugin-release-source-branch" type="text" value="main" placeholder="main" autocomplete="off" title="Branch whose published plugin releases you want to use, for example main or dev." aria-description="Branch whose published plugin releases you want to use, for example main or dev.">
+      </div>
+      <label for="plugin-release-source-credential">Credential environment variable</label>
+      <input id="plugin-release-source-credential" type="text" value="RMM_PLUGIN_GITHUB_TOKEN" autocomplete="off" spellcheck="false" title="Name of the environment variable holding the GitHub token on the server or workspace. Do not paste the token here." aria-description="Name of the environment variable holding the GitHub token on the server or workspace. Do not paste the token here.">
+      <p class="ai-hint">Use RMM_PLUGIN_GITHUB_TOKEN or RMM_PLUGIN_TOKEN_NAME, configured on the server/workspace. Enter the variable name here, never the token.</p>
+
+      <div class="asset-form-row">
+        <button type="submit" id="plugin-release-source-save" title="Save this source on the connected server or workspace. This does not download plugins." aria-description="Save this source on the connected server or workspace. This does not download plugins.">Save source</button>
+        <button type="button" id="plugin-release-source-remove" class="secondary" disabled title="Remove this source configuration. Already installed plugin files remain." aria-description="Remove this source configuration. Already installed plugin files remain.">Remove source</button>
+      </div>
+      <p id="plugin-release-source-status" class="ui-config-status" role="status" aria-live="polite"></p>
+    </form>
+  </dialog>
+
+
   <dialog id="beacon-config-dialog" class="beacon-config-dialog">
     <form id="beacon-config-form" method="dialog" class="beacon-config-form">
       <h3 class="beacon-config-title">Beacon config</h3>
       <p id="beacon-config-session-label" class="beacon-config-session"></p>
       <label for="beacon-config-sleep">Sleep (seconds)</label>
-      <input type="number" id="beacon-config-sleep" min="1" max="3600" value="60" required>
+      <input type="number" id="beacon-config-sleep" min="1" max="3600" value="60" required title="Base delay in seconds between check-ins for the selected session." aria-description="Base delay in seconds between check-ins for the selected session.">
       <label for="beacon-config-jitter">Jitter (%)</label>
-      <input type="number" id="beacon-config-jitter" min="0" max="100" value="30" required>
+      <input type="number" id="beacon-config-jitter" min="0" max="100" value="30" required title="Percentage of variation applied to the selected session check-in interval." aria-description="Percentage of variation applied to the selected session check-in interval.">
       <div class="beacon-config-actions">
         <button type="button" id="beacon-config-cancel" class="secondary">Cancel</button>
         <button type="submit" id="beacon-config-apply">Apply</button>
@@ -584,13 +594,13 @@
     <p>Save reusable model settings, embed explicit documents, and export result collections.</p>
     <p class="ai-hint">Requires the autonomous DLL and an updated Windows Go agent. Text and DOCX only; long documents are truncated. Models must be compatible text encoders.</p>
     <label for="embedding-profiles">Saved profile</label><select id="embedding-profiles"></select>
-    <label for="embedding-name">Profile name</label><input id="embedding-name" maxlength="64" placeholder="strategy-minilm">
+    <label for="embedding-name">Profile name</label><input id="embedding-name" maxlength="64" placeholder="strategy-minilm" title="Unique name used to save and select this embedding profile." aria-description="Unique name used to save and select this embedding profile.">
     <fieldset><legend>Hugging Face model</legend><div class="embedding-grid">
-<div><label for="embedding-repo">Repository (owner/name)</label><input id="embedding-repo" autocomplete="off"></div>
-<div><label for="embedding-revision">Pinned revision (40-character commit SHA)</label><input id="embedding-revision" autocomplete="off"></div>
+<div><label for="embedding-repo">Repository (owner/name)</label><input id="embedding-repo" autocomplete="off" title="Model repository in owner/name format." aria-description="Model repository in owner/name format."></div>
+<div><label for="embedding-revision">Pinned revision (40-character commit SHA)</label><input id="embedding-revision" autocomplete="off" title="Exact 40-character commit SHA that pins the model files." aria-description="Exact 40-character commit SHA that pins the model files."></div>
 <div><label for="embedding-onnx_file">ONNX file</label><input id="embedding-onnx_file" autocomplete="off"></div>
 <div><label for="embedding-tokenizer_file">Tokenizer file</label><input id="embedding-tokenizer_file" autocomplete="off"></div>
-<div><label for="embedding-sha256">ONNX SHA-256</label><input id="embedding-sha256" autocomplete="off"></div>
+<div><label for="embedding-sha256">ONNX SHA-256</label><input id="embedding-sha256" autocomplete="off" title="Expected SHA-256 digest used to verify the ONNX model file." aria-description="Expected SHA-256 digest used to verify the ONNX model file."></div>
 <div><label for="embedding-input_names">Input names (token IDs, mask, type IDs; comma-separated)</label><input id="embedding-input_names" autocomplete="off"></div>
 <div><label for="embedding-output_name">Output tensor name</label><input id="embedding-output_name" autocomplete="off"></div>
 <div><label for="embedding-pooling">Pooling</label><select id="embedding-pooling"><option>mean</option><option>cls</option><option>direct</option></select></div>

@@ -9,6 +9,23 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Repair source save feedback and separate source editing
+
+- Move New/Edit source into a dedicated dialog with Enter-to-save, visible
+  errors, cancel/Escape, immutable existing IDs, and duplicate-ID protection.
+- Display the confirmed saved source immediately and retain existing rows
+  after refresh failures; show workspace-routing error details.
+- Prefill the standard GitHub repository for new sources. The existing backend
+  default repository and one-time seeding behavior are unchanged.
+
+### 2026-10-28 — Explain UI fields and collapse Config sections
+
+- Add hover and assistive-technology descriptions to Config and common login,
+  agent, pivot, AI, and embedding controls. Source ID and Label also have
+  visible definitions with examples.
+- Collapse every Config disclosure, each time
+  the dialog opens. Form values and saved settings are preserved.
+
 ### 2026-10-28 — Simplify Config and plugin selection
 
 - Follow-up: expand Config to a maximum of 76rem with viewport gutters;

@@ -9,7 +9,8 @@ for storage ownership, credentials, limits, and release publication.
 ## WebUI
 
 Open **Config → Plugins**. The **Source** selector lists each saved repository and branch.
-Choose one to inspect it, or select **New source** to create another:
+Choose one and select **Edit source**, or select **New source** to create another.
+Both actions open a separate dialog:
 
 - **Source ID** identifies the saved configuration, such as `stable` or `dev`.
 - **Label** is an optional display name.
@@ -20,7 +21,11 @@ Choose one to inspect it, or select **New source** to create another:
   a service-side variable named `RMM_PLUGIN_TOKEN_NAME`. Enter the variable
   name, never the token. The panel reports whether it is configured.
 
-Select **Save source** to persist changes. **Remove source** deletes only the
+Select **Save source** or press Enter to persist changes. The dialog closes
+after the service confirms the save, selects the saved source, and shows its
+label and ID. Failed saves keep the dialog and entered values visible. Cancel
+or Escape discards edits and restores the previous selection. Existing IDs are
+read-only; New source rejects duplicate IDs. **Remove source** deletes only the
 configuration; installed plugin files remain. A different source can use the
 same repository with another branch or a different repository entirely.
 
@@ -113,6 +118,8 @@ installation to republish the saved file.
 | Web `clearRelease` | Invalidate stale release selections |
 | Web `editSource`, `newSource` | Populate or clear the source form |
 | Web `loadSources` | Refresh persisted sources, preserving the selected ID when available |
+| Web `renderSources` | Render saved source labels, IDs, repositories, and branches, preserving the selected ID |
+| Web `openSourceEditor`, `cancelSourceEditor` | Open the edit dialog or discard drafts and restore the previous selection |
 | Web `saveSource`, `removeSource` | Persist or delete configuration through authenticated APIs |
 | Web `browse` | Render the selected source's exact release and version |
 | Web `install` | Install checked items sequentially with source, revision, tag, and digest pins; retain failures for retry and refresh installed assets |
@@ -120,7 +127,7 @@ installation to republish the saved file.
 
 `tests/test_plugin_release_surfaces.py` checks source CRUD requests, branch and
 configuration pins, mutable-tag rejection, and shared-tool error propagation.
-The UI test `fixture` supplies a DOM adapter and mock persistent API; its ten
+The UI test `fixture` supplies a DOM adapter and mock persistent API; its thirteen
 cases cover configuration add/edit/reload/delete, stale selections, secret-value
 rejection, pinned installs, missing configuration revisions, failed browsing,
 and partial synchronization errors.
@@ -128,12 +135,12 @@ and partial synchronization errors.
 ## Configuration layout and authentication feedback
 
 The dialog separates **Plugins**, **Installed assets and manual uploads**,
-**Beacon transport**, and **Import and export settings**. Plugins open by
-default; the other sections start collapsed. The dialog scrolls within the
+**Beacon transport**, and **Import and export settings**. All sections
+start collapsed every time Config opens. Source editing uses its own modal dialog. The dialog scrolls within the
 viewport, and plugin rows use labeled native checkboxes for keyboard access.
 
-Credential presence appears above the source editor, including when the editor
-is collapsed. Presence means only that the service has a nonempty credential;
+Credential presence appears below the source selector while the source editor
+is closed. Presence means only that the service has a nonempty credential;
 it does not prove GitHub access. The existing browser flow does not accept an
 OAuth token directly. Configure the referenced environment variable on the
 storage-owning service and restart it after changing the environment. Source
@@ -143,3 +150,18 @@ The checklist tests cover explicit selection, clearing selection, per-file
 checksum pins, partial batch failures, and retrying only failed items, in
 addition to source CRUD and stale selection coverage. No live OAuth access is
 validated by these tests.
+
+### Default repository and reload failures
+
+The backend still seeds `default` with `CyrilleFranchet/Minimal-RMM-plugins`
+and branch `main` when the source store is first created. `RMM_PLUGIN_REPOSITORY`
+overrides that initial seed. Existing stores are never overwritten or silently
+reseeded after deletion. New source prefills the standard repository as an
+editable suggestion; it does not save anything until submitted.
+
+Saving uses the source returned by the successful POST immediately, without a
+second GET that could hide a successful save. Refresh failures retain previously
+loaded rows and display an error. Source API errors show the service detail when
+available, including directions to use the workspace URL. Backend tests cover
+saved sources surviving store reopen; UI tests cover submit, explicit success,
+failed refresh, failed save, duplicate IDs, and cancel behavior.
