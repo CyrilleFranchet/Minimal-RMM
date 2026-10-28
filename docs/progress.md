@@ -9,6 +9,16 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Skip identical installed plugin releases in the UI
+
+- Compare release filenames and SHA-256 digests with the actual runtime
+  inventory; dim and disable matching entries and exclude them from Select all.
+- Disable successful installations immediately while keeping failed downloads
+  and failed workspace synchronization retryable. Failed inventory requests
+  display a warning and leave installation available.
+- Regression tests cover matching hashes, changed hashes, successful installs,
+  unavailable inventory, and failed synchronization.
+
 ### 2026-10-28 — Display the connected deployment mode
 
 - Show Standalone, Central in workspace mode, or Workspace with its ID in the

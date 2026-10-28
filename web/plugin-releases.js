@@ -28,7 +28,7 @@
   }
 
   function selected() {
-    return choices.filter((choice) => choice.input.checked).map((choice) => choice.row);
+    return choices.filter((choice) => choice.input.checked && !choice.input.disabled).map((choice) => choice.row);
   }
 
   function syncControls() {
@@ -47,7 +47,7 @@
     $("name").disabled = busy || !release?.plugins?.length;
     $("install").disabled = busy || !rows.length || dirty;
     $("install").textContent = `Install selected (${rows.length})`;
-    for (const id of ["select-all", "select-none"]) $(id).disabled = busy || !choices.length || dirty;
+    for (const id of ["select-all", "select-none"]) $(id).disabled = busy || !choices.some((choice) => !choice.input.disabled) || dirty;
     $("digest").textContent = release ? `${rows.length} of ${choices.length} selected. Each download is verified against its published SHA-256.` : "Load plugins to see the available downloads.";
   }
 
@@ -239,6 +239,15 @@
         throw new Error("The service returned an invalid plugin release or source.");
       }
       release = data;
+      let installed = [];
+      let inventoryKnown = false;
+      try {
+        const inventory = await window.rmmApi("/plugins");
+        if (inventory.status === 200 && Array.isArray(inventory.data?.plugins)) {
+          installed = inventory.data.plugins;
+          inventoryKnown = true;
+        }
+      } catch { /* Installation remains available when inventory cannot be checked. */ }
       $("info").textContent = `${data.repository} · ${data.branch || configured.branch} · version ${data.version} · ${data.tag}`;
       for (const row of data.plugins) {
         const label = document.createElement("label");
@@ -252,9 +261,17 @@
         label.appendChild(input);
         label.appendChild(text);
         $("name").appendChild(label);
-        choices.push({ row, input });
+        const choice = { row, input, label, text };
+        choices.push(choice);
+        if (installed.some((item) => item.name === row.name && item.sha256 === row.sha256)) {
+          markInstalled(choice);
+        }
       }
-      status(data.plugins.length ? "Check the plugins you want, then select Install selected." : "This release has no plugins.");
+      const available = choices.filter((choice) => !choice.input.disabled).length;
+      status(!data.plugins.length ? "This release has no plugins." : !inventoryKnown
+        ? "Installed plugin hashes could not be checked. Installation remains available; reload plugins to retry the comparison."
+        : available ? `${data.plugins.length - available} already installed with matching SHA-256. Check the plugins you want to install.`
+          : "All plugins in this release are already installed with matching SHA-256.", !inventoryKnown);
     } catch (error) {
       clearRelease();
       status(error.message, true);
@@ -262,6 +279,14 @@
       busy = false;
       syncControls();
     }
+  }
+
+  function markInstalled(choice) {
+    choice.input.checked = false;
+    choice.input.disabled = true;
+    choice.label.classList.toggle("plugin-installed", true);
+    choice.text.textContent = `${choice.row.name} · ${Math.ceil(choice.row.size / 1024).toLocaleString()} KB · Installed — SHA-256 matches`;
+    choice.label.title = `Installed runtime SHA-256: ${choice.row.sha256}`;
   }
 
   async function install() {
@@ -285,7 +310,7 @@
             throw new Error(prefix + (response.data?.error || `HTTP ${response.status}`));
           }
           installed++;
-          choices.find((choice) => choice.row === row).input.checked = false;
+          markInstalled(choices.find((choice) => choice.row === row));
         } catch (error) {
           failures.push(`${row.name}: ${error.message}`);
         }
@@ -304,7 +329,7 @@
     $("install")?.addEventListener("click", install);
     for (const id of ["select-all", "select-none"]) $(id)?.addEventListener("click", () => {
       if (busy || dirty) return;
-      for (const choice of choices) choice.input.checked = id === "select-all";
+      for (const choice of choices) choice.input.checked = id === "select-all" && !choice.input.disabled;
       syncControls();
     });
     $("tag")?.addEventListener("input", clearRelease);

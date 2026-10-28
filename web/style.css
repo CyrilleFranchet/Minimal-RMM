@@ -1799,6 +1799,11 @@ body.sidebar-resizing iframe {
   border-bottom: 0;
 }
 
+.plugin-choice.plugin-installed {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .plugin-choice:focus-within {
   outline: 2px solid var(--text);
   outline-offset: -2px;

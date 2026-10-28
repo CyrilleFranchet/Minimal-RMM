@@ -32,7 +32,11 @@ same repository with another branch or a different repository entirely.
 Enter `latest` or an exact release tag and select **Load plugins**. The
 resolved branch and version are displayed. Check one or more plugins and select
 **Install selected (N)**. No plugins are checked by default. **Select all** and
-**Clear selection** apply to the loaded release. Downloads run sequentially;
+**Clear selection** apply to selectable items in the loaded release. Plugins whose
+filename and SHA-256 match the runtime inventory are dimmed, labeled
+**Installed — SHA-256 matches**, and cannot be checked. Different hashes remain
+selectable for updates. Successful installs become disabled immediately; failed
+installs and failed synchronization remain available for retry. Downloads run sequentially;
 successful items are unchecked and failures remain checked for retry. The request pins the source, source configuration
 revision, exact tag, and selected file digest. Changing the source, release
 selection, or source form clears the previously browsed release. Unsaved source
@@ -123,12 +127,13 @@ installation to republish the saved file.
 | Web `openSourceEditor`, `cancelSourceEditor` | Open the edit dialog or discard drafts and restore the previous selection |
 | Web `saveSource`, `removeSource` | Persist or delete configuration through authenticated APIs |
 | Web `browse` | Render the selected source's exact release and version |
+| Web `markInstalled` | Uncheck and disable a matching installed plugin with a visible checksum-match label |
 | Web `install` | Install checked items sequentially with source, revision, tag, and digest pins; retain failures for retry and refresh installed assets |
 | Web `bind` | Connect form controls and stale-selection handling |
 
 `tests/test_plugin_release_surfaces.py` checks source CRUD requests, branch and
 configuration pins, mutable-tag rejection, and shared-tool error propagation.
-The UI test `fixture` supplies a DOM adapter and mock persistent API; its sixteen
+The UI test `fixture` supplies a DOM adapter and mock persistent API; its
 cases cover configuration add/edit/reload/delete, stale selections, secret-value
 rejection, pinned installs, missing configuration revisions, failed browsing,
 and partial synchronization errors.
@@ -175,3 +180,17 @@ empty store, and request failures. An empty store offers New source; a failed
 request shows its error and a retry placeholder when no previous rows exist.
 Malformed responses are errors, not empty stores. Existing rows survive failed
 refreshes. The UI never recreates a deleted default source automatically.
+
+### Installed checksum comparison
+
+Loading a release also reads `GET /api/v1/plugins`. The existing server inventory
+hashes the actual runtime files; workspace requests use the workspace-visible
+central inventory. Comparing both filename and digest prevents a successful
+local download with a missing or outdated runtime copy from being treated as
+deployed. Matching content already available through the workspace inventory
+counts as installed even if it comes from the shared central plugin directory.
+
+This is runtime availability, not proof that a plugin has executed on an agent.
+If inventory lookup fails, the UI reports that comparison is unavailable and
+keeps installation possible. Load plugins again after external changes, asset
+deletion, or enabling/disabling assets to refresh the comparison.

@@ -9,7 +9,7 @@ const tag = `plugins-${'a'.repeat(12)}-v1.2`;
 const digest = 'b'.repeat(64);
 const revision = 'c'.repeat(64);
 
-function fixture(installResponse = { status: 200, data: { cached: true } }, browseResponse, sourcesResponse) {
+function fixture(installResponse = { status: 200, data: { cached: true } }, browseResponse, sourcesResponse, inventoryResponse) {
   class Element {
     constructor() { this.value = ''; this.children = []; this.handlers = {}; this.classList = { toggle() {} }; }
     showModal() { this.open = true; }
@@ -47,6 +47,7 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
         if (options.method === 'POST') sources.push({ id, ...body });
         return { status: 200, data: options.method === 'POST' ? { source: sources.find((row) => row.id === id) } : { ok: true } };
       }
+      if (url === '/plugins') return inventoryResponse || { status: 200, data: { plugins: [] } };
       if (url.startsWith('/plugin-releases?')) return browseResponse || {
         status: 200, data: { repository: 'owner/plugins', branch: 'main', source: get('source').value,
           source_revision: revision, version: '1.2', tag, plugins: [{ name: 'example.dll', size: 5, sha256: digest }] },
@@ -87,7 +88,7 @@ test('changing the source or editing its configuration clears a browsed release'
   assert.equal(ui.get('source-branch').value, 'feature/test');
   await ui.click('browse');
   await ui.click('select-all');
-  assert.match(ui.calls.at(-1).url, /source=dev/);
+  assert.match(ui.calls.find((call) => call.url.includes('source=dev')).url, /source=dev/);
   ui.get('source-branch').value = 'other';
   ui.get('source-branch').handlers.input();
   assert.equal(ui.get('install').disabled, true);
@@ -139,7 +140,7 @@ test('editing the tag clears stale selections before installation', async () => 
   ui.get('tag').handlers.input();
   assert.equal(ui.get('install').disabled, true);
   await ui.click('install');
-  assert.equal(ui.calls.length, 2);
+  assert.equal(ui.calls.length, 3);
 });
 
 test('workspace synchronization failure reports the successful local installation', async () => {
@@ -182,7 +183,7 @@ test('plugins start unchecked and selection can be cleared', async () => {
   await ui.click('select-none');
   assert.equal(ui.get('install').disabled, true);
   await ui.click('install');
-  assert.equal(ui.calls.length, 2);
+  assert.equal(ui.calls.length, 3);
 });
 
 test('batch install pins each plugin and keeps only failures selected for retry', async () => {
@@ -312,4 +313,45 @@ test('deployment badge distinguishes standalone, central, workspace, and unknown
   assert.equal(badge.textContent, 'Workspace: alice');
   window.renderRmmDeploymentMode();
   assert.equal(badge.textContent, 'Mode unknown');
+});
+
+
+test('matching runtime hashes are disabled while updates remain selectable', async () => {
+  const plugins = [{ name: 'same.dll', size: 5, sha256: digest },
+    { name: 'update.dll', size: 5, sha256: 'd'.repeat(64) }];
+  const ui = fixture(undefined, { status: 200, data: { tag, source: 'default', source_revision: revision, plugins } },
+    undefined, { status: 200, data: { plugins: [{ name: 'same.dll', sha256: digest }, { name: 'update.dll', sha256: digest }] } });
+  await ui.load();
+  await ui.click('browse');
+  assert.equal(ui.get('name').children[0].children[0].disabled, true);
+  assert.match(ui.get('name').children[0].children[1].textContent, /Installed — SHA-256 matches/);
+  await ui.click('select-all');
+  assert.equal(ui.get('name').children[0].children[0].checked, false);
+  await ui.click('install');
+  const installs = ui.calls.filter((call) => call.url === '/plugin-releases/install');
+  assert.equal(installs.length, 1);
+  assert.equal(installs[0].body.name, 'update.dll');
+  assert.equal(ui.get('name').children[1].children[0].disabled, true);
+  assert.equal(ui.get('select-all').disabled, true);
+});
+
+test('failed inventory lookup permits installation and explains unavailable comparison', async () => {
+  const ui = fixture(undefined, undefined, undefined, { status: 503 });
+  await ui.load();
+  await ui.click('browse');
+  assert.match(ui.get('status').textContent, /hashes could not be checked/);
+  await ui.click('select-all');
+  assert.equal(ui.get('install').disabled, false);
+});
+
+test('a local installation with failed runtime sync stays selectable', async () => {
+  const ui = fixture({ status: 502, data: { local_installed: true, error: 'runtime unavailable' } });
+  await ui.load();
+  await ui.click('browse');
+  await ui.click('select-all');
+  await ui.click('install');
+  const input = ui.get('name').children[0].children[0];
+  assert.equal(input.checked, true);
+  assert.notEqual(input.disabled, true);
+  assert.equal(ui.get('install').disabled, false);
 });
