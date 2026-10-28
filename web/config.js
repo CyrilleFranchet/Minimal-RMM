@@ -286,6 +286,7 @@
       if (!dialog) return;
       for (const section of dialog.querySelectorAll("details")) section.open = false;
       dialog.showModal();
+      window.refreshPluginSources?.();
     });
     $("#ui-config-export")?.addEventListener("click", downloadConfiguration);
     $("#ui-config-import")?.addEventListener("click", chooseConfigurationFile);

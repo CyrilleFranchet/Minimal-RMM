@@ -9,6 +9,16 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Make source list loading explicit
+
+- Refresh sources whenever Config opens, independently of session/history
+  initialization. Display loading, empty-store, and request errors beside the
+  source selector, and reject malformed lists instead of showing a blank list.
+- Preserve saved rows on refresh failures and never silently reseed deleted
+  sources. Added regression coverage for Config opening and empty/error states.
+- The specific failure on the deployed instance remains unconfirmed pending
+  its source-load error message.
+
 ### 2026-10-28 — Repair source save feedback and separate source editing
 
 - Move New/Edit source into a dedicated dialog with Enter-to-save, visible

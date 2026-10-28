@@ -9,7 +9,7 @@ const tag = `plugins-${'a'.repeat(12)}-v1.2`;
 const digest = 'b'.repeat(64);
 const revision = 'c'.repeat(64);
 
-function fixture(installResponse = { status: 200, data: { cached: true } }, browseResponse) {
+function fixture(installResponse = { status: 200, data: { cached: true } }, browseResponse, sourcesResponse) {
   class Element {
     constructor() { this.value = ''; this.children = []; this.handlers = {}; this.classList = { toggle() {} }; }
     showModal() { this.open = true; }
@@ -37,6 +37,7 @@ function fixture(installResponse = { status: 200, data: { cached: true } }, brow
     async rmmApi(url, options = {}) {
       const body = options.body ? JSON.parse(options.body) : null;
       calls.push({ url, method: options.method || 'GET', body });
+      if (url === '/plugin-sources' && sourcesResponse) return sourcesResponse;
       if (url === '/plugin-sources') return failRefresh ? { status: 503, data: { error: 'offline' } } : { status: 200, data: { sources: sources.map((row) => ({ ...row })) } };
       if (url.startsWith('/plugin-sources/')) {
         if (failSave && options.method === 'POST') return { status: 500, data: { error: 'plugin source storage failed' } };
@@ -254,4 +255,42 @@ test('new source refuses duplicate IDs and editing locks the saved ID', async ()
   assert.equal(ui.get('source-editor').open, true);
   assert.equal(ui.get('source-id').readOnly, true);
   assert.equal(ui.get('source-repository').value, 'owner/plugins');
+});
+
+
+test('an empty store and a failed fetch have different visible source states', async () => {
+  const empty = fixture(undefined, undefined, { status: 200, data: { sources: [] } });
+  await empty.load();
+  assert.match(empty.get('source-list-status').textContent, /No sources are saved/);
+  assert.match(empty.get('source').children[0].textContent, /No saved sources/);
+  assert.equal(empty.get('source-edit').disabled, true);
+  const failed = fixture(undefined, undefined, { status: 409, data: { detail: 'Use the local workspace API URL.' } });
+  await failed.load();
+  assert.match(failed.get('source-list-status').textContent, /Use the local workspace API URL/);
+  assert.match(failed.get('source').children[0].textContent, /Sources unavailable/);
+});
+
+test('malformed source responses are errors rather than empty stores', async () => {
+  const ui = fixture(undefined, undefined, { status: 200, data: {} });
+  await ui.load();
+  assert.match(ui.get('source-list-status').textContent, /invalid source list/);
+  assert.equal(ui.get('browse').disabled, true);
+});
+
+test('opening Config reloads sources independently and collapses sections', () => {
+  const handlers = {};
+  const sections = [{ open: true }, { open: true }];
+  let refreshes = 0;
+  const dialog = { showModal() {}, querySelectorAll() { return sections; } };
+  const button = { addEventListener(name, handler) { handlers[name] = handler; } };
+  const document = { querySelector(selector) {
+    return selector === '#ui-config-dialog' ? dialog : selector === '#config-toggle-btn' ? button : null;
+  } };
+  const window = { refreshPluginSources() { refreshes++; }, addEventListener(name, callback) { callback(); } };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'web/config.js'), 'utf8'), { window, document });
+  handlers.click();
+  assert.equal(refreshes, 1);
+  assert.ok(sections.every((section) => !section.open));
+  handlers.click();
+  assert.equal(refreshes, 2);
 });

@@ -118,6 +118,7 @@ installation to republish the saved file.
 | Web `clearRelease` | Invalidate stale release selections |
 | Web `editSource`, `newSource` | Populate or clear the source form |
 | Web `loadSources` | Refresh persisted sources, preserving the selected ID when available |
+| Web `sourceListStatus` | Show source loading, empty, success, and error feedback beside the selector |
 | Web `renderSources` | Render saved source labels, IDs, repositories, and branches, preserving the selected ID |
 | Web `openSourceEditor`, `cancelSourceEditor` | Open the edit dialog or discard drafts and restore the previous selection |
 | Web `saveSource`, `removeSource` | Persist or delete configuration through authenticated APIs |
@@ -127,7 +128,7 @@ installation to republish the saved file.
 
 `tests/test_plugin_release_surfaces.py` checks source CRUD requests, branch and
 configuration pins, mutable-tag rejection, and shared-tool error propagation.
-The UI test `fixture` supplies a DOM adapter and mock persistent API; its thirteen
+The UI test `fixture` supplies a DOM adapter and mock persistent API; its sixteen
 cases cover configuration add/edit/reload/delete, stale selections, secret-value
 rejection, pinned installs, missing configuration revisions, failed browsing,
 and partial synchronization errors.
@@ -165,3 +166,12 @@ loaded rows and display an error. Source API errors show the service detail when
 available, including directions to use the workspace URL. Backend tests cover
 saved sources surviving store reopen; UI tests cover submit, explicit success,
 failed refresh, failed save, duplicate IDs, and cancel behavior.
+
+### Source list loading
+
+Opening Config refreshes sources independently of session and history loading.
+The status directly below the source selector distinguishes loading, a confirmed
+empty store, and request failures. An empty store offers New source; a failed
+request shows its error and a retry placeholder when no previous rows exist.
+Malformed responses are errors, not empty stores. Existing rows survive failed
+refreshes. The UI never recreates a deleted default source automatically.

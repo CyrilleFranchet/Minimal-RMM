@@ -11,6 +11,11 @@
   let editorPrevious = "";
   let creating = false;
 
+  function sourceListStatus(message, error = false) {
+    $("source-list-status").textContent = message;
+    $("source-list-status").classList.toggle("error", error);
+  }
+
   function status(message, error = false) {
     $("status").textContent = message;
     $("status").classList.toggle("error", error);
@@ -71,24 +76,41 @@
     const previous = typeof preferred === "string" ? preferred : $("source").value;
     busy = true;
     clearRelease();
+    sourceListStatus("Loading saved sources from this service…");
     try {
       if (!window.rmmApi) throw new Error("Connect to the RMM service first.");
       const response = await window.rmmApi("/plugin-sources");
       if (response.status !== 200) throw new Error(response.data?.detail || response.data?.error || `HTTP ${response.status}`);
-      sources = response.data?.sources || [];
+      const rows = response.data?.sources;
+      if (!Array.isArray(rows) || rows.some((row) => !row || typeof row.id !== "string"
+          || typeof row.repository !== "string" || typeof row.branch !== "string")) {
+        throw new Error("The service returned an invalid source list. Check that the UI and service versions match");
+      }
+      sources = rows;
       renderSources(previous);
       editSource();
+      sourceListStatus(sources.length ? `${sources.length} saved source${sources.length === 1 ? "" : "s"} loaded from this service.`
+        : "No sources are saved on this service. Choose New source to add the default GitHub repository or another repository.");
       status(sources.length ? "Choose a source and browse its published plugins." : "Add a repository and branch to get started.");
     } catch (error) {
-      status(`Could not refresh sources: ${error.message}.${sources.length ? " Previously loaded sources are still shown." : " Check the connection and try Refresh sources."}`, true);
+      const message = `Could not refresh sources: ${error.message}.${sources.length ? " Previously loaded sources are still shown." : " Check the connection and try Refresh sources."}`;
+      sourceListStatus(message, true);
+      if (!sources.length) renderSources(undefined, "Sources unavailable — retry Refresh sources");
+      status(message, true);
     } finally {
       busy = false;
       syncControls();
     }
   }
 
-  function renderSources(preferred) {
+  function renderSources(preferred, emptyLabel = "No saved sources — choose New source") {
     $("source").replaceChildren();
+    if (!sources.length) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = emptyLabel;
+      $("source").appendChild(placeholder);
+    }
     for (const row of sources) {
       const option = document.createElement("option");
       option.value = row.id;
@@ -164,6 +186,7 @@
       $("source-editor").close();
       editSource();
       status(`Saved source “${saved.label || id}” [${id}] on this service. It is now selected.`);
+      sourceListStatus(`Saved source “${saved.label || id}” [${id}]. It is now selected.`);
     } catch (error) {
       status(error.message, true);
     } finally {
@@ -194,6 +217,8 @@
       renderSources();
       editSource();
       status(`Removed source [${row.id}]. Installed plugins are unchanged.`);
+      sourceListStatus(sources.length ? `Removed source [${row.id}]. ${sources.length} saved sources remain.`
+        : "No sources are saved on this service. Choose New source to add one.");
     }
   }
 
