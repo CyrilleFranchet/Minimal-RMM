@@ -9,6 +9,27 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Saved document embedding operator workflow
+
+- Added dedicated profile and result APIs, CLI commands, a WebUI editor, and
+  three MCP tools. Profiles persist independently of browser configuration;
+  import/export uses JSON. Runtime model/auth/prefix settings remain bounded
+  by the validated autonomous DLL's input contract.
+- Workspace mode stores records locally in `workspace.db`; server mode uses
+  `embeddings.db`. Central workspace requests are refused, including scoped
+  workspace credentials against server-owned records.
+- Results are saved by explicit session/event selection and can be exported
+  or deleted. No automatic job correlation is claimed. Saved collections
+  remain independent of transcript retention.
+- Documented the required 64 MiB upload/sync limits for the 36.2 MB DLL and
+  the distinction between saved `env` authentication preference and an
+  already-provisioned agent `HF_TOKEN`.
+- Validation: eight targeted HTTP/CLI/storage/server tests and three Node
+  UI-controller tests pass. The full Python suite and `make check` pass,
+  including 44-tool MCP parity and WebUI contracts. Visual browser
+  verification is unavailable because computer-use permission is not granted
+  in this environment; controller tests use a minimal DOM adapter.
+
 ### 2026-10-27 — Standard Windows loader for autonomous ONNX DLLs
 
 - Added opt-in `RMMRequiresWindowsLoader` export inspection before execution.

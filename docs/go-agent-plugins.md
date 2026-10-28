@@ -353,3 +353,10 @@ The server selects this plugin for `mode=auto` exfil requests only when the
 session identifies itself as a Go agent with PE plugin support. Use
 `mode=plugin` to require it or `mode=binary` to force the legacy executable
 path.
+
+## Saved document embedding profiles
+
+The autonomous embedding DLL has a dedicated [operator workflow](document-embeddings.md)
+for saved model settings, CLI and WebUI execution, and explicit result
+collections. It uses the generic transport described here; no agent protocol
+or mapper change is required for profile persistence.

@@ -72,6 +72,7 @@ historical notes in `progress.md`.
 
 | Capability | Page |
 | --- | --- |
+| Saved document embedding profiles, CLI/WebUI, and result export | [Document embeddings](document-embeddings.md) |
 | rclone exfiltration modes | [rclone exfil](rclone-exfil.md) |
 | PowerShell and Go screenshots | [Go agent](go-agent.md) and [External plugin repository](plugin-repository.md) |
 | Downloaded files browser | [Downloads browser](downloads-browser.md) |

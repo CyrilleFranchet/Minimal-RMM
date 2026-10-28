@@ -34,6 +34,7 @@
       <h1>Minimal RMM</h1>
       <span class="spacer"></span>
       <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
+      <button type="button" class="secondary" id="embedding-open">Embeddings</button>
       <button type="button" class="secondary" id="config-toggle-btn" title="Save or restore UI configuration">Config</button>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
       <button type="button" class="secondary" id="open-downloads-dialog" title="Show downloads from all agents">Downloads</button>
@@ -520,11 +521,62 @@
     </div>
   </dialog>
 
+
+  <dialog id="embedding-dialog" class="embedding-dialog" aria-labelledby="embedding-title">
+    <h2 id="embedding-title">Document embeddings</h2>
+    <p>Save reusable model settings, embed explicit documents, and export result collections.</p>
+    <p class="ai-hint">Requires the autonomous DLL and an updated Windows Go agent. Text and DOCX only; long documents are truncated. Models must be compatible text encoders.</p>
+    <label for="embedding-profiles">Saved profile</label><select id="embedding-profiles"></select>
+    <label for="embedding-name">Profile name</label><input id="embedding-name" maxlength="64" placeholder="strategy-minilm">
+    <fieldset><legend>Hugging Face model</legend><div class="embedding-grid">
+<div><label for="embedding-repo">Repository (owner/name)</label><input id="embedding-repo" autocomplete="off"></div>
+<div><label for="embedding-revision">Pinned revision (40-character commit SHA)</label><input id="embedding-revision" autocomplete="off"></div>
+<div><label for="embedding-onnx_file">ONNX file</label><input id="embedding-onnx_file" autocomplete="off"></div>
+<div><label for="embedding-tokenizer_file">Tokenizer file</label><input id="embedding-tokenizer_file" autocomplete="off"></div>
+<div><label for="embedding-sha256">ONNX SHA-256</label><input id="embedding-sha256" autocomplete="off"></div>
+<div><label for="embedding-input_names">Input names (token IDs, mask, type IDs; comma-separated)</label><input id="embedding-input_names" autocomplete="off"></div>
+<div><label for="embedding-output_name">Output tensor name</label><input id="embedding-output_name" autocomplete="off"></div>
+<div><label for="embedding-pooling">Pooling</label><select id="embedding-pooling"><option>mean</option><option>cls</option><option>direct</option></select></div>
+    </div></fieldset>
+    <label for="embedding-auth">Authentication</label>
+    <select id="embedding-auth"><option value="none">Public model (no token)</option><option value="env">Use HF_TOKEN already set in the agent environment</option></select>
+    <p class="ai-hint">The saved preference does not install a token on the agent. Never paste a token into model, prompt, or label fields.</p>
+    <div class="embedding-grid">
+      <div><label for="embedding-prompt">Document prefix</label><input id="embedding-prompt" placeholder="Optional, for example passage: "></div>
+      <div><label for="embedding-label_prompt">Label prefix</label><input id="embedding-label_prompt" placeholder="Empty uses document prefix"></div>
+      <div><label for="embedding-max_tokens">Maximum tokens (truncation)</label><input id="embedding-max_tokens" type="number" min="8" max="512" value="256"></div>
+    </div>
+    <label for="embedding-labels">Optional classification labels (JSON array of name/text objects)</label>
+    <textarea id="embedding-labels" rows="4" spellcheck="false">[]</textarea>
+    <div class="embedding-actions">
+      <button id="embedding-save" type="button">Save profile</button>
+      <button id="embedding-delete" type="button" class="secondary">Delete selected</button>
+      <button id="embedding-export" type="button" class="secondary">Export form JSON</button>
+    </div>
+    <label for="embedding-import">Import profile JSON, then save</label><input id="embedding-import" type="file" accept=".json,application/json">
+    <fieldset><legend>Run on authorized documents</legend>
+      <label for="embedding-session">Session ID or unique prefix</label><input id="embedding-session" list="embedding-sessions"><datalist id="embedding-sessions"></datalist>
+      <label for="embedding-documents">Windows document paths, one per line (maximum 32)</label>
+      <textarea id="embedding-documents" rows="4" placeholder="C:\Lab\strategy.docx" spellcheck="false"></textarea>
+      <button id="embedding-run" type="button">Run saved profile</button>
+    </fieldset>
+    <fieldset><legend>Save and export results</legend>
+      <p>Inspect session output first. Enter its exact event ID to save that collection. Saving does not infer which queued run produced it.</p>
+      <button id="embedding-load-events" type="button" class="secondary">Load output events for this session</button>
+      <label for="embedding-event">Output event ID for the session above</label><input id="embedding-event" type="number" min="1" list="embedding-events"><datalist id="embedding-events"></datalist>
+      <div class="embedding-actions"><button id="embedding-save-result" type="button">Save selected result</button><button id="embedding-refresh" type="button" class="secondary">Refresh saved results</button></div>
+      <div id="embedding-results"></div>
+    </fieldset>
+    <p id="embedding-status" role="status" aria-live="polite"></p>
+    <button id="embedding-close" type="button" class="secondary">Close</button>
+  </dialog>
+
   <script src="theme.js"></script>
   <script src="config.js"></script>
   <script src="workspace-config.js"></script>
   <script src="app.js"></script>
   <script src="assets.js"></script>
+  <script src="embeddings.js"></script>
   <script src="agent-gen.js"></script>
   <script src="go-agent.js"></script>
   <script src="ai.js"></script>

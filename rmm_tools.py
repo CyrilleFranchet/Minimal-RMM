@@ -69,6 +69,24 @@ def _resolve_session_id(client: RmmApiClient, session_ref: str) -> tuple[str | N
     return None, {"error": "session_not_found", "session_ref": ref}
 
 
+def tool_embedding_profiles(client, action="list", name="", config=None):
+    """Manage secret-free embedding profiles in the selected storage owner."""
+    code, data = client.embedding_profiles(action, name, config)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_run_embeddings(client, session_ref, profile, documents):
+    """Queue explicit documents using a previously saved profile."""
+    code, data = client.run_embeddings(session_ref, profile, documents)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_embedding_results(client, action="list", name="", session_ref="", event_id=0):
+    """Save a selected output event or manage persisted result collections."""
+    code, data = client.embedding_results(action, name, session_ref, event_id)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
 def tool_health(client: RmmApiClient) -> str:
     code, data = client.health(timeout=5)
     return _json_result({"ok": code == 200, "status": code, "data": data})
@@ -563,6 +581,9 @@ def tool_remove_persistence(client: RmmApiClient, session_ref: str) -> str:
 
 
 TOOL_HANDLERS = {
+    "embedding_profiles": lambda c, a: tool_embedding_profiles(c, a.get("action", "list"), a.get("name", ""), a.get("config")),
+    "run_embeddings": lambda c, a: tool_run_embeddings(c, a["session_ref"], a["profile"], a["documents"]),
+    "embedding_results": lambda c, a: tool_embedding_results(c, a.get("action", "list"), a.get("name", ""), a.get("session_ref", ""), a.get("event_id", 0)),
     "health": lambda c, a: tool_health(c),
     "list_sessions": lambda c, a: tool_list_sessions(c),
     "get_session": lambda c, a: tool_get_session(c, a["session_ref"]),
@@ -1229,3 +1250,40 @@ Guidelines:
 - Be concise; summarize command output for the user.
 - Destructive actions (kill_session, delete_history, clear_history) require clear user intent.
 """
+
+
+# Saved embedding operations share the same API in server and workspace mode.
+OPENAI_TOOLS.extend(
+[{'type': 'function',
+  'function': {'name': 'embedding_profiles',
+               'description': 'List/get/save/delete embedding profiles. In workspace mode use the '
+                              'local workspace API. Config accepts model, auth (none/env), '
+                              'prompts, labels, max_tokens; never include tokens.',
+               'parameters': {'type': 'object',
+                              'properties': {'action': {'type': 'string',
+                                                        'enum': ['list', 'get', 'save', 'delete']},
+                                             'name': {'type': 'string'},
+                                             'config': {'type': 'object'}},
+                              'required': []}}},
+ {'type': 'function',
+  'function': {'name': 'run_embeddings',
+               'description': 'Queue explicit authorized documents with a saved profile; requires '
+                              'updated Go agent and autonomous DLL.',
+               'parameters': {'type': 'object',
+                              'properties': {'session_ref': {'type': 'string'},
+                                             'profile': {'type': 'string'},
+                                             'documents': {'type': 'array',
+                                                           'items': {'type': 'string'}}},
+                              'required': ['session_ref', 'profile', 'documents']}}},
+ {'type': 'function',
+  'function': {'name': 'embedding_results',
+               'description': 'List/get/save/delete saved embedding results. Save requires exact '
+                              'session_ref and output event_id; get returns exportable JSON.',
+               'parameters': {'type': 'object',
+                              'properties': {'action': {'type': 'string',
+                                                        'enum': ['list', 'get', 'save', 'delete']},
+                                             'name': {'type': 'string'},
+                                             'session_ref': {'type': 'string'},
+                                             'event_id': {'type': 'integer'}},
+                              'required': []}}}]
+)

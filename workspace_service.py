@@ -38,6 +38,7 @@ from rmm_rclone import (
 )
 from rmm_ai_skills import _load_all_skills_full, list_ai_skills
 from rmm_asset_store import AssetError, AssetStore, decode_asset_content
+from rmm_embeddings import EmbeddingStore, embedding_api
 from rmm_ui_state import UiStateError, normalize_ui_state
 from workspace_pivot import WorkspacePivotManager
 
@@ -104,6 +105,7 @@ class WorkspaceStore:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._init_schema()
+        self.embeddings = EmbeddingStore(self.data_dir / "workspace.db")
         try:
             os.chmod(self.data_dir / "workspace.db", 0o600)
         except OSError:
@@ -250,6 +252,7 @@ class WorkspaceStore:
     def close(self) -> None:
         """Close the local SQLite connection."""
         with self._lock:
+            self.embeddings.close()
             self._db.close()
 
     def get_cursor(self) -> int:
@@ -1078,9 +1081,34 @@ class WorkspaceService:
         """Resolve a local session row for API and pivot handlers."""
         return self.store.resolve_session(ref, active_only=True)
 
+    def _embedding_api(self, method, parts, body=None):
+        """Keep profiles and selected result collections in the local workspace."""
+        def queue(ref, request):
+            """Forward only a resolved execution request to the central broker."""
+            session = self._local_session(ref)
+            if not session:
+                return 404, {"error": "session_not_found"}
+            if session.get("agent_type") != "go" or "pe" not in session.get("capabilities", []):
+                return 409, {"error": "requires_go_agent_with_pe_support"}
+            status, payload, _ = self._proxy("POST", f"/api/v1/sessions/{session['id']}/pe", request)
+            return status, payload
+
+        def event(ref, event_id):
+            """Resolve an exact event from local owned session history."""
+            session = self.store.resolve_session(ref)
+            if not session:
+                return None, None
+            rows = self.store.get_events(session["id"], since=event_id - 1, limit=1)
+            return session["id"], next((e for e in rows or [] if e.get("id") == event_id), None)
+
+        status, payload = embedding_api(self.store.embeddings, method, parts, body, queue, event)
+        return status, payload, "application/json"
+
     def get_json(self, path: str, qs: dict[str, list[str]]) -> tuple[int, Any, str] | None:
         """Handle local JSON GET endpoints or return ``None`` for proxying."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts and parts[0] == "embeddings":
+            return self._embedding_api("GET", parts)
         if path == "/api/v1/health":
             return 200, {"status": "ok", "sessions": len(self.store.list_sessions()), "workspace_id": self.workspace_id}, "application/json"
         if parts == ["ui", "config"]:
@@ -1180,6 +1208,8 @@ class WorkspaceService:
     def post_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local pivot and AI persistence endpoints or return ``None``."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts and parts[0] == "embeddings":
+            return self._embedding_api("POST", parts, body)
         asset_kind = None
         if len(parts) == 2 and parts[0] == "assets":
             asset_kind = parts[1]
@@ -1314,6 +1344,8 @@ class WorkspaceService:
     def patch_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local asset enablement updates or return ``None`` for proxying."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts and parts[0] == "embeddings":
+            return 405, {"error": "method_not_allowed"}, "application/json"
         if parts == ["ui", "config"]:
             try:
                 result = self.store.set_ui_state(body.get("config", body))
@@ -1351,6 +1383,8 @@ class WorkspaceService:
     def delete_json(self, path: str) -> tuple[int, Any, str] | None:
         """Handle local history and AI deletion endpoints or return ``None``."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts and parts[0] == "embeddings":
+            return self._embedding_api("DELETE", parts)
         if parts == ["history"]:
             deleted, errors = self.store.clear_history()
             return 200, {"ok": True, "deleted": deleted, "errors": errors}, "application/json"
