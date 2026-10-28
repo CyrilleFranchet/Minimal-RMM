@@ -6,10 +6,11 @@ See the [documentation wiki](README.md) for navigation, the
 and hot-loading model.
 
 The Go agent supports PE plugins as separate child processes. The agent fetches
-the DLL over the authenticated beacon channel, sends the bytes to a child over
-stdin, and maps it there. The plugin is never mapped in the beacon process,
-which keeps the agent small and isolates plugin crashes. Nothing is written to
-the target disk. Authorized lab use only.
+the DLL over the authenticated beacon channel and inspects its loader marker.
+Unmarked DLLs use the existing in-memory mapper. DLLs exporting
+`RMMRequiresWindowsLoader` are staged on disk and loaded by Windows in an
+isolated child. The plugin never runs in the beacon process. Authorized lab
+use only.
 
 ## Overview
 
@@ -23,8 +24,8 @@ POST /api/v1/sessions/{id}/pe     (queue __PE_LOAD__ or __PLUGIN_COMMAND__)
         ▼
 agent-go: execute() dispatch  ──  generic plugin handler
         ├── fetch  GET /tools/plugins/<name>  (beacon auth)
-        ├── child  agent.exe --plugin-child <export>
-        └── frame  DLL bytes + input over stdin
+        ├── unmarked DLL: --plugin-child, DLL bytes + input over stdin
+        └── marked DLL: private file → --plugin-library-child, input over stdin
 ```
 
 One-shot plugin images are downloaded and started per command. The parent does
@@ -119,29 +120,38 @@ endpoints so each pivot loads only the code it needs.
 
 ## How loading works
 
-The runner lives in `agent-go/pe_loader_windows.go` and uses only the Go
-standard library:
+The host uses the Go standard library and Windows APIs:
 
-1. **Fetch** — the plugin bytes are downloaded through the same authenticated
-   `request()` helper as every other beacon call (`X-RMM-Beacon-Token` header).
-   Persistent plugin fetches use a cancellation context so shutdown can abort a
-   stalled download.
-2. **Run** — the parent starts itself with `--plugin-child` and frames the DLL
-   bytes and input over stdin.
-3. **Map** — the child manually maps the PE into private allocations, applies
-   relocations and imports, sets per-section protections, and invokes the
-   requested export.
-4. **Cleanup** — the parent waits up to ten minutes and returns stdout as the
-   plugin result. No plugin file is created.
+1. Fetch the DLL through the authenticated beacon channel and inspect its PE
+   export names without executing code.
+2. For an unmarked DLL, send its bytes and input to `--plugin-child`, which
+   uses the existing manual mapper.
+3. For a DLL exporting `RMMRequiresWindowsLoader`, create a random temporary
+   directory with a protected Windows DACL for the process account and SYSTEM.
+   Write the DLL, keep it open with read sharing only, and start
+   `--plugin-library-child` with its absolute path. Pass plugin input over stdin.
+4. The standard-loader child calls `LoadLibraryExW` with
+   `LOAD_LIBRARY_SEARCH_SYSTEM32`, then `GetProcAddress` and the plugin export.
+   Windows owns CRT, static TLS, worker-thread initialization, and unwind data.
+5. The parent waits for the child and removes the staged file and directory.
+   This also runs after a native crash, timeout, or cancellation. A forced
+   parent termination or machine shutdown can leave the temporary file behind.
 
-Discretion properties:
+The DLL remains loaded until the child exits because an embedded Go runtime
+can own background threads. It is not unloaded with `FreeLibrary`. The
+standard-loader contract permits only Windows system DLL dependencies. It
+requires a writable temporary directory and permission to execute DLLs there.
+It does not bypass Windows application control policies.
 
-- No file is written to the target disk at any point.
-- Code pages are **never writable and executable at the same time**.
-- The image uses private committed memory in the child process and is released
-  when that process exits.
-- After loading, the writable staging allocation is released; only the
-  protected image allocation remains.
+To select this path, a native plugin exports the marker alongside `Run`:
+
+```cpp
+extern "C" __declspec(dllexport) int RMMRequiresWindowsLoader(void) { return 1; }
+```
+
+Only the export name is inspected. The marker is not called, and plugin input
+is unchanged. REST, CLI, MCP, and WebUI continue to use the same generic PE
+command. Operators must use an updated agent before deploying a marked DLL.
 
 ## Plugin ABI
 
@@ -191,16 +201,35 @@ clang -shared -o hello.dll plugin.c
 | Limitation | Detail |
 |------------|--------|
 | Architecture | Only PE32+ amd64 images; other plugins fail with an explicit error |
-| Relocations | Standard Windows DLL relocations are handled by `LoadLibrary` |
-| Loader registration | The child uses the normal Windows loader, so standard module lookup and DLL initialization are available |
-| Exceptions | Plugin language runtimes may use their normal Windows loader requirements inside the child |
-| CFG | Follow the normal compiler and loader requirements for the plugin toolchain |
-| Dependencies | DLL dependencies must be available to the child through the normal Windows loader search rules |
+| Relocations | The manual mapper handles `IMAGE_REL_BASED_DIR64`; other relocation types fail |
+| Loader registration | Unmarked images are not registered with Windows; marked DLLs use the standard loader |
+| Exceptions / TLS / CFG | Use the Windows-loader marker for MSVC C++ exceptions, static TLS, or runtime worker threads; the manual mapper does not provide these guarantees |
+| Dependencies | Marked DLLs must depend only on Windows system DLLs; unmarked imports retain the existing `LoadLibraryA` resolution |
 | Isolation | A crashing plugin terminates only the child runner; the beacon process remains alive |
 | Blocking | One-shot plugins can occupy the command cycle for up to ten minutes; the persistent pivot runs in a separate child and does not block beacon polling |
 | .NET | Managed assemblies are out of scope; build AOT native binaries instead |
 
 Test plugins in the lab before queuing them against live sessions.
+
+### Windows loader validation
+
+`.github/workflows/msvc-plugin-loader.yml` builds a normal MSVC `/MT` DLL with
+no exception or TLS shim. `TestWindowsPluginLifecycle` exercises authenticated
+download, marker selection, the real agent child, constructors, unwind lookup,
+module registration, caught C++ exceptions, and `thread_local` data in a new
+`std::thread`. It checks cleanup after success, an error, a missing export,
+abrupt native exit, and cancellation after the DLL has loaded.
+`TestLegacyPluginLifecycle` covers an unmarked fixture. Both use
+`RMM_MSVC_TEST_DLL` and `RMM_MSVC_TEST_AGENT` to locate Windows artifacts.
+
+`TestDocumentEmbeddingsPlugin` additionally uses `RMM_MSVC_TEST_INPUT` for a
+pinned public MiniLM request and a quantized BGE-small graph, using mean and
+CLS pooling respectively. It validates 384-dimensional normalized vectors
+for two documents and a strategic label, isolates a missing document's error,
+and checks cleanup after both inference and invalid input. The plugin
+repository runs this against its full static ONNX build.
+The earlier manual TLS and exception experiments have been removed from the
+agent; the standard loader supplies those features for marked DLLs.
 
 ## Operator surfaces
 
@@ -253,7 +282,18 @@ New Go functions in `agent-go/`:
 |----------|------|------|
 | `loadPluginPE` | `pe_loader_windows.go` | Fetch, stage, run, and clean up a plugin child |
 | `loadPluginPEContext` | `pe_loader_windows.go` | Run a plugin child with caller-owned cancellation |
-| `runPluginChild` | `pe_loader_windows.go` | Load a DLL with the Windows loader and invoke its export |
+| `runPluginChild` | `pe_loader_windows.go` | Run an unmarked DLL with the existing manual mapper |
+| `invokePluginExport` | `pe_loader_windows.go` | Invoke the shared bounded input/output ABI |
+| `pluginRequiresWindowsLoader` | `plugin_format.go` | Inspect the PE export marker without executing DLL code |
+| `pluginRVAData` | `plugin_format.go` | Resolve bounded file-backed bytes at an RVA |
+| `stageWindowsPlugin` | `plugin_library_windows.go` | Stage the DLL, prevent mutation while running, and return parent-owned cleanup |
+| `createPluginDirectory` | `plugin_library_windows.go` | Atomically create a random staging directory with a protected DACL |
+| `runWindowsPluginChild` | `plugin_library_windows.go` | Load a staged DLL through Windows, resolve its export, and return output |
+| `runWindowsPluginChild` (stub) | `platform_other.go` | Reject the child mode on other operating systems |
+| `pluginTestHost` / `assertPluginCleanup` | `pe_loader_windows_test.go` | Exercise authenticated parent/child execution and verify staging cleanup |
+| `pluginMarkerFixture` / `TestPluginLoaderMarker` / `FuzzPluginLoaderMarker` | `plugin_format_test.go` | Build inert PE metadata and validate marker parsing against malformed inputs |
+| `Initializer` / `RMMRequiresWindowsLoader` / `Run` | `testdata/msvc_plugin.cpp` | Native fixture constructor, marker, and lifecycle test dispatch |
+| `Run` | `testdata/legacy_plugin.c` | Return a fixed result from an unmarked legacy fixture |
 | `loadPluginCommand` | `main.go` | Parse legacy export loads and plugin-owned command loads |
 | `pluginCommandEnvelope` | `main.go` | Wrap a plugin command and opaque input for the plugin `Run` export |
 | `pluginController` / `newPluginController` | `main.go` | Start and cancel one persistent SOCKS or TUN child independently |
@@ -278,8 +318,8 @@ New Python functions:
 ## Security notes
 
 - Plugin downloads require the beacon secret and a registered session ID.
-- Plugin bytes are passed through an anonymous pipe and are never written to
-  the target disk.
+- Unmarked plugin bytes remain in memory. Marked DLLs are staged in a private
+  directory until the child exits; model inputs and credentials stay on stdin.
 - One-shot plugin input is framed over stdin. The persistent pivot plugin also
   receives the beacon URL, session ID, and secret because it owns the
   authenticated `/socks` channel; these values stay in memory and are not
@@ -313,3 +353,10 @@ The server selects this plugin for `mode=auto` exfil requests only when the
 session identifies itself as a Go agent with PE plugin support. Use
 `mode=plugin` to require it or `mode=binary` to force the legacy executable
 path.
+
+## Saved document embedding profiles
+
+The autonomous embedding DLL has a dedicated [operator workflow](document-embeddings.md)
+for saved model settings, CLI and WebUI execution, and explicit result
+collections. It uses the generic transport described here; no agent protocol
+or mapper change is required for profile persistence.

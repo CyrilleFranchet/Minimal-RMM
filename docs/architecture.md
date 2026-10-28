@@ -300,3 +300,12 @@ the runtime store. See the [external plugin repository guide](plugin-repository.
   current loader scope.
 - The central server remains able to observe transient operator and agent data;
   workspace mode changes durable storage and local pivot ownership.
+
+## Saved embedding configuration and results
+
+Embedding profiles and explicitly selected output collections belong to the
+active storage owner: `RMM_logs/embeddings.db` in server mode or
+`RMM_WORKSPACE_DATA/workspace.db` in workspace mode. The central broker refuses
+workspace embedding persistence; only the resolved plugin execution request
+uses the existing central command transport. See the
+[embedding workflow](document-embeddings.md) for CLI, WebUI, MCP, and boundaries.

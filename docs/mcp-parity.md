@@ -57,6 +57,7 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `POST …/exfil` | `queue_exfil` | Same as shell `exfil` / CLI |
 | `GET /rclone/config` | `get_rclone_config` | |
 | `POST …/screenshot` | `queue_screenshot` | Same as shell `screenshot` |
+| `GET/POST/DELETE /embeddings/profiles/*`, `/embeddings/results/*`, `POST /embeddings/run` | `embedding_profiles`, `embedding_results`, `run_embeddings` | [Saved profiles/results](document-embeddings.md); workspace operations use the local service |
 | `GET /plugins`, `POST …/pe` | `list_plugins`, `queue_pe_load` | Isolated child-process PE plugin execution on the Go agent (`__PE_LOAD__` or plugin-owned `__PLUGIN_COMMAND__`) |
 | `GET/POST/PATCH/DELETE /assets/*` | `list_assets`, `add_asset`, `set_asset_enabled`, `remove_asset` | URL-managed agent plugins, AI skills, and rclone profile files |
 | `GET/POST /profile` | `profile_status`, `start_profile`, `stop_profile` | Generic RMM-Profile connector and generated beacon URL |

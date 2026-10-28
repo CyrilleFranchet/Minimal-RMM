@@ -34,6 +34,9 @@ from mcp.server.fastmcp import FastMCP
 
 from rmm_tools import (
     make_client,
+    tool_embedding_profiles,
+    tool_embedding_results,
+    tool_run_embeddings,
     tool_delete_history,
     tool_clear_history,
     tool_exec_command,
@@ -96,6 +99,24 @@ def _client():
             os.environ.get("RMM_API_TOKEN"),
         )
     return _client
+
+
+@mcp.tool()
+def embedding_profiles(action: str = "list", name: str = "", config: dict | None = None) -> str:
+    """List/get/save/delete embedding profiles. Use the local workspace URL in workspace mode; never include tokens in config."""
+    return tool_embedding_profiles(_client(), action, name, config)
+
+
+@mcp.tool()
+def run_embeddings(session_ref: str, profile: str, documents: list[str]) -> str:
+    """Queue explicit document paths with a saved embedding profile."""
+    return tool_run_embeddings(_client(), session_ref, profile, documents)
+
+
+@mcp.tool()
+def embedding_results(action: str = "list", name: str = "", session_ref: str = "", event_id: int = 0) -> str:
+    """List/get/save/delete collections; save selects an exact session output event."""
+    return tool_embedding_results(_client(), action, name, session_ref, event_id)
 
 
 @mcp.tool()
@@ -236,7 +257,7 @@ def queue_pe_load(
     input: str = "",
     command: str = "",
 ) -> str:
-    """Queue a diskless PE plugin command; the plugin owns command dispatch."""
+    """Queue an isolated PE command; Windows-loader DLLs use a temporary file."""
     return tool_queue_pe_load(
         _client(),
         session_ref,

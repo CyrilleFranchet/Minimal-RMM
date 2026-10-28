@@ -56,6 +56,7 @@ from rmm_tun import TunError, TunManager, normalize_tun_config
 from rmm_workspace import WorkspaceEventBroker, WorkspaceRegistry, valid_workspace_id
 from rmm_asset_store import AssetError, AssetStore, decode_asset_content
 from rmm_profile import ProfileError, ProfileManager, profile_directory
+from rmm_embeddings import EmbeddingStore, embedding_api
 from rmm_ui_state import UiStateError, UiStateStore
 from rmm_rclone import (
     RcloneConfigError,
@@ -868,9 +869,20 @@ class RMMServer:
         self.workspace_tun_configs = {}
         self._sessions_broadcast_lock = threading.Lock()
         self._sessions_broadcast_timer = None
+        self._embedding_store = None
+        self._embedding_store_lock = threading.Lock()
         self._ui_state_store: UiStateStore | None = None
         if self.storage_mode == "server":
             self._archive_orphaned_sessions_on_startup()
+
+    def embedding_store(self):
+        """Open the server-owned embedding database only in server mode."""
+        if self.storage_mode != "server":
+            raise ValueError("embedding storage is workspace-local")
+        with self._embedding_store_lock:
+            if self._embedding_store is None:
+                self._embedding_store = EmbeddingStore(os.path.join(LOG_DIR, "embeddings.db"))
+            return self._embedding_store
 
     def ui_state(self) -> UiStateStore:
         """Return the lazily opened SQLite store for server-mode UI state."""
@@ -3238,6 +3250,37 @@ class RMMHandler(BaseHTTPRequestHandler):
         rest = path[len(API_PREFIX) + 1 :]
         return [p for p in rest.split("/") if p]
 
+    def _handle_embeddings(self, method, parts, body=None):
+        """Serve embedding records only at their selected storage owner."""
+        srv = self.server_instance
+        if srv.storage_mode != "server" or getattr(self, "_workspace_scope", lambda: None)():
+            self._json(409, {"error": "embeddings_are_workspace_local", "detail": "Use the local workspace API URL."})
+            return True
+
+        def queue(ref, request):
+            """Queue a validated profile through the existing plugin transport."""
+            session = _resolve_api_session(self, ref)
+            if session is None:
+                return 404, {"error": "session_not_found"}
+            if getattr(session, "agent_type", "") != "go" or "pe" not in getattr(session, "capabilities", []):
+                return 409, {"error": "requires_go_agent_with_pe_support"}
+            if not plugin_path_for_session(request["plugin"], session.id, srv):
+                return 409, {"error": "embedding_plugin_not_installed"}
+            command = f"__PE_LOAD__ {request['plugin']} Run {request['input']}"
+            if not srv.set_command(session.id, command, "oneshot"):
+                return 409, {"error": "queue_failed"}
+            srv.record_operator_action(session, command, "embeddings")
+            return 200, {"ok": True, "session_id": session.id, "queued": command}
+
+        def event(ref, event_id):
+            """Read the exact selected live or archived transcript event."""
+            sid, events = srv.get_history_events(ref, since_id=event_id - 1, limit=0)
+            return sid, next((e for e in events or [] if e.get("id") == event_id), None)
+
+        status, payload = embedding_api(srv.embedding_store(), method, parts, body, queue, event)
+        self._json(status, payload)
+        return True
+
     def _handle_api_get(self, path, qs):
         if not self._api_authorized(qs):
             self._api_unauthorized()
@@ -3245,6 +3288,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if parts and parts[0] == "embeddings":
+            return self._handle_embeddings("GET", parts)
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
@@ -3573,6 +3618,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if parts and parts[0] == "embeddings":
+            return self._handle_embeddings("POST", parts, body)
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
@@ -4160,6 +4207,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if parts and parts[0] == "embeddings":
+            return self._handle_embeddings("DELETE", parts)
         srv = self.server_instance
 
         if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":

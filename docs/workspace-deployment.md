@@ -581,3 +581,12 @@ node --check web/app.js
 For a real Linux TUN test, run the workspace service inside the namespace that
 owns `/dev/net/tun`, start a narrow route, and verify a TCP connection to a
 known authorized target before trying larger tools.
+
+## Document embedding configuration
+
+The local workspace owns embedding profiles and explicitly saved result
+collections in `workspace.db`. Central mode refuses these persistence routes;
+CLI and standalone MCP must point at the local workspace API. The autonomous
+DLL requires larger body limits for base64 upload/synchronization; see
+[document embeddings](document-embeddings.md) for installation, commands,
+authentication preferences, and retention.

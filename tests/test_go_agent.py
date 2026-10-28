@@ -13,6 +13,8 @@ class GoAgentTests(unittest.TestCase):
                 "go.mod",
                 "main.go",
                 "pe_loader_windows.go",
+                "plugin_format.go",
+                "plugin_library_windows.go",
                 "platform_other.go",
                 "platform_windows.go",
             },

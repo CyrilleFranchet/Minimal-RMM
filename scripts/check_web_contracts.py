@@ -223,6 +223,21 @@ def _check_history_view_contract(errors: list[str]) -> None:
         errors.append("docs/session-history.md must document selected archive cleanup")
 
 
+def _check_embedding_contract(errors: list[str]) -> None:
+    """Keep the embedding editor, API controller, and operator guide connected."""
+    html = _read("web/index.html")
+    script = _read("web/embeddings.js")
+    docs = _read("docs/document-embeddings.md")
+    for control in ("open", "dialog", "profiles", "save", "import", "export", "run", "save-result", "load-events", "results"):
+        if f'id="embedding-{control}"' not in html:
+            errors.append(f"Missing embedding control: {control}")
+    if 'src="embeddings.js"' not in html or 'window.rmmApi' not in script:
+        errors.append("Embedding editor must load its authenticated API controller")
+    for phrase in ("embeddings profiles save", "embeddings results save", "HF_TOKEN", "4096 UTF-8 bytes", "workspace.db"):
+        if phrase not in docs:
+            errors.append(f"Embedding guide missing contract: {phrase}")
+
+
 def main() -> int:
     errors: list[str] = []
     _check_shell_contract(errors)
@@ -231,6 +246,7 @@ def main() -> int:
     _check_tun_contract(errors)
     _check_artifact_contract(errors)
     _check_history_view_contract(errors)
+    _check_embedding_contract(errors)
     if errors:
         print("WebUI contract check FAILED:", file=sys.stderr)
         for error in errors:

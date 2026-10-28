@@ -9,6 +9,115 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-28 — Saved document embedding operator workflow
+
+- Added dedicated profile and result APIs, CLI commands, a WebUI editor, and
+  three MCP tools. Profiles persist independently of browser configuration;
+  import/export uses JSON. Runtime model/auth/prefix settings remain bounded
+  by the validated autonomous DLL's input contract.
+- Workspace mode stores records locally in `workspace.db`; server mode uses
+  `embeddings.db`. Central workspace requests are refused, including scoped
+  workspace credentials against server-owned records.
+- Results are saved by explicit session/event selection and can be exported
+  or deleted. No automatic job correlation is claimed. Saved collections
+  remain independent of transcript retention.
+- Documented the required 64 MiB upload/sync limits for the 36.2 MB DLL and
+  the distinction between saved `env` authentication preference and an
+  already-provisioned agent `HF_TOKEN`.
+- Validation: eight targeted HTTP/CLI/storage/server tests and three Node
+  UI-controller tests pass. The full Python suite and `make check` pass,
+  including 44-tool MCP parity and WebUI contracts. Visual browser
+  verification is unavailable because computer-use permission is not granted
+  in this environment; controller tests use a minimal DOM adapter.
+
+### 2026-10-27 — Standard Windows loader for autonomous ONNX DLLs
+
+- Added opt-in `RMMRequiresWindowsLoader` export inspection before execution.
+  Marked DLLs use `LoadLibraryExW` in a separate agent child, with Windows
+  handling CRT, exceptions, static TLS, and new native threads.
+- The parent stages the DLL in a random directory with a protected Windows
+  DACL, holds a read-sharing-only file handle until child exit, and cleans up
+  after success, failure, or cancellation. Input remains on stdin. A forced
+  parent termination can leave the temporary file behind.
+- Removed the manual TLS and exception-table experiments from the production
+  mapper. Unmarked DLLs retain the existing loader path. CLI/MCP descriptions
+  now disclose temporary-file loading instead of promising all loads are
+  diskless; the command schema remains unchanged.
+- Added metadata bounds tests and Windows tests for native thread TLS,
+  exceptions, cancellation, error cleanup, and a legacy unmarked DLL. The
+  real-model test checks normalized MiniLM embeddings and classification
+  through the authenticated parent/child path. Windows lifecycle and legacy
+  fixture tests passed in run 40552719824. Local Go tests, Windows amd64/arm64
+  and Linux cross-builds, 700k marker fuzz inputs, Python source-manifest tests,
+  and `make check` passed. The full ONNX DLL build and real-agent acceptance
+  passed in [plugin run 40553323301](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/actions/runs/40553323301)
+  with plugin revision `fb963ab` and agent revision `6f18910`.
+- The real-model acceptance test now selects both MiniLM (mean pooling) and
+  a pinned quantized BGE-small graph (CLS pooling) with the same DLL. It checks
+  two document vectors, a strategic label, and a missing-document error for
+  each model, then validates invalid-input handling and staging cleanup.
+- Both real-model cases passed on Windows: MiniLM in 1.97 seconds and BGE in
+  2.38 seconds. Import inspection confirmed only Windows system DLLs. The
+  [validated DLL artifact](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/actions/runs/40553323301/artifacts/12763491713)
+  is 36,232,192 bytes, with SHA-256
+  `a08000ab452a475f708293743f91231ca5f31317f4690b98cb41464841aae2e6`.
+  Validation used the actual Go agent process in Windows CI; deployment to a
+  managed host is separate. The DLL needs the updated agent and temporary
+  on-disk staging, but no separate ONNX Runtime, VC runtime, or Python install.
+
+### 2026-10-27 — Prototype an MSVC plugin loader test
+
+- Added a Windows CI fixture built with MSVC `/MT` and a child-process test of
+  the agent's in-memory PE mapper, including a C++ constructor and exception.
+- Registered x64 unwind metadata with `RtlAddFunctionTable` before the mapped
+  DLL's entry point runs. Corrected the documented mapper limitations.
+- Local cross-compilation passed; the statically linked ONNX Runtime probe
+  remains to be validated by its separate Windows CI job.
+- Windows CI confirmed the `/MT` fixture has no VC runtime DLL import and its
+  global constructor runs. `RtlLookupFunctionEntry` finds mapped unwind data,
+  but an ordinary caught C++ throw terminated the child with `0xe06d7363`.
+  The manual image is not registered for MSVC CRT module-base lookup. A
+  fixture-local C bridge that supplies the image base made the same exception
+  test pass in Windows CI. ONNX Runtime linking and execution remain open.
+- A separate plugin-repository Windows probe linked a Go C archive into an
+  MSVC `/MT` DLL. Explicitly starting the Go runtime from its exported entry
+  point passed both normal `LoadLibrary` and this agent's in-memory mapper.
+  This preserves a possible route to reuse the existing Go document pipeline
+  in a single native DLL. The plugin repository now has an ONNX C++ bridge,
+  Go autonomous build tag, and Windows combined-DLL workflow. The first
+  static ONNX Runtime link succeeded in CI; mapped inference and the combined
+  document workflow still require Windows CI validation. A subsequent
+  Windows job successfully linked the Go archive and static ONNX Runtime
+  into `document-embeddings-autonomous.dll`. Its artifact upload failed while
+  traversing an unrelated protected `_deps` directory; the plugin workflow
+  now uses the exact DLL path and is rebuilding for import and mapper tests.
+- Extended the mapped-plugin fixture test to accept a JSON result substring
+  and a three-minute timeout for the public-model end-to-end check.
+- The combined DLL passed Windows import inspection with only system DLLs and
+  executed under the normal Windows loader. Its first run through the manual
+  mapper crashed in an MSVC static TLS access. Added an experimental
+  current-thread PE TLS template and callback setup to the mapper; the
+  diagnostic workflow is validating the already-built DLL without rebuilding
+  ONNX Runtime.
+- The validation-only mapped request now reaches the embedded Go pipeline.
+  A real model request exposed a second null static-TLS slot after Go entered
+  its download path. The plugin branch now restores the mapped TLS block at
+  each native ONNX boundary and locks Go execution to one OS thread. Its
+  MSVC helper compiled in a short Windows job; the full DLL rebuild and
+  model-inference retest are pending. A separate short Windows fixture
+  deliberately replaced the thread TLS vector; the helper restored a
+  thread-local value through the actual agent mapper.
+- The rebuilt single DLL passed Windows dependency inspection: it imports only
+  Windows system DLLs and needs no separate ONNX Runtime or VC runtime DLL.
+  A pinned public MiniLM model produced an embedding and strategic label under
+  the normal Windows loader (plugin CI run 40548809398). The same request
+  crashes under the in-memory mapper at a native static-TLS access on an ONNX
+  Runtime worker thread (RVA `0xF478D7`, TLS index 4096, null block). The
+  current-thread TLS repair cannot cover threads created later. The plugin is
+  therefore a prototype, not a working Go-agent feature. The next step is a
+  loader design that initializes static TLS for every native thread, or a
+  standard Windows loader path for this DLL, followed by the real-model test.
+
 ### 2026-10-15 — Add Exegol MCP and RMM pivot routing skill
 
 - Added the default `exegol-rmm-pivot` AI skill to distinguish RMM agent

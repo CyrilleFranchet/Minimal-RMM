@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Canonical MCP / OPENAI_TOOLS / TOOL_HANDLERS tool names.
 REQUIRED_MCP_TOOLS = frozenset({
+    "embedding_profiles", "embedding_results", "run_embeddings",
     "health",
     "list_sessions",
     "get_session",
@@ -64,6 +65,9 @@ REQUIRED_MCP_TOOLS = frozenset({
 
 # MCP tool -> RmmApiClient method (wrappers may share queue_command).
 TOOL_CLIENT_METHOD: dict[str, str] = {
+    "embedding_profiles": "embedding_profiles",
+    "embedding_results": "embedding_results",
+    "run_embeddings": "run_embeddings",
     "health": "health",
     "list_sessions": "list_sessions",
     "get_session": "get_session",

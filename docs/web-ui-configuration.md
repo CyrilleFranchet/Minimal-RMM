@@ -124,3 +124,9 @@ state controls remain wired into the page. When adding a new setting:
 | `WorkspaceStore.get_ui_state` / `set_ui_state` | Persist workspace UI state in `workspace.db` |
 | `loadRmmUiConfig` | Load state after authentication and refresh the WebUI |
 | `persistRmmUiConfig` | Debounce UI changes into the authenticated state endpoint |
+
+## Embedding profiles
+
+Embedding profiles and saved result collections use dedicated SQLite records,
+not the UI-state blob or Config export. Use the **Embeddings** panel to edit,
+save, import, and export them. See [document embeddings](document-embeddings.md).

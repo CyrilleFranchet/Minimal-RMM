@@ -74,8 +74,12 @@ var pluginCommandPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,127}$`)
 var commandPrefixPattern = regexp.MustCompile(`(?i)^(ps|powershell|pwsh|cmd)\s*:\s*(.*)$`)
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--plugin-child" {
-		if err := runPluginChild(os.Args[1:]); err != nil {
+	if len(os.Args) > 1 && (os.Args[1] == "--plugin-child" || os.Args[1] == "--plugin-library-child") {
+		child := runPluginChild
+		if os.Args[1] == "--plugin-library-child" {
+			child = runWindowsPluginChild
+		}
+		if err := child(os.Args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(3)
 		}

