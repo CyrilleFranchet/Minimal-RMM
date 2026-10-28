@@ -27,6 +27,11 @@ implementation log.
 - Validation: 151 Python tests, eleven Node controller tests, 49-tool parity,
   and repository lint pass. The plugin publisher has eighteen passing tests
   covering version increments, branch isolation, reuse, and publication guards.
+- [Main version 1.0](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/releases/tag/plugins-0d6e4079e367-v1.0)
+  published successfully in run 40666514314 with both compiler jobs skipped.
+  Live saved-source selection, private download, cached retry, and stale-source
+  rejection passed. Read-only replanning reports `publish: false` for unchanged
+  plugin inputs and metadata.
 
 ### 2026-10-28 — Install compiled plugins from private releases
 
