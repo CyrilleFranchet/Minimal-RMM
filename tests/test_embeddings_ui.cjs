@@ -17,6 +17,7 @@ function fixture(records = new Map(), savedResults = []) {
     add(child) { this.children.push(child); }
     showModal() { this.open = true; }
     close() { this.open = false; }
+    focus() { this.focused = true; }
     click() {
       if (this.download) downloads.push({ name: this.download, blob: blobs.get(this.href) });
       this.handlers.click?.();
@@ -65,7 +66,12 @@ function fixture(records = new Map(), savedResults = []) {
   const get = (id) => elements.get(`embedding-${id}`);
   const click = async (id) => { get(id).click(); for (let i = 0; i < 30; i++) await new Promise(setImmediate); };
   const change = async (id) => { get(id).handlers.change?.(); for (let i = 0; i < 30; i++) await new Promise(setImmediate); };
-  return { get, click, change, records, calls, downloads };
+  const label = (index) => {
+    const row = get('labels').children[index];
+    return { name: row.children[0].children[1], text: row.children[1].children[1], remove: row.children[2],
+      copy: get('copy_labels').children[index].children[0] };
+  };
+  return { get, click, change, label, records, calls, downloads };
 }
 
 test('save, reload, edit protection, run, and deletion use dedicated API controls', async () => {
@@ -103,11 +109,12 @@ test('event browsing advances past 1000 unrelated events and saves the explicit 
   assert.deepEqual(save.body, { session_ref: 'fixture-session', event_id: 1001 });
 });
 
-test('invalid label JSON reports an error and releases the busy button', async () => {
-  const ui = fixture(); ui.get('name').value = 'bad'; ui.get('labels').value = '{';
+test('incomplete label rows report an error and release the busy button', async () => {
+  const ui = fixture(); ui.get('name').value = 'bad'; await ui.click('add-label');
+  ui.label(0).name.value = 'Engineering';
   await ui.click('save');
   assert.equal(ui.records.size, 0); assert.equal(ui.get('save').disabled, false);
-  assert.ok(ui.get('status').textContent);
+  assert.match(ui.get('status').textContent, /name and description/);
 });
 
 test('copy settings survive import, save, reload, export, and protect unsaved runs', async () => {
@@ -121,7 +128,9 @@ test('copy settings survive import, save, reload, export, and protect unsaved ru
     ui.get('import').files = [{ size: 1000, text: async () => JSON.stringify(value) }];
     await ui.change('import');
     assert.equal(ui.get('copy_documents').checked, true);
-    assert.deepEqual(JSON.parse(ui.get('copy_labels').value), ['lab']);
+    assert.equal(ui.label(0).name.value, 'lab');
+    assert.equal(ui.label(0).copy.checked, true);
+    assert.equal(ui.get('copy-mode').value, 'selected');
     assert.equal(Number(ui.get('copy_threshold').value), 0.4);
   }
   await ui.click('save');
@@ -136,7 +145,7 @@ test('copy settings survive import, save, reload, export, and protect unsaved ru
   reopened.get('documents').value = 'C:\\Lab Docs\n\\\\server\\share\\Lab Docs';
   for (const [id, property, changed, original] of [
     ['copy_documents', 'checked', false, true],
-    ['copy_labels', 'value', '[]', '["lab"]'],
+    ['copy-mode', 'value', 'all', 'selected'],
     ['copy_threshold', 'value', '0.8', '0.4'],
   ]) {
     reopened.get(id)[property] = changed;
@@ -157,7 +166,7 @@ test('legacy profiles default copying off and can run without resaving', async (
   const reopened = fixture(ui.records); await reopened.click('open');
   reopened.get('profiles').value = 'legacy'; await reopened.change('profiles');
   assert.equal(reopened.get('copy_documents').checked, false);
-  assert.equal(reopened.get('copy_labels').value, '[]');
+  assert.equal(reopened.get('copy_labels').children.length, 0);
   assert.equal(Number(reopened.get('copy_threshold').value), 0);
   reopened.get('session').value = 'fixture-session'; reopened.get('documents').value = 'C:\\Lab';
   await reopened.click('run');
@@ -176,4 +185,88 @@ test('result export retains copied paths and directory error rows', async () => 
   row.children[1].click();
   for (let i = 0; i < 30; i++) await new Promise(setImmediate);
   assert.deepEqual(JSON.parse(await ui.downloads[0].blob.text()), record);
+});
+
+test('preset hides advanced settings and custom profiles round-trip without resets', async () => {
+  const ui = fixture();
+  assert.equal(ui.get('preset').value, 'minilm');
+  assert.equal(ui.get('advanced').open, false);
+  ui.get('name').value = 'custom'; await ui.click('save');
+  const custom = structuredClone(ui.records.get('custom'));
+  custom.model.repo = 'example/custom'; custom.model.input_names = ['tokens', 'mask'];
+  custom.prompt = 'passage: '; custom.label_prompt = 'query: '; custom.max_tokens = 128; custom.auth.method = 'env';
+  custom.labels = [{ name: 'Engineering', text: 'Technical designs' }];
+  ui.get('import').files = [{ size: 1000, text: async () => JSON.stringify({ config: custom, name: 'custom' }) }];
+  await ui.change('import');
+  assert.equal(ui.get('preset').value, 'custom'); assert.equal(ui.get('advanced').open, true);
+  await ui.click('export');
+  assert.deepEqual(JSON.parse(await ui.downloads[0].blob.text()).config, custom);
+  ui.get('preset').value = 'minilm'; await ui.change('preset');
+  assert.equal(ui.get('advanced').open, false);
+  assert.equal(ui.get('repo').value, 'Xenova/all-MiniLM-L6-v2');
+  assert.equal(ui.get('prompt').value, ''); assert.equal(ui.get('auth').value, 'none');
+  assert.equal(ui.label(0).name.value, 'Engineering');
+});
+
+test('copy filters are progressive, track renamed labels, and never broaden an empty selection', async () => {
+  const ui = fixture(); ui.get('name').value = 'filtered';
+  assert.equal(ui.get('copy-options').hidden, true); assert.equal(ui.get('copy-options').disabled, true);
+  await ui.click('add-label'); ui.label(0).name.value = 'Engineering'; ui.label(0).text.value = 'Technical designs';
+  ui.get('copy_documents').checked = true; await ui.change('copy_documents');
+  assert.equal(ui.get('copy-options').hidden, false);
+  ui.get('copy-mode').value = 'selected'; await ui.change('copy-mode');
+  await ui.click('save'); assert.equal(ui.records.size, 0);
+  assert.match(ui.get('status').textContent, /Select at least one/);
+  ui.label(0).copy.checked = true;
+  ui.label(0).name.value = 'Architecture'; ui.label(0).name.handlers.input();
+  assert.equal(ui.get('copy_labels').children[0].children[1].textContent, ' Architecture');
+  ui.get('threshold-enabled').checked = true; await ui.change('threshold-enabled');
+  await ui.click('save'); assert.match(ui.get('status').textContent, /threshold requires/);
+  ui.get('copy_threshold').value = '0.4'; await ui.click('save');
+  assert.deepEqual(ui.records.get('filtered').copy_labels, ['Architecture']);
+  assert.equal(ui.records.get('filtered').copy_threshold, 0.4);
+  ui.get('copy_documents').checked = false; await ui.change('copy_documents'); await ui.click('save');
+  assert.equal(ui.records.get('filtered').copy_documents, false);
+  assert.deepEqual(ui.records.get('filtered').copy_labels, []); assert.equal(ui.records.get('filtered').copy_threshold, 0);
+  ui.get('copy_documents').checked = true; await ui.change('copy_documents'); await ui.click('save');
+  assert.deepEqual(ui.records.get('filtered').copy_labels, ['Architecture']);
+  ui.label(0).remove.click(); await ui.click('save');
+  assert.match(ui.get('status').textContent, /Select at least one/);
+  assert.deepEqual(ui.records.get('filtered').copy_labels, ['Architecture']);
+});
+
+test('label editor enforces unique names and a 16-label limit', async () => {
+  const ui = fixture(); ui.get('name').value = 'labels';
+  for (let i = 0; i < 16; i++) {
+    await ui.click('add-label'); ui.label(i).name.value = `Label ${i}`; ui.label(i).text.value = `Description ${i}`;
+  }
+  assert.equal(ui.get('add-label').disabled, true);
+  await ui.click('add-label'); assert.equal(ui.get('labels').children.length, 16);
+  ui.label(1).name.value = 'Label 0'; await ui.click('save');
+  assert.match(ui.get('status').textContent, /unique/); assert.equal(ui.records.size, 0);
+  ui.label(1).remove.click(); assert.equal(ui.get('add-label').disabled, false);
+  await ui.click('save'); assert.equal(ui.records.get('labels').labels.length, 15);
+});
+
+test('summary follows the form and missing run inputs are rejected before queuing', async () => {
+  const ui = fixture(); ui.get('name').value = 'summary'; await ui.click('save');
+  assert.match(ui.get('run-summary').textContent, /Local copies: off/);
+  await ui.click('run'); assert.match(ui.get('status').textContent, /session ID/);
+  ui.get('session').value = 'lab'; ui.get('session').handlers.input();
+  await ui.click('run'); assert.match(ui.get('status').textContent, /1 to 32/);
+  ui.get('documents').value = 'C:\\Lab\n\\\\server\\share'; ui.get('documents').handlers.input();
+  assert.match(ui.get('run-summary').textContent, /Session: lab.*2 input paths/);
+  assert.equal(ui.calls.filter((c) => c.url === '/embeddings/run').length, 0);
+  await ui.click('run'); assert.equal(ui.calls.filter((c) => c.url === '/embeddings/run').length, 1);
+});
+
+test('saved copy selections compare by membership regardless of order or duplicates', async () => {
+  const seed = fixture(); seed.get('name').value = 'legacy-copy'; await seed.click('save');
+  const config = seed.records.get('legacy-copy');
+  config.labels = [{ name: 'A', text: 'Category A' }, { name: 'B', text: 'Category B' }];
+  Object.assign(config, { copy_documents: true, copy_labels: ['B', 'A', 'B'] });
+  const ui = fixture(seed.records); await ui.click('open'); ui.get('profiles').value = 'legacy-copy'; await ui.change('profiles');
+  ui.get('session').value = 'lab'; ui.get('documents').value = 'C:\\Lab'; await ui.click('run');
+  assert.equal(ui.calls.filter((c) => c.url === '/embeddings/run').length, 1);
+  assert.equal(ui.label(0).copy.checked, true); assert.equal(ui.label(1).copy.checked, true);
 });

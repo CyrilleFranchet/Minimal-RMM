@@ -596,8 +596,15 @@
     <h2 id="embedding-title">Document embeddings</h2>
     <p>Save reusable model settings, embed selected files or directories, and export result collections.</p>
     <p class="ai-hint">Requires the updated autonomous DLL and Windows Go agent. Supports text, Markdown, CSV, JSON, logs, and DOCX; no PDF or OCR. Long documents are chunked. Models must be compatible text encoders.</p>
+    <p id="embedding-status" role="status" aria-live="polite"></p>
     <label for="embedding-profiles">Saved profile</label><select id="embedding-profiles"></select>
     <label for="embedding-name">Profile name</label><input id="embedding-name" maxlength="64" placeholder="strategy-minilm" title="Unique name used to save and select this embedding profile." aria-description="Unique name used to save and select this embedding profile.">
+    <label for="embedding-preset">Model</label>
+    <select id="embedding-preset" aria-describedby="embedding-model-help"><option value="minilm">MiniLM — English documents</option><option value="custom">Custom model</option></select>
+    <p id="embedding-model-help" class="ai-hint">MiniLM is the tested starting point for English documents. No model settings need editing. Classification quality for other languages has not been validated.</p>
+    <details id="embedding-advanced">
+    <summary>Advanced settings</summary>
+    <p class="ai-hint">Change these only when your model requires it. Imported custom profiles retain their exact settings.</p>
     <fieldset><legend>Hugging Face model</legend><div class="embedding-grid">
 <div><label for="embedding-repo">Repository (owner/name)</label><input id="embedding-repo" autocomplete="off" title="Model repository in owner/name format." aria-description="Model repository in owner/name format."></div>
 <div><label for="embedding-revision">Pinned revision (40-character commit SHA)</label><input id="embedding-revision" autocomplete="off" title="Exact 40-character commit SHA that pins the model files." aria-description="Exact 40-character commit SHA that pins the model files."></div>
@@ -612,20 +619,34 @@
     <select id="embedding-auth"><option value="none">Public model (no token)</option><option value="env">Use HF_TOKEN already set in the agent environment</option></select>
     <p class="ai-hint">The saved preference does not install a token on the agent. Never paste a token into model, prompt, or label fields.</p>
     <div class="embedding-grid">
-      <div><label for="embedding-prompt">Document prefix</label><input id="embedding-prompt" placeholder="Optional, for example passage: "></div>
-      <div><label for="embedding-label_prompt">Label prefix</label><input id="embedding-label_prompt" placeholder="Empty uses document prefix"></div>
-      <div><label for="embedding-max_tokens">Maximum tokens per chunk</label><input id="embedding-max_tokens" type="number" min="8" max="512" value="256"></div>
+      <div><label for="embedding-prompt">Document prefix</label><input id="embedding-prompt" placeholder="Optional, for example passage: " title="Literal text added before each document. Leave empty for MiniLM; some models require a prefix such as passage: ."></div>
+      <div><label for="embedding-label_prompt">Label prefix</label><input id="embedding-label_prompt" placeholder="Empty uses document prefix" title="Literal text added before each label description. An empty value uses the document prefix."></div>
+      <div><label for="embedding-max_tokens">Maximum tokens per chunk</label><input id="embedding-max_tokens" type="number" min="8" max="512" value="256" title="Long documents are split into chunks of this size. The default is 256; supported values are 8 through 512."></div>
     </div>
-    <label for="embedding-labels">Optional classification labels (JSON array of name/text objects)</label>
-    <textarea id="embedding-labels" rows="4" spellcheck="false">[]</textarea>
+    </details>
+    <fieldset><legend>Classification labels (optional)</legend>
+      <p class="ai-hint">Describe the categories you want to recognize. For example: “Engineering” — “Technical designs, architecture notes, and engineering plans.” Each document gets its closest label. Up to 16 labels.</p>
+      <p id="embedding-label-empty" class="ai-hint">No labels: generate embeddings without classification.</p>
+      <div id="embedding-labels"></div>
+      <button id="embedding-add-label" type="button" class="secondary">Add label</button>
+    </fieldset>
     <fieldset><legend>Optional local copies</legend>
       <label for="embedding-copy_documents"><input id="embedding-copy_documents" type="checkbox" aria-describedby="embedding-copy-help"> Copy matching documents on the target</label>
-      <p id="embedding-copy-help" class="ai-hint">Copies remain in a temporary directory on the target; they are not downloaded. Results include copy_directory and copied_to paths. Collect and delete copies manually when finished.</p>
-      <label for="embedding-copy_labels">Copy labels (JSON array of defined label names)</label>
-      <textarea id="embedding-copy_labels" rows="2" spellcheck="false" aria-describedby="embedding-copy-filters">[]</textarea>
-      <label for="embedding-copy_threshold">Minimum cosine similarity for copying (0–1)</label>
-      <input id="embedding-copy_threshold" type="number" min="0" max="1" step="any" value="0" aria-describedby="embedding-copy-filters">
-      <p id="embedding-copy-filters" class="ai-hint">Filters require copying enabled. An empty label list matches every label; 0 disables the threshold. A positive threshold requires classification labels. With no filters, every successfully embedded document is copied.</p>
+      <p id="embedding-copy-help" class="ai-hint">Off by default. Copies stay in a temporary folder on the target; they are not downloaded. Collect and delete them manually when finished.</p>
+      <fieldset id="embedding-copy-options" hidden disabled><legend>Choose what to copy</legend>
+        <label for="embedding-copy-mode">Documents to copy</label>
+        <select id="embedding-copy-mode"><option value="all">All successfully embedded documents</option><option value="selected">Only documents matching selected labels</option></select>
+        <div id="embedding-copy-selection" hidden>
+          <p class="ai-hint">Select at least one label. Add labels above if the list is empty.</p>
+          <div id="embedding-copy_labels"></div>
+        </div>
+        <label for="embedding-threshold-enabled"><input id="embedding-threshold-enabled" type="checkbox"> Require a minimum similarity score</label>
+        <div id="embedding-threshold-options" hidden>
+          <label for="embedding-copy_threshold">Minimum cosine similarity (greater than 0, up to 1)</label>
+          <input id="embedding-copy_threshold" type="number" min="0" max="1" step="any" value="0" aria-describedby="embedding-score-help" title="Cosine similarity measures how closely a document matches its winning label description. It is not a confidence percentage.">
+          <p id="embedding-score-help" class="ai-hint">Requires classification labels. For example, 0.4 keeps scores of 0.4 or higher. This is not a confidence percentage; choose a threshold using results from your own documents.</p>
+        </div>
+      </fieldset>
     </fieldset>
     <div class="embedding-actions">
       <button id="embedding-save" type="button">Save profile</button>
@@ -637,7 +658,8 @@
       <label for="embedding-session">Session ID or unique prefix</label><input id="embedding-session" list="embedding-sessions"><datalist id="embedding-sessions"></datalist>
       <label for="embedding-documents">Windows file or directory paths, one per line (maximum 32)</label>
       <textarea id="embedding-documents" rows="4" placeholder="C:\Lab\strategy.docx" spellcheck="false" aria-describedby="embedding-path-help"></textarea>
-      <p id="embedding-path-help" class="ai-hint">Local and UNC share paths are supported. Directories expand recursively up to eight levels without following links. Expansion beyond 32 documents fails the run; unusable paths produce error rows.</p>
+      <p id="embedding-path-help" class="ai-hint">Examples: <code>C:\Lab\notes.txt</code>, <code>C:\Lab Docs</code>, or <code>\\fileserver\share\Docs</code>. Enter paths without surrounding quotes. Directories expand recursively up to eight levels without following links. Expansion beyond 32 documents fails the run; unusable paths produce error rows.</p>
+      <p id="embedding-run-summary" class="embedding-summary" role="status" aria-live="polite"></p>
       <button id="embedding-run" type="button">Run saved profile</button>
     </fieldset>
     <fieldset><legend>Save and export results</legend>
@@ -647,7 +669,6 @@
       <div class="embedding-actions"><button id="embedding-save-result" type="button">Save selected result</button><button id="embedding-refresh" type="button" class="secondary">Refresh saved results</button></div>
       <div id="embedding-results"></div>
     </fieldset>
-    <p id="embedding-status" role="status" aria-live="polite"></p>
     <button id="embedding-close" type="button" class="secondary">Close</button>
   </dialog>
 

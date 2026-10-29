@@ -132,17 +132,29 @@ Text, Markdown, CSV, JSON, logs, and DOCX are supported; PDF/OCR is not.
 ## Web workflow
 
 1. Connect to the server or your local workspace service and click **Embeddings**.
-2. Select a saved profile, import a JSON profile, or fill the model fields.
-   A new profile starts with the validated MiniLM model settings.
-3. Set authentication, prefixes, tokens per chunk, and optional label JSON.
-   Under **Optional local copies**, enable copying only when wanted, select
-   label names as a JSON array, and set an optional minimum cosine similarity.
-   An empty array selects all labels; zero disables the score filter. Filters
-   require copying enabled, and a positive threshold requires labels.
+2. Select a saved profile, import a JSON profile, or use **MiniLM — English
+   documents**, the tested preset. **Advanced settings** starts collapsed for
+   MiniLM and contains model files, revision, digest, tensors, authentication,
+   prefixes, and chunk size. Custom models open this section automatically.
+   Choosing MiniLM restores its model settings, public authentication, empty
+   prefixes, and 256-token chunks while keeping labels and copy preferences.
+3. Use **Add label** to enter a category name and description. No JSON editing
+   is needed. With no labels, the plugin generates embeddings without
+   classification. Names must be unique and every row needs a description.
+   Under **Optional local copies**, enable copying to reveal its controls.
+   Choose all successfully embedded documents or select label checkboxes.
+   Selected-label mode requires at least one checked label; removing the last
+   selected label never silently switches to copying all documents. Optionally
+   enable a minimum similarity score greater than zero and at most one.
+   The threshold requires labels and represents cosine similarity, not a
+   confidence percentage.
 4. Click **Save profile**. Unsaved edits must be saved before running.
 5. Enter a session ID or unique prefix and one Windows file or directory path
    per line, including UNC paths when needed.
-   Click **Run saved profile** and inspect the session transcript.
+   Review the live summary of session, input-path count, model, labels, and
+   local copy behavior. Click **Run saved profile** and inspect the session
+   transcript. Missing sessions or invalid path counts are rejected before
+   queuing.
 6. Click **Load output events for this session**, select its exact output
    event ID, and click **Save selected result**.
 7. Use **Export JSON** on a saved collection to download it, or delete the
@@ -155,6 +167,12 @@ the target only; it does not download them. The exported result includes
 `copy_directory` and per-document `copied_to` paths for manual collection and
 cleanup. Counts in the result list and event picker represent result rows,
 including directory failures, rather than only successfully embedded files.
+Disabling copying keeps the current filter controls in the form for toggling
+back on, but saves and exports disabled copying with no filters. Reloading that
+saved profile restores the disabled state. Copy-label order and duplicate
+entries from older API profiles do not count as unsaved edits. CLI, REST, and
+MCP continue using the same JSON schema; the visual editor only changes how
+operators enter it.
 
 The event picker reads up to ten pages of 1000 events per click and advances
 its cursor. Click again to continue through long workspace histories or to
@@ -228,9 +246,13 @@ Server-mode Web AI can use the shared server-owned profiles.
 | MCP `embedding_profiles`, `run_embeddings`, `embedding_results` | Typed FastMCP wrappers |
 | JS `message`, `request`, `perform` | Status messages, authenticated API calls, busy/error handling |
 | JS `readForm`, `fillForm`, `download` | Edit/import/export configuration and result JSON |
+| JS `modelFromForm`, `fillModel`, `syncPreset` | Preserve model settings and identify the tested preset or custom configuration |
+| JS `addLabel`, `renderLabels`, `updateEditor` | Build labeled category rows, keep copy checkboxes aligned, and reveal optional controls |
+| JS `savedFormConfig`, `sameConfig` | Compare normalized saved profiles, treating copy labels as a set |
+| JS `documentPaths`, `updateSummary` | Parse input paths and preview the current session, model, labels, and copy behavior |
 | JS `refreshProfiles`, `refreshResults` | Load saved data and create safe text-only result controls |
 | `_check_embedding_contract` | Check editor HTML/controller/documentation wiring in `make check` |
-| JS test `fixture`, `Element`, `request`, `get`, `click`, `change` | Minimal DOM/API adapter for controller tests without a browser |
+| JS test `fixture`, `Element`, `request`, `get`, `click`, `change`, `label` | Minimal DOM/API adapter and editable label access for controller tests without a browser |
 | `EmbeddingValidationTests`, `EmbeddingWorkspaceTests`, `EmbeddingServerTests`, `output_event` | Validation, reopen persistence, owner isolation, exact-event selection, HTTP/CLI/server checks |
 
 `EmbeddingWorkspaceTests.test_cli_copy_profile_directory_run_and_result_round_trip`
@@ -238,6 +260,9 @@ exercises CLI profile import/export/reimport, directory and UNC dispatch, and
 copy-result export through the local HTTP API. The UI controller tests also
 cover copy-setting round trips, legacy profiles, unsaved copy edits, and
 exporting directory failures alongside copied documents.
+Additional controller coverage checks preset/custom model preservation, label
+validation and removal, optional filters, duplicate legacy copy selections,
+and summary/run validation.
 
 Run `make check`, the embedding/workspace/plugin Python tests, and
 `node --check web/embeddings.js`, and `node --test tests/test_embeddings_ui.cjs`. The native DLL's two-model acceptance is

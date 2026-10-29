@@ -9,6 +9,21 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Simplify the embedding profile editor
+
+- Added the tested MiniLM preset and collapsed advanced model controls;
+  custom profile imports preserve their model, prefixes, and authentication.
+- Replaced label JSON with editable name/description rows and copy-label JSON
+  with checkboxes. Copy settings appear only when enabled, and selected-label
+  mode cannot silently fall back to copying all documents.
+- Added optional similarity filtering, visible path examples, contextual help,
+  and a live run summary. Existing CLI/REST/MCP profile formats are unchanged.
+- Controller regression tests cover old and custom profiles, preset switching,
+  duplicate copy selections, label limits, filter toggles, and run validation.
+  All 31 JavaScript controller tests and `make check` pass.
+  Browser visual QA is unavailable because computer-use permissions are not
+  enabled. No plugin rebuild is required for this editor-only change.
+
 ### 2026-10-29 — Align embedding editor and CLI with the updated plugin
 
 - Fixed plugin tokenizer truncation inherited from serialized configuration,

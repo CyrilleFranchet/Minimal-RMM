@@ -4,6 +4,8 @@
   let profiles = [];
   let eventSession = "";
   let eventCursor = 0;
+  let labelRows = [];
+  let labelSerial = 0;
   const baseModel = {
     repo: "Xenova/all-MiniLM-L6-v2", revision: "08a308f628bc9d6774b7922f319eb1b65afa1a82",
     onnx_file: "onnx/model.onnx", tokenizer_file: "tokenizer.json",
@@ -25,32 +27,144 @@
     return result.data;
   }
 
-  function readForm() {
+  function modelFromForm() {
     const model = {};
     for (const key of Object.keys(baseModel)) model[key] = $(key).value.trim();
     model.input_names = model.input_names.split(",").map((x) => x.trim()).filter(Boolean);
+    return model;
+  }
+
+  function fillModel(model) {
+    for (const key of Object.keys(baseModel)) {
+      const value = model?.[key] ?? "";
+      $(key).value = Array.isArray(value) ? value.join(", ") : value;
+    }
+    syncPreset();
+  }
+
+  function syncPreset() {
+    const preset = JSON.stringify(modelFromForm()) === JSON.stringify(baseModel);
+    $("preset").value = preset ? "minilm" : "custom";
+    $("model-help").textContent = preset
+      ? "MiniLM is the tested starting point for English documents. No model settings need editing. Classification quality for other languages has not been validated."
+      : "Custom model settings are preserved in Advanced settings. Check that the model is compatible with the plugin before running.";
+  }
+
+  function addLabel(label = { name: "", text: "" }, selected = false) {
+    const id = ++labelSerial;
+    const container = document.createElement("div"); container.className = "embedding-label-row";
+    const fields = [];
+    for (const [key, title, tag] of [["name", "Label name", "input"], ["text", "Description", "textarea"]]) {
+      const wrapper = document.createElement("div");
+      const caption = document.createElement("label"); caption.textContent = title; caption.htmlFor = `embedding-label-${id}-${key}`;
+      const field = document.createElement(tag); field.id = caption.htmlFor; field.value = label[key];
+      if (key === "text") field.rows = 2;
+      field.addEventListener("input", updateEditor);
+      wrapper.append(caption, field); container.append(wrapper); fields.push(field);
+    }
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "secondary"; remove.textContent = "Remove label";
+    container.append(remove);
+    const copyContainer = document.createElement("label");
+    const copy = document.createElement("input"); copy.type = "checkbox"; copy.checked = selected;
+    const copyCaption = document.createElement("span");
+    copyContainer.append(copy, copyCaption); copy.addEventListener("change", updateSummary);
+    const row = { container, name: fields[0], text: fields[1], copyContainer, copy, copyCaption };
+    remove.addEventListener("click", () => {
+      labelRows = labelRows.filter((item) => item !== row);
+      renderLabels(); $("add-label").focus();
+    });
+    labelRows.push(row);
+    return row;
+  }
+
+  function renderLabels() {
+    $("labels").replaceChildren(...labelRows.map((row) => row.container));
+    $("copy_labels").replaceChildren(...labelRows.map((row) => row.copyContainer));
+    updateEditor();
+  }
+
+  function updateEditor() {
+    $("label-empty").hidden = labelRows.length > 0;
+    $("add-label").disabled = labelRows.length >= 16;
+    for (const row of labelRows) row.copyCaption.textContent = ` ${row.name.value || "Unnamed label"}`;
+    const copying = $("copy_documents").checked;
+    $("copy-options").hidden = !copying; $("copy-options").disabled = !copying;
+    $("copy-selection").hidden = $("copy-mode").value !== "selected";
+    $("threshold-options").hidden = !$("threshold-enabled").checked;
+    $("copy_threshold").disabled = !copying || !$("threshold-enabled").checked;
+    updateSummary();
+  }
+
+  function savedFormConfig(config) {
+    return { model: Object.fromEntries(Object.keys(baseModel).map((key) => [key, config.model[key]])), auth: config.auth,
+      prompt: config.prompt ?? "", label_prompt: config.label_prompt ?? "", max_tokens: config.max_tokens ?? 256,
+      labels: (config.labels || []).map(({ name, text }) => ({ name, text })),
+      copy_documents: config.copy_documents ?? false, copy_labels: config.copy_labels ?? [], copy_threshold: config.copy_threshold ?? 0 };
+  }
+
+  function sameConfig(left, right) {
+    const ordered = (config) => JSON.stringify({ ...config, copy_labels: [...new Set(config.copy_labels)].sort() });
+    return ordered(left) === ordered(right);
+  }
+
+  function documentPaths() {
+    return $("documents").value.split(/\r?\n/).map((path) => path.trim()).filter(Boolean);
+  }
+
+  function updateSummary() {
+    try {
+      const config = readForm();
+      const saved = profiles.find((profile) => profile.name === $("profiles").value);
+      const dirty = !saved || $("name").value.trim() !== saved.name || !sameConfig(config, savedFormConfig(saved.config));
+      const copies = config.copy_documents
+        ? `Local copies: ${config.copy_labels.length ? config.copy_labels.join(", ") : "all successfully embedded documents"}${config.copy_threshold ? `; score ≥ ${config.copy_threshold}` : ""}.`
+        : "Local copies: off.";
+      $("run-summary").textContent = `Session: ${$("session").value.trim() || "not selected"}. ${documentPaths().length} input paths (up to 32 expanded documents). Model: ${config.model.repo}. Labels: ${config.labels.map((label) => label.name).join(", ") || "none"}. ${copies} ${dirty ? "Save profile changes before running." : `Saved profile: ${saved.name}.`}`;
+    } catch (error) {
+      $("run-summary").textContent = `Finish the profile: ${error.message}`;
+    }
+  }
+
+  function readForm() {
+    const model = modelFromForm();
+    const labels = labelRows.map((row) => ({ name: row.name.value, text: row.text.value }));
+    if (labels.length > 16) throw new Error("Use at most 16 labels.");
+    if (labels.some((label) => !label.name.trim() || !label.text.trim())) throw new Error("Each label needs a name and description.");
+    if (new Set(labels.map((label) => label.name)).size !== labels.length) throw new Error("Label names must be unique.");
+    const copying = $("copy_documents").checked;
+    const selected = copying && $("copy-mode").value === "selected";
+    const copyLabels = selected ? labelRows.filter((row) => row.copy.checked).map((row) => row.name.value) : [];
+    if (selected && !copyLabels.length) throw new Error("Select at least one copy label, or choose all documents.");
+    const threshold = copying && $("threshold-enabled").checked ? Number($("copy_threshold").value) : 0;
+    if (copying && $("threshold-enabled").checked && (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1 || !labels.length)) {
+      throw new Error("A similarity threshold requires labels and a number greater than 0 and at most 1.");
+    }
     return { model, auth: { method: $("auth").value }, prompt: $("prompt").value,
       label_prompt: $("label_prompt").value, max_tokens: Number($("max_tokens").value),
-      labels: JSON.parse($("labels").value || "[]"),
-      copy_documents: $("copy_documents").checked,
-      copy_labels: JSON.parse($("copy_labels").value || "[]"),
-      copy_threshold: Number($("copy_threshold").value) };
+      labels, copy_documents: copying, copy_labels: copyLabels, copy_threshold: threshold };
   }
 
   function fillForm(config, name = "") {
-    $("name").value = name;
-    for (const key of Object.keys(baseModel)) {
-      const value = config.model?.[key] ?? "";
-      $(key).value = Array.isArray(value) ? value.join(", ") : value;
+    const labels = config.labels ?? [];
+    const copyLabels = config.copy_labels ?? [];
+    if (!Array.isArray(labels) || labels.length > 16 || labels.some((label) => !label || typeof label.name !== "string" || typeof label.text !== "string") ||
+        !Array.isArray(copyLabels) || copyLabels.some((name) => typeof name !== "string" || !labels.some((label) => label.name === name))) {
+      throw new Error("Profile labels must have names and descriptions, and copy labels must reference them.");
     }
+    $("name").value = name;
+    fillModel(config.model);
+    $("advanced").open = $("preset").value === "custom";
     $("auth").value = config.auth?.method || "none";
     $("prompt").value = config.prompt || "";
     $("label_prompt").value = config.label_prompt || "";
     $("max_tokens").value = config.max_tokens || 256;
-    $("labels").value = JSON.stringify(config.labels || [], null, 2);
+    labelRows = [];
+    for (const label of labels) addLabel(label, copyLabels.includes(label.name));
     $("copy_documents").checked = config.copy_documents ?? false;
-    $("copy_labels").value = JSON.stringify(config.copy_labels || [], null, 2);
+    $("copy-mode").value = copyLabels.length ? "selected" : "all";
     $("copy_threshold").value = config.copy_threshold ?? 0;
+    $("threshold-enabled").checked = (config.copy_threshold ?? 0) > 0;
+    renderLabels();
   }
 
   function download(name, value) {
@@ -99,6 +213,26 @@
   document.addEventListener("DOMContentLoaded", () => {
     fillForm({ model: baseModel, max_tokens: 256 });
     const bind = (id, action) => $(id).addEventListener("click", () => perform($(id), action));
+    $("add-label").addEventListener("click", () => {
+      if (labelRows.length >= 16) return;
+      const row = addLabel(); renderLabels(); row.name.focus();
+    });
+    $("preset").addEventListener("change", () => {
+      if ($("preset").value === "minilm") {
+        fillModel(baseModel); $("auth").value = "none";
+        $("prompt").value = ""; $("label_prompt").value = ""; $("max_tokens").value = 256;
+        $("advanced").open = false;
+      } else {
+        $("advanced").open = true;
+        $("model-help").textContent = "Edit the model details below, or import an existing profile. Switching to MiniLM restores its model settings and prefixes.";
+      }
+      updateSummary();
+    });
+    for (const key of Object.keys(baseModel)) $(key).addEventListener("input", () => { syncPreset(); updateSummary(); });
+    for (const id of ["copy_documents", "copy-mode", "threshold-enabled"]) $(id).addEventListener("change", updateEditor);
+    for (const id of ["name", "auth", "prompt", "label_prompt", "max_tokens", "copy_threshold", "session", "documents"]) {
+      $(id).addEventListener("input", updateSummary);
+    }
     bind("open", async () => {
       $("dialog").showModal(); message("Loading saved workspace configuration…");
       await refreshProfiles(); await refreshResults();
@@ -108,6 +242,7 @@
         $("sessions").append(new Option(`${session.hostname} (${session.agent_type})`, session.id));
       }
       message("Profiles and saved results persist in the active server or workspace database.");
+      updateSummary();
     });
     $("close").addEventListener("click", () => $("dialog").close());
     $("profiles").addEventListener("change", () => {
@@ -118,7 +253,7 @@
       const name = $("name").value.trim();
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw new Error("Use a profile name with letters, digits, dots, underscores, or hyphens (maximum 64).");
       await request(`profiles/${encodeURIComponent(name)}`, "POST", { config: readForm() });
-      await refreshProfiles(name); message(`Saved ${name}. It will survive browser and service restarts.`);
+      await refreshProfiles(name); updateSummary(); message(`Saved ${name}. It will survive browser and service restarts.`);
     });
     bind("delete", async () => {
       const name = $("profiles").value;
@@ -133,19 +268,21 @@
       if (file.size > 65536) throw new Error("Profile files must be under 64 KiB.");
       let value = JSON.parse(await file.text()); value = value.record || value;
       fillForm(value.config || value, value.name || ""); $("profiles").value = "";
+      updateSummary();
       message("Profile imported into the form. Save it to persist it.");
     }));
     bind("run", async () => {
       const profile = $("profiles").value;
       if (!profile) throw new Error("Save and select a profile before running.");
       const saved = profiles.find((p) => p.name === profile);
-      if (JSON.stringify(readForm()) !== JSON.stringify({ model: Object.fromEntries(Object.keys(baseModel).map((key) => [key, saved.config.model[key]])), auth: saved.config.auth,
-        prompt: saved.config.prompt, label_prompt: saved.config.label_prompt, max_tokens: saved.config.max_tokens, labels: saved.config.labels,
-        copy_documents: saved.config.copy_documents ?? false, copy_labels: saved.config.copy_labels ?? [], copy_threshold: saved.config.copy_threshold ?? 0 })) {
+      if (!saved || $("name").value.trim() !== saved.name || !sameConfig(readForm(), savedFormConfig(saved.config))) {
         throw new Error("Save your configuration changes before running.");
       }
+      const documents = documentPaths();
+      if (!$("session").value.trim()) throw new Error("Enter a session ID before running.");
+      if (!documents.length || documents.length > 32) throw new Error("Enter 1 to 32 file or directory paths, one per line.");
       const data = await request("run", "POST", { session_ref: $("session").value.trim(), profile,
-        documents: $("documents").value.split(/\r?\n/).map((p) => p.trim()).filter(Boolean) });
+        documents });
       message(`Queued for ${data.session_id}. Inspect the session output, then save its exact event ID below.`);
     });
     bind("save-result", async () => {
