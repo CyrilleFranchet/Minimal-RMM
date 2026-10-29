@@ -6,6 +6,8 @@ Requires: pip install -r requirements-mcp.txt (Python 3.10+).
 
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 import asyncio
 import json
 import os
@@ -76,11 +78,12 @@ def resolve_exegol_mcp_config(
 
     Returns (enabled, url, token). When enabled with no URL, uses DEFAULT_EXEGOL_MCP_URL.
     """
-    env_url = os.environ.get("RMM_EXEGOL_MCP_URL", "").strip()
-    env_token = os.environ.get("RMM_EXEGOL_MCP_TOKEN", "").strip()
+    env_url = settings_getenv("RMM_EXEGOL_MCP_URL", "").strip()
+    env_token = settings_getenv("RMM_EXEGOL_MCP_TOKEN", "").strip()
 
-    resolved_url = (url or "").strip() or env_url
-    resolved_token = (token or "").strip() or env_token or None
+    resolved_url = env_url if url is None else url.strip()
+    matching_endpoint = url is None or resolved_url.rstrip("/") == env_url.rstrip("/")
+    resolved_token = (env_token if token is None and matching_endpoint else (token or "").strip()) or None
 
     if enabled is None:
         enabled = bool(resolved_url)
@@ -146,8 +149,14 @@ class McpRmmSession(_BaseMcpSession):
         from mcp.client.stdio import stdio_client
 
         env = dict(os.environ)
+        # Internal tools must use this request's identity, never an operator's
+        # unrelated client configuration or inherited central credentials.
+        env["RMM_INTERNAL_MCP"] = "1"
+        env.pop("RMM_CONFIG_FILE", None)
+        env.pop("RMM_WORKSPACE_ID", None)
+        env.pop("RMM_WORKSPACE_TOKEN", None)
         env["RMM_SERVER_URL"] = self.rmm_base_url
-        token = (self.rmm_token or "").strip()
+        token = "" if self.extra_headers.get("X-RMM-Workspace") else (self.rmm_token or "").strip()
         if token:
             env["RMM_API_TOKEN"] = token
         else:
@@ -301,5 +310,5 @@ def run_with_mcp_session(
 
 
 def use_mcp_for_ai() -> bool:
-    flag = os.environ.get("RMM_AI_USE_MCP", "1").strip().lower()
+    flag = settings_getenv("RMM_AI_USE_MCP", "1").strip().lower()
     return flag not in ("0", "false", "no", "off")

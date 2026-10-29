@@ -1,5 +1,11 @@
 # Web UI configuration and persistence
 
+Process settings have their own **Service settings** section in Config and
+an authenticated `/api/v1/settings` API. They are saved to the owning service's
+protected configuration file and apply after restart. See
+[service settings](service-settings.md) for CLI/MCP, secrets, and migration.
+The browser-state format described below remains separate.
+
 The **Config** button opens sections for plugins, installed assets, beacon
 transport, and import/export. Every section starts collapsed each time the
 dialog opens; `initConfiguration` resets all nested `details` before showing it. It saves

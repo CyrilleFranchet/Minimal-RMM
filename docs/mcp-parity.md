@@ -6,6 +6,14 @@ boundaries.
 
 Every **operator REST capability** exposed by `server_rmm.py` under `/api/v1/*` must be reachable through **`mcp_rmm_server.py`** (and shared `rmm_tools.py` / `OPENAI_TOOLS` for the web AI panel).
 
+## Service configuration
+
+`GET /api/v1/settings` maps to `rmm_cli.py settings show` and MCP
+`settings(action="show")`. `PATCH /api/v1/settings` maps to CLI
+`settings set`, `unset`, and `import`, or MCP
+`settings(action="update", settings={...})`. Credentials are write-only;
+saved service changes require restart. See [service settings](service-settings.md).
+
 ## Requirement
 
 When adding or changing an operator feature:

@@ -82,19 +82,21 @@ subsequent repository and branch changes in the UI, CLI, or source API.
 Credential references are restricted to `RMM_PLUGIN_GITHUB_TOKEN` and dedicated
 names such as `RMM_PLUGIN_TOKEN_DEV`; arbitrary service secrets cannot be used
 as GitHub credentials. Multiple sources can share a credential reference.
-The browser and CLI send source settings and release selections, never tokens.
-GitHub credentials are never sent to the agent, central broker in workspace
-mode, browser configuration, or plugin manifest.
+The source/release APIs carry credential references and release selections.
+Set the actual token through the owning service's write-only settings API,
+CLI secret-file input, or offline configuration. GitHub credentials are never
+sent to the agent or central broker in workspace mode, and configuration reads
+do not return them. See [service settings](service-settings.md).
 
 For Compose, `.env.example` provides `RMM_WORKSPACE_PLUGIN_GITHUB_TOKEN` and
 `RMM_SERVER_PLUGIN_GITHUB_TOKEN`; populate only the storage owner's value.
 Compose maps that value to `RMM_PLUGIN_GITHUB_TOKEN` in the selected service.
 Protect the environment file and exclude it from source control. Each separately
 deployed workspace can use its own repository credential.
-For additional named credentials in Compose, explicitly pass each variable
-into that workspace service's `environment` map, for example
-`RMM_PLUGIN_TOKEN_DEV: ${RMM_PLUGIN_TOKEN_DEV:-}`. Merely adding it to `.env`
-does not expose it to the container. The UI reports credential presence only.
+For additional named credentials, save `RMM_PLUGIN_TOKEN_<NAME>` through
+service settings and reference that name in the source editor. Legacy Compose
+users must explicitly forward each environment variable to the container;
+adding it to `.env` alone does not do so. The UI reports presence only.
 
 The largest current plugin is about 75 MB. Set `RMM_ASSET_MAX_BYTES=134217728`
 at the storage owner and `RMM_MAX_BODY_BYTES=134217728` on the central server

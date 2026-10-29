@@ -434,6 +434,26 @@
         <button type="submit" class="secondary" aria-label="Close configuration dialog">×</button>
       </div>
       <p id="deployment-mode-description" class="ai-hint">The connected service has not reported its deployment mode.</p>
+      <details class="asset-manager" id="service-settings-section">
+        <summary>Service settings</summary>
+        <p id="service-settings-scope" class="ai-hint">Settings belong to the connected server or workspace. Saving requires a process restart; environment variables take precedence.</p>
+        <p class="ai-hint">Credentials are write-only. Leave password fields blank to keep them, or remove a saved override explicitly. These settings are separate from browser configuration exports.</p>
+        <fieldset id="service-settings-fields" disabled><legend class="sr-only">Service settings fields</legend></fieldset>
+        <div class="embedding-actions">
+          <button type="button" id="service-settings-save" disabled>Save settings</button>
+          <button type="button" id="service-settings-reload" class="secondary">Reload settings</button>
+        </div>
+        <details>
+          <summary>Add a named plugin credential</summary>
+          <label for="service-settings-credential-key">Credential key</label>
+          <input id="service-settings-credential-key" placeholder="RMM_PLUGIN_TOKEN_TEAM" autocomplete="off" aria-describedby="service-settings-credential-help">
+          <label for="service-settings-credential-value">Credential value</label>
+          <input id="service-settings-credential-value" type="password" autocomplete="new-password">
+          <p id="service-settings-credential-help" class="ai-hint">Use this key in a plugin source's credential field after restarting the service. The value is never returned.</p>
+          <button type="button" id="service-settings-add-credential">Save credential</button>
+        </details>
+        <p id="service-settings-status" class="ui-config-status" role="status" aria-live="polite"></p>
+      </details>
       <details class="asset-manager">
         <summary>Plugins</summary>
         <h3>1. Choose a source</h3>
@@ -532,8 +552,8 @@
         <label for="plugin-release-source-branch">Branch</label>
         <input id="plugin-release-source-branch" type="text" value="main" placeholder="main" autocomplete="off" title="Branch whose published plugin releases you want to use, for example main or dev." aria-description="Branch whose published plugin releases you want to use, for example main or dev.">
       </div>
-      <label for="plugin-release-source-credential">Credential environment variable</label>
-      <input id="plugin-release-source-credential" type="text" value="RMM_PLUGIN_GITHUB_TOKEN" autocomplete="off" spellcheck="false" title="Name of the environment variable holding the GitHub token on the server or workspace. Do not paste the token here." aria-description="Name of the environment variable holding the GitHub token on the server or workspace. Do not paste the token here.">
+      <label for="plugin-release-source-credential">Credential key</label>
+      <input id="plugin-release-source-credential" type="text" value="RMM_PLUGIN_GITHUB_TOKEN" autocomplete="off" spellcheck="false" title="Key holding the GitHub token in Service settings or the server/workspace environment. Do not paste the token here." aria-description="Key holding the GitHub token in Service settings or the server/workspace environment. Do not paste the token here.">
       <p class="ai-hint">Use RMM_PLUGIN_GITHUB_TOKEN or RMM_PLUGIN_TOKEN_NAME, configured on the server/workspace. Enter the variable name here, never the token.</p>
 
       <div class="asset-form-row">
@@ -676,6 +696,7 @@
 
   <script src="theme.js"></script>
   <script src="config.js"></script>
+  <script src="settings.js"></script>
   <script src="workspace-config.js"></script>
   <script src="app.js"></script>
   <script src="assets.js"></script>

@@ -66,7 +66,7 @@
     $("source-repository").value = row?.repository || "";
     $("source-branch").value = row?.branch || "main";
     $("source-credential").value = row?.credential_env || "RMM_PLUGIN_GITHUB_TOKEN";
-    $("source-auth").textContent = row ? (row.credential_configured ? `GitHub credential detected in ${row.credential_env}. Repository access is checked when you load plugins.` : `GitHub credential missing. Set ${row.credential_env} on the workspace or server process, then restart that service. This field takes the variable name, not your OAuth token. Your RMM login token is separate.`) : "";
+    $("source-auth").textContent = row ? (row.credential_configured ? `GitHub credential detected in ${row.credential_env}. Repository access is checked when you load plugins.` : `GitHub credential missing. Save ${row.credential_env} in Service settings (or the service environment), then restart that service. This field takes the credential key, not your OAuth token. Your RMM login token is separate.`) : "";
     dirty = false;
     clearRelease();
   }

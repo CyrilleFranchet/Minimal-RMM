@@ -9,6 +9,11 @@ authenticated HTTP.
 
 from __future__ import annotations
 
+from rmm_settings import SettingsError, active_store, bootstrap, record_flags, settings_api, getenv as settings_getenv
+
+if __name__ == "__main__":
+    bootstrap("workspace")
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
 import base64
@@ -49,8 +54,8 @@ ROOT = Path(__file__).resolve().parent
 WEB_DIR = ROOT / "web"
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 8787
-DEFAULT_DATA_DIR = Path(os.environ.get("RMM_WORKSPACE_DATA", "~/.minimal-rmm")).expanduser()
-MAX_LOCAL_BODY = int(os.environ.get("RMM_WORKSPACE_MAX_BODY", str(32 * 1024 * 1024)))
+DEFAULT_DATA_DIR = Path(settings_getenv("RMM_WORKSPACE_DATA", "~/.minimal-rmm")).expanduser()
+MAX_LOCAL_BODY = int(settings_getenv("RMM_WORKSPACE_MAX_BODY", str(32 * 1024 * 1024)))
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,199}$")
 
 
@@ -175,7 +180,8 @@ class WorkspaceStore:
     def skill_directories(self) -> list[str]:
         """Return built-in skills followed by the workspace skill overlay."""
         builtin = str(ROOT / "ai-skills")
-        return [builtin, str(self.assets.root / "skills")]
+        custom = settings_getenv("RMM_AI_SKILLS_DIR", "").strip()
+        return [builtin, *([custom] if custom else []), str(self.assets.root / "skills")]
 
     def skill_overrides(self) -> dict[str, bool]:
         """Return explicit workspace skill enablement flags."""
@@ -815,8 +821,9 @@ class WorkspaceService:
         self.auto_claim = bool(auto_claim)
         self.poll_interval = max(0.2, float(poll_interval))
         self.store = WorkspaceStore(data_dir, workspace_id)
+        self.settings = active_store("workspace", self.store.data_dir / "settings.json")
         self.upstream = WorkspaceUpstream(central_url, workspace_id, workspace_token)
-        helper_path = tun_helper.strip() or os.environ.get("RMM_WORKSPACE_TUN_HELPER", "tools/rmm-tun")
+        helper_path = tun_helper.strip() or settings_getenv("RMM_WORKSPACE_TUN_HELPER", "tools/rmm-tun")
         self.pivots = WorkspacePivotManager(
             helper_path,
             self._submit_pivot_tasks,
@@ -1109,6 +1116,9 @@ class WorkspaceService:
     def get_json(self, path: str, qs: dict[str, list[str]]) -> tuple[int, Any, str] | None:
         """Handle local JSON GET endpoints or return ``None`` for proxying."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts == ["settings"]:
+            status, payload = settings_api(self.settings, "GET")
+            return status, payload, "application/json"
         if parts and parts[0] == "embeddings":
             return self._embedding_api("GET", parts)
         if parts == ["plugin-releases"]:
@@ -1341,6 +1351,13 @@ class WorkspaceService:
             return 200, response, "application/json"
         if parts == ["ai", "chat"]:
             forwarded = dict(body)
+            if forwarded.get("provider", "openai") == "openai" and not (forwarded.get("api_key") or forwarded.get("openai_api_key")):
+                forwarded["api_key"] = settings_getenv("OPENAI_API_KEY", "")
+            saved_url = settings_getenv("RMM_EXEGOL_MCP_URL", "")
+            forwarded.setdefault("exegol_mcp_url", saved_url)
+            saved_token = settings_getenv("RMM_EXEGOL_MCP_TOKEN", "") if str(forwarded["exegol_mcp_url"] or "").rstrip("/") == saved_url.rstrip("/") else ""
+            forwarded.setdefault("exegol_mcp_token", saved_token)
+            forwarded.setdefault("exegol_mcp_enabled", bool(forwarded["exegol_mcp_url"]))
             skill_ids = forwarded.get("skill_ids")
             if skill_ids is not None and not isinstance(skill_ids, list):
                 return 400, {"error": "invalid_skill_ids"}, "application/json"
@@ -1358,6 +1375,9 @@ class WorkspaceService:
     def patch_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local asset enablement updates or return ``None`` for proxying."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts == ["settings"]:
+            status, payload = settings_api(self.settings, "PATCH", body)
+            return status, payload, "application/json"
         if parts and parts[0] == "embeddings":
             return 405, {"error": "method_not_allowed"}, "application/json"
         if parts == ["ui", "config"]:
@@ -1563,17 +1583,29 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
 def main() -> int:
     """Parse environment and command-line settings, then run one workspace service."""
     parser = argparse.ArgumentParser(description="Minimal-RMM per-operator workspace service")
-    parser.add_argument("--central-url", default=os.environ.get("RMM_C2_URL", "http://127.0.0.1:8080"))
-    parser.add_argument("--workspace-id", default=os.environ.get("RMM_WORKSPACE_ID", ""))
-    parser.add_argument("--workspace-token", default=os.environ.get("RMM_WORKSPACE_TOKEN", ""))
+    parser.add_argument("--config", help="Persistent workspace configuration file")
+    parser.add_argument("--central-url", default=settings_getenv("RMM_C2_URL", "http://127.0.0.1:8080"))
+    parser.add_argument("--workspace-id", default=settings_getenv("RMM_WORKSPACE_ID", ""))
+    parser.add_argument("--workspace-token", default=settings_getenv("RMM_WORKSPACE_TOKEN", ""))
     parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
-    parser.add_argument("--bind", default=os.environ.get("RMM_WORKSPACE_BIND", DEFAULT_BIND))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("RMM_WORKSPACE_PORT", DEFAULT_PORT)))
-    parser.add_argument("--local-token", default=os.environ.get("RMM_WORKSPACE_LOCAL_TOKEN", ""))
-    parser.add_argument("--tun-helper", default=os.environ.get("RMM_WORKSPACE_TUN_HELPER", "tools/rmm-tun"))
-    parser.add_argument("--auto-claim", action="store_true", default=os.environ.get("RMM_WORKSPACE_AUTO_CLAIM", "0").lower() in {"1", "true", "yes"})
-    parser.add_argument("--poll-interval", type=float, default=float(os.environ.get("RMM_WORKSPACE_POLL_INTERVAL", "1")))
+    parser.add_argument("--bind", default=settings_getenv("RMM_WORKSPACE_BIND", DEFAULT_BIND))
+    parser.add_argument("--port", type=int, default=int(settings_getenv("RMM_WORKSPACE_PORT", DEFAULT_PORT)))
+    parser.add_argument("--local-token", default=settings_getenv("RMM_WORKSPACE_LOCAL_TOKEN", ""))
+    parser.add_argument("--tun-helper", default=settings_getenv("RMM_WORKSPACE_TUN_HELPER", "tools/rmm-tun"))
+    parser.add_argument("--auto-claim", action="store_true", default=settings_getenv("RMM_WORKSPACE_AUTO_CLAIM", "0").lower() in {"1", "true", "yes"})
+    parser.add_argument("--poll-interval", type=float, default=float(settings_getenv("RMM_WORKSPACE_POLL_INTERVAL", "1")))
     args = parser.parse_args()
+    record_flags({
+        "--central-url": ("RMM_C2_URL", args.central_url),
+        "--workspace-id": ("RMM_WORKSPACE_ID", args.workspace_id),
+        "--workspace-token": ("RMM_WORKSPACE_TOKEN", args.workspace_token),
+        "--bind": ("RMM_WORKSPACE_BIND", args.bind),
+        "--port": ("RMM_WORKSPACE_PORT", args.port),
+        "--local-token": ("RMM_WORKSPACE_LOCAL_TOKEN", args.local_token),
+        "--tun-helper": ("RMM_WORKSPACE_TUN_HELPER", args.tun_helper),
+        "--auto-claim": ("RMM_WORKSPACE_AUTO_CLAIM", args.auto_claim),
+        "--poll-interval": ("RMM_WORKSPACE_POLL_INTERVAL", args.poll_interval),
+    })
     if not args.workspace_id or not args.workspace_token:
         parser.error("--workspace-id and --workspace-token are required")
     service = WorkspaceService(

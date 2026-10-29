@@ -28,12 +28,16 @@ Cursor MCP config (~/.cursor/mcp.json):
 
 from __future__ import annotations
 
-import os
+from rmm_settings import bootstrap, getenv as settings_getenv
+
+if __name__ == "__main__":
+    bootstrap("client")
 
 from mcp.server.fastmcp import FastMCP
 
 from rmm_tools import (
     make_client,
+    tool_settings,
     tool_embedding_profiles,
     tool_embedding_results,
     tool_run_embeddings,
@@ -93,17 +97,23 @@ mcp = FastMCP(
     ),
 )
 
-_client = None
+_cached_client = None
 
 
 def _client():
-    global _client
-    if _client is None:
-        _client = make_client(
-            os.environ.get("RMM_SERVER_URL") or os.environ.get("RMM_BASE_URL"),
-            os.environ.get("RMM_API_TOKEN"),
+    global _cached_client
+    if _cached_client is None:
+        _cached_client = make_client(
+            settings_getenv("RMM_SERVER_URL") or settings_getenv("RMM_BASE_URL"),
+            settings_getenv("RMM_API_TOKEN") or None,
         )
-    return _client
+    return _cached_client
+
+
+@mcp.tool()
+def settings(action: str = "show", settings: dict | None = None) -> str:
+    """Read redacted service settings or update typed overrides. Null removes an override. Restart required; environment takes precedence. Workspace settings use the local workspace API."""
+    return tool_settings(_client(), action, settings)
 
 
 @mcp.tool()
@@ -273,9 +283,9 @@ def profile_status() -> str:
 
 
 @mcp.tool()
-def start_profile(name: str = "cloudflared") -> str:
+def start_profile(name: str = "cloudflared", config: dict | None = None) -> str:
     """Start an installed RMM-Profile connector."""
-    return tool_start_profile(_client(), name)
+    return tool_start_profile(_client(), name, config)
 
 
 @mcp.tool()

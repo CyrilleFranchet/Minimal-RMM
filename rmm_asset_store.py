@@ -8,6 +8,8 @@ truth and can republish that copy after a restart.
 
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 import base64
 from datetime import datetime, timezone
 import hashlib
@@ -52,7 +54,7 @@ def normalize_asset_kind(kind: str) -> str:
 
 def _max_bytes() -> int:
     """Return the bounded download size for remote assets."""
-    raw = os.environ.get("RMM_ASSET_MAX_BYTES", str(DEFAULT_MAX_BYTES)).strip()
+    raw = settings_getenv("RMM_ASSET_MAX_BYTES", str(DEFAULT_MAX_BYTES)).strip()
     try:
         value = int(raw)
     except ValueError:

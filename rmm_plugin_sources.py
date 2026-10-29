@@ -1,6 +1,8 @@
 """Persistent repository/branch selections owned by a server or user workspace."""
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 import hashlib
 import json
 import os
@@ -54,7 +56,7 @@ def public_source(source: dict) -> dict:
     """Add configuration revision and credential presence without exposing the secret."""
     revision = hashlib.sha256(json.dumps(source, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {**source, "revision": revision,
-            "credential_configured": bool(os.environ.get(source["credential_env"], "").strip())}
+            "credential_configured": bool(settings_getenv(source["credential_env"], "").strip())}
 
 
 class PluginSourceStore:
@@ -68,7 +70,7 @@ class PluginSourceStore:
         with _LOCK:
             if not self.path.exists():
                 source = normalize_source("default", {
-                    "label": "Default", "repository": os.environ.get("RMM_PLUGIN_REPOSITORY", "CyrilleFranchet/Minimal-RMM-plugins"),
+                    "label": "Default", "repository": settings_getenv("RMM_PLUGIN_REPOSITORY", "CyrilleFranchet/Minimal-RMM-plugins"),
                     "branch": "main", "credential_env": "RMM_PLUGIN_GITHUB_TOKEN",
                 })
                 self._write([source])

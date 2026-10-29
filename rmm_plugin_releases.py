@@ -1,6 +1,8 @@
 """Fetch verified, versioned plugin releases at the operator storage owner."""
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 import hashlib
 import json
 import os
@@ -40,13 +42,13 @@ class PluginReleases:
     """Read one configured GitHub repository and verify its release manifests."""
 
     def __init__(self, source=None):
-        source = source or {"id": "default", "repository": os.environ.get("RMM_PLUGIN_REPOSITORY", "CyrilleFranchet/Minimal-RMM-plugins"),
+        source = source or {"id": "default", "repository": settings_getenv("RMM_PLUGIN_REPOSITORY", "CyrilleFranchet/Minimal-RMM-plugins"),
                             "branch": "main", "credential_env": "RMM_PLUGIN_GITHUB_TOKEN", "label": "Default"}
         config = normalize_source(source["id"], {key: source[key] for key in ("label", "repository", "branch", "credential_env")})
         self.repository = config["repository"]
         self.branch = config["branch"]
         self.branch_key = hashlib.sha256(self.branch.encode("utf-8")).hexdigest()[:12]
-        self.token = os.environ.get(config["credential_env"], "").strip()
+        self.token = settings_getenv(config["credential_env"], "").strip()
         self.base = f"https://api.github.com/repos/{self.repository}"
         self.opener = urllib.request.build_opener(ReleaseRedirect())
 

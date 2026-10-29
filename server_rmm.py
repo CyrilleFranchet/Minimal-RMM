@@ -16,6 +16,11 @@ Enhanced Features:
 
 from __future__ import annotations
 
+from rmm_settings import SettingsError, active_store, bootstrap, record_flags, settings_api, getenv as settings_getenv
+
+if __name__ == "__main__":
+    bootstrap("server")
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
 import hashlib
@@ -82,14 +87,14 @@ HISTORY_FILE = os.path.expanduser("~/.RMM_history")
 # Configuration (overridden by argparse in main())
 PORT = 8080  # Backward-compatible alias for the administration port.
 try:
-    ADMIN_PORT = int(os.environ.get("RMM_ADMIN_PORT", str(PORT)))
+    ADMIN_PORT = int(settings_getenv("RMM_ADMIN_PORT", str(PORT)))
 except (TypeError, ValueError):
     ADMIN_PORT = PORT
 try:
-    BEACON_PORT = int(os.environ.get("RMM_BEACON_PORT", "8081"))
+    BEACON_PORT = int(settings_getenv("RMM_BEACON_PORT", "8081"))
 except (TypeError, ValueError):
     BEACON_PORT = 8081
-LOG_DIR = "RMM_logs"
+LOG_DIR = settings_getenv("RMM_LOG_DIR", "RMM_logs")
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 SERVER_TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
 CLIENT_SCRIPT = os.path.join(
@@ -99,14 +104,14 @@ GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-g
 GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
 # Operator PE and script plugins served to the agent. Deploy release artifacts
 # here from the external Minimal-RMM-plugins repository.
-PLUGINS_DIR = os.environ.get("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
-ASSETS_DIR = os.environ.get("RMM_ASSETS_DIR", "").strip() or os.path.join(LOG_DIR, "assets")
-UI_STATE_DB = os.environ.get("RMM_UI_STATE_DB", "").strip() or os.path.join(LOG_DIR, "ui-state.db")
+PLUGINS_DIR = settings_getenv("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
+ASSETS_DIR = settings_getenv("RMM_ASSETS_DIR", "").strip() or os.path.join(LOG_DIR, "assets")
+UI_STATE_DB = settings_getenv("RMM_UI_STATE_DB", "").strip() or os.path.join(LOG_DIR, "ui-state.db")
 PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PLUGIN_ARTIFACT_EXTENSIONS = {".dll", ".ps1"}
 PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 PLUGIN_COMMAND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,127}$")
-TUN_HELPER = os.environ.get("RMM_TUN_HELPER", "").strip() or os.path.join(SERVER_TOOLS_DIR, "rmm-tun")
+TUN_HELPER = settings_getenv("RMM_TUN_HELPER", "").strip() or os.path.join(SERVER_TOOLS_DIR, "rmm-tun")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
 WEB_MIME = {
@@ -117,12 +122,12 @@ WEB_MIME = {
     ".ico": "image/x-icon",
 }
 API_PREFIX = "/api/v1"
-API_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
-BEACON_SECRET = os.environ.get("RMM_BEACON_SECRET", "").strip()
+API_TOKEN = settings_getenv("RMM_API_TOKEN", "").strip()
+BEACON_SECRET = settings_getenv("RMM_BEACON_SECRET", "").strip()
 INSECURE = False
-LISTEN_HOST = "127.0.0.1"
-BEACON_BIND = os.environ.get("RMM_BEACON_BIND", "").strip() or LISTEN_HOST
-BEACON_PUBLIC_URL = os.environ.get("RMM_BEACON_PUBLIC_URL", "").strip()
+LISTEN_HOST = settings_getenv("RMM_ADMIN_BIND", "127.0.0.1")
+BEACON_BIND = settings_getenv("RMM_BEACON_BIND", "").strip() or LISTEN_HOST
+BEACON_PUBLIC_URL = settings_getenv("RMM_BEACON_PUBLIC_URL", "").strip()
 MAX_RESULT_EVENTS = 500
 MAX_AI_CHAT_MESSAGES = 500
 # Cap event body size on operator WebSocket pushes (full text stays in memory/history/API).
@@ -130,7 +135,7 @@ MAX_WS_EVENT_BODY = 16 * 1024
 
 
 def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
+    raw = settings_getenv(name, "").strip()
     if not raw:
         return default
     try:
@@ -141,7 +146,7 @@ def _env_int(name: str, default: int) -> int:
 
 def configured_storage_mode() -> str:
     """Return the central persistence mode, defaulting to legacy server storage."""
-    value = os.environ.get("RMM_STORAGE_MODE", "server").strip().lower()
+    value = settings_getenv("RMM_STORAGE_MODE", "server").strip().lower()
     return value if value in {"server", "workspace"} else "server"
 
 
@@ -844,6 +849,7 @@ class RMMServer:
     storage_mode = "server"
 
     def __init__(self):
+        self.settings = active_store("server", os.path.join(LOG_DIR, "settings.json"))
         self.storage_mode = configured_storage_mode()
         self.workspace_registry = WorkspaceRegistry.from_environment()
         self.workspace_events = WorkspaceEventBroker()
@@ -864,7 +870,7 @@ class RMMServer:
         self.beacon_port = BEACON_PORT
         self.beacon_public_url = BEACON_PUBLIC_URL
         self.profile_manager = ProfileManager(profile_directory(), log_fn=self.log)
-        self.profile_name = os.environ.get("RMM_PROFILE_NAME", "cloudflared").strip().lower()
+        self.profile_name = settings_getenv("RMM_PROFILE_NAME", "cloudflared").strip().lower()
         # In workspace mode this stores transport-only relay configuration;
         # the workspace service creates the listener or TUN device locally.
         self.workspace_socks_configs = {}
@@ -911,21 +917,62 @@ class RMMServer:
         status["beacon_port"] = self.beacon_port
         status["beacon_public_url"] = self.beacon_public_url or None
         status["profile_name"] = self.profile_name or None
+        status["origin_url"] = f"http://{'127.0.0.1' if BEACON_BIND in {'0.0.0.0', '::', ''} else BEACON_BIND}:{self.beacon_port}"
         return status
+
+    @property
+    def beacon_public_url(self) -> str:
+        """Return only a live connector URL, otherwise the configured fallback."""
+        manager = getattr(self, "profile_manager", None)
+        live = manager.status().get("public_url") if manager else None
+        return live or getattr(self, "_beacon_public_url", "")
+
+    @beacon_public_url.setter
+    def beacon_public_url(self, value: str) -> None:
+        """Set the static fallback used when no connector is running."""
+        self._beacon_public_url = value
+
+    def profile_config(self, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Resolve the active Cloudflare settings for every start path."""
+        config = {}
+        if name == "cloudflared":
+            for key, setting in {
+                "mode": "RMM_CLOUDFLARE_MODE", "public_url": "RMM_CLOUDFLARE_PUBLIC_URL",
+                "token": "RMM_CLOUDFLARE_TOKEN", "binary": "RMM_CLOUDFLARE_BINARY",
+                "origin_host": "RMM_CLOUDFLARE_ORIGIN_HOST",
+            }.items():
+                value = settings_getenv(setting, "").strip()
+                if value:
+                    config[key] = value
+            config.setdefault("binary", settings_getenv("CLOUDFLARED_BIN", "cloudflared"))
+        config.update(overrides or {})
+        if name == "cloudflared":
+            mode = config.get("mode", "quick")
+            if mode not in {"quick", "named"}:
+                raise ProfileError("Cloudflare mode must be quick or named")
+            if mode == "named":
+                from rmm_settings import validate
+                try:
+                    validate("RMM_CLOUDFLARE_PUBLIC_URL", config.get("public_url", ""), "server")
+                except SettingsError:
+                    raise ProfileError("named tunnels require a valid HTTPS public URL") from None
+                if not config.get("public_url") or not isinstance(config.get("token"), str) or not config["token"].strip():
+                    raise ProfileError("named tunnels require a public URL and token")
+        return config
 
     def start_profile(self, name: str | None = None, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """Start a dynamic profile and publish the URL agents must use."""
         selected = (name or self.profile_name or "").strip().lower()
         if not selected:
             raise ProfileError("profile name is required")
+        resolved = self.profile_config(selected, config)
         event = self.profile_manager.start(
             selected,
             listen_host="127.0.0.1" if BEACON_BIND in {"0.0.0.0", "::", ""} else BEACON_BIND,
             listen_port=self.beacon_port,
-            config=config,
+            config=resolved,
         )
         self.profile_name = selected
-        self.beacon_public_url = str(event.get("public_url") or "").rstrip("/")
         self.log(f"RMM-Profile {selected} ready: {self.beacon_public_url}", "SUCCESS")
         return self.profile_status()
 
@@ -939,6 +986,7 @@ class RMMServer:
         """Return built-in and centrally managed skill directories."""
         return [
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-skills"),
+            *([settings_getenv("RMM_AI_SKILLS_DIR")] if settings_getenv("RMM_AI_SKILLS_DIR") else []),
             os.path.join(ASSETS_DIR, "skills"),
         ]
 
@@ -3330,6 +3378,14 @@ class RMMHandler(BaseHTTPRequestHandler):
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
+        if parts in (["settings"], ["ui", "config"]) and workspace_id:
+            self._json(403, {"error": "administrator_required"})
+            return True
+        if parts == ["settings"]:
+            status, payload = settings_api(srv.settings, "GET")
+            self._json(status, payload)
+            return True
+
         if parts == ["workspace", "sessions"]:
             if not workspace_id:
                 self._json(403, {"error": "workspace_auth_required"})
@@ -3738,6 +3794,9 @@ class RMMHandler(BaseHTTPRequestHandler):
 
         if parts == ["profile"]:
             try:
+                if workspace_id:
+                    self._json(403, {"error": "administrator_required"})
+                    return True
                 if body.get("stop"):
                     stopped = srv.stop_profile()
                     self._json(200, {"ok": True, "stopped": stopped, "profile": srv.profile_status()})
@@ -4075,7 +4134,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             api_key = str(
                 body.get("api_key")
                 or body.get("openai_api_key")
-                or (os.environ.get("OPENAI_API_KEY", "") if provider == "openai" else "")
+                or (settings_getenv("OPENAI_API_KEY", "") if provider == "openai" and not workspace_id else "")
             ).strip()
             if not api_key:
                 self._json(400, {"error": "missing_api_key"})
@@ -4110,7 +4169,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "X-RMM-Workspace": workspace_id,
                     "X-RMM-Workspace-Token": workspace_token,
                 }
-            rmm_token = (self._api_token_from_request() or API_TOKEN or "").strip()
+            rmm_token = "" if workspace_id else (self._api_token_from_request() or API_TOKEN or "").strip()
             if not rmm_token and not rmm_headers:
                 self._json(401, {
                     "error": "unauthorized",
@@ -4183,6 +4242,14 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts is None:
             return False
         srv = self.server_instance
+
+        if parts in (["settings"], ["ui", "config"]) and self._workspace_scope():
+            self._json(403, {"error": "administrator_required"})
+            return True
+        if parts == ["settings"]:
+            status, payload = settings_api(srv.settings, "PATCH", body)
+            self._json(status, payload)
+            return True
 
         if parts == ["ui", "config"]:
             try:
@@ -4937,6 +5004,7 @@ def main():
     global PORT, ADMIN_PORT, BEACON_PORT, API_TOKEN, BEACON_SECRET, INSECURE, LISTEN_HOST, BEACON_BIND
 
     parser = argparse.ArgumentParser(description="Mini RMM HTTP server")
+    parser.add_argument("--config", help="Persistent service configuration file")
     parser.add_argument(
         "port",
         nargs="?",
@@ -4983,7 +5051,7 @@ def main():
     )
     parser.add_argument(
         "--profile",
-        default=os.environ.get("RMM_PROFILE_NAME", "cloudflared"),
+        default=settings_getenv("RMM_PROFILE_NAME", "cloudflared"),
         help="RMM-Profile to start when installed (env: RMM_PROFILE_NAME)",
     )
     parser.add_argument(
@@ -5005,6 +5073,17 @@ def main():
         help="Max exfil size in bytes (file or folder); 0 = unlimited (or set RMM_RCLONE_MAX_BYTES)",
     )
     args = parser.parse_args()
+    record_flags({
+        "--admin-port": ("RMM_ADMIN_PORT", args.admin_port),
+        "--beacon-port": ("RMM_BEACON_PORT", args.beacon_port),
+        "--bind": ("RMM_ADMIN_BIND", args.bind),
+        "--beacon-bind": ("RMM_BEACON_BIND", args.beacon_bind),
+        "--token": ("RMM_API_TOKEN", args.token),
+        "--beacon-secret": ("RMM_BEACON_SECRET", args.beacon_secret),
+        "--profile": ("RMM_PROFILE_NAME", args.profile),
+        "--rclone-profiles": ("RMM_RCLONE_PROFILES_FILE", args.rclone_profiles),
+        "--rclone-max-bytes": ("RMM_RCLONE_MAX_BYTES", args.rclone_max_bytes),
+    })
     admin_port = args.admin_port if args.admin_port is not None else args.port
     if admin_port is None:
         admin_port = _env_int("RMM_ADMIN_PORT", 8080)
@@ -5018,6 +5097,13 @@ def main():
     BEACON_PORT = beacon_port
     LISTEN_HOST = args.bind
     BEACON_BIND = args.beacon_bind or LISTEN_HOST
+    startup_settings = active_store("server", os.path.join(LOG_DIR, "settings.json"))
+    startup_settings.effective.update({
+        "RMM_ADMIN_PORT": admin_port, "RMM_BEACON_PORT": beacon_port,
+        "RMM_ADMIN_BIND": LISTEN_HOST, "RMM_BEACON_BIND": BEACON_BIND,
+    })
+    if args.port is not None and args.admin_port is None:
+        startup_settings.flags.add("RMM_ADMIN_PORT")
     INSECURE = args.insecure
     if args.token:
         API_TOKEN = args.token.strip()
@@ -5031,7 +5117,6 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        os.environ["RMM_RCLONE_PROFILES_FILE"] = profiles_path
     if args.rclone_max_bytes is not None:
         if args.rclone_max_bytes < 0:
             print(
@@ -5039,7 +5124,6 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        os.environ["RMM_RCLONE_MAX_BYTES"] = str(args.rclone_max_bytes)
 
     if not INSECURE:
         if not API_TOKEN:
@@ -5117,7 +5201,7 @@ def main():
     for http_thread in http_threads:
         http_thread.start()
 
-    profile_auto_start = os.environ.get("RMM_PROFILE_AUTOSTART", "1").strip().lower() in {"1", "true", "yes"}
+    profile_auto_start = settings_getenv("RMM_PROFILE_AUTOSTART", "1").strip().lower() in {"1", "true", "yes"}
     if profile_auto_start and args.profile and any(row["name"] == args.profile.strip().lower() for row in server.profile_manager.list()):
         try:
             server.start_profile(args.profile)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 import asyncio
 import json
 import os
@@ -24,7 +26,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 def _max_tool_rounds() -> int:
     """Return the configured AI tool-round limit with a safe lower bound."""
-    raw = os.environ.get("RMM_AI_MAX_TOOL_ROUNDS", "32").strip()
+    raw = settings_getenv("RMM_AI_MAX_TOOL_ROUNDS", "32").strip()
     try:
         return max(1, int(raw))
     except ValueError:

@@ -25,6 +25,7 @@ historical notes in `progress.md`.
 
 | Goal | Page |
 | --- | --- |
+| Configure services without maintaining environment-variable lists | [Persistent service settings](service-settings.md) |
 | Choose a setup and deploy without mixing server/workspace settings | [Deployment guide](deployment.md) |
 | Understand the complete system | [Architecture overview](architecture.md) |
 | Look up startup arguments and optional helper setup | [Server startup reference](server-startup.md) |
@@ -54,7 +55,7 @@ historical notes in `progress.md`.
 | Topic | Page |
 | --- | --- |
 | Development and Docker startup paths | [Server startup](server-startup.md) |
-| RMM-Profile volume and Cloudflared quick tunnel | [RMM-Profiles](rmm-profiles.md) |
+| RMM-Profile volume and Cloudflared Quick/named tunnels | [RMM-Profiles](rmm-profiles.md) |
 | Go agent generation, targets, and runtime settings | [Go agent](go-agent.md) |
 | PowerShell agent generation | [PowerShell agent generator](web-agent-generator.md) |
 | Hidden command execution and shell dispatch | [Client command execution](client-command-execution.md) |

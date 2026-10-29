@@ -8,6 +8,8 @@ transport-specific commands and parsing remain in the profile repository.
 
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 from datetime import datetime, timezone
 import json
 import os
@@ -18,6 +20,7 @@ import subprocess
 import sys
 import threading
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 
 PROFILE_SCHEMA = "minimal-rmm-profile-v1"
@@ -32,8 +35,8 @@ class ProfileError(RuntimeError):
 def profile_directory() -> str:
     """Return the runtime directory containing installed profile bundles."""
     return os.path.realpath(
-        os.environ.get("RMM_PROFILES_DIR", "").strip()
-        or os.path.join(os.environ.get("RMM_LOG_DIR", "RMM_logs"), "profiles")
+        settings_getenv("RMM_PROFILES_DIR", "").strip()
+        or os.path.join(settings_getenv("RMM_LOG_DIR", "RMM_logs"), "profiles")
     )
 
 
@@ -103,6 +106,33 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _ready_event(payload: dict[str, Any]) -> dict[str, str]:
+    """Validate a public origin and retain only credential-free handshake fields."""
+    value = payload.get("public_url")
+    if not isinstance(value, str) or not value or len(value) > 2048:
+        raise ProfileError("profile ready event has an invalid public URL")
+    try:
+        parsed = urlsplit(value)
+        valid = (
+            parsed.scheme in {"https", "http"}
+            and parsed.hostname
+            and not parsed.username
+            and not parsed.password
+            and parsed.path in {"", "/"}
+            and not parsed.query
+            and not parsed.fragment
+            and not any(character.isspace() for character in value)
+            and "\\" not in value
+        )
+        # Accessing port also validates its syntax and range.
+        parsed.port
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ProfileError("profile ready event has an invalid public URL")
+    return {"event": "ready", "public_url": value.rstrip("/"), "hostname": parsed.hostname}
+
+
 class ProfileProcess:
     """Run one profile connector and wait for its generic ready event."""
 
@@ -142,44 +172,58 @@ class ProfileProcess:
             rendered.extend(extra)
         return rendered
 
-    def _read_stdout(self) -> None:
-        """Consume lifecycle events from the runner's stdout."""
-        process = self.process
+    def _read_stdout(self, process: subprocess.Popen[str]) -> None:
+        """Consume bounded lifecycle events without trusting arbitrary event fields."""
         if not process or not process.stdout:
             return
-        for line in process.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                self._log(f"Profile {self.manifest['name']} emitted non-JSON output", "WARNING")
-                continue
-            if not isinstance(event, dict):
-                continue
+        try:
+            while True:
+                line = process.stdout.readline(65537)
+                if not line:
+                    break
+                if len(line) > 65536:
+                    with self._lock:
+                        if self.process is process:
+                            self._error = "profile runner emitted an oversized event"
+                            self._ready.set()
+                    return
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                with self._lock:
+                    if self.process is not process:
+                        return
+                    if event.get("event") == "ready" and not self._error:
+                        try:
+                            self._event = _ready_event(event)
+                        except ProfileError as exc:
+                            self._error = str(exc)
+                        self._ready.set()
+                    elif event.get("event") == "error":
+                        # Connector error strings may contain provider tokens or URLs.
+                        self._error = "profile runner reported a failure"
+                        self._ready.set()
+        except (OSError, ValueError):
+            pass
+        finally:
             with self._lock:
-                self._event = dict(event)
-                if event.get("event") == "ready":
+                if self.process is process:
+                    if not self._error:
+                        self._error = "profile runner closed its event stream"
                     self._ready.set()
-                elif event.get("event") == "error":
-                    self._error = str(event.get("message") or "profile runner failed")
-                    self._ready.set()
-        returncode = process.poll()
-        with self._lock:
-            if returncode not in (None, 0) and not self._error:
-                self._error = f"profile runner exited with status {returncode}"
-                self._ready.set()
 
-    def _read_stderr(self) -> None:
-        """Forward profile stderr without exposing it through the agent."""
-        process = self.process
+    def _read_stderr(self, process: subprocess.Popen[str]) -> None:
+        """Drain provider diagnostics without exposing credentials to server logs."""
         if not process or not process.stderr:
             return
-        for line in process.stderr:
-            line = line.strip()
-            if line:
-                self._log(f"Profile {self.manifest['name']}: {line}", "INFO")
+        try:
+            while process.stderr.read(4096):
+                pass
+        except (OSError, ValueError):
+            pass
 
     def start(
         self,
@@ -217,18 +261,20 @@ class ProfileProcess:
                     start_new_session=True,
                 )
             except OSError as exc:
-                raise ProfileError(f"cannot start profile: {exc}") from exc
+                raise ProfileError("cannot start profile runner") from exc
             self._ready.clear()
             self._error = None
             self._event = {}
             self._started_at = _utc_now()
             threading.Thread(
                 target=self._read_stdout,
+                args=(self.process,),
                 name=f"profile-{self.manifest['name']}-stdout",
                 daemon=True,
             ).start()
             threading.Thread(
                 target=self._read_stderr,
+                args=(self.process,),
                 name=f"profile-{self.manifest['name']}-stderr",
                 daemon=True,
             ).start()
@@ -236,21 +282,24 @@ class ProfileProcess:
             self.stop()
             raise ProfileError("profile did not emit a ready event before the timeout")
         with self._lock:
-            if self._error:
-                error = self._error
-                self.stop()
-                raise ProfileError(error)
+            error = self._error
             event = dict(self._event)
-            if not str(event.get("public_url") or "").strip():
-                self.stop()
-                raise ProfileError("profile ready event is missing public_url")
-            return event
+            if not error and (not self.process or self.process.poll() is not None):
+                error = "profile runner exited before startup completed"
+        if error:
+            self.stop()
+            raise ProfileError(error)
+        if not event.get("public_url"):
+            self.stop()
+            raise ProfileError("profile ready event is missing public_url")
+        return event
 
     def stop(self) -> None:
         """Terminate the profile runner and wait briefly for it to exit."""
         with self._lock:
             process = self.process
             self.process = None
+            self._ready.set()
         if not process:
             return
         try:
@@ -263,6 +312,10 @@ class ProfileProcess:
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
+            pass
+        finally:
+            # The runner may exit before its children. Always terminate the
+            # remaining process group, even when wait() returned immediately.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except (OSError, AttributeError):
@@ -286,7 +339,7 @@ class ProfileProcess:
         with self._lock:
             process = self.process
             event = dict(self._event)
-            running = bool(process and process.poll() is None)
+            running = bool(process and process.poll() is None and not self._error)
             return {
                 "name": self.manifest.get("name"),
                 "version": self.manifest.get("version"),
@@ -295,6 +348,7 @@ class ProfileProcess:
                 "hostname": event.get("hostname") if running else None,
                 "started_at": self._started_at if running else None,
                 "capabilities": self.manifest.get("capabilities", []),
+                "error": self._error,
             }
 
 
@@ -310,6 +364,7 @@ class ProfileManager:
         self.root = Path(root or profile_directory()).expanduser().resolve()
         self.log_fn = log_fn or (lambda _message, _level="INFO": None)
         self._lock = threading.RLock()
+        self._operation_lock = threading.Lock()
         self._active: ProfileProcess | None = None
         self._active_manifest: dict[str, Any] | None = None
         self._last_error: str | None = None
@@ -326,7 +381,7 @@ class ProfileManager:
                 "version": manifest["version"],
                 "description": manifest.get("description", ""),
                 "capabilities": manifest.get("capabilities", []),
-                "running": manifest["name"] == active_name,
+                "running": bool(manifest["name"] == active_name and active_status and active_status["running"]),
             }
             if active_status and manifest["name"] == active_name:
                 row.update(
@@ -349,37 +404,45 @@ class ProfileManager:
         manifest = next((row for row in discover_profiles(self.root) if row["name"] == name), None)
         if not manifest:
             raise ProfileError(f"profile {name!r} is not installed")
-        with self._lock:
-            if self._active:
-                self._active.stop()
-            process = ProfileProcess(manifest, log_fn=self.log_fn)
-            self._active = process
-            self._active_manifest = manifest
-            self._last_error = None
-        try:
-            return process.start(
-                listen_host=listen_host,
-                listen_port=listen_port,
-                config=config,
-                timeout=timeout,
-            )
-        except Exception as exc:
+        with self._operation_lock:
             with self._lock:
-                self._last_error = str(exc)
+                previous = self._active
                 self._active = None
                 self._active_manifest = None
-            raise
+            if previous:
+                previous.stop()
+            process = ProfileProcess(manifest, log_fn=self.log_fn)
+            with self._lock:
+                self._active = process
+                self._active_manifest = manifest
+                self._last_error = None
+            try:
+                return process.start(
+                    listen_host=listen_host,
+                    listen_port=listen_port,
+                    config=config,
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                process.stop()
+                error = str(exc) if isinstance(exc, ProfileError) else "profile startup failed"
+                with self._lock:
+                    self._last_error = error
+                    self._active = None
+                    self._active_manifest = None
+                raise ProfileError(error) from exc
 
     def stop(self) -> bool:
         """Stop the active profile, if any."""
-        with self._lock:
-            process = self._active
-            self._active = None
-            self._active_manifest = None
-        if not process:
-            return False
-        process.stop()
-        return True
+        with self._operation_lock:
+            with self._lock:
+                process = self._active
+                self._active = None
+                self._active_manifest = None
+            if not process:
+                return False
+            process.stop()
+            return True
 
     def status(self) -> dict[str, Any]:
         """Return the active profile, public URL, and last startup error."""
@@ -390,5 +453,5 @@ class ProfileManager:
                 "installed": self.list(),
                 "active": row,
                 "public_url": row.get("public_url") if row else None,
-                "last_error": self._last_error,
+                "last_error": self._last_error or (row.get("error") if row else None),
             }

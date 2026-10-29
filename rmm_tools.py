@@ -6,14 +6,14 @@ Uses the same REST API as rmm_cli.py (RmmApiClient).
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from rmm_cli import RmmApiClient, _default_server_url
+from rmm_settings import getenv as settings_getenv
 
 DEFAULT_RMM_URL = _default_server_url()
-DEFAULT_RMM_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
+DEFAULT_RMM_TOKEN = settings_getenv("RMM_API_TOKEN", "").strip()
 
 
 def make_client(
@@ -21,15 +21,14 @@ def make_client(
     token: str | None = None,
     extra_headers: dict[str, str] | None = None,
 ) -> RmmApiClient:
-    resolved_token = DEFAULT_RMM_TOKEN if token is None else str(token).strip()
-    if not resolved_token:
-        resolved_token = DEFAULT_RMM_TOKEN
+    resolved_token = DEFAULT_RMM_TOKEN if token is None and extra_headers is None else str(token or "").strip()
     headers = dict(extra_headers or {})
-    workspace_id = os.environ.get("RMM_WORKSPACE_ID", "").strip()
-    workspace_token = os.environ.get("RMM_WORKSPACE_TOKEN", "").strip()
-    if workspace_id and workspace_token:
-        headers.setdefault("X-RMM-Workspace", workspace_id)
-        headers.setdefault("X-RMM-Workspace-Token", workspace_token)
+    if not token and extra_headers is None:
+        workspace_id = settings_getenv("RMM_WORKSPACE_ID", "").strip()
+        workspace_token = settings_getenv("RMM_WORKSPACE_TOKEN", "").strip()
+        if workspace_id and workspace_token:
+            headers["X-RMM-Workspace"] = workspace_id
+            headers["X-RMM-Workspace-Token"] = workspace_token
     return RmmApiClient(
         (base_url or DEFAULT_RMM_URL).rstrip("/"),
         resolved_token,
@@ -67,6 +66,14 @@ def _resolve_session_id(client: RmmApiClient, session_ref: str) -> tuple[str | N
             return s["id"], s
 
     return None, {"error": "session_not_found", "session_ref": ref}
+
+
+def tool_settings(client, action="show", settings=None):
+    """Read redacted settings or save overrides at the connected storage owner."""
+    if action not in {"show", "update"} or (action == "update" and not isinstance(settings, dict)):
+        return _json_result({"ok": False, "status": 400, "data": {"error": "Use show, or update with a settings object"}})
+    code, data = client.settings(settings if action == "update" else None)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
 def tool_embedding_profiles(client, action="list", name="", config=None):
@@ -321,9 +328,9 @@ def tool_profile_status(client: RmmApiClient) -> str:
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
-def tool_start_profile(client: RmmApiClient, name: str = "cloudflared") -> str:
+def tool_start_profile(client: RmmApiClient, name: str = "cloudflared", config: dict | None = None) -> str:
     """Start one installed RMM-Profile connector."""
-    code, data = client.start_profile(name)
+    code, data = client.start_profile(name, config)
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
@@ -613,6 +620,7 @@ def tool_remove_persistence(client: RmmApiClient, session_ref: str) -> str:
 
 
 TOOL_HANDLERS = {
+    "settings": lambda c, a: tool_settings(c, a.get("action", "show"), a.get("settings")),
     "embedding_profiles": lambda c, a: tool_embedding_profiles(c, a.get("action", "list"), a.get("name", ""), a.get("config")),
     "run_embeddings": lambda c, a: tool_run_embeddings(c, a["session_ref"], a["profile"], a["documents"]),
     "embedding_results": lambda c, a: tool_embedding_results(c, a.get("action", "list"), a.get("name", ""), a.get("session_ref", ""), a.get("event_id", 0)),
@@ -656,7 +664,7 @@ TOOL_HANDLERS = {
     ),
     "remove_asset": lambda c, a: tool_remove_asset(c, a["kind"], a["name"]),
     "profile_status": lambda c, a: tool_profile_status(c),
-    "start_profile": lambda c, a: tool_start_profile(c, a.get("name", "cloudflared")),
+    "start_profile": lambda c, a: tool_start_profile(c, a.get("name", "cloudflared"), a.get("config")),
     "stop_profile": lambda c, a: tool_stop_profile(c),
     "queue_pe_load": lambda c, a: tool_queue_pe_load(
         c,
@@ -1027,7 +1035,8 @@ OPENAI_TOOLS: list[dict] = [
             "description": "Start an installed RMM-Profile connector such as cloudflared.",
             "parameters": {
                 "type": "object",
-                "properties": {"name": {"type": "string", "default": "cloudflared"}},
+                "properties": {"name": {"type": "string", "default": "cloudflared"},
+                               "config": {"type": "object", "description": "Optional one-run configuration; omit to use configured service defaults."}},
             },
         },
     },
@@ -1344,6 +1353,18 @@ Guidelines:
 
 
 # Saved embedding operations share the same API in server and workspace mode.
+OPENAI_TOOLS.append({
+    "type": "function",
+    "function": {
+        "name": "settings",
+        "description": "Read redacted service settings or atomically save overrides. Use the local workspace API for workspace settings. Updates require process restart; environment variables take precedence. Null removes a saved override. Secret values are never returned.",
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["show", "update"], "default": "show"},
+            "settings": {"type": "object", "description": "Canonical setting keys mapped to typed values; null removes an override."},
+        }},
+    },
+})
+
 OPENAI_TOOLS.extend(
 [{'type': 'function',
   'function': {'name': 'embedding_profiles',

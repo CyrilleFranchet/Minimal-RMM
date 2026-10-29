@@ -8,6 +8,8 @@ privilege-free.
 
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 import ipaddress
 import os
 import platform
@@ -24,7 +26,7 @@ from urllib.parse import urlparse
 DEFAULT_TUN_ADDRESS = "198.18.0.1/15"
 DEFAULT_TUN_MTU = 1500
 DEFAULT_UDP_TIMEOUT_SECONDS = 300
-DEFAULT_TUN_LOG_LEVEL = os.environ.get("RMM_TUN_LOG_LEVEL", "info").strip() or "info"
+DEFAULT_TUN_LOG_LEVEL = settings_getenv("RMM_TUN_LOG_LEVEL", "info").strip() or "info"
 TUN_DEVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 TUN_INTERFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 MACOS_TUN_DEVICE_RE = re.compile(r"^utun[0-9]+$")

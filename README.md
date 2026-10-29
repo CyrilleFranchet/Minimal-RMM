@@ -13,6 +13,10 @@ privilege boundaries.
 
 ---
 
+Manage operational configuration through [persistent service settings](docs/service-settings.md)
+in the UI, CLI, or MCP. Cloudflare supports both Quick and existing remotely
+managed [named tunnels](docs/rmm-profiles.md).
+
 ## Architecture
 
 The component summary below is intentionally short. Use the

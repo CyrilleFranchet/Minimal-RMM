@@ -69,7 +69,7 @@ when browsing. Legacy commit tags and branch-scoped major/minor release tags
 are supported. To roll back, browse and install an older exact tag from the
 same source. Source commands and release commands accept `--json`.
 
-The source credential reference must be provisioned in the service environment
+The source credential reference must be provisioned in service settings or the legacy environment
 before accessing a private repository. Different workspaces can configure
 independent sources and credentials. Changing a saved source does not change
 an already installed plugin or execute anything on an agent.
@@ -147,10 +147,10 @@ viewport, and plugin rows use labeled native checkboxes for keyboard access.
 
 Credential presence appears below the source selector while the source editor
 is closed. Presence means only that the service has a nonempty credential;
-it does not prove GitHub access. The existing browser flow does not accept an
-OAuth token directly. Configure the referenced environment variable on the
-storage-owning service and restart it after changing the environment. Source
-settings contain only the variable name. See [credential setup](plugin-releases.md#configure-the-storage-owner).
+it does not prove GitHub access. Enter the referenced credential in
+**Service settings**, or keep a legacy environment override. Restart the
+storage-owning service after changing its credentials. The source editor
+contains only the credential reference name. See [credential setup](plugin-releases.md#configure-the-storage-owner).
 
 The checklist tests cover explicit selection, clearing selection, per-file
 checksum pins, partial batch failures, and retrying only failed items, in

@@ -45,7 +45,7 @@ The manifest must use `minimal-rmm-profile-v1`:
   "schema": "minimal-rmm-profile-v1",
   "name": "cloudflared",
   "version": "0.1.0",
-  "description": "Cloudflared quick tunnel for the RMM beacon listener",
+  "description": "Cloudflared transport for the RMM beacon listener",
   "entrypoint": "cloudflared_profile.py",
   "command": ["python3", "{entrypoint}"],
   "capabilities": ["https-ingress", "trycloudflare-url"]
@@ -82,6 +82,13 @@ agent plugins, AI skills, and rclone files.
 
 ## Cloudflared profile
 
+Select Quick or Named in central service settings. Save the configuration and
+restart the central service before starting the profile. The external profile
+bundle must also be updated; updating only Minimal-RMM does not update a bundle
+already copied into the profile store. No agent DLL rebuild is needed.
+
+### Quick Tunnel
+
 The Cloudflared bundle runs:
 
 ```text
@@ -117,6 +124,42 @@ RMM_PROFILE_STORE=./profile-store docker compose up --build -d rmm-control
 The private repository requires GitHub credentials. The same bundle can be
 copied into the default named `rmm-profile-store` volume when a host bind mount
 is not desired.
+
+### Existing named tunnel
+
+Create a remotely managed tunnel and a published hostname route in Cloudflare
+first. Point that route at the central beacon origin, for example
+`http://127.0.0.1:8081` when Cloudflared shares the server's network namespace.
+Use the beacon listener, not the administration API.
+
+Configure these central service settings:
+
+| Setting | Value |
+| --- | --- |
+| `RMM_CLOUDFLARE_MODE` | `named` |
+| `RMM_CLOUDFLARE_PUBLIC_URL` | Published HTTPS origin, such as `https://agents.example.com` |
+| `RMM_CLOUDFLARE_TOKEN` | Tunnel connector token, supplied as a write-only secret |
+| `RMM_CLOUDFLARE_BINARY` | `cloudflared` or its installed executable path |
+| `RMM_PROFILE_NAME` | `cloudflared` |
+| `RMM_PROFILE_AUTOSTART` | Enable to connect after the service restarts |
+
+The runner starts the existing tunnel with the token supplied to the child
+process securely rather than in command-line arguments. It reports the configured
+public URL after Cloudflared registers a connection. This confirms connector
+readiness; it does not prove that DNS or the externally managed hostname route
+is correct. Verify the published route separately.
+
+Minimal-RMM does not create Cloudflare accounts, tunnels, DNS records, or ingress
+routes. Named tunnels require a Cloudflare account and an existing published
+hostname configuration; Quick Tunnels retain their generated URL behavior.
+`RMM_CLOUDFLARE_ORIGIN_HOST` configures the Quick Tunnel origin; named-tunnel
+ingress is managed in Cloudflare. See Cloudflare's
+[tunnel setup documentation](https://developers.cloudflare.com/tunnel/get-started/)
+and [token documentation](https://developers.cloudflare.com/tunnel/reference/tunnel-tokens/).
+
+A named hostname remains stable across connector restarts. Rotating the token
+requires saving the replacement and restarting the central service. The secret
+is not returned by settings/status APIs.
 
 ## Startup and operations
 
@@ -160,7 +203,7 @@ MCP exposes `profile_status`, `start_profile`, and `stop_profile`.
 6. Start it with `profile start <name>` and verify the returned public URL.
 
 The control plane must not gain provider-specific branches for a new profile.
-Only the generic process manager and the profile bundle should change.
+Keep provider process launch and readiness parsing in the profile bundle; the\ncontrol plane supplies validated saved configuration through the generic contract.
 
 ## Implementation reference
 
@@ -168,6 +211,9 @@ Only the generic process manager and the profile bundle should change.
 | --- | --- |
 | `profile_directory` | Resolve `RMM_PROFILES_DIR` or the log-directory fallback |
 | `discover_profiles` | Validate manifests and safe entrypoints under the profile root |
+| `_ready_event` | Validate public origins and retain only credential-free readiness fields |
+| `RMMServer.profile_config` | Resolve active saved Cloudflare settings and per-start overrides |
+| `RMMServer.beacon_public_url` | Return a live connector URL or the configured static fallback |
 | `ProfileError` | Report missing, invalid, or failed profiles |
 | `ProfileProcess` | Start one runner, consume NDJSON events, expose status, and stop it |
 | `ProfileManager` | Discover profiles and keep one active connector |

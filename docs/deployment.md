@@ -4,6 +4,14 @@ Use this page to choose and start a deployment. The other pages are references,
 not additional steps to run on every machine. Work on branch **v2**;
 Minimal-RMM `main` remains v1. The separate plugin repository uses `main`.
 
+## Configuration before startup
+
+Use [persistent service settings](service-settings.md) for new installations.
+Initialize authentication locally with `rmm_settings.py`, then manage operational
+settings through Config, CLI, or MCP. Restart after saving. The environment-file
+recipes below remain a compatible migration path; nonempty environment values
+override saved settings until removed.
+
 ## Choose one topology
 
 | Setup | Use it for | Processes |
@@ -205,14 +213,24 @@ disables profile autostart so missing optional bundles do not obscure setup.
 
 ## Compose alternative
 
-Use the root `.env.example` only for Compose. Populate all required workspace
-values even when initially starting only `rmm-control`, since Compose parses
-service environment expressions. Do not overwrite an existing `.env` with the
-example on updates. Start the central service:
+Use the root `.env.example` only for Compose bootstrap and optional legacy
+credential overrides. Operational settings live in each persistent data volume.
+Do not overwrite an existing `.env` on updates. Initialize configuration before
+first startup, for example:
 
 ```bash
-# First installation only: copy .env.example to .env and edit all values.
-docker compose up --build -d rmm-control
+docker compose build rmm-control
+docker compose run --rm -T rmm-control python3 rmm_settings.py --scope server --config RMM_logs/settings.json import - < /private/path/central-settings.json
+docker compose up -d rmm-control
+```
+
+The private import file is a JSON object containing the central API/beacon
+secrets and workspace registry. For the sidecar, initialize its settings in the
+workspace volume too, including `RMM_C2_URL=http://rmm-control:8080`, its workspace
+identity/token, and a distinct local token:
+
+```bash
+docker compose run --rm -T workspace python3 rmm_settings.py --scope workspace --config /workspace/data/settings.json import - < /private/path/workspace-settings.json
 ```
 
 Choose **one** workspace placement:
@@ -256,7 +274,7 @@ TUN helper there only if using TUN.
 | --- | --- |
 | Workspace `/ui/` loads, API returns 401 | Enter the workspace local token; do not use the central admin/workspace transport token |
 | Workspace has no sessions | Correct central admin URL, matching ID/token, connectivity, and explicit claims |
-| Plugin source reports missing credentials | Configure the referenced token in the workspace process/container; restart after environment changes |
+| Plugin source reports missing credentials | Save the referenced credential in workspace service settings, remove conflicting environment overrides, and restart |
 | Plugin install succeeds locally but reports sync failure | Central reachability/token and its 128 MiB `RMM_MAX_BODY_BYTES` setting; retry install |
 | Missing TUN helper or `ip` | Install on the pivot owner's host/namespace; ordinary startup does not build it |
 | Cloudflared unavailable | Install provider and trusted bundle centrally, or keep profile autostart disabled |

@@ -2,20 +2,16 @@
 services:
   rmm-control:
     build: .
+    # Operational settings live in /app/RMM_logs/settings.json.
+    # Nonempty legacy secrets below explicitly override saved configuration.
     environment:
-      RMM_API_TOKEN: ${RMM_API_TOKEN:?set RMM_API_TOKEN}
-      RMM_BEACON_SECRET: ${RMM_BEACON_SECRET:?set RMM_BEACON_SECRET}
-      RMM_WORKSPACES: ${RMM_WORKSPACES:?set RMM_WORKSPACES}
+      RMM_API_TOKEN: ${RMM_API_TOKEN:-}
+      RMM_BEACON_SECRET: ${RMM_BEACON_SECRET:-}
+      RMM_WORKSPACES: ${RMM_WORKSPACES:-}
       RMM_STORAGE_MODE: ${RMM_STORAGE_MODE:-workspace}
       RMM_PLUGINS_DIR: /app/plugins
       RMM_PROFILES_DIR: /app/profiles
-      RMM_PROFILE_NAME: ${RMM_PROFILE_NAME:-cloudflared}
-      RMM_PROFILE_AUTOSTART: ${RMM_PROFILE_AUTOSTART:-1}
-      RMM_ASSET_MAX_BYTES: ${RMM_ASSET_MAX_BYTES:-67108864}
-      RMM_PLUGIN_REPOSITORY: >-
-        ${RMM_PLUGIN_REPOSITORY:-CyrilleFranchet/Minimal-RMM-plugins}
       RMM_PLUGIN_GITHUB_TOKEN: ${RMM_SERVER_PLUGIN_GITHUB_TOKEN:-}
-      RMM_MAX_BODY_BYTES: ${RMM_MAX_BODY_BYTES:-33554432}
       RMM_ADMIN_PORT: 8080
       RMM_BEACON_PORT: 8081
     command:
@@ -48,25 +44,16 @@ services:
     depends_on:
       - rmm-control
     environment:
-      RMM_C2_URL: http://rmm-control:8080
-      RMM_WORKSPACE_ID: ${RMM_WORKSPACE_ID:?set RMM_WORKSPACE_ID}
-      RMM_WORKSPACE_TOKEN: ${RMM_WORKSPACE_TOKEN:?set RMM_WORKSPACE_TOKEN}
+      RMM_C2_URL: ${RMM_C2_URL:-}
+      RMM_WORKSPACE_ID: ${RMM_WORKSPACE_ID:-}
+      RMM_WORKSPACE_TOKEN: ${RMM_WORKSPACE_TOKEN:-}
       RMM_WORKSPACE_LOCAL_TOKEN: >-
-        ${RMM_WORKSPACE_LOCAL_TOKEN:?set RMM_WORKSPACE_LOCAL_TOKEN}
+        ${RMM_WORKSPACE_LOCAL_TOKEN:-}
       RMM_WORKSPACE_DATA: /workspace/data
-      RMM_WORKSPACE_MAX_BODY: ${RMM_WORKSPACE_MAX_BODY:-33554432}
-      RMM_ASSET_MAX_BYTES: ${RMM_ASSET_MAX_BYTES:-67108864}
-      RMM_PLUGIN_REPOSITORY: >-
-        ${RMM_PLUGIN_REPOSITORY:-CyrilleFranchet/Minimal-RMM-plugins}
       RMM_PLUGIN_GITHUB_TOKEN: ${RMM_WORKSPACE_PLUGIN_GITHUB_TOKEN:-}
       RMM_WORKSPACE_BIND: 0.0.0.0
       RMM_WORKSPACE_PORT: 8787
       RMM_WORKSPACE_TUN_HELPER: /app/tools/rmm-tun
-      RMM_RCLONE_PROFILES_FILE: >-
-        ${RMM_RCLONE_PROFILES_FILE:-/workspace/rclone/profiles.json}
-      RMM_RCLONE_PROFILES: ${RMM_RCLONE_PROFILES:-}
-      RMM_RCLONE_DEFAULT_PROFILE: ${RMM_RCLONE_DEFAULT_PROFILE:-mega-lab}
-      RMM_RCLONE_MAX_BYTES: ${RMM_RCLONE_MAX_BYTES:-100000000}
     command: ["python3", "workspace_service.py"]
     ports:
       - "${RMM_WORKSPACE_PORT:-8787}:8787"

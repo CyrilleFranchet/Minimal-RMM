@@ -1946,6 +1946,13 @@ body.sidebar-resizing iframe {
 }
 
 /* Document embedding profile editor. */
+.service-setting { margin: 0.8rem 0; padding-bottom: 0.8rem; border-bottom: 1px solid var(--border); }
+.service-setting > label:first-child { display: block; font-weight: 600; }
+.service-setting > input:not([type="checkbox"]), .service-setting > textarea, .service-setting > select { width: 100%; box-sizing: border-box; }
+.service-setting .ai-hint { overflow-wrap: anywhere; white-space: pre-wrap; }
+.service-setting-reset { display: flex; align-items: center; gap: 0.4rem; }
+#service-settings-fields { min-width: 0; border: 0; padding: 0; }
+#service-settings-fields fieldset { min-width: 0; margin: 0.8rem 0; border: 1px solid var(--border); }
 .embedding-dialog { width: min(900px, calc(100vw - 2rem)); max-height: 90vh; overflow: auto; }
 .embedding-dialog label { display: block; margin-top: 0.8rem; }
 .embedding-dialog input, .embedding-dialog select, .embedding-dialog textarea { width: 100%; box-sizing: border-box; }

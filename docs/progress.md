@@ -9,6 +9,33 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Validate persistent settings and named tunnel integration
+
+- Completed startup configuration wiring across service consumers and client
+  entry points, including flag precedence and active-versus-saved provenance.
+- Restricted central settings and transport mutations to administrators and
+  removed administrative credential fallback from workspace AI/MCP calls.
+  Internal MCP children cannot load unrelated client configuration; saved
+  Exegol credentials follow only their configured endpoint.
+- Validation: all 195 Python tests, all 39 JavaScript controller tests, and
+  `make check` pass. The external connector's 10 tests also pass. Integration
+  coverage starts a real local server, checks saved named-profile autostart
+  with a fake connector, rotates authentication, and verifies restart behavior.
+- Live Cloudflare routing and browser visual QA have not been performed.
+
+### 2026-10-29 — Persistent service configuration and named tunnels
+
+- Added owner-scoped service configuration through API, UI, CLI, MCP, and an
+  offline initialization command. Secrets are write-only in configuration read
+  views; saved changes apply after service restart. Explicit environment and
+  startup flags remain visible overrides for migration.
+- Added existing remotely managed Cloudflare named-tunnel configuration alongside
+  Quick Tunnels. Central transport remains separate from workspace ownership.
+- Documented environment migration, bootstrap exceptions, configuration
+  precedence, and persistent-volume initialization. Removed Compose operational
+  defaults that would otherwise override saved settings on every restart.
+- Validation results are recorded after implementation checks complete.
+
 ### 2026-10-29 — Clarify the embedding dialog introduction
 
 - Replaced the developer-oriented introduction with operator-facing guidance

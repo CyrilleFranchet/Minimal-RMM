@@ -4,6 +4,8 @@ Load server-side AI skills (Markdown + YAML frontmatter) for the web AI assistan
 
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 import os
 import re
 
@@ -12,7 +14,7 @@ _SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 def ai_skills_dir() -> str:
     """Directory containing *.md skill files (override with RMM_AI_SKILLS_DIR)."""
-    custom = (os.environ.get("RMM_AI_SKILLS_DIR") or "").strip()
+    custom = (settings_getenv("RMM_AI_SKILLS_DIR") or "").strip()
     if custom:
         return os.path.realpath(custom)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-skills")

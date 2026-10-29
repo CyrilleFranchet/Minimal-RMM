@@ -9,6 +9,8 @@ operator queues exfil, the selected process embeds ephemeral
 
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 import json
 import os
 import re
@@ -16,9 +18,9 @@ import re
 RCLONE_REMOTE_NAME = "RMM"
 TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "rclone")
 DEFAULT_RCLONE_BIN = os.path.join(TOOLS_DIR, "rclone.exe")
-RCLONE_BIN_PATH = os.environ.get("RMM_RCLONE_BIN", DEFAULT_RCLONE_BIN).strip()
+RCLONE_BIN_PATH = settings_getenv("RMM_RCLONE_BIN", DEFAULT_RCLONE_BIN).strip()
 RCLONE_TOOLS_URL = "/tools/rclone.exe"
-DEFAULT_PROFILE = os.environ.get("RMM_RCLONE_DEFAULT_PROFILE", "mega-lab").strip() or "mega-lab"
+DEFAULT_PROFILE = settings_getenv("RMM_RCLONE_DEFAULT_PROFILE", "mega-lab").strip() or "mega-lab"
 
 _PROFILE_KEY_MAP = {
     "user": "USER",
@@ -41,11 +43,11 @@ class RcloneConfigError(Exception):
 
 def get_rclone_default_profile() -> str:
     """Return the current default profile name from the process environment."""
-    return os.environ.get("RMM_RCLONE_DEFAULT_PROFILE", "").strip() or DEFAULT_PROFILE
+    return settings_getenv("RMM_RCLONE_DEFAULT_PROFILE", "").strip() or DEFAULT_PROFILE
 
 
 def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
+    raw = settings_getenv(name, "").strip()
     if not raw:
         return default
     try:
@@ -97,12 +99,12 @@ def load_profiles(
     raw = (
         str(raw_override).strip()
         if raw_override is not None
-        else os.environ.get("RMM_RCLONE_PROFILES", "").strip()
+        else settings_getenv("RMM_RCLONE_PROFILES", "").strip()
     )
     path = (
         str(path_override).strip()
         if path_override is not None
-        else os.environ.get("RMM_RCLONE_PROFILES_FILE", "").strip()
+        else settings_getenv("RMM_RCLONE_PROFILES_FILE", "").strip()
     )
     if path:
         with open(path, encoding="utf-8") as f:

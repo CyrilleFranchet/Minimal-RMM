@@ -15,6 +15,11 @@ Example:
 
 from __future__ import annotations
 
+from rmm_settings import bootstrap
+
+if __name__ == "__main__":
+    bootstrap("client")
+
 import argparse
 import sys
 import time
@@ -120,6 +125,7 @@ def main() -> int:
         default=None,
         help="Override default command list",
     )
+    parser.add_argument("--config", help="Persistent client configuration file")
     args = parser.parse_args()
 
     if not args.token:

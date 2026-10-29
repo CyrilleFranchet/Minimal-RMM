@@ -14,6 +14,11 @@ One-shot / scripting:
 
 from __future__ import annotations
 
+from rmm_settings import MAX_BYTES as SETTINGS_MAX_BYTES, bootstrap, getenv as settings_getenv
+
+if __name__ == "__main__":
+    bootstrap("client")
+
 import argparse
 import base64
 import glob
@@ -81,14 +86,14 @@ RMM_CLI_COMMANDS = [
 def _default_server_url() -> str:
     """Operator CLI URL: RMM_SERVER_URL, else same as beacon client (RMM_BASE_URL)."""
     for key in ("RMM_SERVER_URL", "RMM_BASE_URL"):
-        val = os.environ.get(key, "").strip().rstrip("/")
+        val = settings_getenv(key, "").strip().rstrip("/")
         if val:
             return val
     return "http://127.0.0.1:8080"
 
 
 DEFAULT_URL = _default_server_url()
-DEFAULT_TOKEN = os.environ.get("RMM_API_TOKEN", "").strip()
+DEFAULT_TOKEN = settings_getenv("RMM_API_TOKEN", "").strip()
 STATE_FILE = os.path.expanduser("~/.rmm_cli_state.json")
 HISTORY_FILE = os.path.expanduser("~/.rmm_cli_history")
 # Interactive mode: prompt_toolkit + patch_stdout (input line fixed at bottom).
@@ -244,6 +249,12 @@ class RmmApiClient:
     def profile_status(self):
         """Return dynamic profile and beacon transport status."""
         return self.request("GET", "/api/v1/profile")
+
+    def settings(self, values: dict | None = None):
+        """Read redacted service settings or atomically save supplied overrides."""
+        if values is None:
+            return self.request("GET", "/api/v1/settings")
+        return self.request("PATCH", "/api/v1/settings", {"settings": values})
 
     def start_profile(self, name: str = "", config: dict | None = None):
         """Start one installed RMM-Profile."""
@@ -929,7 +940,10 @@ def cmd_profile(client: RmmApiClient, state: dict, args):
     if action == "status":
         code, data = client.profile_status()
     elif action == "start":
-        code, data = client.start_profile(args.name)
+        config = None
+        if getattr(args, "config_file", None):
+            config = read_settings_json(args.config_file)
+        code, data = client.start_profile(args.name, config)
     elif action == "stop":
         code, data = client.stop_profile()
     else:
@@ -1813,6 +1827,62 @@ def cmd_events(client: RmmApiClient, state: dict, args):
         print("-" * 40)
 
 
+def read_settings_json(filename):
+    """Read a bounded JSON object from a file or standard input."""
+    try:
+        if filename == "-":
+            raw = sys.stdin.read(SETTINGS_MAX_BYTES + 1)
+        else:
+            with open(filename, encoding="utf-8") as handle:
+                raw = handle.read(SETTINGS_MAX_BYTES + 1)
+        if len(raw.encode("utf-8")) > SETTINGS_MAX_BYTES:
+            raise ValueError("configuration exceeds the settings size limit")
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError("configuration must be a JSON object")
+        return value
+    except (OSError, ValueError) as exc:
+        die(f"Cannot read configuration: {exc}")
+
+
+def cmd_settings(client, state, args):
+    """Read settings or save typed overrides without exposing secret input."""
+    action = args.settings_action
+    values = None
+    if action == "set":
+        if (args.value is None) == (args.value_file is None):
+            die("Provide VALUE or --value-file FILE (use - for standard input), not both.")
+        raw = args.value
+        if args.value_file is not None:
+            try:
+                if args.value_file == "-":
+                    raw = sys.stdin.read(SETTINGS_MAX_BYTES + 1)
+                else:
+                    with open(args.value_file, encoding="utf-8") as handle:
+                        raw = handle.read(SETTINGS_MAX_BYTES + 1)
+                raw = raw.rstrip("\r\n")
+            except (OSError, UnicodeError) as exc:
+                die(f"Cannot read setting value: {exc}")
+        if len(raw.encode("utf-8")) > SETTINGS_MAX_BYTES:
+            die("Setting value exceeds the settings size limit")
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = raw
+        values = {args.key: value}
+    elif action == "unset":
+        values = {args.key: None}
+    elif action == "import":
+        payload = read_settings_json(args.file)
+        if set(payload) != {"settings"} or not isinstance(payload["settings"], dict):
+            die('Expected {"settings": {"KEY": value}}')
+        values = payload["settings"]
+    code, data = client.settings(values)
+    if code != 200:
+        die(f"settings failed ({code}): {data}")
+    print_json(data)
+
+
 def cmd_embeddings(client, state, args):
     """Dispatch profile management, execution, and result export for the CLI."""
     action = args.embedding_action
@@ -1850,6 +1920,7 @@ def build_parser() -> argparse.ArgumentParser:
     shared.add_argument("--json", action="store_true", help="JSON output")
 
     p = argparse.ArgumentParser(description="RMM operator CLI (REST API client)")
+    p.add_argument("--config", help="Client settings file (loaded before connecting)")
     p.add_argument(
         "--url",
         default=DEFAULT_URL,
@@ -1999,6 +2070,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_profile_status.set_defaults(func=cmd_profile)
     sp_profile_start = sp_profile_sub.add_parser("start", parents=[shared], help="Start an installed profile")
     sp_profile_start.add_argument("name", nargs="?", default="cloudflared")
+    sp_profile_start.add_argument("--config-file", help="One-run profile configuration JSON; use - for standard input")
     sp_profile_start.set_defaults(func=cmd_profile)
     sp_profile_stop = sp_profile_sub.add_parser("stop", parents=[shared], help="Stop the active profile")
     sp_profile_stop.set_defaults(func=cmd_profile)
@@ -2050,6 +2122,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp_tun_stop.add_argument("session_ref", help="Session id prefix or hostname")
     sp_tun_stop.set_defaults(func=cmd_tun_stop)
+
+    settings = sub.add_parser("settings", help="Persistent service settings (restart required; environment overrides saved values)")
+    settings_actions = settings.add_subparsers(dest="settings_action", required=True)
+    for action in ("show", "set", "unset", "import"):
+        command = settings_actions.add_parser(action, parents=[shared])
+        command.set_defaults(func=cmd_settings)
+        if action in {"set", "unset"}:
+            command.add_argument("key", help="Canonical setting key, for example RMM_ASSET_MAX_BYTES")
+        if action == "set":
+            command.add_argument("value", nargs="?", help="JSON value or plain string; use --value-file for secrets")
+            command.add_argument("--value-file", help="Read value from a file; - reads standard input without placing secrets in argv")
+        if action == "import":
+            command.add_argument("file", help='JSON file containing {"settings": {...}}; - reads standard input')
 
     embeddings = sub.add_parser("embeddings", help="Saved document embedding profiles and results")
     groups = embeddings.add_subparsers(dest="embedding_group", required=True)

@@ -8,6 +8,8 @@ workspace service persists transcripts and artifacts locally.
 
 from __future__ import annotations
 
+from rmm_settings import getenv as settings_getenv
+
 from collections import deque
 import copy
 import hmac
@@ -29,7 +31,7 @@ def valid_workspace_id(value: str) -> bool:
 
 def _workspace_event_limit() -> int:
     """Read the bounded central event queue size from the environment."""
-    raw = os.environ.get("RMM_WORKSPACE_EVENT_LIMIT", "").strip()
+    raw = settings_getenv("RMM_WORKSPACE_EVENT_LIMIT", "").strip()
     try:
         value = int(raw) if raw else DEFAULT_WORKSPACE_EVENT_LIMIT
     except ValueError:
@@ -55,7 +57,7 @@ class WorkspaceRegistry:
     @classmethod
     def from_environment(cls) -> "WorkspaceRegistry":
         """Build a registry from ``RMM_WORKSPACES`` or singular workspace variables."""
-        raw = os.environ.get("RMM_WORKSPACES", "").strip()
+        raw = settings_getenv("RMM_WORKSPACES", "").strip()
         values: dict[str, str] = {}
         if raw:
             try:
@@ -76,8 +78,8 @@ class WorkspaceRegistry:
                     if workspace_id and token:
                         values[workspace_id] = token
 
-        workspace_id = os.environ.get("RMM_WORKSPACE_ID", "").strip()
-        token = os.environ.get("RMM_WORKSPACE_TOKEN", "").strip()
+        workspace_id = settings_getenv("RMM_WORKSPACE_ID", "").strip()
+        token = settings_getenv("RMM_WORKSPACE_TOKEN", "").strip()
         if workspace_id and token:
             values.setdefault(workspace_id, token)
         return cls(values)
