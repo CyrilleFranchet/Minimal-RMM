@@ -9,6 +9,12 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Clarify the embedding dialog introduction
+
+- Replaced the developer-oriented introduction with operator-facing guidance
+  on classification, reviewing results, and optional local copies. Retained
+  processing location and supported-file limitations in the supporting text.
+
 ### 2026-10-29 — Share repository-owned embedding defaults across interfaces
 
 - Moved model settings, financial label descriptions, and copy defaults into
