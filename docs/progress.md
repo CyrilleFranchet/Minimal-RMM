@@ -9,6 +9,84 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Add the lateral movement technique-selection skill
+
+- Added `ai-skills/lateral-movement.md` (`default: false`) teaching the AI that
+  several techniques can reach the same authorized target and that per-technique
+  failures are normal: remote services, WMI, WinRM, scheduled tasks, RDP,
+  DCOM, pass-the-hash/ticket from Exegol, and MSSQL.
+- Documented failure classification (connectivity, authentication,
+  authorization, policy, detection) with the guidance to diagnose, then move to
+  the next authorized technique instead of stopping at the first error or
+  silently broadening scope.
+- Review added completion checks and stop conditions, corrected error-code
+  namespaces, and required sanitized evidence and cleanup reporting. Outcomes
+  distinguish verified success, partial completion, failure, and uncertainty.
+
+### 2026-10-29 — Compact injected AI skills
+
+- Consolidated repeated instructions in dispatch, identity/profile resolution,
+  local reconnaissance, AD method selection, embeddings, and pivot reporting.
+- Preserved skill IDs and default/always settings. Kept the skills self-contained
+  because the current loader injects selected bodies without reference retrieval.
+- Replaced the AD collection query cookbook with schema-aware analysis guidance
+  and distinguished in-place analysis from artifact transfer.
+- Removed raw-secret output examples and invalid/ambiguous AD identity examples;
+  retained scoped collection, ownership, runtime limits, and evidence requirements.
+- Checked frontmatter preservation, Markdown fences, and diff whitespace. No
+  runtime code or operator surfaces changed.
+
+### 2026-10-29 — Add scoped local secret hunting to the baseline skill
+
+- Extended `ai-skills/local-recon-before-network.md` (default-enabled) with a
+  secret-hunt stage after the local baseline: scheduled tasks, services,
+  web/app configuration, unattend/sysprep files, GPP `cpassword`, autologon
+  registry, command histories, and client tool configs, using built-in
+  commands first.
+- Deployment of compiled situational-awareness tools such as Seatbelt is
+  documented as a last resort with operator intent, scoped command groups,
+  and the approved RMM upload/plugin path.
+- Guardrails: findings are reported as location/type/unlocked account without
+  raw values, unrelated user files stay out of scope, and using a found secret
+  for a new action requires the operator's intent.
+
+### 2026-10-29 — Rename and extend the AD collection skill into analysis
+
+- Renamed `ai-skills/python-bloodhound.md` to `ai-skills/ad-collection-analysis.md`
+  (id `ad-collection-analysis`, still optional and off by default).
+- The skill now explains that Python BloodHound is a good way to collect AD
+  data, that the AI must download the collected output and analyze it on the
+  operator side, and that BloodHound import is optional — direct JSON
+  manipulation in Exegol (`jq`/Python) answers most questions.
+- Added a curated catalog of common analysis goals with BloodHound Cypher
+  queries and their direct-JSON equivalents: Domain Admins, shortest paths,
+  Kerberoastable/AS-REP roastable accounts, delegation, DCSync, ACL abuse,
+  GPO control, sessions, and local admin reach.
+- Updated cross-references in `docs/web-ai-skills.md` and the
+  `local-recon-before-network` skill.
+
+### 2026-10-29 — Require a local baseline before network discovery
+
+- Added the default-enabled `local-recon-before-network` AI skill for identity,
+  token groups/privileges, OS, local networking, domain membership, and DC hints.
+- Linked the pivot skill to this prerequisite; existing recent evidence can be
+  reused, and unknown DC information is distinguished from live discovery.
+
+### 2026-10-29 — Add an optional Python BloodHound preference skill
+
+- Added `ai-skills/python-bloodhound.md` with `default: false` for AD graph
+  collection from the operator environment.
+- Documented precedence over the ADWS-first collection workflow when selected,
+  while retaining current-token identity guidance and explicit task scope.
+
+### 2026-10-29 — Add the RMM AI document embeddings skill
+
+- Added `ai-skills/document-embeddings.md` in the server AI skill format,
+  covering purpose, profiles, tool execution, workspace ownership limits,
+  WebUI usage, copying, and exact-event results.
+- Enabled by default for operators without a saved skill selection; existing
+  selections can enable it through AI → Skills.
+
 ### 2026-10-29 — Expose embedding panel run failures beside the button
 
 - Run validation, submission progress, API failures, and queue confirmation

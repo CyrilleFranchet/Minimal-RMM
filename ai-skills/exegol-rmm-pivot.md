@@ -46,6 +46,10 @@ network reachable from that host, and Exegol has no route to that network.
 
 Before starting a pivot:
 
+Establish or reuse the selected agent's local baseline as described in
+`local-recon-before-network` before a discovery task. Verify identity, network
+configuration, and domain context before choosing targets or routes.
+
 1. Use RMM `list_sessions` and `get_session` to select the exact live agent.
 2. Check whether the target is already reachable from the Exegol namespace.
    Do not create a pivot just because the agent is selected.
@@ -123,18 +127,10 @@ needs Linux `/dev/net/tun`, `CAP_NET_ADMIN`, the `rmm-tun` helper, and a shared
 namespace with the tools. The central control-plane container does not own the
 workspace TUN device.
 
-## Execution and reporting rules
+## Reporting
 
-- Use `execute_command_in_container` for commands that must run in Exegol and
-  `exec_command` / `queue_command` for commands that must run on Windows.
-- Use `execute_remote_command` only when the operator requested a supported
-  direct protocol path. Do not silently change an RMM task into SSH, WinRM,
-  SMB, WMI, or RDP.
-- If a pivot is unavailable, distinguish the failure: missing agent
-  capability, missing plugin artifact, missing helper, missing route, wrong
-  namespace, or target-side refusal. Do not claim that the target is reachable
-  from a relay start response alone.
-- Keep Exegol tool output, RMM agent output, and pivot status distinct in the
-  final summary. Include the exact target scope and the transport used.
-- Stop temporary pivots after the task and leave the operator with the
-  resulting evidence or the concrete prerequisite that blocked the operation.
+Keep Exegol output, agent output, and relay status distinct. Include exact
+target scope and transport. For failures, distinguish missing capability,
+plugin/helper, route, wrong namespace, and target refusal. A relay start
+response alone does not prove reachability. Report the resulting evidence or
+specific blocking prerequisite after cleaning up temporary pivots.

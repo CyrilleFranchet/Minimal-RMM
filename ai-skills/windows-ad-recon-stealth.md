@@ -5,161 +5,70 @@ description: Prefer ADWS (Get-AD*) over direct LDAP and net.exe RPC recon; net u
 default: true
 ---
 
-# AD recon — RPC noise vs LDAP/ADWS
+# AD reconnaissance method selection
 
-On domain-joined Windows hosts, **how** you enumerate users and groups affects **detection**. The beacon runs in the operator's authorized lab — prefer **quieter** paths unless the operator explicitly asks for legacy/noisy tooling.
+For authorized domain queries, prefer ADWS through the ActiveDirectory
+PowerShell module, then direct LDAP if the module or ADWS is unavailable.
+Avoid legacy `net.exe`/`net1.exe` enumeration by default. This is an operator
+method preference, not a guarantee of lower detection: both ADWS and LDAP
+produce observable activity, and visibility depends on the environment.
 
-Use **`PS:`** for PowerShell below (see **agent-command-dispatch**); this syntax works with both the PowerShell and Go Windows agents. For identity of the **current token**, see **windows-identity-and-groups** (`whoami /groups` is appropriate and is not a substitute for full AD enumeration).
+Use `PS:` for PowerShell via RMM, following `agent-command-dispatch`. Reuse the
+baseline from `local-recon-before-network`. Current-token questions belong to
+`windows-identity-and-groups`; explicitly selected `ad-collection-analysis`
+takes precedence for graph collection. Direct operator instructions prevail.
 
-## Noisy — RPC / legacy recon (avoid by default)
+## Directory workflow
 
-These spawn **`net.exe` / `net1.exe`** or similar and drive **SAMR / LSA / MSRPC** recon that blue teams and EDR commonly alert on (process creation, RPC patterns, “recon” rule packs):
+1. Establish the requested domain object and scope from verified identity or
+   operator input. Do not broaden a single-object lookup into domain discovery.
+2. Check module availability:
 
-| Command / tool | Typical RPC / behavior | Risk |
-|----------------|------------------------|------|
-| `net user`, `net user /domain` | SAMR, domain user enum | High |
-| `net group`, `net group /domain` | SAMR / domain groups | High |
-| `net localgroup`, `net localgroup …` | Local group membership via RPC | Medium–high |
-| `net accounts`, `net accounts /domain` | Policy / account RPC | Medium |
-| `nltest /domain_trusts`, `nltest /dsgetdc` | Netlogon / domain RPC | Medium |
-| `query user`, `quser` | Terminal services / session RPC | Medium |
-| `wmic useraccount`, `wmic group` | WMI account recon | Medium–high |
-| `dsquery *` (legacy) | LDAP via dsquery.exe binary — still a known recon binary | Medium |
+   ```text
+   PS: Get-Module -ListAvailable ActiveDirectory | Select-Object Name,Version
+   ```
 
-**Do not** reach for `net user %USERNAME%` or `net user /domain` as a first step for domain user or group discovery. Besides **opsec**, `net user <name>` often **fails** for domain accounts (local SAM lookup) — see **windows-identity-and-groups**.
+3. In a separate call, import with `-ErrorAction Stop` and run the scoped
+   `Get-AD*` query. Inspect the result before choosing a fallback.
+4. If the module or ADWS is unavailable, explain that limitation and use a
+   separate direct LDAP query. Do not combine both methods in a large fallback
+   script or repeatedly retry unchanged authentication/connectivity failures.
+5. If neither method works, report the concrete error. Do not silently switch
+   to legacy RPC tools; obtain operator preference before changing that method.
 
-Tell the operator when you skip noisy commands and what stealthier alternative you use instead.
+| Question | ADWS cmdlet |
+|----------|-------------|
+| User properties | `Get-ADUser` with verified identity and requested properties |
+| Group members | `Get-ADGroupMember`; distinguish direct and recursive membership |
+| A principal's directory groups | `Get-ADPrincipalGroupMembership` with an actual identity/SID |
+| Domain information or trusts | `Get-ADDomain` / `Get-ADTrust`, scoped to the question |
 
-## Stealthier — ADWS first, direct LDAP as fallback
+Do not pass formatted `whoami /user` output as an AD identity. Resolve the SID
+or account identifier first. Avoid hardcoded localized group names when a
+verified SID or distinguished name is available.
 
-For **domain** user/group/membership questions (beyond the current token), prefer queries that **avoid `net.exe` RPC** and, when possible, **avoid raw LDAP** from the client.
+## LDAP fallback and error handling
 
-### Preference order
+Use `[ADSI]` / `DirectorySearcher` with an explicit `DirectoryEntry` search
+root, narrow search base/filter, and only the required properties. Escape
+operator-supplied LDAP filter values. Use the established authentication context;
+local token identity does not by itself prove a successful directory bind.
 
-| Priority | Method | Client behavior |
-|----------|--------|-----------------|
-| **1 — preferred** | **ADWS** via **ActiveDirectory** module (`Get-AD*`) | Cmdlets talk to **AD Web Services** on DCs (TCP **9389**), not classic `ldap.exe` / `net.exe` recon binaries |
-| **2 — fallback** | **Direct LDAP** via `[ADSI]` / `DirectorySearcher` | .NET LDAP bind/search (TCP **389** / **636**) — quieter than `net`, but more visible than ADWS on many stacks |
-| **3 — avoid** | `net user`, `net group`, `nltest`, etc. | SAMR / MSRPC recon — high EDR noise |
+ADWS requires the module and reachable service (normally TCP 9389); LDAP uses
+the configured LDAP/LDAPS endpoint. Report the method actually used and why.
+An empty transcript is not proof of an empty directory result: inspect command
+completion and errors. Avoid blanket `SilentlyContinue`. Do not pipe directly
+from a PowerShell `foreach` statement; collect results or use `ForEach-Object`.
 
-**Always try ADWS (`Get-AD*`) first.** Use direct LDAP only when the **ActiveDirectory** module is unavailable or ADWS is unreachable — and say so to the operator.
+## Local accounts and legacy tools
 
-**Active Directory Web Services (ADWS)** on domain controllers backs the **ActiveDirectory** PowerShell module (RSAT). Cmdlets such as `Get-ADUser`, `Get-ADGroup`, and `Get-ADGroupMember` use the **current logon token** and the ADWS channel — not `net.exe` and typically not hand-rolled LDAP from `[ADSI]`.
+For local SAM questions, use `Get-LocalUser`, `Get-LocalGroup`, or
+`Get-LocalGroupMember` through `PS:`. These answer a different question from
+token groups or directory membership. On workgroup hosts, use local/token
+queries rather than attempting AD discovery.
 
-Why ADWS over direct LDAP:
-
-- Same opsec goal (no `net.exe`), but **ADWS** matches normal admin tooling (RSAT/AD module) rather than ad-hoc LDAP clients.
-- Direct LDAP (`LDAP://…`, `DirectorySearcher`) still works but is a **second choice** — different protocol/port footprint and easier to tie to scripted enumeration.
-- Both hit the DC; neither is invisible — ADWS is the **preferred** path when the module is present.
-
-### 1. ADWS — ActiveDirectory module (try first)
-
-```text
-PS: Get-Module -ListAvailable ActiveDirectory | Select-Object Name,Version,Path
-```
-
-```text
-PS: Import-Module ActiveDirectory -ErrorAction SilentlyContinue; Get-ADDomain | Select-Object DNSRoot,DomainControllers
-```
-
-```text
-PS: Import-Module ActiveDirectory -ErrorAction SilentlyContinue; Get-ADUser -Filter 'SamAccountName -eq "jsmith"' -Properties MemberOf,PasswordLastSet,LastLogonDate | Select-Object Name,SamAccountName,Enabled,MemberOf
-```
-
-```text
-PS: Import-Module ActiveDirectory -ErrorAction SilentlyContinue; Get-ADGroupMember -Identity 'Domain Admins' | Select-Object Name,SamAccountName,objectClass
-```
-
-**Domain Admins members** — use **separate** `exec_command` steps (do not merge ADWS + LDAP fallback into one line):
-
-```text
-PS: Get-Module -ListAvailable ActiveDirectory | Select-Object Name,Version
-```
-
-```text
-PS: Import-Module ActiveDirectory -ErrorAction Stop; Get-ADGroupMember -Identity 'Domain Admins' | Select-Object Name,SamAccountName,ObjectClass | Format-Table -AutoSize
-```
-
-If the second command fails (no RSAT / ADWS), run the LDAP fallback as a **third** command — not nested inside the same script:
-
-```text
-PS: $base=([ADSI]'LDAP://RootDSE').defaultNamingContext; $root=New-Object DirectoryServices.DirectoryEntry("LDAP://$base"); $s=New-Object DirectoryServices.DirectorySearcher($root); $s.Filter='(&(objectCategory=group)(cn=Domain Admins))'; $g=$s.FindOne(); if(-not $g){'Domain Admins group not found.'; return}; @($g.Properties['member']) | ForEach-Object { try { $u=New-Object DirectoryServices.DirectoryEntry("LDAP://$_"); [PSCustomObject]@{Name=$u.Properties['name'].Value; SamAccountName=$u.Properties['samaccountname'].Value; ObjectClass=@($u.Properties['objectclass'].Value)[-1]} } catch { [PSCustomObject]@{Name='(error)'; SamAccountName=$_; ObjectClass=$_.Exception.Message} } } | Format-Table -AutoSize
-```
-
-```text
-PS: Import-Module ActiveDirectory -ErrorAction SilentlyContinue; Get-ADPrincipalGroupMembership -Identity (whoami.exe /user) | Select-Object Name,GroupCategory,GroupScope
-```
-
-Adjust identity filters from **`whoami`** / operator input — never guess `C:\Users\…` or SAM names without verification.
-
-If `Import-Module ActiveDirectory` fails or `Get-ADUser` errors (no ADWS, firewalled **9389**, offline DC), **then** fall back to direct LDAP below — do not jump to `net user /domain`.
-
-### 2. Direct LDAP — fallback only (`[ADSI]` / `DirectorySearcher`)
-
-When the **ActiveDirectory** module or **ADWS** is unavailable (common on endpoints without RSAT, or when TCP **9389** is blocked), use **LDAP** from .NET — still avoids `net.exe`, but is **less preferred** than ADWS:
-
-```text
-PS: $ds=[ADSI]"LDAP://RootDSE"; $base=$ds.defaultNamingContext; $s=[adsisearcher]"(&(objectCategory=user)(sAMAccountName=$env:USERNAME))"; $s.SearchRoot="LDAP://$base"; $s.FindOne().Properties | Format-List
-```
-
-```text
-PS: $base=([ADSI]"LDAP://RootDSE").defaultNamingContext; $root=New-Object DirectoryServices.DirectoryEntry("LDAP://$base"); $s=New-Object DirectoryServices.DirectorySearcher($root); $s.Filter='(&(objectCategory=group)(cn=Domain Admins))'; $hit=$s.FindOne(); if(-not $hit){'Domain Admins group not found.'} else { $hit.Properties | Format-List }
-```
-
-These use the **current logon token** for bind. Tell the operator you used **direct LDAP** because ADWS/`Get-AD*` was not available.
-
-### PowerShell `exec_command` pitfalls (empty output)
-
-If the transcript shows **`result » PS: …`** with **no table or error below**, the script likely **failed to parse or exited silently**:
-
-| Mistake | Why it fails |
-|---------|----------------|
-| `foreach (...) { … } \| Format-Table` | **Invalid** — you cannot pipe directly off a `foreach` block; use `@(...) \| ForEach-Object { … } \| Format-Table` or collect in `$rows += …` then `$rows \| Format-Table` |
-| ADWS + LDAP fallback in **one** mega `if/else` line | Parser/brace errors; use **two or three** separate `exec_command` calls |
-| `-ErrorAction SilentlyContinue` everywhere | Hides module/load failures — probe with `Get-Module` first, then `-ErrorAction Stop` on the query |
-| `$s.SearchRoot="LDAP://$base"` on `DirectorySearcher` | Prefer `DirectoryEntry` as search root: `New-Object DirectoryServices.DirectorySearcher($root)` |
-
-Always surface errors: `$Error[0]` or `-ErrorAction Stop` on the query step after probing the module.
-
-### 3. Local accounts/groups without `net.exe`
-
-For **local** SAM (not domain), prefer PowerShell cmdlets over `net localgroup`:
-
-```text
-PS: Get-LocalUser | Select-Object Name,Enabled,LastLogon
-```
-
-```text
-PS: Get-LocalGroup | Select-Object Name,SID
-```
-
-```text
-PS: Get-LocalGroupMember -Group Administrators | Select-Object Name,ObjectClass,PrincipalSource
-```
-
-If `Get-LocalUser` is unavailable, say so and ask whether the operator accepts `net localgroup` or a WMI alternative — do not silently default to `net` for domain AD questions.
-
-## Decision guide
-
-| Goal | Prefer | Fallback | Avoid (default) |
-|------|--------|----------|-----------------|
-| Who is the beacon? | `whoami`, `whoami /groups` | — | `net user %USERNAME%` |
-| Domain user attributes | `Get-ADUser` (ADWS) | `[ADSI]` / `DirectorySearcher` | `net user /domain` |
-| Domain group members | `Get-ADGroupMember` (ADWS) | LDAP search | `net group /domain` |
-| All groups for a user | `Get-ADPrincipalGroupMembership` (ADWS) | LDAP | `net user` / `net group` loops |
-| Local Administrators members | `Get-LocalGroupMember` | — | `net localgroup Administrators` |
-| Trusts / DC locator | `Get-ADTrust`, `Get-ADDomain` (ADWS) | — | `nltest` (unless operator requests) |
-
-## RMM workflow
-
-1. Clarify whether the operator wants **token-only** view (quiet) or **directory** enumeration (ADWS first, not `net`).
-2. Probe **`ActiveDirectory`** module (`Get-Module -ListAvailable`); then **`Get-AD*`** in a **second** `exec_command` (ADWS).
-3. Only if step 2 fails, run a **separate** LDAP fallback command — never nest ADWS + LDAP in one line.
-4. If both fail (offline, no DC, non-domain host), report the error — do not chain noisy RPC tools without operator approval.
-
-## Limitations
-
-- ADWS and direct LDAP still generate **DC-side** logs; “stealth” means **avoiding loud client binaries and SAMR RPC**, not invisibility.
-- **ADWS** requires the **ActiveDirectory** module, network path to a DC, and TCP **9389** reachable (or AD Web Services running).
-- **Direct LDAP** (fallback) uses **389**/**636** and is preferable to `net.exe`, but **less preferred than ADWS** when the module is available.
-- **Not applicable** on standalone workgroups — use local cmdlets or token-only recon.
+If local cmdlets are unavailable, state the limitation and establish the
+operator's preferred alternative. Legacy commands such as `net user /domain`,
+`net group`, `net localgroup`, and `nltest` are not automatic fallback steps.
+`net user <name>` queries local SAM by default; failure for a domain user does
+not mean the account is unknown.

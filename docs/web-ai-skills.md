@@ -87,8 +87,12 @@ another click. Default and always-enabled skills are marked in the list.
 | `ai-skills/windows-identity-and-groups.md` | **Default.** Identity and groups via `whoami` / token; do not use `net user %USERNAME%` on domain accounts. |
 | `ai-skills/windows-ad-recon-stealth.md` | **Default.** Prefer **ADWS** (`Get-AD*`) over direct LDAP and `net.exe` RPC recon. |
 | `ai-skills/windows-user-profile-path.md` | Do not assume `C:\Users\<username>`; resolve profile path on the agent before file ops. |
-| `ai-skills/exegol-rmm-pivot.md` | **Default.** Route work between Minimal-RMM and Exegol MCP; choose RMM control tools, Exegol execution tools, and SOCKS5/TUN based on where the operation must run. |
+| `ai-skills/exegol-rmm-pivot.md` | **Optional, off by default.** Route work between Minimal-RMM and Exegol MCP; choose RMM control tools, Exegol execution tools, and SOCKS5/TUN based on where the operation must run. |
 | `ai-skills/task-completion-report.md` | **Always enabled.** End every task with a concise work report; the server appends authoritative UTC start and completion timestamps. |
+| `ai-skills/document-embeddings.md` | **Default.** Explain document classification, use saved profiles through RMM tools, distinguish operator commands from target commands, and diagnose execution/results. |
+| `ai-skills/ad-collection-analysis.md` | **Optional, off by default.** Collect scoped AD data with Python BloodHound and analyze it in place or transfer artifacts when needed; BloodHound import is optional. Deselect the competing ADWS-first skill for that workflow. Current-token identity checks still use the identity skill. |
+| `ai-skills/local-recon-before-network.md` | **Default.** Establish agent identity, token, OS, interfaces/routes, and domain context before network discovery; distinguish local DC hints from live directory lookups; then hunt scoped local secrets (scheduled tasks, web configs, etc.) to progress faster, with Seatbelt-style tools as a last resort. |
+| `ai-skills/lateral-movement.md` | **Optional, off by default.** Evaluate authorized remote-access attempts, verify completion before changing methods, and report success, partial completion, failure, or uncertainty with sanitized evidence. |
 
 ### Why `PS:` matters for the AI
 

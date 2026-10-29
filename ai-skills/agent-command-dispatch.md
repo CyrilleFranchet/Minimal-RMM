@@ -7,89 +7,39 @@ default: true
 
 # Agent command dispatch (CMD vs PowerShell)
 
-Commands sent with **`exec_command`** or **`queue_command`** are executed on the Windows agent by a small dispatch router. The PowerShell agent implements it in `Invoke-RmmUserCommand`; the Go Windows agent implements the same prefix and CMD alias behavior in `buildCommandInvocation`. This is **not** a native PowerShell or SSH shell — each line is dispatched through a small router.
+RMM `exec_command` and `queue_command` send strings to the Windows agent's
+command router, not an interactive PowerShell/SSH shell. PowerShell and Go
+Windows agents share these prefix rules:
 
-## Dispatch modes
+| Prefix | Engine | Use |
+|--------|--------|-----|
+| None, or `cmd:` | CMD | Simple built-ins and executables such as `dir`, `whoami`, `sc query` |
+| `PS:` or `powershell:` | Windows PowerShell | Cmdlets, variables, pipelines, .NET |
+| `pwsh:` | PowerShell 7 when available | Falls back to Windows PowerShell if unavailable |
 
-| Prefix | Engine | When to use |
-|--------|--------|-------------|
-| *(none)* | **cmd.exe** | Built-in CMD tools: `dir`, `whoami`, `ipconfig`, `sc query`, `net user`, etc. |
-| `PS:` or `powershell:` | **Windows PowerShell** | Scripts, cmdlets, pipelines (`|`), `Get-*`, `Select-Object`, .NET APIs |
-| `pwsh:` | **PowerShell 7** (if installed) | Same as `PS:` but prefers `pwsh.exe` |
-| `cmd:` | **cmd.exe** (explicit) | Force CMD when the line could be ambiguous |
+## PowerShell scripts
 
-**Default is CMD.** A bare line never runs in PowerShell.
-
-The Go Windows agent follows these same Windows rules. `pwsh:` prefers
-PowerShell 7 and falls back to `powershell.exe` when `pwsh.exe` is unavailable.
-
-## Critical rule — PowerShell must use `PS:`
-
-Put the **script body only** after the prefix. Do **not** wrap with `powershell.exe`, `-Command`, or `-NoProfile` — the agent adds that internally via `-EncodedCommand`.
-
-### Correct (PowerShell with pipes)
+Send only the script body after `PS:`. Do not wrap it in `powershell.exe`,
+`-Command`, or `-NoProfile`; the router supplies its encoded invocation.
 
 ```text
-PS: $p=[Environment]::GetFolderPath('UserProfile'); Get-ChildItem -Force (Join-Path $p 'Downloads') | Select-Object Mode,Length,LastWriteTime,Name | Format-Table -AutoSize
+PS: Get-CimInstance Win32_UserProfile | Where-Object { -not $_.Special } | Select-Object LocalPath,SID
 ```
 
-```text
-PS: Get-CimInstance Win32_UserProfile | Where-Object { -not $_.Special } | Select-Object LocalPath, SID
-```
+Avoid nested shell quoting and unprefixed PowerShell pipelines. If a cmdlet is
+reported as “not recognized,” inspect dispatch and the prefix before assuming
+the cmdlet is absent. Use `PS:` for logic beyond simple CMD commands.
 
-### Wrong — CMD breaks the pipeline
+## CMD and tool details
 
-```text
-powershell -NoProfile -Command "$p=[Environment]::GetFolderPath('UserProfile'); Get-ChildItem ... | Select-Object ..."
-```
-
-Why this fails: the line runs under **cmd.exe** first. In CMD, `|` is a **CMD pipe even inside double quotes**. CMD splits the line and tries to run `Select-Object`, `Format-Table`, etc. as external programs:
-
-```text
-'Select-Object' is not recognized as an internal or external command
-```
-
-Same failure mode for `powershell -Command "… | …"` without the `PS:` prefix.
-
-## CMD examples
-
-Bare CMD (no prefix):
-
-```text
-whoami
-dir C:\ /w
-sc query wuauserv
-```
-
-Explicit CMD prefix (optional):
-
-```text
-cmd: net user
-```
-
-CMD tips:
-
-- An exact bare `ls` is mapped to `dir` on Windows CMD agents, including `cmd: ls`.
-- Simple `'single-quoted'` segments are converted to CMD double quotes.
-- **`net group`:** name before `/domain` — `net group "Domain Admins" /domain` (not `net group /domain …`).
-- Paths with spaces may need CMD quoting; for complex logic, use `PS:` instead.
-
-## Working directory
-
-The agent tracks cwd across commands (`RMM_CWD_SIG`). Both CMD and PowerShell modes honor the current directory on the agent.
-
-## Tool usage
-
-- **`exec_command`** — wait for output (blocking). Use for discovery, one-shot checks, short scripts.
-- **`queue_command`** — queue for next beacon (non-blocking). Use when sleep/jitter is long.
-
-Both tools take the **exact string** the agent will receive — including `PS:` / `cmd:` when needed.
-
-## Quick decision
-
-| Need | Send |
-|------|------|
-| `dir`, `whoami`, `net`, `sc` | bare CMD line |
-| `Get-ChildItem`, `|`, `$variables`, .NET | `PS: …` |
-| PowerShell 7 features | `pwsh: …` |
-| Unsure | prefer `PS:` for anything beyond simple CMD builtins |
+- An exact bare `ls`, including `cmd: ls`, maps to `dir` on Windows agents.
+- Simple single-quoted segments are converted to CMD double quotes. Quote paths
+  containing spaces; use PowerShell for complex expressions.
+- For `net group`, put the group name before `/domain` when that command is
+  appropriate under the selected reconnaissance workflow.
+- The agent tracks the current directory (`RMM_CWD_SIG`) across commands; both
+  engines honor it.
+- `exec_command` waits for output; use it for short checks. `queue_command`
+  queues for a later beacon and is suitable when sleep/jitter is long. Queue
+  acceptance is not execution completion.
+- Pass the exact command string, including its prefix, to either RMM tool.

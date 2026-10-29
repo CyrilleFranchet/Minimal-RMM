@@ -7,84 +7,37 @@ default: true
 
 # Windows identity and group membership
 
-The beacon runs as a **Windows logon session** (user, service, or SYSTEM). Session metadata (`username`, `hostname`) is context only — always **verify on the agent** before group or account queries.
+Verify identity on the selected agent before account/group queries. Registration
+metadata is context only; the beacon can run as a user, service, or SYSTEM,
+different from the desktop user. Reuse recent verified evidence for that token.
 
-Use **`PS:`** for PowerShell and bare CMD (or `cmd:`) for `whoami` — see skill **agent-command-dispatch**.
+## Token versus directory
 
-## Environment variables — CMD vs PowerShell
+| Question | Query |
+|----------|-------|
+| Current identity | `whoami` |
+| SID | `whoami /user` |
+| Token groups and attributes | `whoami /groups` |
+| Identity, groups, privileges, integrity | `whoami /all` |
+| PowerShell identity | `PS: [System.Security.Principal.WindowsIdentity]::GetCurrent().Name` |
 
-| Context | Syntax | Example |
-|---------|--------|---------|
-| CMD (bare line or `cmd:`) | `%NAME%` | `echo %USERDOMAIN%\%USERNAME%` |
-| `PS:` | `$env:NAME` | `PS: "$env:USERDOMAIN\$env:USERNAME"` |
+Token groups are not a full directory inventory. Interpret attributes such as
+deny-only status; membership does not automatically establish elevation or
+an enabled privilege.
 
-**Do not** use `%USERNAME%` inside a `PS:` script — PowerShell does not expand CMD percent variables.
+`net user <name>` queries local SAM by default. Failure for a domain account
+is not evidence that the username is unknown. Do not try guessed usernames or
+use `net user %USERNAME%` to determine the beacon identity.
 
-## Do not use `net user %USERNAME%` for the beacon user
+For directory questions, follow the selected AD skill: normally ADWS first
+through `windows-ad-recon-stealth`, with its LDAP fallback. For local accounts
+or memberships use `PS: Get-LocalUser` / `Get-LocalGroupMember` with a verified
+group identity. Neither query replaces inspection of the current token.
 
-`net user <name>` queries the **local SAM** (local accounts on the machine). On domain-joined hosts the interactive user is usually a **domain account** (`DOMAIN\user`). Then:
+## RMM execution
 
-```text
-net user %USERNAME%
-```
-
-often fails with *The user name could not be found* even when `%USERNAME%` is set correctly. This is **expected** — not a missing env var.
-
-**Do not** treat that failure as “username unknown” or switch to guessing other names without evidence.
-
-## Preferred — effective identity (access token)
-
-The beacon process identity is what matters for “who am I” and **effective group membership**:
-
-```text
-whoami
-```
-
-```text
-whoami /groups
-```
-
-```text
-whoami /all
-```
-
-PowerShell equivalent:
-
-```text
-PS: [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-```
-
-```text
-PS: whoami.exe /groups
-```
-
-`whoami /groups` lists **SIDs in the current token** (including domain groups). This is the most reliable view of **effective** membership for the logged-on user running the agent.
-
-## Domain vs local
-
-| Question | Tool |
-|----------|------|
-| Who is the beacon running as? | `whoami`, `PS: [WindowsIdentity]::GetCurrent().Name` |
-| What groups are in my token? | `whoami /groups`, `whoami /all` |
-| Domain user / group enumeration | ADWS (`Get-AD*`) first — **windows-ad-recon-stealth**; direct LDAP only if ADWS unavailable |
-| List **local** accounts | `PS: Get-LocalUser` — **windows-ad-recon-stealth** |
-| Members of a **local** group | `PS: Get-LocalGroupMember` — **windows-ad-recon-stealth** (not `net localgroup` by default) |
-
-For domain users, use `whoami` / token APIs or LDAP — not `net user`. For local accounts, prefer `Get-LocalUser` over `net user`.
-
-## RMM workflow
-
-1. `list_sessions` / `get_session` — hostname and registration username for display only.
-2. `exec_command` with `whoami` and/or `whoami /groups` — canonical identity and effective groups.
-3. If the operator asks for local group members, prefer `PS: Get-LocalGroupMember -Group 'Administrators'` — see **windows-ad-recon-stealth** (avoid `net localgroup` unless operator accepts RPC noise).
-4. If AD enumeration is required, probe `ActiveDirectory` module and use **`Get-AD*`** (ADWS) first — direct LDAP/`[ADSI]` only as fallback — not `net user /domain` — see **windows-ad-recon-stealth**.
-
-## Common mistakes
-
-| Wrong | Why | Use instead |
-|-------|-----|-------------|
-| `net user %USERNAME%` on domain PC | Local SAM lookup | `whoami /groups` |
-| `PS: net user %USERNAME%` | `%USERNAME%` not expanded in PS | `PS: net user $env:USERNAME` still fails for domain users — use `whoami` |
-| Assume `username` from API equals SAM name | Profile/logon names differ | `whoami` on agent |
-| `net user DOMAIN\user` without server | RPC recon + wrong tool for domain | LDAP/`Get-ADUser` — **windows-ad-recon-stealth** |
-| `net localgroup` / `net user /domain` for enum | RPC recon, EDR noise | `Get-AD*`, `[ADSI]`, `Get-LocalGroupMember` |
+Select the session with `list_sessions` / `get_session`, then use RMM
+`exec_command` or `queue_command` for the relevant query. Follow
+`agent-command-dispatch`: bare commands run in CMD; PowerShell requires `PS:`.
+CMD uses `%NAME%`; PowerShell uses `$env:NAME`. Do not use `%USERNAME%` inside
+PowerShell. Report which identity and membership source the result describes.

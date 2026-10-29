@@ -7,55 +7,33 @@ default: true
 
 # Windows user profile path
 
-Beacon registration and `whoami` give you a **username**, not a reliable profile directory. Do not build paths like `C:\Users\<username>\...` unless you have confirmed that folder on the agent.
+Resolve paths on the selected agent before file operations. Registration and
+`whoami` provide an account name, not its profile directory. Folder names,
+drives, redirection, and service versus interactive identities can differ.
+Never construct `C:\Users\<username>` from an unverified account name.
 
-## Command format on the agent
-
-Profile resolution uses **PowerShell** (pipes, cmdlets, .NET). Every `exec_command` / `queue_command` line must start with **`PS:`** (see skill **agent-command-dispatch**).
-
-- **Do:** `PS: [Environment]::GetFolderPath('UserProfile')`
-- **Do not:** `powershell -Command "…"` — CMD will break `|` and cmdlet names before PowerShell runs.
-
-## Why shortcuts fail
-
-- The profile folder name often **differs** from the logon name (e.g. `CORP\jsmith` → `C:\Users\jsmith.CORP` or `jsmith.001`).
-- Profiles may live on another drive or share (reassigned / redirected profiles).
-- The interactive user may not match the account you think you are targeting (multiple sessions, service accounts).
-- Downloads, uploads, exfil, and screenshots need a **verified path** on disk.
-
-## Resolve on the agent first
-
-Use **`PS:`** on the **current beacon user** (`exec_command` or `queue_command`):
-
-```text
-PS: $env:USERPROFILE
-```
+Use RMM `exec_command` / `queue_command` with the `PS:` prefix from
+`agent-command-dispatch`:
 
 ```text
 PS: [Environment]::GetFolderPath('UserProfile')
 ```
 
-List Downloads under the resolved profile:
+For a named account, resolve its qualified identity to SID, then inspect its
+profile mapping; replace the example identity with the verified account:
 
 ```text
-PS: $p=[Environment]::GetFolderPath('UserProfile'); Get-ChildItem -Force (Join-Path $p 'Downloads') | Select-Object Mode,Length,LastWriteTime,Name | Format-Table -AutoSize
+PS: $nt=New-Object System.Security.Principal.NTAccount('DOMAIN\user'); $sid=$nt.Translate([System.Security.Principal.SecurityIdentifier]).Value; (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid" -ErrorAction Stop).ProfileImagePath
 ```
 
-For a **specific account** on the machine, map to SID then read the profile path:
+When profile discovery is needed:
 
 ```text
-PS: $user='jsmith'; $nt=New-Object System.Security.Principal.NTAccount($user); $sid=$nt.Translate([System.Security.Principal.SecurityIdentifier]).Value; (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid").ProfileImagePath
+PS: Get-CimInstance Win32_UserProfile | Where-Object { -not $_.Special -and $_.LocalPath } | Select-Object LocalPath,SID
 ```
 
-Or enumerate profiles:
-
-```text
-PS: Get-CimInstance Win32_UserProfile | Where-Object { -not $_.Special -and $_.LocalPath } | Select-Object LocalPath, SID | Format-Table -AutoSize
-```
-
-## RMM workflow
-
-1. Use `list_sessions` / `get_session` for hostname and username context only.
-2. **Run** a `PS:` profile command via `exec_command` (or `queue_command` if sleep is long).
-3. Use the **returned path** in `queue_download`, `queue_upload`, `queue_exfil`, or shell paths.
-4. If the operator names a username, resolve that user's profile on the agent before any file operation — do not guess `C:\Users\...`.
+Verify the returned path and intended subfolder before using it for downloads,
+uploads, exfiltration, or shell operations. A resolved profile does not prove
+that Downloads or another known folder exists beneath it; check redirection
+when relevant. Missing mappings or access failures are findings, not a reason
+to guess a path or substitute another user's profile.
