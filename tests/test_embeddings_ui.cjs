@@ -162,6 +162,7 @@ test('copy settings survive import, save, reload, export, and protect unsaved ru
 test('legacy profiles default copying off and can run without resaving', async () => {
   const ui = fixture(); ui.get('name').value = 'legacy'; await ui.click('save');
   const config = ui.records.get('legacy');
+  config.labels = [];
   for (const key of ['copy_documents', 'copy_labels', 'copy_threshold']) delete config[key];
   const reopened = fixture(ui.records); await reopened.click('open');
   reopened.get('profiles').value = 'legacy'; await reopened.change('profiles');
@@ -196,6 +197,7 @@ test('preset hides advanced settings and custom profiles round-trip without rese
   custom.model.repo = 'example/custom'; custom.model.input_names = ['tokens', 'mask'];
   custom.prompt = 'passage: '; custom.label_prompt = 'query: '; custom.max_tokens = 128; custom.auth.method = 'env';
   custom.labels = [{ name: 'Engineering', text: 'Technical designs' }];
+  custom.copy_labels = ['Engineering'];
   ui.get('import').files = [{ size: 1000, text: async () => JSON.stringify({ config: custom, name: 'custom' }) }];
   await ui.change('import');
   assert.equal(ui.get('preset').value, 'custom'); assert.equal(ui.get('advanced').open, true);
@@ -210,6 +212,9 @@ test('preset hides advanced settings and custom profiles round-trip without rese
 
 test('copy filters are progressive, track renamed labels, and never broaden an empty selection', async () => {
   const ui = fixture(); ui.get('name').value = 'filtered';
+  while (ui.get('labels').children.length) ui.label(0).remove.click();
+  ui.get('copy_documents').checked = false; await ui.change('copy_documents');
+  ui.get('copy_threshold').value = '0';
   assert.equal(ui.get('copy-options').hidden, true); assert.equal(ui.get('copy-options').disabled, true);
   await ui.click('add-label'); ui.label(0).name.value = 'Engineering'; ui.label(0).text.value = 'Technical designs';
   ui.get('copy_documents').checked = true; await ui.change('copy_documents');
@@ -237,6 +242,8 @@ test('copy filters are progressive, track renamed labels, and never broaden an e
 
 test('label editor enforces unique names and a 16-label limit', async () => {
   const ui = fixture(); ui.get('name').value = 'labels';
+  while (ui.get('labels').children.length) ui.label(0).remove.click();
+  ui.get('copy_documents').checked = false; await ui.change('copy_documents');
   for (let i = 0; i < 16; i++) {
     await ui.click('add-label'); ui.label(i).name.value = `Label ${i}`; ui.label(i).text.value = `Description ${i}`;
   }
@@ -250,7 +257,7 @@ test('label editor enforces unique names and a 16-label limit', async () => {
 
 test('summary follows the form and missing run inputs are rejected before queuing', async () => {
   const ui = fixture(); ui.get('name').value = 'summary'; await ui.click('save');
-  assert.match(ui.get('run-summary').textContent, /Local copies: off/);
+  assert.match(ui.get('run-summary').textContent, /Local copies: strategic-financial; score ≥ 0.4/);
   await ui.click('run'); assert.match(ui.get('status').textContent, /session ID/);
   ui.get('session').value = 'lab'; ui.get('session').handlers.input();
   await ui.click('run'); assert.match(ui.get('status').textContent, /1 to 32/);
@@ -269,4 +276,32 @@ test('saved copy selections compare by membership regardless of order or duplica
   ui.get('session').value = 'lab'; ui.get('documents').value = 'C:\\Lab'; await ui.click('run');
   assert.equal(ui.calls.filter((c) => c.url === '/embeddings/run').length, 1);
   assert.equal(ui.label(0).copy.checked, true); assert.equal(ui.label(1).copy.checked, true);
+});
+
+test('new profiles use the exact financial classification and copy defaults', async () => {
+  const ui = fixture();
+  const expected = {
+    labels: [
+      { name: 'strategic-financial', text: 'Confidential strategic financial data: revenue and profit figures, budgets, forecasts and valuations, merger and acquisition terms, funding and pricing strategy, bank and payment details, and insider financial decisions' },
+      { name: 'other', text: 'Routine, operational, technical, or public content without confidential financial information' },
+    ],
+    copy_documents: true, copy_labels: ['strategic-financial'], copy_threshold: 0.4,
+  };
+  async function assertDefaults() {
+    await ui.click('export');
+    const { config } = JSON.parse(await ui.downloads.at(-1).blob.text());
+    for (const key of Object.keys(expected)) assert.deepEqual(config[key], expected[key]);
+    assert.equal(config.auth.method, 'none');
+    assert.equal(ui.get('copy-options').hidden, false);
+    assert.equal(ui.get('threshold-enabled').checked, true);
+    assert.equal(ui.label(0).copy.checked, true); assert.equal(ui.label(1).copy.checked, false);
+  }
+  await assertDefaults();
+  ui.get('name').value = 'financial'; await ui.click('save');
+  for (const key of Object.keys(expected)) assert.deepEqual(ui.records.get('financial')[key], expected[key]);
+  ui.label(0).text.value = 'Edited description';
+  ui.get('profiles').value = ''; await ui.change('profiles');
+  await assertDefaults();
+  ui.get('profiles').value = 'financial'; await ui.change('profiles'); await ui.click('delete');
+  await assertDefaults();
 });

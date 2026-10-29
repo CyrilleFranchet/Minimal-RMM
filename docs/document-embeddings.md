@@ -131,6 +131,19 @@ Text, Markdown, CSV, JSON, logs, and DOCX are supported; PDF/OCR is not.
 
 ## Web workflow
 
+New WebUI profiles start with the public English MiniLM model and two labels:
+`strategic-financial` describes confidential financial figures, plans, deals,
+pricing, payment details, and decisions; `other` describes routine,
+operational, technical, or public content without confidential financial
+information. Local copying is enabled for `strategic-financial` only, with
+`copy_threshold: 0.4`. Both descriptions and all copy settings remain editable.
+The copy controls and run summary display these enabled defaults.
+
+These defaults apply when first opening the editor, choosing **New profile**,
+or resetting the form after deleting a profile. Saved and imported profiles
+retain their own settings, including empty labels or disabled copying. The
+REST/CLI default for an omitted `copy_documents` field remains `false`.
+
 1. Connect to the server or your local workspace service and click **Embeddings**.
 2. Select a saved profile, import a JSON profile, or use **MiniLM — English
    documents**, the tested preset. **Advanced settings** starts collapsed for
@@ -263,6 +276,8 @@ exporting directory failures alongside copied documents.
 Additional controller coverage checks preset/custom model preservation, label
 validation and removal, optional filters, duplicate legacy copy selections,
 and summary/run validation.
+The new-profile regression and its `assertDefaults` helper check exact label
+descriptions, copy settings, export/save behavior, and form reset paths.
 
 Run `make check`, the embedding/workspace/plugin Python tests, and
 `node --check web/embeddings.js`, and `node --test tests/test_embeddings_ui.cjs`. The native DLL's two-model acceptance is

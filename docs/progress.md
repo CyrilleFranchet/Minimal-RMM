@@ -9,6 +9,16 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Default new embedding profiles to financial classification
+
+- New WebUI profiles use the requested `strategic-financial` and `other`
+  descriptions, enable local copying for `strategic-financial`, and require
+  a similarity score of at least 0.4. The selected model remains public MiniLM.
+- Existing saved/imported profiles retain their settings. New-profile and
+  post-delete resets restore the same defaults, with visible copy guidance.
+- Regression coverage verifies exact descriptions and settings through
+  save/export and resets, alongside legacy and custom profile compatibility.
+
 ### 2026-10-29 — Simplify the embedding profile editor
 
 - Added the tested MiniLM preset and collapsed advanced model controls;

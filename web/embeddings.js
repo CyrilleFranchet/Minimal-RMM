@@ -12,6 +12,14 @@
     sha256: "759c3cd2b7fe7e93933ad23c4c9181b7396442a2ed746ec7c1d46192c469c46e",
     input_names: ["input_ids", "attention_mask", "token_type_ids"], output_name: "last_hidden_state", pooling: "mean",
   };
+  const defaultProfile = {
+    model: baseModel, max_tokens: 256,
+    labels: [
+      { name: "strategic-financial", text: "Confidential strategic financial data: revenue and profit figures, budgets, forecasts and valuations, merger and acquisition terms, funding and pricing strategy, bank and payment details, and insider financial decisions" },
+      { name: "other", text: "Routine, operational, technical, or public content without confidential financial information" },
+    ],
+    copy_documents: true, copy_labels: ["strategic-financial"], copy_threshold: 0.4,
+  };
 
   function message(value, error = false) {
     $("status").textContent = value;
@@ -211,7 +219,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    fillForm({ model: baseModel, max_tokens: 256 });
+    fillForm(defaultProfile);
     const bind = (id, action) => $(id).addEventListener("click", () => perform($(id), action));
     $("add-label").addEventListener("click", () => {
       if (labelRows.length >= 16) return;
@@ -247,7 +255,7 @@
     $("close").addEventListener("click", () => $("dialog").close());
     $("profiles").addEventListener("change", () => {
       const profile = profiles.find((p) => p.name === $("profiles").value);
-      fillForm(profile?.config || { model: baseModel, max_tokens: 256 }, profile?.name || "");
+      fillForm(profile?.config || defaultProfile, profile?.name || "");
     });
     bind("save", async () => {
       const name = $("name").value.trim();
@@ -260,7 +268,7 @@
       if (!name) throw new Error("Select a saved profile first.");
       if (!window.confirm(`Delete profile ${name}?`)) return;
       await request(`profiles/${encodeURIComponent(name)}`, "DELETE");
-      await refreshProfiles(); fillForm({ model: baseModel }); message("Profile deleted.");
+      await refreshProfiles(); fillForm(defaultProfile); message("Profile deleted.");
     });
     bind("export", async () => download(`${$("name").value || "embedding-profile"}.json`, { config: readForm() }));
     $("import").addEventListener("change", () => perform($("import"), async () => {
