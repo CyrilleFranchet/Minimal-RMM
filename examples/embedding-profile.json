@@ -14,7 +14,10 @@
   "label_prompt": "",
   "max_tokens": 256,
   "labels": [
-    {"name": "strategic", "text": "Business strategy, plans, and confidential decisions"},
-    {"name": "ordinary", "text": "General reference material"}
-  ]
+    {"name": "strategic-financial", "text": "Confidential strategic financial data: revenue and profit figures, budgets, forecasts and valuations, merger and acquisition terms, funding and pricing strategy, bank and payment details, and insider financial decisions"},
+    {"name": "other", "text": "Routine, operational, technical, or public content without confidential financial information"}
+  ],
+  "copy_documents": true,
+  "copy_labels": ["strategic-financial"],
+  "copy_threshold": 0.4
 }

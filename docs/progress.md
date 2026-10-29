@@ -9,6 +9,21 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Share repository-owned embedding defaults across interfaces
+
+- Moved model settings, financial label descriptions, and copy defaults into
+  `examples/embedding-profile.json` as the canonical preset. The WebUI loads
+  the validated configuration from `GET /api/v1/embeddings/defaults` and no
+  longer contains a separate copy of the preset.
+- Added `embeddings profiles defaults [--output FILE]` in the CLI and
+  `embedding_profiles(action="defaults")` in MCP. Reading defaults does not
+  modify workspace records; saving a profile creates the durable snapshot.
+- Missing/invalid repository configuration produces an explicit API error;
+  the editor stays disabled until defaults load successfully and can retry.
+- Tests cover server/workspace access, CLI/MCP retrieval, saved-profile
+  preservation, changed repository defaults, and browser error/retry behavior.
+  All 159 Python tests, 34 JavaScript controller tests, and `make check` pass.
+
 ### 2026-10-29 — Default new embedding profiles to financial classification
 
 - New WebUI profiles use the requested `strategic-financial` and `other`

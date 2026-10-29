@@ -269,6 +269,8 @@ class RmmApiClient:
 
     def embedding_profiles(self, action="list", name="", config=None):
         """Manage reusable profiles at the server or local workspace API."""
+        if action == "defaults":
+            return self.request("GET", "/api/v1/embeddings/defaults")
         if action not in {"list", "get", "save", "delete"}:
             raise ValueError("invalid profile action")
         path = "/api/v1/embeddings/profiles"
@@ -2058,12 +2060,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=cmd_embeddings, embedding_action="run")
     for group in ("profiles", "results"):
         commands = groups.add_parser(group).add_subparsers(dest="embedding_action", required=True)
-        for action in ("list", "get", "save", "delete"):
+        for action in (("list", "get", "save", "delete", "defaults") if group == "profiles" else ("list", "get", "save", "delete")):
             command = commands.add_parser(action, parents=[shared])
             command.set_defaults(func=cmd_embeddings)
             if action in {"get", "delete"} or (group == "profiles" and action == "save"):
                 command.add_argument("name")
-            if action == "get":
+            if action in {"get", "defaults"}:
                 command.add_argument("--output", "-o", help="Export JSON to a local file")
             if action == "save" and group == "profiles":
                 command.add_argument("--file", "-f", required=True, help="Profile configuration JSON or exported record")

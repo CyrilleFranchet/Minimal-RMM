@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const root = path.join(__dirname, '..');
 
-function fixture(records = new Map(), savedResults = []) {
+async function fixture(records = new Map(), savedResults = [], setupOptions = {}) {
   const downloads = [];
   const blobs = new Map();
   class Element {
@@ -35,6 +35,7 @@ function fixture(records = new Map(), savedResults = []) {
   const request = async (url, options = {}) => {
     const body = options.body ? JSON.parse(options.body) : null;
     calls.push({ url, method: options.method || 'GET', body });
+    if (url === '/embeddings/defaults') return setupOptions.failDefaults ? { status: 500, data: { error: 'unavailable' } } : { status: 200, data: { config: structuredClone(setupOptions.config || JSON.parse(fs.readFileSync(path.join(root, 'examples/embedding-profile.json'), 'utf8'))) } };
     if (url === '/sessions') return { status: 200, data: { sessions: [] } };
     if (url.startsWith('/history/')) {
       const since = Number(new URL(url, 'http://fixture').searchParams.get('since'));
@@ -71,17 +72,18 @@ function fixture(records = new Map(), savedResults = []) {
     return { name: row.children[0].children[1], text: row.children[1].children[1], remove: row.children[2],
       copy: get('copy_labels').children[index].children[0] };
   };
+  await click('open');
   return { get, click, change, label, records, calls, downloads };
 }
 
 test('save, reload, edit protection, run, and deletion use dedicated API controls', async () => {
-  const ui = fixture();
+  const ui = await fixture();
   await ui.click('open');
   ui.get('name').value = 'strategy';
   await ui.click('save');
   assert.ok(ui.records.has('strategy'));
   assert.match(ui.get('status').textContent, /Saved strategy/);
-  const reopened = fixture(ui.records);
+  const reopened = await fixture(ui.records);
   await reopened.click('open');
   reopened.get('profiles').value = 'strategy';
   await reopened.change('profiles');
@@ -100,7 +102,7 @@ test('save, reload, edit protection, run, and deletion use dedicated API control
 });
 
 test('event browsing advances past 1000 unrelated events and saves the explicit ID', async () => {
-  const ui = fixture(); ui.get('session').value = 'fixture-session';
+  const ui = await fixture(); ui.get('session').value = 'fixture-session';
   await ui.click('load-events');
   assert.equal(ui.get('events').children.length, 1);
   assert.equal(ui.get('events').children[0].value, '1001');
@@ -110,7 +112,7 @@ test('event browsing advances past 1000 unrelated events and saves the explicit 
 });
 
 test('incomplete label rows report an error and release the busy button', async () => {
-  const ui = fixture(); ui.get('name').value = 'bad'; await ui.click('add-label');
+  const ui = await fixture(); ui.get('name').value = 'bad'; await ui.click('add-label');
   ui.label(0).name.value = 'Engineering';
   await ui.click('save');
   assert.equal(ui.records.size, 0); assert.equal(ui.get('save').disabled, false);
@@ -118,7 +120,7 @@ test('incomplete label rows report an error and release the busy button', async 
 });
 
 test('copy settings survive import, save, reload, export, and protect unsaved runs', async () => {
-  const ui = fixture();
+  const ui = await fixture();
   ui.get('name').value = 'copy-profile';
   await ui.click('save');
   const config = structuredClone(ui.records.get('copy-profile'));
@@ -135,7 +137,7 @@ test('copy settings survive import, save, reload, export, and protect unsaved ru
   }
   await ui.click('save');
   assert.deepEqual(ui.records.get('copy-profile'), config);
-  const reopened = fixture(ui.records);
+  const reopened = await fixture(ui.records);
   await reopened.click('open');
   reopened.get('profiles').value = 'copy-profile';
   await reopened.change('profiles');
@@ -160,11 +162,11 @@ test('copy settings survive import, save, reload, export, and protect unsaved ru
 });
 
 test('legacy profiles default copying off and can run without resaving', async () => {
-  const ui = fixture(); ui.get('name').value = 'legacy'; await ui.click('save');
+  const ui = await fixture(); ui.get('name').value = 'legacy'; await ui.click('save');
   const config = ui.records.get('legacy');
   config.labels = [];
   for (const key of ['copy_documents', 'copy_labels', 'copy_threshold']) delete config[key];
-  const reopened = fixture(ui.records); await reopened.click('open');
+  const reopened = await fixture(ui.records); await reopened.click('open');
   reopened.get('profiles').value = 'legacy'; await reopened.change('profiles');
   assert.equal(reopened.get('copy_documents').checked, false);
   assert.equal(reopened.get('copy_labels').children.length, 0);
@@ -180,7 +182,7 @@ test('result export retains copied paths and directory error rows', async () => 
       { path: 'C:\\Lab\\a.txt', embedding: [1, 0], classification: { label: 'lab', score: 0.8 }, copied_to: 'C:\\Temp\\rmm-embeddings-test\\lab\\a.txt' },
       { path: 'C:\\missing', error: 'not found', embedding: null },
     ] } };
-  const ui = fixture(new Map(), [record]); await ui.click('open');
+  const ui = await fixture(new Map(), [record]); await ui.click('open');
   const row = ui.get('results').children[0];
   assert.match(row.children[0].textContent, /2 result rows/);
   row.children[1].click();
@@ -189,8 +191,8 @@ test('result export retains copied paths and directory error rows', async () => 
 });
 
 test('preset hides advanced settings and custom profiles round-trip without resets', async () => {
-  const ui = fixture();
-  assert.equal(ui.get('preset').value, 'minilm');
+  const ui = await fixture();
+  assert.equal(ui.get('preset').value, 'default');
   assert.equal(ui.get('advanced').open, false);
   ui.get('name').value = 'custom'; await ui.click('save');
   const custom = structuredClone(ui.records.get('custom'));
@@ -203,7 +205,7 @@ test('preset hides advanced settings and custom profiles round-trip without rese
   assert.equal(ui.get('preset').value, 'custom'); assert.equal(ui.get('advanced').open, true);
   await ui.click('export');
   assert.deepEqual(JSON.parse(await ui.downloads[0].blob.text()).config, custom);
-  ui.get('preset').value = 'minilm'; await ui.change('preset');
+  ui.get('preset').value = 'default'; await ui.change('preset');
   assert.equal(ui.get('advanced').open, false);
   assert.equal(ui.get('repo').value, 'Xenova/all-MiniLM-L6-v2');
   assert.equal(ui.get('prompt').value, ''); assert.equal(ui.get('auth').value, 'none');
@@ -211,7 +213,7 @@ test('preset hides advanced settings and custom profiles round-trip without rese
 });
 
 test('copy filters are progressive, track renamed labels, and never broaden an empty selection', async () => {
-  const ui = fixture(); ui.get('name').value = 'filtered';
+  const ui = await fixture(); ui.get('name').value = 'filtered';
   while (ui.get('labels').children.length) ui.label(0).remove.click();
   ui.get('copy_documents').checked = false; await ui.change('copy_documents');
   ui.get('copy_threshold').value = '0';
@@ -241,7 +243,7 @@ test('copy filters are progressive, track renamed labels, and never broaden an e
 });
 
 test('label editor enforces unique names and a 16-label limit', async () => {
-  const ui = fixture(); ui.get('name').value = 'labels';
+  const ui = await fixture(); ui.get('name').value = 'labels';
   while (ui.get('labels').children.length) ui.label(0).remove.click();
   ui.get('copy_documents').checked = false; await ui.change('copy_documents');
   for (let i = 0; i < 16; i++) {
@@ -256,7 +258,7 @@ test('label editor enforces unique names and a 16-label limit', async () => {
 });
 
 test('summary follows the form and missing run inputs are rejected before queuing', async () => {
-  const ui = fixture(); ui.get('name').value = 'summary'; await ui.click('save');
+  const ui = await fixture(); ui.get('name').value = 'summary'; await ui.click('save');
   assert.match(ui.get('run-summary').textContent, /Local copies: strategic-financial; score ≥ 0.4/);
   await ui.click('run'); assert.match(ui.get('status').textContent, /session ID/);
   ui.get('session').value = 'lab'; ui.get('session').handlers.input();
@@ -268,18 +270,18 @@ test('summary follows the form and missing run inputs are rejected before queuin
 });
 
 test('saved copy selections compare by membership regardless of order or duplicates', async () => {
-  const seed = fixture(); seed.get('name').value = 'legacy-copy'; await seed.click('save');
+  const seed = await fixture(); seed.get('name').value = 'legacy-copy'; await seed.click('save');
   const config = seed.records.get('legacy-copy');
   config.labels = [{ name: 'A', text: 'Category A' }, { name: 'B', text: 'Category B' }];
   Object.assign(config, { copy_documents: true, copy_labels: ['B', 'A', 'B'] });
-  const ui = fixture(seed.records); await ui.click('open'); ui.get('profiles').value = 'legacy-copy'; await ui.change('profiles');
+  const ui = await fixture(seed.records); await ui.click('open'); ui.get('profiles').value = 'legacy-copy'; await ui.change('profiles');
   ui.get('session').value = 'lab'; ui.get('documents').value = 'C:\\Lab'; await ui.click('run');
   assert.equal(ui.calls.filter((c) => c.url === '/embeddings/run').length, 1);
   assert.equal(ui.label(0).copy.checked, true); assert.equal(ui.label(1).copy.checked, true);
 });
 
 test('new profiles use the exact financial classification and copy defaults', async () => {
-  const ui = fixture();
+  const ui = await fixture();
   const expected = {
     labels: [
       { name: 'strategic-financial', text: 'Confidential strategic financial data: revenue and profit figures, budgets, forecasts and valuations, merger and acquisition terms, funding and pricing strategy, bank and payment details, and insider financial decisions' },
@@ -304,4 +306,33 @@ test('new profiles use the exact financial classification and copy defaults', as
   await assertDefaults();
   ui.get('profiles').value = 'financial'; await ui.change('profiles'); await ui.click('delete');
   await assertDefaults();
+});
+
+test('editor uses the API default rather than a browser copy of the preset', async () => {
+  const config = JSON.parse(fs.readFileSync(path.join(root, 'examples/embedding-profile.json'), 'utf8'));
+  config.model.repo = 'example/repository-preset';
+  config.prompt = 'document: '; config.max_tokens = 128;
+  config.labels = [{ name: 'repo-label', text: 'Repository description' }];
+  config.copy_labels = ['repo-label']; config.copy_threshold = 0.7;
+  const ui = await fixture(new Map(), [], { config });
+  assert.equal(ui.get('editor').disabled, false);
+  assert.equal(ui.get('repo').value, config.model.repo);
+  assert.equal(ui.get('preset').value, 'default');
+  await ui.click('export');
+  assert.deepEqual(JSON.parse(await ui.downloads[0].blob.text()).config, config);
+  ui.get('prompt').value = 'changed'; ui.get('preset').value = 'default'; await ui.change('preset');
+  assert.equal(ui.get('prompt').value, 'document: ');
+  assert.equal(Number(ui.get('max_tokens').value), 128);
+  assert.equal(ui.label(0).name.value, 'repo-label');
+});
+
+test('default loading failure disables the editor and reopening retries', async () => {
+  const options = { failDefaults: true };
+  const ui = await fixture(new Map(), [], options);
+  assert.equal(ui.get('editor').disabled, true);
+  assert.match(ui.get('status').textContent, /Cannot load the default profile/);
+  assert.equal(ui.calls.some((call) => call.url === '/embeddings/profiles'), false);
+  await ui.click('close'); options.failDefaults = false; await ui.click('open');
+  assert.equal(ui.get('editor').disabled, false);
+  assert.equal(ui.label(0).name.value, 'strategic-financial');
 });

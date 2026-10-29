@@ -80,6 +80,26 @@ python rmm_cli.py embeddings run strategy --session SESSION_ID \
 python rmm_cli.py events --session SESSION_ID
 ```
 
+That JSON file is the canonical default profile for the server and workspace,
+including model settings, label descriptions, and copy filters. The WebUI
+loads it through the authenticated `GET /api/v1/embeddings/defaults` endpoint;
+it no longer embeds a separate preset in JavaScript. CLI and MCP can retrieve
+the same validated configuration without having a checkout on the client:
+
+```bash
+python rmm_cli.py embeddings profiles defaults --output default-profile.json
+python rmm_cli.py embeddings profiles save financial --file default-profile.json
+```
+
+For MCP, call `embedding_profiles(action="defaults")`, then pass the returned
+configuration to `embedding_profiles(action="save", name="financial", config=…)`.
+Reading defaults never creates or overwrites a saved profile. A saved profile
+is a workspace/server database snapshot and is not changed by later edits to
+the repository JSON. Deploy that file with the service; Docker includes it.
+The API returns `500 default_embedding_profile_unavailable` if the file is
+missing or invalid. The WebUI keeps the editor disabled and offers a retry by
+closing and reopening it, rather than falling back to different defaults.
+
 Edit the JSON and save the same name to update it. Profile names allow letters,
 digits, dots, underscores, and hyphens, up to 64 characters. Exported records
 and plain configuration objects are both accepted by `profiles save --file`.
@@ -145,12 +165,12 @@ retain their own settings, including empty labels or disabled copying. The
 REST/CLI default for an omitted `copy_documents` field remains `false`.
 
 1. Connect to the server or your local workspace service and click **Embeddings**.
-2. Select a saved profile, import a JSON profile, or use **MiniLM — English
-   documents**, the tested preset. **Advanced settings** starts collapsed for
-   MiniLM and contains model files, revision, digest, tensors, authentication,
+2. Select a saved profile, import a JSON profile, or use **Repository default**
+   (currently the tested English MiniLM preset). **Advanced settings** starts
+   collapsed for the default and contains model files, revision, digest, tensors, authentication,
    prefixes, and chunk size. Custom models open this section automatically.
-   Choosing MiniLM restores its model settings, public authentication, empty
-   prefixes, and 256-token chunks while keeping labels and copy preferences.
+   Choosing the repository default restores its model settings, authentication,
+   prefixes, and chunk size while keeping labels and copy preferences.
 3. Use **Add label** to enter a category name and description. No JSON editing
    is needed. With no labels, the plugin generates embeddings without
    classification. Names must be unique and every row needs a description.
@@ -224,6 +244,7 @@ established by the service, never by a `user_id` or namespace in input JSON.
 
 | Method and path | Body / response | MCP |
 | --- | --- | --- |
+| `GET /api/v1/embeddings/defaults` | Repository preset as `{ "config": { … } }` | `embedding_profiles(action="defaults")` |
 | `GET /api/v1/embeddings/profiles` | `profiles` list | `embedding_profiles(action="list")` |
 | `GET /api/v1/embeddings/profiles/{name}` | Full `record` | `embedding_profiles(action="get", name=…)` |
 | `POST /api/v1/embeddings/profiles/{name}` | `{ "config": { … } }` | `embedding_profiles(action="save", name=…, config=…)` |
@@ -247,6 +268,7 @@ Server-mode Web AI can use the shared server-owned profiles.
 | `EmbeddingError` | Invalid configuration/request/result error |
 | `encode`, `text`, `fields` | Strict JSON, bounded UTF-8 strings, and field allowlists |
 | `profile_config`, `plugin_request`, `result_payload` | Normalize profiles, bound final requests, validate selected output |
+| `DEFAULT_PROFILE_PATH`, `default_profile` | Locate, read, and validate the canonical repository preset independently of the working directory |
 | `EmbeddingStore.__init__`, `close` | Owner-only SQLite setup and connection lifecycle |
 | `EmbeddingStore.get`, `put`, `delete` | Parameterized record access and atomic writes |
 | `embedding_api` | Shared profile, queue, and result REST dispatch |
@@ -278,6 +300,11 @@ validation and removal, optional filters, duplicate legacy copy selections,
 and summary/run validation.
 The new-profile regression and its `assertDefaults` helper check exact label
 descriptions, copy settings, export/save behavior, and form reset paths.
+Shared-default coverage checks CLI/MCP retrieval, export/save round trips,
+workspace snapshot preservation, authenticated access, missing/invalid files,
+and browser loading failures and retry. The UI fixture reads the repository
+JSON or a test override, so model-setting changes do not require a second
+browser preset.
 
 Run `make check`, the embedding/workspace/plugin Python tests, and
 `node --check web/embeddings.js`, and `node --test tests/test_embeddings_ui.cjs`. The native DLL's two-model acceptance is

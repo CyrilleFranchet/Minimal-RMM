@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import Mock, patch
 from http.server import ThreadingHTTPServer
 
-from rmm_embeddings import EmbeddingError, EmbeddingStore, embedding_api, profile_config, plugin_request, result_payload
+from rmm_embeddings import EmbeddingError, EmbeddingStore, default_profile, embedding_api, profile_config, plugin_request, result_payload
+from rmm_tools import tool_embedding_profiles, OPENAI_TOOLS
 from rmm_cli import RmmApiClient, build_parser
 from server_rmm import RMMHandler
 from workspace_service import WorkspaceService, WorkspaceRequestHandler
@@ -28,6 +29,21 @@ def output_event(event_id=4):
 
 class EmbeddingValidationTests(unittest.TestCase):
     """Reject invalid model contracts, credential fields, and oversized requests."""
+
+    def test_defaults_report_missing_or_invalid_repository_configuration(self):
+        """A bad packaged preset returns a server error rather than hidden fallback values."""
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "preset.json"
+            with patch("rmm_embeddings.DEFAULT_PROFILE_PATH", path):
+                for contents in (None, "not JSON", '{"model": {}}'):
+                    if contents is not None:
+                        path.write_text(contents, encoding="utf-8")
+                    self.assertEqual(embedding_api(None, "GET", ["embeddings", "defaults"]),
+                                     (500, {"error": "default_embedding_profile_unavailable"}))
+                path.write_text(json.dumps(CONFIG), encoding="utf-8")
+                self.assertEqual(embedding_api(None, "GET", ["embeddings", "defaults"]),
+                                 (200, {"config": profile_config(CONFIG)}))
+                self.assertEqual(embedding_api(None, "POST", ["embeddings", "defaults"])[0], 405)
 
     def test_profile_round_trip_and_agent_environment_preference(self):
         config = profile_config(CONFIG)
@@ -117,6 +133,7 @@ class EmbeddingValidationTests(unittest.TestCase):
             profile_config(config)
 
         config = copy.deepcopy(CONFIG)
+        config["copy_documents"] = False
         config["copy_labels"] = names
         with self.assertRaisesRegex(EmbeddingError, "require copy_documents"):
             profile_config(config)
@@ -199,6 +216,7 @@ class EmbeddingWorkspaceTests(unittest.TestCase):
     def test_authentication_and_central_workspace_rejection(self):
         self.client.token = "wrong"
         self.assertEqual(self.client.embedding_profiles()[0], 401)
+        self.assertEqual(self.client.embedding_profiles("defaults")[0], 401)
         handler = SimpleNamespace(server_instance=SimpleNamespace(storage_mode="workspace", embedding_store=Mock()), _json=Mock())
         for method in ("GET", "POST", "DELETE"):
             RMMHandler._handle_embeddings(handler, method, ["embeddings", "profiles"])
@@ -220,6 +238,33 @@ class EmbeddingWorkspaceTests(unittest.TestCase):
             args = parser.parse_args(["embeddings", "profiles", "get", "strategy", "--output", str(output)])
             args.func(self.client, {}, args)
             self.assertEqual(json.loads(output.read_text())["record"]["config"]["model"], CONFIG["model"])
+
+    def test_shared_defaults_through_cli_and_mcp_do_not_change_workspace_profiles(self):
+        """CLI and MCP read the same repository preset without implicitly saving it."""
+        expected = profile_config(CONFIG)
+        self.assertEqual(default_profile(), expected)
+        code, response = self.client.embedding_profiles("defaults")
+        self.assertEqual(code, 200)
+        self.assertEqual(response, {"config": expected})
+        mcp = json.loads(tool_embedding_profiles(self.client, action="defaults"))
+        self.assertTrue(mcp["ok"])
+        self.assertEqual(mcp["data"], response)
+        tool = next(item["function"] for item in OPENAI_TOOLS if item["function"]["name"] == "embedding_profiles")
+        self.assertIn("defaults", tool["parameters"]["properties"]["action"]["enum"])
+        self.assertEqual(self.client.embedding_profiles()[1]["profiles"], [])
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "defaults.json"
+            args = build_parser().parse_args(["embeddings", "profiles", "defaults", "--output", str(output)])
+            args.func(self.client, {}, args)
+            self.assertEqual(json.loads(output.read_text()), response)
+            args = build_parser().parse_args(["embeddings", "profiles", "save", "financial", "--file", str(output)])
+            with patch("rmm_cli.print_json"):
+                args.func(self.client, {}, args)
+            changed = copy.deepcopy(expected)
+            changed.update(copy_documents=False, copy_labels=[], copy_threshold=0)
+            self.client.embedding_profiles("save", "financial", changed)
+            self.client.embedding_profiles("defaults")
+            self.assertEqual(self.client.embedding_profiles("get", "financial")[1]["record"]["config"], changed)
 
     def test_cli_copy_profile_directory_run_and_result_round_trip(self):
         """CLI JSON workflows preserve copy filters, UNC paths, and error rows."""
@@ -282,6 +327,8 @@ class EmbeddingServerTests(unittest.TestCase):
             handler = SimpleNamespace(server_instance=server, _json=Mock(), _api_authorized=lambda *args: True,
                                       _api_path_parts=lambda path: path.removeprefix("/api/v1/").split("/"))
             handler._handle_embeddings = RMMHandler._handle_embeddings.__get__(handler)
+            RMMHandler._handle_api_get(handler, "/api/v1/embeddings/defaults", {})
+            self.assertEqual(handler._json.call_args.args, (200, {"config": profile_config(CONFIG)}))
             RMMHandler._handle_api_post(handler, "/api/v1/embeddings/profiles/test", {"config": CONFIG})
             self.assertEqual(handler._json.call_args.args[0], 200)
             with patch("server_rmm.plugin_path_for_session", return_value=None):

@@ -108,7 +108,7 @@ def _client():
 
 @mcp.tool()
 def embedding_profiles(action: str = "list", name: str = "", config: dict | None = None) -> str:
-    """List/get/save/delete embedding profiles. Use the local workspace URL in workspace mode; never include tokens in config."""
+    """List/get/save/delete embedding profiles, or use action='defaults' for the repository preset. Use the local workspace URL in workspace mode; never include tokens in config."""
     return tool_embedding_profiles(_client(), action, name, config)
 
 

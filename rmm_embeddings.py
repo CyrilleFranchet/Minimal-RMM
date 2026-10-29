@@ -12,6 +12,7 @@ import threading
 import uuid
 
 PLUGIN = "document-embeddings-autonomous.dll"
+DEFAULT_PROFILE_PATH = Path(__file__).resolve().parent / "examples" / "embedding-profile.json"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
@@ -103,6 +104,11 @@ def profile_config(value):
     if len(encode(result).encode()) > 4000:
         raise EmbeddingError("profile leaves insufficient room in the 4096-byte plugin input")
     return result
+
+
+def default_profile():
+    """Load and validate the repository-owned default without changing saved profiles."""
+    return profile_config(json.loads(DEFAULT_PROFILE_PATH.read_text(encoding="utf-8")))
 
 
 def plugin_request(config, documents):
@@ -220,6 +226,13 @@ def embedding_api(store, method, parts, body=None, queue=None, event=None):
     """Dispatch the same local-owner API for server, workspace, CLI, and MCP."""
     body = {} if body is None else body
     try:
+        if parts == ["embeddings", "defaults"]:
+            if method != "GET":
+                return 405, {"error": "method_not_allowed"}
+            try:
+                return 200, {"config": default_profile()}
+            except (OSError, ValueError, TypeError):
+                return 500, {"error": "default_embedding_profile_unavailable"}
         if method == "POST" and parts == ["embeddings", "run"]:
             fields(body, ("profile", "session_ref", "documents"), "run")
             profile = store.get("profiles", text(body.get("profile"), "profile", 64))

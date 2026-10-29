@@ -597,11 +597,12 @@
     <p>Save reusable model settings, embed selected files or directories, and export result collections.</p>
     <p class="ai-hint">Requires the updated autonomous DLL and Windows Go agent. Supports text, Markdown, CSV, JSON, logs, and DOCX; no PDF or OCR. Long documents are chunked. Models must be compatible text encoders.</p>
     <p id="embedding-status" role="status" aria-live="polite"></p>
+    <fieldset id="embedding-editor" class="embedding-editor" disabled><legend class="sr-only">Embedding profile and results</legend>
     <label for="embedding-profiles">Saved profile</label><select id="embedding-profiles"></select>
     <label for="embedding-name">Profile name</label><input id="embedding-name" maxlength="64" placeholder="strategy-minilm" title="Unique name used to save and select this embedding profile." aria-description="Unique name used to save and select this embedding profile.">
     <label for="embedding-preset">Model</label>
-    <select id="embedding-preset" aria-describedby="embedding-model-help"><option value="minilm">MiniLM — English documents</option><option value="custom">Custom model</option></select>
-    <p id="embedding-model-help" class="ai-hint">MiniLM is the tested starting point for English documents. No model settings need editing. Classification quality for other languages has not been validated.</p>
+    <select id="embedding-preset" aria-describedby="embedding-model-help"><option value="default">Repository default</option><option value="custom">Custom model</option></select>
+    <p id="embedding-model-help" class="ai-hint">Loading the repository default from the server or workspace.</p>
     <details id="embedding-advanced">
     <summary>Advanced settings</summary>
     <p class="ai-hint">Change these only when your model requires it. Imported custom profiles retain their exact settings.</p>
@@ -632,7 +633,7 @@
     </fieldset>
     <fieldset><legend>Optional local copies</legend>
       <label for="embedding-copy_documents"><input id="embedding-copy_documents" type="checkbox" aria-describedby="embedding-copy-help"> Copy matching documents on the target</label>
-      <p id="embedding-copy-help" class="ai-hint">New profiles copy strategic-financial matches with a score of at least 0.4. You can change or disable copying. Copies stay in a temporary folder on the target; they are not downloaded. Collect and delete them manually when finished.</p>
+      <p id="embedding-copy-help" class="ai-hint">New profiles use the repository's copy settings, shown below and in the run summary. You can change or disable copying. Copies stay in a temporary folder on the target; they are not downloaded. Collect and delete them manually when finished.</p>
       <fieldset id="embedding-copy-options" hidden disabled><legend>Choose what to copy</legend>
         <label for="embedding-copy-mode">Documents to copy</label>
         <select id="embedding-copy-mode"><option value="all">All successfully embedded documents</option><option value="selected">Only documents matching selected labels</option></select>
@@ -668,6 +669,7 @@
       <label for="embedding-event">Output event ID for the session above</label><input id="embedding-event" type="number" min="1" list="embedding-events"><datalist id="embedding-events"></datalist>
       <div class="embedding-actions"><button id="embedding-save-result" type="button">Save selected result</button><button id="embedding-refresh" type="button" class="secondary">Refresh saved results</button></div>
       <div id="embedding-results"></div>
+    </fieldset>
     </fieldset>
     <button id="embedding-close" type="button" class="secondary">Close</button>
   </dialog>

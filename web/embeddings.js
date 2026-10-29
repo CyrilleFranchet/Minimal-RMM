@@ -6,20 +6,8 @@
   let eventCursor = 0;
   let labelRows = [];
   let labelSerial = 0;
-  const baseModel = {
-    repo: "Xenova/all-MiniLM-L6-v2", revision: "08a308f628bc9d6774b7922f319eb1b65afa1a82",
-    onnx_file: "onnx/model.onnx", tokenizer_file: "tokenizer.json",
-    sha256: "759c3cd2b7fe7e93933ad23c4c9181b7396442a2ed746ec7c1d46192c469c46e",
-    input_names: ["input_ids", "attention_mask", "token_type_ids"], output_name: "last_hidden_state", pooling: "mean",
-  };
-  const defaultProfile = {
-    model: baseModel, max_tokens: 256,
-    labels: [
-      { name: "strategic-financial", text: "Confidential strategic financial data: revenue and profit figures, budgets, forecasts and valuations, merger and acquisition terms, funding and pricing strategy, bank and payment details, and insider financial decisions" },
-      { name: "other", text: "Routine, operational, technical, or public content without confidential financial information" },
-    ],
-    copy_documents: true, copy_labels: ["strategic-financial"], copy_threshold: 0.4,
-  };
+  const modelFields = ["repo", "revision", "onnx_file", "tokenizer_file", "sha256", "input_names", "output_name", "pooling"];
+  let defaultProfile = null;
 
   function message(value, error = false) {
     $("status").textContent = value;
@@ -37,13 +25,13 @@
 
   function modelFromForm() {
     const model = {};
-    for (const key of Object.keys(baseModel)) model[key] = $(key).value.trim();
+    for (const key of modelFields) model[key] = $(key).value.trim();
     model.input_names = model.input_names.split(",").map((x) => x.trim()).filter(Boolean);
     return model;
   }
 
   function fillModel(model) {
-    for (const key of Object.keys(baseModel)) {
+    for (const key of modelFields) {
       const value = model?.[key] ?? "";
       $(key).value = Array.isArray(value) ? value.join(", ") : value;
     }
@@ -51,10 +39,10 @@
   }
 
   function syncPreset() {
-    const preset = JSON.stringify(modelFromForm()) === JSON.stringify(baseModel);
-    $("preset").value = preset ? "minilm" : "custom";
+    const preset = defaultProfile && JSON.stringify(modelFromForm()) === JSON.stringify(Object.fromEntries(modelFields.map((key) => [key, defaultProfile.model[key]])));
+    $("preset").value = preset ? "default" : "custom";
     $("model-help").textContent = preset
-      ? "MiniLM is the tested starting point for English documents. No model settings need editing. Classification quality for other languages has not been validated."
+      ? `Repository default: ${defaultProfile.model.repo}. Its settings come from the server or workspace; no manual model configuration is needed.`
       : "Custom model settings are preserved in Advanced settings. Check that the model is compatible with the plugin before running.";
   }
 
@@ -104,7 +92,7 @@
   }
 
   function savedFormConfig(config) {
-    return { model: Object.fromEntries(Object.keys(baseModel).map((key) => [key, config.model[key]])), auth: config.auth,
+    return { model: Object.fromEntries(modelFields.map((key) => [key, config.model[key]])), auth: config.auth,
       prompt: config.prompt ?? "", label_prompt: config.label_prompt ?? "", max_tokens: config.max_tokens ?? 256,
       labels: (config.labels || []).map(({ name, text }) => ({ name, text })),
       copy_documents: config.copy_documents ?? false, copy_labels: config.copy_labels ?? [], copy_threshold: config.copy_threshold ?? 0 };
@@ -219,30 +207,40 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    fillForm(defaultProfile);
+    $("editor").disabled = true;
     const bind = (id, action) => $(id).addEventListener("click", () => perform($(id), action));
     $("add-label").addEventListener("click", () => {
       if (labelRows.length >= 16) return;
       const row = addLabel(); renderLabels(); row.name.focus();
     });
     $("preset").addEventListener("change", () => {
-      if ($("preset").value === "minilm") {
-        fillModel(baseModel); $("auth").value = "none";
-        $("prompt").value = ""; $("label_prompt").value = ""; $("max_tokens").value = 256;
+      if ($("preset").value === "default") {
+        fillModel(defaultProfile.model); $("auth").value = defaultProfile.auth.method;
+        $("prompt").value = defaultProfile.prompt; $("label_prompt").value = defaultProfile.label_prompt; $("max_tokens").value = defaultProfile.max_tokens;
         $("advanced").open = false;
       } else {
         $("advanced").open = true;
-        $("model-help").textContent = "Edit the model details below, or import an existing profile. Switching to MiniLM restores its model settings and prefixes.";
+        $("model-help").textContent = "Edit the model details below, or import an existing profile. Switching to the repository default restores its model settings and prefixes.";
       }
       updateSummary();
     });
-    for (const key of Object.keys(baseModel)) $(key).addEventListener("input", () => { syncPreset(); updateSummary(); });
+    for (const key of modelFields) $(key).addEventListener("input", () => { syncPreset(); updateSummary(); });
     for (const id of ["copy_documents", "copy-mode", "threshold-enabled"]) $(id).addEventListener("change", updateEditor);
     for (const id of ["name", "auth", "prompt", "label_prompt", "max_tokens", "copy_threshold", "session", "documents"]) {
       $(id).addEventListener("input", updateSummary);
     }
     bind("open", async () => {
       $("dialog").showModal(); message("Loading saved workspace configuration…");
+      if (!defaultProfile) {
+        try {
+          defaultProfile = (await request("defaults")).config;
+          fillForm(defaultProfile);
+          $("editor").disabled = false;
+        } catch (error) {
+          defaultProfile = null;
+          throw new Error(`Cannot load the default profile: ${error.message}. Close and reopen to retry.`);
+        }
+      }
       await refreshProfiles(); await refreshResults();
       const response = await window.rmmApi("/sessions");
       $("sessions").replaceChildren();

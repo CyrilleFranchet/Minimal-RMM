@@ -1347,13 +1347,13 @@ Guidelines:
 OPENAI_TOOLS.extend(
 [{'type': 'function',
   'function': {'name': 'embedding_profiles',
-               'description': 'List/get/save/delete embedding profiles. In workspace mode use the '
+               'description': 'List/get/save/delete embedding profiles, or use defaults to read the repository preset. In workspace mode use the '
                               'local workspace API. Config accepts model, auth (none/env), '
                               'prompts, labels, max_tokens, copy_documents, copy_labels, '
                               'copy_threshold; never include tokens.',
                'parameters': {'type': 'object',
                               'properties': {'action': {'type': 'string',
-                                                        'enum': ['list', 'get', 'save', 'delete']},
+                                                        'enum': ['list', 'get', 'save', 'delete', 'defaults']},
                                              'name': {'type': 'string'},
                                              'config': {'type': 'object'}},
                               'required': []}}},

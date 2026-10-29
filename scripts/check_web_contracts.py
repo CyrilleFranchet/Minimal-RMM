@@ -230,7 +230,7 @@ def _check_embedding_contract(errors: list[str]) -> None:
     docs = _read("docs/document-embeddings.md")
     for control in ("open", "dialog", "profiles", "save", "import", "export", "run", "save-result", "load-events", "results",
                     "copy_documents", "copy_labels", "copy_threshold", "preset", "advanced", "add-label",
-                    "copy-options", "copy-mode", "threshold-enabled", "run-summary"):
+                    "copy-options", "copy-mode", "threshold-enabled", "run-summary", "editor"):
         if f'id="embedding-{control}"' not in html:
             errors.append(f"Missing embedding control: {control}")
     if 'src="embeddings.js"' not in html or 'window.rmmApi' not in script:
