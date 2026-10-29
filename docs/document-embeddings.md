@@ -104,7 +104,24 @@ Edit the JSON and save the same name to update it. Profile names allow letters,
 digits, dots, underscores, and hyphens, up to 64 characters. Exported records
 and plain configuration objects are both accepted by `profiles save --file`.
 The command group is available in the standalone CLI; the existing interactive
-shell retains generic `pe` execution.
+shell retains generic `pe` execution. The WebUI session shell also supports
+direct execution using a saved profile:
+
+```text
+embeddings run strategy --document "C:\Lab Docs" --document "\\fileserver\share\Docs"
+```
+
+This uses the selected session and queues the plugin through the same
+authenticated embeddings API as the panel. It does not open a dialog.
+Repeat `--document` for one to 32 paths; quotes preserve Windows and UNC
+backslashes. Bare `embeddings` prints usage locally. Invalid arguments never
+reach the target interpreter. Help and completion include the command.
+The shell echoes a successful queued command and matches its plugin output;
+the server records the existing plugin queue, dispatch, download, and
+completion lifecycle. API failures appear in the shell without a queued echo.
+`dispatchShellMetaCommand` handles this routing; `parseShellWords` uses literal
+backslashes for embedding arguments. The shell regression fixture in
+`tests/test_embeddings_shell.cjs` checks routing, paths, and error handling.
 Directory and UNC paths use the same repeatable `--document` argument as files.
 Copy options belong in the saved profile JSON; profile import/export preserves
 them, and result export preserves copy destinations and directory error rows.

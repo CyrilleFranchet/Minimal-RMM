@@ -25,7 +25,7 @@ A hint line under the input shows the top completion match or match count.
 
 - Session command history (most recent first in candidate list)
 - Static agent dispatch prefixes: `cmd:`, `PS:`, `powershell:`, `pwsh:`; Tab completion inserts the trailing space
-- Operator meta commands: `help`, `?`, `exfil`, `download`, `screenshot`, `pe`
+- Operator meta commands: `help`, `?`, `exfil`, `download`, `screenshot`, `pe`, `embeddings`
 
 Agent-side path completion is out of scope (tech plan §4 v2).
 
@@ -40,6 +40,7 @@ These commands are handled in the browser instead of being sent to the agent she
 | `download <remote_path>` | `POST …/download` | Spaces in path: quote or omit extra tokens are joined |
 | `exfil <remote_path> [profile]` | `POST …/exfil` | File or folder; profile defaults to Exfil panel / server default |
 | `screenshot` | `POST …/screenshot` | No arguments |
+| `embeddings run <profile> --document <path>` | `POST /api/v1/embeddings/run` | Uses the selected session and a saved profile; repeat `--document` for up to 32 paths; quoted Windows and UNC backslashes are preserved |
 | `pe <plugin> [export] [input]` | `POST …/pe` | Loads a Go PE plugin through the selected agent; export defaults to `Run` |
 
 The REST, CLI, and MCP surfaces also support plugin-owned command dispatch by

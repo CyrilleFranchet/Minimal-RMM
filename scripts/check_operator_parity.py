@@ -129,6 +129,7 @@ WEB_SHELL_META: dict[str, str] = {
     "exfil": "queue_exfil",
     "screenshot": "queue_screenshot",
     "pe": "queue_pe_load",
+    "embeddings": "run_embeddings",
 }
 
 # Browser-local shell commands do not have an operator API or MCP equivalent.

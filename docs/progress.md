@@ -9,6 +9,16 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Execute embeddings directly from the WebUI shell
+
+- Added `embeddings run <profile> --document <path>` for the selected session,
+  with help and completion support. It directly queues through the embeddings
+  API without opening the panel.
+- Invalid arguments stay local instead of reaching the Windows interpreter.
+- Quoted Windows and UNC paths preserve backslashes; errors do not show a
+  successful queued echo. Regression tests cover routing and failure paths.
+- Actual plugin runs continue through the existing audited plugin queue.
+
 ### 2026-10-29 — Check Go agent Quick Tunnel connection configuration
 
 - Verified authenticated registration through a local HTTPS reverse proxy;
