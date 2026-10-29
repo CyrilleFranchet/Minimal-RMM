@@ -26,6 +26,8 @@ import argparse
 import hashlib
 import re
 import secrets
+import signal
+import socket
 import threading
 import sys
 import urllib.parse
@@ -381,7 +383,73 @@ def go_agent_source_files() -> list[dict[str, str]]:
     return files
 
 
-def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None) -> dict:
+class BuildProcessManager:
+    """Own compiler process groups so shutdown cancels and reaps active builds."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._processes = set()
+        self._closed = False
+
+    @staticmethod
+    def terminate(process):
+        """Stop a build and any remaining compiler children, then reap it."""
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (OSError, AttributeError):
+            if process.poll() is None:
+                process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (OSError, AttributeError):
+                if process.poll() is None:
+                    process.kill()
+            process.wait(timeout=2)
+
+    def run(self, command, *, cwd, env, timeout):
+        """Capture compiler output with cancellation and timeout cleanup."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("server is stopping")
+            process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, start_new_session=True)
+            self._processes.add(process)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        finally:
+            try:
+                self.terminate(process)
+            finally:
+                try:
+                    for stream in (process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
+                finally:
+                    with self._lock:
+                        self._processes.discard(process)
+
+    def close(self):
+        """Reject new builds and cancel every build currently owned."""
+        with self._lock:
+            self._closed = True
+            processes = list(self._processes)
+        failure = None
+        for process in processes:
+            try:
+                self.terminate(process)
+            except Exception as exc:
+                failure = exc
+        if failure is not None:
+            raise failure
+
+
+def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None) -> dict:
     """Build a fixed repository Go agent for one allowlisted OS and architecture."""
     goos = str(goos or "").strip().lower()
     goarch = str(goarch or "").strip().lower()
@@ -442,7 +510,7 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None) -> 
         linker_flags.extend(["-X", f"main.{name}={encoded}"])
     ldflags = " ".join(shlex.quote(flag) for flag in linker_flags)
     try:
-        completed = subprocess.run(
+        completed = (process_owner or BuildProcessManager()).run(
             [
                 go_bin,
                 "build",
@@ -456,10 +524,7 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None) -> 
             ],
             cwd=root,
             env=env,
-            capture_output=True,
-            text=True,
             timeout=120,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("Go build timed out after 120 seconds") from exc
@@ -862,6 +927,9 @@ class RMMServer:
         self._cli_use_ptk = False  # True when using prompt_toolkit (skip readline.redisplay in handle_result)
         self.current_session = None
         self.running = True
+        self._shutdown_lock = threading.RLock()
+        self._closed = False
+        self.builds = BuildProcessManager()
         self.event_hub = OperatorEventHub()
         self.socks = SocksManager(log_fn=self.log)
         self.tun_transport = SocksManager(log_fn=self.log)
@@ -883,20 +951,72 @@ class RMMServer:
         if self.storage_mode == "server":
             self._archive_orphaned_sessions_on_startup()
 
+    def close(self, *, close_databases=True) -> None:
+        """Release owned resources once, including partially initialized services."""
+        with self._shutdown_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self.running = False
+        with self._sessions_broadcast_lock:
+            timer = self._sessions_broadcast_timer
+            self._sessions_broadcast_timer = None
+            if timer:
+                timer.cancel()
+        with self.session_lock:
+            sessions = list(self.sessions.values())
+        for session in sessions:
+            with session.wait_lock:
+                if session.wait_event:
+                    session.wait_event.set()
+        resources = [
+            ("operator events", self.event_hub.close),
+            ("transport profile", self.profile_manager.close),
+            ("agent builds", self.builds.close),
+            ("TUN helpers", self.tun.close),
+            ("TUN transport", self.tun_transport.close),
+            ("SOCKS relays", self.socks.close),
+        ]
+        if close_databases:
+            resources.append(("databases", self.close_databases))
+        for name, close in resources:
+            try:
+                close()
+            except Exception:
+                self.log(f"Could not complete cleanup for {name}", "WARNING")
+
+    def close_databases(self) -> None:
+        """Close storage after requests finish, without allowing it to reopen."""
+        with self._embedding_store_lock:
+            for attribute in ("_embedding_store", "_ui_state_store"):
+                store = getattr(self, attribute)
+                if store is not None:
+                    try:
+                        store.close()
+                    except Exception:
+                        self.log("Could not complete database cleanup", "WARNING")
+                    finally:
+                        setattr(self, attribute, None)
+
     def embedding_store(self):
         """Open the server-owned embedding database only in server mode."""
         if self.storage_mode != "server":
             raise ValueError("embedding storage is workspace-local")
         with self._embedding_store_lock:
+            if self._closed:
+                raise ValueError("server is stopping")
             if self._embedding_store is None:
                 self._embedding_store = EmbeddingStore(os.path.join(LOG_DIR, "embeddings.db"))
             return self._embedding_store
 
     def ui_state(self) -> UiStateStore:
         """Return the lazily opened SQLite store for server-mode UI state."""
-        if self._ui_state_store is None:
-            self._ui_state_store = UiStateStore(UI_STATE_DB)
-        return self._ui_state_store
+        with self._embedding_store_lock:
+            if self._closed:
+                raise ValueError("server is stopping")
+            if self._ui_state_store is None:
+                self._ui_state_store = UiStateStore(UI_STATE_DB)
+            return self._ui_state_store
 
     def get_ui_state(self) -> dict[str, dict[str, str]] | None:
         """Load the persisted server-mode operator UI state."""
@@ -962,6 +1082,13 @@ class RMMServer:
 
     def start_profile(self, name: str | None = None, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """Start a dynamic profile and publish the URL agents must use."""
+        with self._shutdown_lock:
+            if self._closed:
+                raise ProfileError("server is stopping")
+            return self._start_profile(name, config)
+
+    def _start_profile(self, name, config):
+        """Start a profile while holding the service lifecycle lock."""
         selected = (name or self.profile_name or "").strip().lower()
         if not selected:
             raise ProfileError("profile name is required")
@@ -2201,6 +2328,8 @@ class RMMServer:
             self.event_hub.broadcast_sessions(sessions)
 
         with self._sessions_broadcast_lock:
+            if not self.running:
+                return
             if self._sessions_broadcast_timer is not None:
                 self._sessions_broadcast_timer.cancel()
             self._sessions_broadcast_timer = threading.Timer(0.2, fire)
@@ -2441,6 +2570,11 @@ class RMMServer:
             with session.wait_lock:
                 session.wait_event = None
             return None, "timeout"
+        if not self.running:
+            with session.wait_lock:
+                session.wait_event = None
+                session.wait_result = None
+            return None, "server_stopped"
         with session.wait_lock:
             result = session.wait_result
             session.wait_event = None
@@ -3857,6 +3991,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     body.get("goos"),
                     body.get("goarch"),
                     agent_config=body.get("config"),
+                    process_owner=srv.builds,
                 )
             except ValueError as exc:
                 self._json(400, {"error": "invalid_target", "detail": str(exc)})
@@ -5155,105 +5290,214 @@ def main():
     """ + Colors.END)
 
     server = RMMServer()
-    RMMHandler.server_instance = server
+    run_server(server, args)
 
-    def make_http_server(bind: str, port: int, role: str):
-        """Bind one role-specific threaded HTTP listener."""
-        handler = type(
-            f"{role.title()}RMMHandler",
-            (RMMHandler,),
-            {"server_instance": server, "listener_role": role},
-        )
-        instance = ThreadingHTTPServer((bind, port), handler)
-        instance.daemon_threads = True
-        instance.listener_role = role
-        instance.server_instance = server
-        return instance
 
-    if admin_port == beacon_port and LISTEN_HOST == BEACON_BIND:
-        http_servers = [make_http_server(LISTEN_HOST, admin_port, "combined")]
-    else:
-        http_servers = [
-            make_http_server(LISTEN_HOST, admin_port, "admin"),
-            make_http_server(BEACON_BIND, beacon_port, "beacon"),
-        ]
-    server.set_listener_ports(admin_port, beacon_port)
+class RMMHTTPServer(ThreadingHTTPServer):
+    """Track accepted sockets so shutdown releases idle HTTP readers as well."""
 
-    print(f"{Colors.GREEN}[*] Administration listener: {LISTEN_HOST}:{admin_port} (threaded HTTP){Colors.END}")
-    print(f"{Colors.GREEN}[*] Beacon listener: {BEACON_BIND}:{beacon_port} (threaded HTTP){Colors.END}")
-    print(f"{Colors.CYAN}[*] Operator API: http://127.0.0.1:{admin_port}{API_PREFIX}/{Colors.END}")
-    print(f"{Colors.CYAN}[*] Web UI: http://127.0.0.1:{admin_port}/ui/{Colors.END}")
-    print(f"{Colors.CYAN}[*] CLI: python rmm_cli.py --url http://127.0.0.1:{admin_port}{Colors.END}")
-    print(f"{Colors.CYAN}[*] MCP: python mcp_rmm_server.py (see README){Colors.END}")
-    print(f"{Colors.CYAN}[*] Web AI: /ui/ → AI Assistant panel (OpenAI key + RMM tools){Colors.END}")
-    print(f"{Colors.CYAN}[*] RMM-Profile directory: {profile_directory()}{Colors.END}")
-    print(f"{Colors.YELLOW}[*] Logs: {LOG_DIR}{Colors.END}")
-    if API_TOKEN:
-        print(f"{Colors.YELLOW}[*] Operator API auth: enabled ({API_PREFIX}/*){Colors.END}")
-    if BEACON_SECRET:
-        print(f"{Colors.YELLOW}[*] Beacon auth: X-RMM-Beacon-Token required{Colors.END}")
-    print()
+    daemon_threads = True
 
-    http_threads = [
-        threading.Thread(target=http_server.serve_forever, daemon=True, name=f"rmm-{http_server.listener_role}")
-        for http_server in http_servers
-    ]
-    for http_thread in http_threads:
-        http_thread.start()
+    def __init__(self, *args, **kwargs):
+        self._requests_lock = threading.Lock()
+        self._requests = set()
+        self._workers = set()
+        self._closing = False
+        super().__init__(*args, **kwargs)
 
-    profile_auto_start = settings_getenv("RMM_PROFILE_AUTOSTART", "1").strip().lower() in {"1", "true", "yes"}
-    if profile_auto_start and args.profile and any(row["name"] == args.profile.strip().lower() for row in server.profile_manager.list()):
+    def process_request(self, request, client_address):
+        """Track accepted sockets before their handler threads start."""
+        with self._requests_lock:
+            if self._closing:
+                request.close()
+                return
+            self._requests.add(request)
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        """Track live handlers separately from the accepting server thread."""
+        worker = threading.current_thread()
+        with self._requests_lock:
+            self._workers.add(worker)
         try:
-            server.start_profile(args.profile)
-        except ProfileError as exc:
-            server.log(f"RMM-Profile {args.profile} did not start: {exc}", "WARNING")
-    elif profile_auto_start and args.profile:
-        print(f"{Colors.YELLOW}[*] RMM-Profile {args.profile} is not installed; install it under {profile_directory()}{Colors.END}")
-    
-    if not args.cli:
-        print(f"{Colors.BOLD}[*] Headless mode. Press Ctrl+C to stop.{Colors.END}\n")
-        try:
-            while server.running:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print(f"\n{Colors.YELLOW}Shutting down...{Colors.END}")
-        server.stop_profile()
-        server.tun.stop_all()
-        server.tun_transport.stop_all()
-        server.socks.stop_all()
-        for http_server in http_servers:
-            http_server.shutdown()
-            http_server.server_close()
-        return
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._requests_lock:
+                self._workers.discard(worker)
 
-    cli = CommandInterface(server)
-    print(f"{Colors.BOLD}Embedded CLI — type 'help' for commands{Colors.END}")
+    def handle_error(self, request, client_address):
+        """Suppress expected disconnect errors only during service shutdown."""
+        if not self._closing:
+            super().handle_error(request, client_address)
+
+    def join_requests(self, timeout=5):
+        """Allow bounded request completion and report whether storage is idle."""
+        deadline = time.monotonic() + timeout
+        with self._requests_lock:
+            workers = list(self._workers)
+        for worker in workers:
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+        with self._requests_lock:
+            return not self._workers and not self._requests
+
+    def shutdown_request(self, request):
+        """Release socket ownership when a handler finishes or startup fails."""
+        try:
+            super().shutdown_request(request)
+        finally:
+            with self._requests_lock:
+                self._requests.discard(request)
+
+    def abort_requests(self):
+        """Unblock outstanding socket reads during process shutdown."""
+        with self._requests_lock:
+            self._closing = True
+            requests = list(self._requests)
+        for request in requests:
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def run_server(server, args):
+    """Own listeners and guarantee cleanup on EOF, signals and startup failure."""
+    admin_port, beacon_port = ADMIN_PORT, BEACON_PORT
+    http_servers = []
+    http_threads = []
+    previous_term = None
+
+    def terminate(_signum, _frame):
+        """Enter the same finally path as normal exit without reentrant cleanup."""
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise SystemExit(0)
+
+    if threading.current_thread() is threading.main_thread():
+        previous_term = signal.signal(signal.SIGTERM, terminate)
     try:
-        __import__("prompt_toolkit")
-        _have_ptk = True
-    except ImportError:
-        _have_ptk = False
+        RMMHandler.server_instance = server
 
-    if _have_ptk:
-        print(
-            f"{Colors.YELLOW}Tip: Client output scrolls above; your input line stays fixed at the bottom.{Colors.END}\n"
-        )
-        _run_cli_prompt_toolkit(server, cli)
-    else:
-        print(
-            f"{Colors.CYAN}[*] pip install -r requirements.txt for the fixed bottom prompt (prompt_toolkit).{Colors.END}\n"
-        )
-        _run_cli_readline(server, cli)
+        def make_http_server(bind: str, port: int, role: str):
+            """Bind one role-specific threaded HTTP listener."""
+            handler = type(
+                f"{role.title()}RMMHandler",
+                (RMMHandler,),
+                {"server_instance": server, "listener_role": role},
+            )
+            instance = RMMHTTPServer((bind, port), handler)
+            instance.daemon_threads = True
+            instance.listener_role = role
+            instance.server_instance = server
+            return instance
 
-    if not getattr(server, "_cli_use_ptk", False):
-        readline.write_history_file(HISTORY_FILE)
-    server.stop_profile()
-    server.tun.stop_all()
-    server.tun_transport.stop_all()
-    server.socks.stop_all()
-    for http_server in http_servers:
-        http_server.shutdown()
-        http_server.server_close()
+        if admin_port == beacon_port and LISTEN_HOST == BEACON_BIND:
+            http_servers.append(make_http_server(LISTEN_HOST, admin_port, "combined"))
+        else:
+            http_servers.append(make_http_server(LISTEN_HOST, admin_port, "admin"))
+            http_servers.append(make_http_server(BEACON_BIND, beacon_port, "beacon"))
+        server.set_listener_ports(admin_port, beacon_port)
+
+        print(f"{Colors.GREEN}[*] Administration listener: {LISTEN_HOST}:{admin_port} (threaded HTTP){Colors.END}")
+        print(f"{Colors.GREEN}[*] Beacon listener: {BEACON_BIND}:{beacon_port} (threaded HTTP){Colors.END}")
+        print(f"{Colors.CYAN}[*] Operator API: http://127.0.0.1:{admin_port}{API_PREFIX}/{Colors.END}")
+        print(f"{Colors.CYAN}[*] Web UI: http://127.0.0.1:{admin_port}/ui/{Colors.END}")
+        print(f"{Colors.CYAN}[*] CLI: python rmm_cli.py --url http://127.0.0.1:{admin_port}{Colors.END}")
+        print(f"{Colors.CYAN}[*] MCP: python mcp_rmm_server.py (see README){Colors.END}")
+        print(f"{Colors.CYAN}[*] Web AI: /ui/ → AI Assistant panel (OpenAI key + RMM tools){Colors.END}")
+        print(f"{Colors.CYAN}[*] RMM-Profile directory: {profile_directory()}{Colors.END}")
+        print(f"{Colors.YELLOW}[*] Logs: {LOG_DIR}{Colors.END}")
+        if API_TOKEN:
+            print(f"{Colors.YELLOW}[*] Operator API auth: enabled ({API_PREFIX}/*){Colors.END}")
+        if BEACON_SECRET:
+            print(f"{Colors.YELLOW}[*] Beacon auth: X-RMM-Beacon-Token required{Colors.END}")
+        print()
+
+        http_threads = [
+            threading.Thread(target=http_server.serve_forever, daemon=True, name=f"rmm-{http_server.listener_role}")
+            for http_server in http_servers
+        ]
+        for http_thread in http_threads:
+            http_thread.start()
+
+        profile_auto_start = settings_getenv("RMM_PROFILE_AUTOSTART", "1").strip().lower() in {"1", "true", "yes"}
+        if profile_auto_start and args.profile and any(row["name"] == args.profile.strip().lower() for row in server.profile_manager.list()):
+            try:
+                server.start_profile(args.profile)
+            except ProfileError as exc:
+                server.log(f"RMM-Profile {args.profile} did not start: {exc}", "WARNING")
+        elif profile_auto_start and args.profile:
+            print(f"{Colors.YELLOW}[*] RMM-Profile {args.profile} is not installed; install it under {profile_directory()}{Colors.END}")
+
+        if not args.cli:
+            print(f"{Colors.BOLD}[*] Headless mode. Press Ctrl+C to stop.{Colors.END}\n")
+            try:
+                while server.running:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print(f"\n{Colors.YELLOW}Shutting down...{Colors.END}")
+            return
+
+        cli = CommandInterface(server)
+        print(f"{Colors.BOLD}Embedded CLI — type 'help' for commands{Colors.END}")
+        try:
+            __import__("prompt_toolkit")
+            _have_ptk = True
+        except ImportError:
+            _have_ptk = False
+
+        if _have_ptk:
+            print(
+                f"{Colors.YELLOW}Tip: Client output scrolls above; your input line stays fixed at the bottom.{Colors.END}\n"
+            )
+            _run_cli_prompt_toolkit(server, cli)
+        else:
+            print(
+                f"{Colors.CYAN}[*] pip install -r requirements.txt for the fixed bottom prompt (prompt_toolkit).{Colors.END}\n"
+            )
+            _run_cli_readline(server, cli)
+
+        if not getattr(server, "_cli_use_ptk", False):
+            readline.write_history_file(HISTORY_FILE)
+    except KeyboardInterrupt:
+        print(f"\n{Colors.YELLOW}Shutting down...{Colors.END}")
+    finally:
+        previous_int = None
+        if threading.current_thread() is threading.main_thread():
+            previous_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        server.running = False
+        try:
+            # shutdown() may only be used while serve_forever runs on another
+            # thread; calling it on a never-started listener deadlocks.
+            for listener, worker in zip(http_servers, http_threads):
+                if worker.is_alive():
+                    try:
+                        listener.shutdown()
+                    except Exception:
+                        server.log("Could not stop an HTTP accepting loop", "WARNING")
+            try:
+                for listener in http_servers:
+                    for close in (listener.abort_requests, listener.server_close):
+                        try:
+                            close()
+                        except Exception:
+                            server.log("Could not close an HTTP listener", "WARNING")
+            finally:
+                server.close(close_databases=False)
+            drained = all([listener.join_requests() for listener in http_servers])
+            if drained:
+                server.close_databases()
+            else:
+                server.log("Shutdown grace expired for active requests; storage remains open until process exit", "WARNING")
+            for worker in http_threads:
+                if worker.is_alive():
+                    worker.join(timeout=2)
+        finally:
+            if previous_term is not None:
+                signal.signal(signal.SIGTERM, previous_term)
+            if previous_int is not None:
+                signal.signal(signal.SIGINT, previous_int)
+
 
 if __name__ == "__main__":
     main()

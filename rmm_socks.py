@@ -76,6 +76,8 @@ class SessionSocksBridge:
         self._queued_udp_tasks = 0
         self._listener_sock: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
+        self._client_sockets: set[socket.socket] = set()
+        self._client_threads: set[threading.Thread] = set()
         self._running = False
         self._udp_sock: socket.socket | None = None
         self._udp_control_sock: socket.socket | None = None
@@ -180,6 +182,10 @@ class SessionSocksBridge:
     def stop(self) -> None:
         with self.lock:
             self._running = False
+            clients = list(self._client_sockets)
+            client_threads = list(self._client_threads)
+            ls = self._listener_sock
+            self._listener_sock = None
             tunnels = list(self.tunnels.values())
             self.tunnels.clear()
             self.task_queue.clear()
@@ -200,17 +206,18 @@ class SessionSocksBridge:
             self._agent_ws = None
         if aws:
             try:
-                aws.send_json({"op": "active", "active": False})
-            except Exception:
-                pass
-            try:
                 aws.close()
             except Exception:
                 pass
+        # Pending handshakes are not yet in self.tunnels. Wake every accepted
+        # client before acquiring per-tunnel send locks or joining workers.
+        for client in clients:
+            try:
+                client.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         for t in tunnels:
             self._close_tunnel(t, notify_client=False)
-        ls = self._listener_sock
-        self._listener_sock = None
         if ls:
             try:
                 ls.close()
@@ -230,6 +237,12 @@ class SessionSocksBridge:
             self._udp_thread.join(timeout=2.0)
         if self._accept_thread and self._accept_thread.is_alive():
             self._accept_thread.join(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        for thread in client_threads:
+            if thread is not threading.current_thread():
+                thread.join(timeout=max(0, deadline - time.monotonic()))
+        for client in clients:
+            client.close()
         self.log(f"SOCKS stopped for session {self.session_id[:8]}", "INFO")
 
     def _accept_loop(self) -> None:
@@ -246,11 +259,29 @@ class SessionSocksBridge:
                 continue
             except OSError:
                 break
-            threading.Thread(
-                target=self._handle_socks_client,
-                args=(client_sock,),
-                daemon=True,
-            ).start()
+            with self.lock:
+                if not self._running:
+                    client_sock.close()
+                    break
+                thread = threading.Thread(target=self._serve_client, args=(client_sock,), daemon=True)
+                self._client_sockets.add(client_sock)
+                self._client_threads.add(thread)
+                try:
+                    thread.start()
+                except BaseException:
+                    self._client_sockets.discard(client_sock)
+                    self._client_threads.discard(thread)
+                    client_sock.close()
+                    raise
+
+    def _serve_client(self, client_sock: socket.socket) -> None:
+        """Track the entire client lifetime, including an incomplete handshake."""
+        try:
+            self._handle_socks_client(client_sock)
+        finally:
+            with self.lock:
+                self._client_sockets.discard(client_sock)
+                self._client_threads.discard(threading.current_thread())
 
     def _enqueue_task(self, task: dict[str, Any]) -> None:
         with self.lock:
@@ -578,6 +609,8 @@ class SessionSocksBridge:
         with self.lock:
             if conn_id in self.tunnels:
                 return True
+            if not self._running:
+                return False
             err = self.connect_errors.get(conn_id)
             if err:
                 self.connect_errors.pop(conn_id, None)
@@ -932,6 +965,7 @@ class SocksManager:
 
     def __init__(self, log_fn=None):
         self.lock = threading.Lock()
+        self._closed = False
         self.bridges: dict[str, SessionSocksBridge] = {}
         self.log_fn = log_fn
 
@@ -951,6 +985,8 @@ class SocksManager:
         udp_idle_timeout: float = RELAY_IDLE_TIMEOUT,
     ) -> SessionSocksBridge:
         with self.lock:
+            if self._closed:
+                raise RuntimeError("SOCKS manager is stopping")
             existing = self.bridges.pop(session_id, None)
             if existing:
                 existing.stop()
@@ -963,7 +999,7 @@ class SocksManager:
             )
             try:
                 bridge.start()
-            except Exception:
+            except BaseException:
                 # A failed bind must not leave an unusable bridge registered.
                 bridge.stop()
                 raise
@@ -979,6 +1015,8 @@ class SocksManager:
     ) -> SessionSocksBridge:
         """Start a task-only bridge for a workspace-local listener."""
         with self.lock:
+            if self._closed:
+                raise RuntimeError("SOCKS manager is stopping")
             existing = self.bridges.pop(session_id, None)
             if existing:
                 existing.stop()
@@ -1007,6 +1045,15 @@ class SocksManager:
             ids = list(self.bridges.keys())
         for sid in ids:
             self.stop(sid)
+
+    def close(self) -> None:
+        """Permanently reject new bridges and close all owned listeners."""
+        with self.lock:
+            self._closed = True
+            bridges = list(self.bridges.values())
+            self.bridges.clear()
+        for bridge in bridges:
+            bridge.stop()
 
     def list_relays(self) -> list[dict[str, Any]]:
         """Active SOCKS listeners and agent channel state (global operator view)."""

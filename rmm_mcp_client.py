@@ -143,6 +143,7 @@ class McpRmmSession(_BaseMcpSession):
         self.rmm_token = rmm_token
         self.extra_headers = dict(extra_headers or {})
         self._stdio_stack: Any = None
+        self._stack = AsyncExitStack()
 
     async def __aenter__(self) -> McpRmmSession:
         from mcp import ClientSession, StdioServerParameters
@@ -175,18 +176,21 @@ class McpRmmSession(_BaseMcpSession):
             cwd=str(MCP_SCRIPT.parent),
         )
         self._stdio_stack = stdio_client(params)
-        read, write = await self._stdio_stack.__aenter__()
-        self._session = ClientSession(read, write)
-        await self._session.__aenter__()
-        await self._load_tools_and_instructions()
+        try:
+            read, write = await self._stack.enter_async_context(self._stdio_stack)
+            self._session = ClientSession(read, write)
+            await self._stack.enter_async_context(self._session)
+            await self._load_tools_and_instructions()
+        except BaseException:
+            await self.__aexit__(*sys.exc_info())
+            raise
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        if self._session is not None:
-            await self._session.__aexit__(exc_type, exc, tb)
+        try:
+            await self._stack.__aexit__(exc_type, exc, tb)
+        finally:
             self._session = None
-        if self._stdio_stack is not None:
-            await self._stdio_stack.__aexit__(exc_type, exc, tb)
             self._stdio_stack = None
 
 
@@ -214,23 +218,25 @@ class McpHttpSession(_BaseMcpSession):
             headers=headers,
             timeout=httpx.Timeout(300.0, connect=30.0),
         )
-        await self._stack.enter_async_context(self._http_client)
-
-        self._transport_cm = streamable_http_client(self.url, http_client=self._http_client)
-        streams = await self._stack.enter_async_context(self._transport_cm)
-        if len(streams) == 3:
-            read, write, _ = streams
-        else:
-            read, write = streams
-
-        self._session = ClientSession(read, write)
-        await self._stack.enter_async_context(self._session)
-        await self._load_tools_and_instructions()
+        try:
+            await self._stack.enter_async_context(self._http_client)
+            self._transport_cm = streamable_http_client(self.url, http_client=self._http_client)
+            streams = await self._stack.enter_async_context(self._transport_cm)
+            if len(streams) == 3:
+                read, write, _ = streams
+            else:
+                read, write = streams
+            self._session = ClientSession(read, write)
+            await self._stack.enter_async_context(self._session)
+            await self._load_tools_and_instructions()
+        except BaseException:
+            await self.__aexit__(*sys.exc_info())
+            raise
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self._session = None
-        await self._stack.aclose()
+        await self._stack.__aexit__(exc_type, exc, tb)
 
 
 class McpCompositeSession:
@@ -241,6 +247,7 @@ class McpCompositeSession:
         self._tool_route: dict[str, McpBackend] = {}
         self._openai_tools: list[dict] = []
         self._server_instructions: str | None = None
+        self._stack = AsyncExitStack()
 
     @property
     def openai_tools(self) -> list[dict]:
@@ -252,23 +259,26 @@ class McpCompositeSession:
 
     async def __aenter__(self) -> McpCompositeSession:
         instructions: list[str] = []
-        for backend in self._backends:
-            await backend.__aenter__()  # type: ignore[attr-defined]
-            if backend.server_instructions:
-                instructions.append(backend.server_instructions)
-            for tool in backend.openai_tools:
-                name = tool["function"]["name"]
-                if name in self._tool_route:
-                    raise RuntimeError(f"duplicate MCP tool name: {name}")
-                self._tool_route[name] = backend
-                self._openai_tools.append(tool)
+        try:
+            for backend in self._backends:
+                await self._stack.enter_async_context(backend)
+                if backend.server_instructions:
+                    instructions.append(backend.server_instructions)
+                for tool in backend.openai_tools:
+                    name = tool["function"]["name"]
+                    if name in self._tool_route:
+                        raise RuntimeError(f"duplicate MCP tool name: {name}")
+                    self._tool_route[name] = backend
+                    self._openai_tools.append(tool)
+        except BaseException:
+            await self.__aexit__(*sys.exc_info())
+            raise
         if instructions:
             self._server_instructions = "\n\n".join(instructions)
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        for backend in reversed(self._backends):
-            await backend.__aexit__(exc_type, exc, tb)  # type: ignore[attr-defined]
+        await self._stack.__aexit__(exc_type, exc, tb)
 
     async def call_tool(self, name: str, arguments: dict) -> str:
         backend = self._tool_route.get(name)

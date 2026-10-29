@@ -61,7 +61,7 @@ var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 // loadPluginPE fetches the plugin in the parent, then sends the raw DLL bytes
 // to a child over stdin. The child performs all mapping and export execution.
 func loadPluginPE(client *http.Client, cfg *config, url, exportName, input string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), pluginRunTimeout)
+	ctx, cancel := context.WithTimeout(agentContext, pluginRunTimeout)
 	defer cancel()
 	return loadPluginPEContext(ctx, client, cfg, url, exportName, input)
 }
@@ -103,6 +103,7 @@ func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, 
 		cmd.Stdin = &frame
 	}
 	var stdout, stderr bytes.Buffer
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

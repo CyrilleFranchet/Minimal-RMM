@@ -364,7 +364,8 @@ class ProfileManager:
         self.root = Path(root or profile_directory()).expanduser().resolve()
         self.log_fn = log_fn or (lambda _message, _level="INFO": None)
         self._lock = threading.RLock()
-        self._operation_lock = threading.Lock()
+        self._operation_lock = threading.RLock()
+        self._closed = False
         self._active: ProfileProcess | None = None
         self._active_manifest: dict[str, Any] | None = None
         self._last_error: str | None = None
@@ -405,6 +406,8 @@ class ProfileManager:
         if not manifest:
             raise ProfileError(f"profile {name!r} is not installed")
         with self._operation_lock:
+            if self._closed:
+                raise ProfileError("profile manager is stopping")
             with self._lock:
                 previous = self._active
                 self._active = None
@@ -423,14 +426,22 @@ class ProfileManager:
                     config=config,
                     timeout=timeout,
                 )
-            except Exception as exc:
+            except BaseException as exc:
                 process.stop()
                 error = str(exc) if isinstance(exc, ProfileError) else "profile startup failed"
                 with self._lock:
                     self._last_error = error
                     self._active = None
                     self._active_manifest = None
+                if not isinstance(exc, Exception):
+                    raise
                 raise ProfileError(error) from exc
+
+    def close(self) -> bool:
+        """Stop the connector and permanently reject new starts at shutdown."""
+        with self._operation_lock:
+            self._closed = True
+            return self.stop()
 
     def stop(self) -> bool:
         """Stop the active profile, if any."""

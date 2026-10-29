@@ -9,7 +9,6 @@ broker endpoints.
 from __future__ import annotations
 
 import threading
-import time
 from typing import Any, Callable
 
 from rmm_socks import DEFAULT_BIND_HOST, DEFAULT_SOCKS_PORT, SocksManager
@@ -33,8 +32,9 @@ class WorkspacePivotManager:
         self.socks = SocksManager(log_fn=self.log_fn)
         self.tun_transport = SocksManager(log_fn=self.log_fn)
         self.tun_relays: dict[str, ServerTunRelay] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._running = True
+        self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=self._sync_loop,
             name="workspace-pivot-sync",
@@ -53,7 +53,10 @@ class WorkspacePivotManager:
         bind_host: str = DEFAULT_BIND_HOST,
     ) -> dict[str, Any]:
         """Start the workspace-local public SOCKS5 listener."""
-        bridge = self.socks.start(session_id, port=port, bind_host=bind_host)
+        with self._lock:
+            if not self._running:
+                raise RuntimeError("workspace pivots are stopped")
+            bridge = self.socks.start(session_id, port=port, bind_host=bind_host)
         return {
             "session_id": session_id,
             "bind_host": bridge.bind_host,
@@ -80,22 +83,24 @@ class WorkspacePivotManager:
 
     def start_tun(self, session_id: str, config: dict[str, Any]) -> dict[str, Any]:
         """Start a local TUN helper and route target traffic through the broker."""
-        normalized = normalize_tun_config(config)
-        if self.tun_active(session_id):
-            raise TunError("TUN relay is already active")
-        relay = ServerTunRelay(
-            session_id,
-            normalized,
-            self.helper_path,
-            self.tun_transport,
-            log_fn=self.log_fn,
-        )
-        try:
-            relay.start()
-        except Exception:
-            relay.stop()
-            raise
         with self._lock:
+            if not self._running:
+                raise TunError("workspace pivots are stopped")
+            normalized = normalize_tun_config(config)
+            if self.tun_active(session_id):
+                raise TunError("TUN relay is already active")
+            relay = ServerTunRelay(
+                session_id,
+                normalized,
+                self.helper_path,
+                self.tun_transport,
+                log_fn=self.log_fn,
+            )
+            try:
+                relay.start()
+            except BaseException:
+                relay.stop()
+                raise
             self.tun_relays[session_id] = relay
         status = relay.status()
         status["workspace_local"] = True
@@ -141,6 +146,8 @@ class WorkspacePivotManager:
         """Exchange pending task and response batches for every local pivot."""
         for channel, manager in (("socks", self.socks), ("tun", self.tun_transport)):
             for row in manager.list_relays():
+                if not self._running:
+                    return
                 session_id = str(row.get("session_id") or "")
                 if not session_id:
                     continue
@@ -148,6 +155,8 @@ class WorkspacePivotManager:
                 if tasks:
                     if not self.submit_tasks(session_id, channel, tasks):
                         manager.requeue_tasks(session_id, tasks)
+                if not self._running:
+                    return
                 responses = self.fetch_responses(session_id, channel)
                 if responses:
                     manager.submit_agent_responses(session_id, responses)
@@ -158,20 +167,26 @@ class WorkspacePivotManager:
             try:
                 self.sync_once()
             except Exception as exc:
-                self.log(f"Workspace pivot sync failed: {exc}", "WARNING")
-            time.sleep(0.025)
+                if self._running:
+                    self.log(f"Workspace pivot sync failed: {exc}", "WARNING")
+            self._stop_event.wait(0.025)
 
     def stop_all(self) -> None:
         """Stop all local pivots and their background task bridge."""
-        self._running = False
-        for row in self.socks.list_relays():
-            session_id = str(row.get("session_id") or "")
-            if session_id:
-                self.socks.stop(session_id)
         with self._lock:
-            session_ids = list(self.tun_relays)
-        for session_id in session_ids:
-            self.stop_tun(session_id)
-        self.tun_transport.stop_all()
-        if self._thread.is_alive():
-            self._thread.join(timeout=2.0)
+            self._running = False
+            self._stop_event.set()
+            relays = list(self.tun_relays.values())
+            self.tun_relays.clear()
+        actions = [self.socks.stop_all, *(relay.stop for relay in relays), self.tun_transport.stop_all]
+        first_error = None
+        for action in actions:
+            try:
+                action()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if self._thread.is_alive() and self._thread is not threading.current_thread():
+            self._thread.join()
+        if first_error is not None:
+            raise first_error

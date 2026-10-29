@@ -19,11 +19,14 @@ import argparse
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import signal
+import socket
 import sqlite3
 import threading
 import time
@@ -756,6 +759,21 @@ class WorkspaceUpstream:
         self.base_url = base_url.rstrip("/")
         self.workspace_id = workspace_id
         self.workspace_token = workspace_token
+        self._stopping = threading.Event()
+        self._socket_lock = threading.Lock()
+        self._sockets: set[socket.socket] = set()
+
+    def close(self) -> None:
+        """Cancel active upstream sockets and refuse further broker requests."""
+        self._stopping.set()
+        with self._socket_lock:
+            connections = list(self._sockets)
+        for connection in connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
 
     def request(
         self,
@@ -765,6 +783,36 @@ class WorkspaceUpstream:
         timeout: float = 30,
     ) -> tuple[int, Any, str]:
         """Send one JSON or binary request to the central broker."""
+        if self._stopping.is_set():
+            return 0, {"error": "workspace_stopping"}, "application/json"
+        owned_sockets = []
+        owner = self
+
+        def connection_factory(connection_type):
+            """Track the socket before HTTP response headers can block."""
+            class TrackedConnection(connection_type):
+                def connect(connection_self):
+                    super().connect()
+                    connection = connection_self.sock
+                    with owner._socket_lock:
+                        if owner._stopping.is_set():
+                            connection.close()
+                            raise OSError("workspace is stopping")
+                        owner._sockets.add(connection)
+                        owned_sockets.append(connection)
+                    connection.settimeout(timeout)
+            return TrackedConnection
+
+        class HttpHandler(urllib.request.HTTPHandler):
+            def http_open(handler_self, request):
+                return handler_self.do_open(connection_factory(http.client.HTTPConnection), request)
+
+        class HttpsHandler(urllib.request.HTTPSHandler):
+            def https_open(handler_self, request):
+                return handler_self.do_open(connection_factory(http.client.HTTPSConnection), request,
+                                            context=handler_self._context)
+
+        opener = urllib.request.build_opener(HttpHandler(), HttpsHandler())
         data = None
         headers = {
             "Accept": "application/json",
@@ -778,7 +826,7 @@ class WorkspaceUpstream:
             f"{self.base_url}{path}", data=data, headers=headers, method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with opener.open(request, timeout=min(timeout, 5.0)) as response:
                 content_type = response.headers.get_content_type()
                 raw = response.read()
                 if content_type == "application/json":
@@ -788,14 +836,94 @@ class WorkspaceUpstream:
                         return response.status, {"error": "invalid_upstream_json"}, content_type
                 return response.status, raw, content_type
         except urllib.error.HTTPError as exc:
-            raw = exc.read()
             try:
-                payload = json.loads(raw.decode(errors="replace")) if raw else {}
-            except json.JSONDecodeError:
-                payload = {"error": raw.decode(errors="replace") or str(exc.reason)}
-            return exc.code, payload, "application/json"
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                raw = exc.read()
+                try:
+                    payload = json.loads(raw.decode(errors="replace")) if raw else {}
+                except json.JSONDecodeError:
+                    payload = {"error": raw.decode(errors="replace") or str(exc.reason)}
+                return exc.code, payload, "application/json"
+            finally:
+                exc.close()
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
             return 0, {"error": "upstream_unreachable", "detail": str(exc)}, "application/json"
+        finally:
+            with self._socket_lock:
+                for connection in owned_sockets:
+                    self._sockets.discard(connection)
+            for connection in owned_sockets:
+                connection.close()
+
+
+class WorkspaceHTTPServer(ThreadingHTTPServer):
+    """Interruptible listener that drains request workers before storage closes."""
+
+    daemon_threads = False
+
+    def __init__(self, *args, **kwargs):
+        self._stop_requested = threading.Event()
+        self._serving_done = threading.Event()
+        self._serving_done.set()
+        self._serving_thread = None
+        self._request_lock = threading.Lock()
+        self._requests: set[socket.socket] = set()
+        super().__init__(*args, **kwargs)
+
+    def serve_forever(self, poll_interval=0.2):
+        """Poll for requests until stopped without BaseServer's shutdown deadlock."""
+        self._serving_thread = threading.current_thread()
+        self._serving_done.clear()
+        self.timeout = poll_interval
+        try:
+            while not self._stop_requested.is_set():
+                self.handle_request()
+        finally:
+            self._serving_done.set()
+
+    def shutdown(self):
+        """Stop accepting requests; safe before serving and on the serving thread."""
+        self._stop_requested.set()
+        if self._serving_thread is not threading.current_thread():
+            self._serving_done.wait()
+
+    def process_request(self, request, client_address):
+        """Track accepted sockets so incomplete clients cannot prevent shutdown."""
+        with self._request_lock:
+            if self._stop_requested.is_set():
+                self.shutdown_request(request)
+                return
+            self._requests.add(request)
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            with self._request_lock:
+                self._requests.discard(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        """Release accepted-socket tracking when a handler finishes."""
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._request_lock:
+                self._requests.discard(request)
+
+    def handle_error(self, request, client_address):
+        """Suppress expected broken-connection diagnostics during shutdown only."""
+        if not self._stop_requested.is_set():
+            super().handle_error(request, client_address)
+
+    def server_close(self):
+        """Interrupt incomplete client requests, then join all request threads."""
+        self.shutdown()
+        with self._request_lock:
+            requests = list(self._requests)
+        for request in requests:
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        super().server_close()
 
 
 class WorkspaceService:
@@ -820,16 +948,23 @@ class WorkspaceService:
         self.port = int(port)
         self.auto_claim = bool(auto_claim)
         self.poll_interval = max(0.2, float(poll_interval))
+        self._stop_event = threading.Event()
+        self._stop_lock = threading.Lock()
+        self._closed = False
         self.store = WorkspaceStore(data_dir, workspace_id)
-        self.settings = active_store("workspace", self.store.data_dir / "settings.json")
-        self.upstream = WorkspaceUpstream(central_url, workspace_id, workspace_token)
-        helper_path = tun_helper.strip() or settings_getenv("RMM_WORKSPACE_TUN_HELPER", "tools/rmm-tun")
-        self.pivots = WorkspacePivotManager(
-            helper_path,
-            self._submit_pivot_tasks,
-            self._fetch_pivot_responses,
-            self.log,
-        )
+        try:
+            self.settings = active_store("workspace", self.store.data_dir / "settings.json")
+            self.upstream = WorkspaceUpstream(central_url, workspace_id, workspace_token)
+            helper_path = tun_helper.strip() or settings_getenv("RMM_WORKSPACE_TUN_HELPER", "tools/rmm-tun")
+            self.pivots = WorkspacePivotManager(
+                helper_path,
+                self._submit_pivot_tasks,
+                self._fetch_pivot_responses,
+                self.log,
+            )
+        except BaseException:
+            self.store.close()
+            raise
         self._running = True
         self._sync_thread = threading.Thread(target=self._sync_loop, name="workspace-sync", daemon=True)
         self.http_server: ThreadingHTTPServer | None = None
@@ -879,6 +1014,8 @@ class WorkspaceService:
     def _sync_workspace_plugins(self) -> None:
         """Republish persistent workspace plugins after a central restart."""
         for row in self.store.asset_list("plugins"):
+            if not self._running:
+                return
             self._sync_plugin_asset(row)
 
     def _resolve_local_session_id(self, ref: str) -> str | None:
@@ -888,16 +1025,20 @@ class WorkspaceService:
 
     def sync_once(self) -> None:
         """Synchronize sessions, events, and central pivot state once."""
+        if not self._running:
+            return
         if self.auto_claim:
             status, payload, _ = self.upstream.request("GET", "/api/v1/workspace/candidates")
             if status == 200 and isinstance(payload, dict):
                 for candidate in payload.get("sessions", []):
+                    if not self._running:
+                        return
                     session_id = candidate.get("id") if isinstance(candidate, dict) else None
                     if session_id:
                         self.upstream.request("POST", "/api/v1/workspace/claims", {"session_id": session_id})
 
         status, payload, _ = self.upstream.request("GET", "/api/v1/workspace/sessions")
-        if status != 200 or not isinstance(payload, dict):
+        if not self._running or status != 200 or not isinstance(payload, dict):
             return
         records = payload.get("sessions")
         if not isinstance(records, list):
@@ -908,7 +1049,7 @@ class WorkspaceService:
         status, payload, _ = self.upstream.request(
             "GET", f"/api/v1/workspace/events?since={cursor}&limit=1000"
         )
-        if status == 200 and isinstance(payload, dict):
+        if self._running and status == 200 and isinstance(payload, dict):
             if payload.get("reset_required"):
                 self.log("Central workspace event queue overflowed; local history is incomplete", "WARNING")
             for envelope in payload.get("events", []):
@@ -929,8 +1070,10 @@ class WorkspaceService:
 
     def _sync_pivot_state(self) -> None:
         """Recreate local listeners after a workspace service restart."""
+        if not self._running:
+            return
         status, payload, _ = self.upstream.request("GET", "/api/v1/socks")
-        if status == 200 and isinstance(payload, dict):
+        if self._running and status == 200 and isinstance(payload, dict):
             active = {str(row.get("session_id")): row for row in payload.get("relays", []) if isinstance(row, dict)}
             for row in self.pivots.list_socks_status():
                 session_id = str(row.get("session_id") or "")
@@ -948,7 +1091,7 @@ class WorkspaceService:
                         self.log(f"Cannot restore local SOCKS for {session_id[:8]}: {exc}", "WARNING")
 
         status, payload, _ = self.upstream.request("GET", "/api/v1/tun")
-        if status == 200 and isinstance(payload, dict):
+        if self._running and status == 200 and isinstance(payload, dict):
             active = {str(row.get("session_id")): row for row in payload.get("relays", []) if isinstance(row, dict)}
             for row in self.pivots.list_tun_status():
                 session_id = str(row.get("session_id") or "")
@@ -963,45 +1106,74 @@ class WorkspaceService:
 
     def _sync_loop(self) -> None:
         """Run periodic central synchronization until service shutdown."""
+        try:
+            self._sync_workspace_plugins()
+        except Exception as exc:
+            if self._running:
+                self.log(f"Workspace plugin sync failed: {exc}", "WARNING")
         while self._running:
             try:
                 self.sync_once()
             except Exception as exc:
-                self.log(f"Workspace sync failed: {exc}", "WARNING")
-            time.sleep(self.poll_interval)
+                if self._running:
+                    self.log(f"Workspace sync failed: {exc}", "WARNING")
+            self._stop_event.wait(self.poll_interval)
 
     def start(self) -> ThreadingHTTPServer:
         """Start the local HTTP service and its synchronization thread."""
-        handler = type("BoundWorkspaceHandler", (WorkspaceRequestHandler,), {"service": self})
-        self.http_server = ThreadingHTTPServer((self.bind, self.port), handler)
-        self.port = int(self.http_server.server_address[1])
+        if self._stop_event.is_set():
+            raise RuntimeError("workspace service is stopped")
+        if self.http_server is not None:
+            return self.http_server
         try:
-            self._sync_workspace_plugins()
-        except Exception as exc:
-            self.log(f"Workspace plugin sync failed: {exc}", "WARNING")
-        self._sync_thread.start()
+            handler = type("BoundWorkspaceHandler", (WorkspaceRequestHandler,), {"service": self})
+            self.http_server = WorkspaceHTTPServer((self.bind, self.port), handler)
+            self.port = int(self.http_server.server_address[1])
+            self._sync_thread.start()
+        except BaseException:
+            self.stop()
+            raise
         self.log(f"Workspace {self.workspace_id} listening on {self.bind}:{self.port}", "SUCCESS")
         return self.http_server
 
     def serve_forever(self) -> None:
         """Start and run the local HTTP server until interrupted."""
-        server = self.start()
         try:
+            server = self.start()
             server.serve_forever()
+        except KeyboardInterrupt:
+            pass
         finally:
             self.stop()
 
+    def request_stop(self) -> None:
+        """Signal shutdown without blocking a signal handler on worker threads."""
+        if not self._running:
+            return
+        self._running = False
+        self._stop_event.set()
+        if self.http_server is not None:
+            self.http_server._stop_requested.set()
+
     def stop(self) -> None:
         """Stop HTTP, synchronization, pivot listeners, and local storage."""
-        self._running = False
-        if self.http_server:
-            self.http_server.shutdown()
-            self.http_server.server_close()
-            self.http_server = None
-        self.pivots.stop_all()
-        if self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=2.0)
-        self.store.close()
+        self.request_stop()
+        with self._stop_lock:
+            if self._closed:
+                return
+            self.upstream.close()
+            try:
+                if self.http_server:
+                    self.http_server.server_close()
+                    self.http_server = None
+            finally:
+                try:
+                    self.pivots.stop_all()
+                finally:
+                    if self._sync_thread.is_alive() and self._sync_thread is not threading.current_thread():
+                        self._sync_thread.join()
+                    self.store.close()
+                    self._closed = True
 
     def _local_authorized(self, handler: BaseHTTPRequestHandler, qs: dict[str, list[str]]) -> bool:
         """Authenticate the local browser or CLI token when configured."""
@@ -1620,7 +1792,15 @@ def main() -> int:
         auto_claim=args.auto_claim,
         poll_interval=args.poll_interval,
     )
-    service.serve_forever()
+    previous_handlers = {}
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(signum, lambda _signum, _frame: service.request_stop())
+        service.serve_forever()
+    finally:
+        service.stop()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
     return 0
 
 

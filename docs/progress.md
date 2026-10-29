@@ -9,6 +9,22 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Audit and repair shutdown paths
+
+- Added unconditional central cleanup for signals, console exits, partial bind
+  failures, accepted sockets, transport helpers, compiler children, and storage.
+- Fixed workspace same-thread shutdown deadlocks, interrupted upstream requests,
+  worker draining, polling waits, and SQLite cleanup order.
+- Fixed WebSocket/SOCKS socket leaks, helper process reaping, late resource starts,
+  and partial MCP context initialization cleanup.
+- Added Go cancellation propagation and PowerShell process/runspace finalizers;
+  the external SOCKS PowerShell plugin now cleans up interrupted relays.
+- See [shutdown behavior](shutdown.md) for ownership, tests, graceful termination
+  timing, and forced-kill/platform limitations.
+- Validation: all 218 Python tests and `make check` pass. Go tests with the race
+  detector, `go vet`, Windows/Linux cross-builds, and both executable PowerShell
+  cleanup tests pass. Native Windows shutdown remains unverified.
+
 ### 2026-10-29 — Restore workspace registry input compatibility
 
 - Preserve trimmed workspace IDs/tokens and the legacy `workspace_id` fallback

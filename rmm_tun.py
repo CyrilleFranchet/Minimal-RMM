@@ -244,7 +244,7 @@ class ServerTunRelay:
             if self.process.poll() is not None:
                 raise TunError(f"TUN helper exited with status {self.process.returncode}")
             self._configure_interface(system)
-        except Exception:
+        except BaseException:
             self.stop()
             raise
         self.log(
@@ -264,18 +264,32 @@ class ServerTunRelay:
         helper_log_thread = self._helper_log_thread
         self._helper_log_thread = None
         helper_stderr = getattr(process, "stderr", None) if process else None
-        if process and process.poll() is None:
+        if process:
             try:
                 if os.name != "nt":
                     os.killpg(process.pid, signal.SIGTERM)
                 else:
                     process.terminate()
+            except OSError:
+                pass
+            try:
                 process.wait(timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                # A helper may exit before its descendants. Reap the process
+                # and terminate any survivors in its dedicated process group.
                 try:
-                    process.kill()
+                    if os.name != "nt":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
                 except OSError:
                     pass
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.log("TUN helper did not exit after forced termination", "WARNING")
         if helper_stderr is not None:
             try:
                 helper_stderr.close()
@@ -419,6 +433,7 @@ class TunManager:
         self.socks_manager = socks_manager
         self.log_fn = log_fn
         self.lock = threading.Lock()
+        self._closed = False
         self.relays: dict[str, ServerTunRelay] = {}
 
     def _log(self, message: str, level: str = "INFO") -> None:
@@ -430,17 +445,27 @@ class TunManager:
         """Replace any existing relay for a session with a new TUN relay."""
         relay = ServerTunRelay(session_id, config, self.helper_path, self.socks_manager, self._log)
         with self.lock:
+            if self._closed:
+                raise TunError("TUN manager is stopping")
             existing = self.relays.pop(session_id, None)
-        if existing:
-            existing.stop()
-        try:
-            relay.start()
-        except Exception:
-            relay.stop()
-            raise
-        with self.lock:
+            if existing:
+                existing.stop()
+            try:
+                relay.start()
+            except BaseException:
+                relay.stop()
+                raise
             self.relays[session_id] = relay
         return relay
+
+    def close(self) -> None:
+        """Permanently reject new relays and stop every registered helper."""
+        with self.lock:
+            self._closed = True
+            relays = list(self.relays.values())
+            self.relays.clear()
+        for relay in relays:
+            relay.stop()
 
     def stop(self, session_id: str) -> bool:
         """Stop the relay for a session if one exists."""

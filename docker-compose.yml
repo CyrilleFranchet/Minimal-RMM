@@ -2,6 +2,7 @@
 services:
   rmm-control:
     build: .
+    stop_grace_period: 45s
     # Operational settings live in /app/RMM_logs/settings.json.
     # Nonempty legacy secrets below explicitly override saved configuration.
     environment:
@@ -40,6 +41,7 @@ services:
 
   workspace:
     build: .
+    stop_grace_period: 45s
     profiles: ["workspace"]
     depends_on:
       - rmm-control

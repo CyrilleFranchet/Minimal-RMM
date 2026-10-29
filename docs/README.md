@@ -29,6 +29,7 @@ historical notes in `progress.md`.
 | Choose a setup and deploy without mixing server/workspace settings | [Deployment guide](deployment.md) |
 | Understand the complete system | [Architecture overview](architecture.md) |
 | Look up startup arguments and optional helper setup | [Server startup reference](server-startup.md) |
+| Stop services and understand cleanup guarantees | [Service shutdown](shutdown.md) and [agent shutdown](agent-shutdown.md) |
 | Understand workspace claims, storage, and protocol details | [Workspace reference](workspace-deployment.md) |
 | Install plugins, AI skills, and rclone files | [Operator-managed assets](operator-assets.md) |
 | Install and operate Cloudflared or another connector | [RMM-Profiles](rmm-profiles.md) |

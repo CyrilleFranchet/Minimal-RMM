@@ -140,6 +140,8 @@ class WebSocketConnection:
             return None
         try:
             with self._recv_lock:
+                if self._closed:
+                    return None
                 while True:
                     opcode, payload = _read_frame(self.sock)
                     if opcode == 0x8:
@@ -166,17 +168,25 @@ class WebSocketConnection:
             return None
 
     def close(self) -> None:
-        if self._closed:
-            return
-        try:
-            _send_frame(self.sock, 0x8, b"")
-        except OSError:
-            pass
-        try:
-            self.sock.close()
-        except OSError:
-            pass
+        """Release the transport even after a receive/send failure marked it closed."""
         self._closed = True
+        try:
+            # Do not wait on the sender lock or a close frame: shutdown must
+            # also wake another thread blocked in recv/send on this socket.
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        # Allow an awakened receiver to leave its timed socket operation before
+        # invalidating the descriptor (notably important for macOS select).
+        acquired = self._recv_lock.acquire(timeout=1.0)
+        try:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        finally:
+            if acquired:
+                self._recv_lock.release()
 
     @property
     def closed(self) -> bool:
@@ -188,13 +198,27 @@ class OperatorEventHub:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._closed = False
         self._clients: Set[WebSocketConnection] = set()
         self._filters: dict = {}  # id(conn) -> session_id or None
 
     def add(self, ws: WebSocketConnection, session_filter: Optional[str] = None) -> None:
         with self._lock:
-            self._clients.add(ws)
-            self._filters[id(ws)] = session_filter
+            if not self._closed:
+                self._clients.add(ws)
+                self._filters[id(ws)] = session_filter
+                return
+        ws.close()
+
+    def close(self) -> None:
+        """Close every subscriber and reject additions after service shutdown."""
+        with self._lock:
+            self._closed = True
+            clients = list(self._clients)
+            self._clients.clear()
+            self._filters.clear()
+        for ws in clients:
+            ws.close()
 
     def remove(self, ws: WebSocketConnection) -> None:
         with self._lock:
