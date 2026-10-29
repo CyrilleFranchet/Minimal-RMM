@@ -76,7 +76,7 @@ def tool_embedding_profiles(client, action="list", name="", config=None):
 
 
 def tool_run_embeddings(client, session_ref, profile, documents):
-    """Queue explicit documents using a previously saved profile."""
+    """Queue explicit file or directory paths using a previously saved profile."""
     code, data = client.run_embeddings(session_ref, profile, documents)
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
@@ -1349,7 +1349,8 @@ OPENAI_TOOLS.extend(
   'function': {'name': 'embedding_profiles',
                'description': 'List/get/save/delete embedding profiles. In workspace mode use the '
                               'local workspace API. Config accepts model, auth (none/env), '
-                              'prompts, labels, max_tokens; never include tokens.',
+                              'prompts, labels, max_tokens, copy_documents, copy_labels, '
+                              'copy_threshold; never include tokens.',
                'parameters': {'type': 'object',
                               'properties': {'action': {'type': 'string',
                                                         'enum': ['list', 'get', 'save', 'delete']},
@@ -1358,7 +1359,7 @@ OPENAI_TOOLS.extend(
                               'required': []}}},
  {'type': 'function',
   'function': {'name': 'run_embeddings',
-               'description': 'Queue explicit authorized documents with a saved profile; requires '
+               'description': 'Queue explicit authorized file or directory paths (including UNC) with a saved profile; requires '
                               'updated Go agent and autonomous DLL.',
                'parameters': {'type': 'object',
                               'properties': {'session_ref': {'type': 'string'},

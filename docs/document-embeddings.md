@@ -18,6 +18,12 @@ runtime installation. Windows system libraries and HTTPS access to Hugging
 Face/CDN remain required. The agent temporarily writes this DLL to disk,
 loads it with the Windows loader, and removes it after its child exits.
 
+That artifact records the initial native-runtime acceptance, not the current
+directory, chunking, and copy-option changes. Build and install an autonomous
+DLL from the updated plugin source before using these fields. Updating the
+WebUI/server alone does not update the installed DLL; older binaries can
+reject the new request fields.
+
 For **browser upload or workspace plugin synchronization**, configure these
 limits before starting the corresponding services:
 
@@ -69,6 +75,8 @@ python rmm_cli.py embeddings profiles list
 python rmm_cli.py embeddings profiles get strategy --output strategy.json
 python rmm_cli.py embeddings run strategy --session SESSION_ID \
   --document 'C:\Lab\strategy.docx' --document 'C:\Lab\notes.txt'
+python rmm_cli.py embeddings run strategy --session SESSION_ID \
+  --document 'C:\Lab Docs' --document '\\fileserver\share\Lab Docs'
 python rmm_cli.py events --session SESSION_ID
 ```
 
@@ -77,6 +85,9 @@ digits, dots, underscores, and hyphens, up to 64 characters. Exported records
 and plain configuration objects are both accepted by `profiles save --file`.
 The command group is available in the standalone CLI; the existing interactive
 shell retains generic `pe` execution.
+Directory and UNC paths use the same repeatable `--document` argument as files.
+Copy options belong in the saved profile JSON; profile import/export preserves
+them, and result export preserves copy destinations and directory error rows.
 
 A profile contains:
 
@@ -90,14 +101,30 @@ A profile contains:
 - `prompt` and `label_prompt`: literal embedding prefixes, up to 512 UTF-8
   bytes each. Empty label prefix uses the document prefix. These are not
   generative chat instructions.
-- `max_tokens`: 8–512. Longer documents are truncated, not chunked.
+- `max_tokens`: 8–512. The autonomous DLL chunks longer documents into
+  `max_tokens`-sized windows instead of truncating them.
 - `labels`: up to 16 `{ "name", "text" }` descriptions; label text is limited
   to 512 UTF-8 bytes. Omit labels for embeddings without classification.
+- `copy_documents`: optional boolean, default `false`. When true, the plugin
+  copies embedded documents matching your selection into a fresh
+  `rmm-embeddings-<random>` directory under the agent temporary directory,
+  organized by label subdirectory, and reports it as `copy_directory` plus a
+  `copied_to` path per document row. The directory remains on the target
+  after the run and must be collected and deleted manually.
+- `copy_labels`: optional list of label names that trigger a copy; documents
+  classified with another label are not copied, and listing several names
+  copies a document matching any of them. Names must match defined
+  labels, and the field requires `copy_documents`. `copy_threshold`
+  (0 to 1, default 0 = disabled) additionally requires the classification
+  score to reach the threshold.
 
-Each run supplies one to 32 explicit document paths. The complete serialized
-plugin input must fit **4096 UTF-8 bytes**; oversize batches are rejected
-before queuing rather than silently truncated. Model/tokenizer compatibility,
-CPU graph constraints, supported file formats, and per-document limits remain
+Each run supplies one to 32 document paths, and each path may be a file or a
+directory: the plugin enumerates listed directories itself, keeping supported
+files up to the 32-document limit, and fails explicitly past it. The complete
+serialized plugin input must fit **4096 UTF-8 bytes**; oversize batches are
+rejected before queuing rather than silently truncated. Model/tokenizer
+compatibility, CPU graph constraints, supported file formats, per-document
+limits, and directory enumeration rules remain
 as specified by the
 [DLL guide](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/blob/feature/autonomous-document-embeddings/docs/document-embeddings.md).
 Text, Markdown, CSV, JSON, logs, and DOCX are supported; PDF/OCR is not.
@@ -107,14 +134,27 @@ Text, Markdown, CSV, JSON, logs, and DOCX are supported; PDF/OCR is not.
 1. Connect to the server or your local workspace service and click **Embeddings**.
 2. Select a saved profile, import a JSON profile, or fill the model fields.
    A new profile starts with the validated MiniLM model settings.
-3. Set authentication, prefixes, token limit, and optional label JSON.
+3. Set authentication, prefixes, tokens per chunk, and optional label JSON.
+   Under **Optional local copies**, enable copying only when wanted, select
+   label names as a JSON array, and set an optional minimum cosine similarity.
+   An empty array selects all labels; zero disables the score filter. Filters
+   require copying enabled, and a positive threshold requires labels.
 4. Click **Save profile**. Unsaved edits must be saved before running.
-5. Enter a session ID or unique prefix and one Windows document path per line.
+5. Enter a session ID or unique prefix and one Windows file or directory path
+   per line, including UNC paths when needed.
    Click **Run saved profile** and inspect the session transcript.
 6. Click **Load output events for this session**, select its exact output
    event ID, and click **Save selected result**.
 7. Use **Export JSON** on a saved collection to download it, or delete the
    saved copy. Refresh the result list after changes from another client.
+
+The editor preserves all three copy options when importing, saving, reloading,
+or exporting a profile, and detects unsaved changes to these options before
+running. Older profiles default to copying disabled. Copying creates files on
+the target only; it does not download them. The exported result includes
+`copy_directory` and per-document `copied_to` paths for manual collection and
+cleanup. Counts in the result list and event picker represent result rows,
+including directory failures, rather than only successfully embedded files.
 
 The event picker reads up to ten pages of 1000 events per click and advances
 its cursor. Click again to continue through long workspace histories or to
@@ -192,6 +232,12 @@ Server-mode Web AI can use the shared server-owned profiles.
 | `_check_embedding_contract` | Check editor HTML/controller/documentation wiring in `make check` |
 | JS test `fixture`, `Element`, `request`, `get`, `click`, `change` | Minimal DOM/API adapter for controller tests without a browser |
 | `EmbeddingValidationTests`, `EmbeddingWorkspaceTests`, `EmbeddingServerTests`, `output_event` | Validation, reopen persistence, owner isolation, exact-event selection, HTTP/CLI/server checks |
+
+`EmbeddingWorkspaceTests.test_cli_copy_profile_directory_run_and_result_round_trip`
+exercises CLI profile import/export/reimport, directory and UNC dispatch, and
+copy-result export through the local HTTP API. The UI controller tests also
+cover copy-setting round trips, legacy profiles, unsaved copy edits, and
+exporting directory failures alongside copied documents.
 
 Run `make check`, the embedding/workspace/plugin Python tests, and
 `node --check web/embeddings.js`, and `node --test tests/test_embeddings_ui.cjs`. The native DLL's two-model acceptance is

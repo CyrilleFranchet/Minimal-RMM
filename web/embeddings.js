@@ -31,7 +31,10 @@
     model.input_names = model.input_names.split(",").map((x) => x.trim()).filter(Boolean);
     return { model, auth: { method: $("auth").value }, prompt: $("prompt").value,
       label_prompt: $("label_prompt").value, max_tokens: Number($("max_tokens").value),
-      labels: JSON.parse($("labels").value || "[]") };
+      labels: JSON.parse($("labels").value || "[]"),
+      copy_documents: $("copy_documents").checked,
+      copy_labels: JSON.parse($("copy_labels").value || "[]"),
+      copy_threshold: Number($("copy_threshold").value) };
   }
 
   function fillForm(config, name = "") {
@@ -45,6 +48,9 @@
     $("label_prompt").value = config.label_prompt || "";
     $("max_tokens").value = config.max_tokens || 256;
     $("labels").value = JSON.stringify(config.labels || [], null, 2);
+    $("copy_documents").checked = config.copy_documents ?? false;
+    $("copy_labels").value = JSON.stringify(config.copy_labels || [], null, 2);
+    $("copy_threshold").value = config.copy_threshold ?? 0;
   }
 
   function download(name, value) {
@@ -68,7 +74,7 @@
     for (const result of results) {
       const row = document.createElement("div"); row.className = "asset-item";
       const label = document.createElement("span");
-      label.textContent = `${result.model} · ${result.document_count} documents · ${result.session_id} / event ${result.event_id}`;
+      label.textContent = `${result.model} · ${result.document_count} result rows · ${result.session_id} / event ${result.event_id}`;
       row.append(label);
       for (const [title, handler] of [
         ["Export JSON", async () => download(`${result.name}.json`, (await request(`results/${result.name}`)).record)],
@@ -134,7 +140,8 @@
       if (!profile) throw new Error("Save and select a profile before running.");
       const saved = profiles.find((p) => p.name === profile);
       if (JSON.stringify(readForm()) !== JSON.stringify({ model: Object.fromEntries(Object.keys(baseModel).map((key) => [key, saved.config.model[key]])), auth: saved.config.auth,
-        prompt: saved.config.prompt, label_prompt: saved.config.label_prompt, max_tokens: saved.config.max_tokens, labels: saved.config.labels })) {
+        prompt: saved.config.prompt, label_prompt: saved.config.label_prompt, max_tokens: saved.config.max_tokens, labels: saved.config.labels,
+        copy_documents: saved.config.copy_documents ?? false, copy_labels: saved.config.copy_labels ?? [], copy_threshold: saved.config.copy_threshold ?? 0 })) {
         throw new Error("Save your configuration changes before running.");
       }
       const data = await request("run", "POST", { session_ref: $("session").value.trim(), profile,
@@ -163,7 +170,7 @@
           try {
             const result = JSON.parse(event.body);
             if (result.model && Array.isArray(result.results)) {
-              $("events").append(new Option(`${result.model} · ${result.results.length} documents · ${event.timestamp}`, String(event.id)));
+              $("events").append(new Option(`${result.model} · ${result.results.length} result rows · ${event.timestamp}`, String(event.id)));
             }
           } catch { /* Other command output is not an embedding collection. */ }
         }

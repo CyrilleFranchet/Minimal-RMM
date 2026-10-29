@@ -114,7 +114,7 @@ def embedding_profiles(action: str = "list", name: str = "", config: dict | None
 
 @mcp.tool()
 def run_embeddings(session_ref: str, profile: str, documents: list[str]) -> str:
-    """Queue explicit document paths with a saved embedding profile."""
+    """Queue explicit file or directory paths, including UNC, with a saved embedding profile."""
     return tool_run_embeddings(_client(), session_ref, profile, documents)
 
 

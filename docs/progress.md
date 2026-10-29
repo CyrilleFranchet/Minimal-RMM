@@ -9,6 +9,45 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Align embedding editor and CLI with the updated plugin
+
+- Fixed plugin tokenizer truncation inherited from serialized configuration,
+  directory-depth counting, and failed-scan deduplication/document accounting.
+  Regression tests cover full token retention, the eight/nine-level boundary,
+  and explicit paths following a failed directory scan.
+- The WebUI now preserves and edits all three copy settings, checks them for
+  unsaved changes, and documents chunking, directory/UNC inputs, and local copy
+  destinations. Result counts include error rows explicitly.
+- CLI profile JSON and full result exports already preserved these fields;
+  updated CLI/MCP help and added HTTP-backed CLI round-trip coverage for copy
+  settings, directory/UNC dispatch, and result metadata.
+- Validation: plugin Go tests and `go vet`, all 26 JavaScript controller tests
+  (including six embedding tests), all 157 Python tests (including twelve
+  embedding tests), and `make check` pass. Windows native inference and live agent
+  execution have not been rerun; an updated DLL must be built and installed
+  before using the changed plugin behavior.
+
+### 2026-10-29 — Accept directory paths in embedding requests
+
+- The autonomous document-embeddings DLL now enumerates listed directories
+  itself: directory entries expand, in lexical order and without following
+  links, to contained supported files up to eight levels deep, bounded by the
+  32-document limit; expansion beyond it fails explicitly instead of
+  truncating. Files found both explicitly and through a directory are
+  embedded once, and unusable paths return per-path error rows.
+- Long documents are chunked instead of truncated by the same DLL, and UNC
+  SMB paths are covered by validation tests. See the
+  [DLL guide](https://github.com/CyrilleFranchet/Minimal-RMM-plugins/blob/feature/autonomous-document-embeddings/docs/document-embeddings.md).
+- `result_payload` in `rmm_embeddings.py` now accepts up to 64 result rows
+  with at most 32 embedded documents, so enumeration error rows save
+  alongside embeddings; covered by
+  `tests/test_rmm_embeddings.py`.
+- New opt-in profile fields `copy_documents`, `copy_labels`, and
+  `copy_threshold` make the autonomous DLL copy embedded documents matching
+  the selected labels — and score threshold — into a fresh temporary
+  directory on the target, organized by label, reported as `copy_directory`
+  and per-row `copied_to` result fields.
+
 ### 2026-10-28 — Skip identical installed plugin releases in the UI
 
 - Compare release filenames and SHA-256 digests with the actual runtime

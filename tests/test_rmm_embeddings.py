@@ -63,6 +63,70 @@ class EmbeddingValidationTests(unittest.TestCase):
         with self.assertRaises(EmbeddingError):
             result_payload(event)
 
+    def test_accepts_enumeration_failures_alongside_embeddings(self):
+        """Directory enumeration may add per-path error rows to embedded files."""
+        event = output_event()
+        data = json.loads(event["body"])
+        data["results"] = [{"path": f"C:\\Lab\\f{i}.txt", "embedding": [0.6, 0.8]} for i in range(32)]
+        data["results"] += [{"path": f"C:\\Lab\\d{i}", "error": "directory contains no supported documents"}
+                            for i in range(4)]
+        event["body"] = json.dumps(data)
+        self.assertEqual(len(result_payload(event)["results"]), 36)
+        data["results"].append({"path": "C:\\Lab\\extra.txt", "embedding": [0.6, 0.8]})
+        event["body"] = json.dumps(data)
+        with self.assertRaisesRegex(EmbeddingError, "too many embedded"):
+            result_payload(event)
+
+    def test_copy_documents_profile_and_result_fields(self):
+        """Local copying is an explicit profile switch with dedicated result fields."""
+        config = copy.deepcopy(CONFIG)
+        config["copy_documents"] = True
+        request = plugin_request(profile_config(config), ["C:\\Lab\\a.txt"])
+        self.assertIs(json.loads(request["input"])["copy_documents"], True)
+        event = output_event()
+        data = json.loads(event["body"])
+        data["copy_directory"] = "C:\\Windows\\Temp\\rmm-embeddings-x"
+        data["results"][0]["copied_to"] = "C:\\Windows\\Temp\\rmm-embeddings-x\\sensitive\\a.txt"
+        event["body"] = json.dumps(data)
+        value = result_payload(event)
+        self.assertEqual(value["copy_directory"], "C:\\Windows\\Temp\\rmm-embeddings-x")
+        data["results"][1]["copied_to"] = "C:\\Windows\\Temp\\rmm-embeddings-x\\a.txt"
+        event["body"] = json.dumps(data)
+        with self.assertRaisesRegex(EmbeddingError, "failed document"):
+            result_payload(event)
+        config["copy_documents"] = "yes"
+        with self.assertRaises(EmbeddingError):
+            profile_config(config)
+
+    def test_copy_filters_select_labels_and_threshold(self):
+        """Copies stay on documents matching the selected label names."""
+        config = copy.deepcopy(CONFIG)
+        config["copy_documents"] = True
+        names = [label["name"] for label in config["labels"]]
+        config["copy_labels"] = names
+        config["copy_threshold"] = 0.4
+        request = plugin_request(profile_config(config), ["C:\\Lab\\a.txt"])
+        payload = json.loads(request["input"])
+        self.assertEqual(payload["copy_labels"], names)
+        self.assertEqual(payload["copy_threshold"], 0.4)
+
+        config = copy.deepcopy(CONFIG)
+        config["copy_documents"] = True
+        config["copy_labels"] = ["absent"]
+        with self.assertRaisesRegex(EmbeddingError, "defined label"):
+            profile_config(config)
+
+        config = copy.deepcopy(CONFIG)
+        config["copy_labels"] = names
+        with self.assertRaisesRegex(EmbeddingError, "require copy_documents"):
+            profile_config(config)
+
+        config = copy.deepcopy(CONFIG)
+        config["copy_documents"] = True
+        config["copy_threshold"] = 1.5
+        with self.assertRaisesRegex(EmbeddingError, "between 0 and 1"):
+            profile_config(config)
+
     def test_utf8_byte_limit_and_empty_batches(self):
         with self.assertRaisesRegex(EmbeddingError, "4096 bytes"):
             plugin_request(CONFIG, ["C:\\" + "é" * 400 + str(i) for i in range(5)])
@@ -156,6 +220,52 @@ class EmbeddingWorkspaceTests(unittest.TestCase):
             args = parser.parse_args(["embeddings", "profiles", "get", "strategy", "--output", str(output)])
             args.func(self.client, {}, args)
             self.assertEqual(json.loads(output.read_text())["record"]["config"]["model"], CONFIG["model"])
+
+    def test_cli_copy_profile_directory_run_and_result_round_trip(self):
+        """CLI JSON workflows preserve copy filters, UNC paths, and error rows."""
+        parser = build_parser()
+        config = copy.deepcopy(CONFIG)
+        config.update(copy_documents=True, copy_labels=[config["labels"][0]["name"]], copy_threshold=0.4)
+        with tempfile.TemporaryDirectory() as root, patch("rmm_cli.print_json"):
+            source = Path(root) / "profile.json"
+            exported = Path(root) / "export.json"
+            for value in (config, {"config": config}, {"record": {"config": config}}):
+                source.write_text(json.dumps(value), encoding="utf-8")
+                args = parser.parse_args(["embeddings", "profiles", "save", "copy-profile", "--file", str(source)])
+                args.func(self.client, {}, args)
+                args = parser.parse_args(["embeddings", "profiles", "get", "copy-profile", "--output", str(exported)])
+                args.func(self.client, {}, args)
+                self.assertEqual(json.loads(exported.read_text())["record"]["config"], profile_config(config))
+
+            args = parser.parse_args(["embeddings", "profiles", "save", "reimported", "--file", str(exported)])
+            args.func(self.client, {}, args)
+            paths = [r"C:\Lab Docs", r"\\fileserver\share\Lab Docs"]
+            with patch.object(self.service, "_proxy", return_value=(200, {"session_id": "alice-session", "ok": True}, "application/json")) as proxy:
+                args = parser.parse_args(["embeddings", "run", "reimported", "--session", "alice-session",
+                                         "--document", paths[0], "--document", paths[1]])
+                args.func(self.client, {}, args)
+                payload = proxy.call_args.args[2]
+                self.assertEqual(payload["plugin"], "document-embeddings-autonomous.dll")
+                self.assertEqual(json.loads(payload["input"]), {**profile_config(config), "documents": paths})
+
+            event = output_event(6)
+            result = json.loads(event["body"])
+            result["copy_directory"] = r"C:\Temp\rmm-embeddings-test"
+            result["results"][0].update(copied_to=r"C:\Temp\rmm-embeddings-test\lab\a.txt",
+                                        classification={"label": config["labels"][0]["name"], "score": 0.8})
+            result["results"][1]["path"] = r"\\fileserver\missing"
+            event["body"] = json.dumps(result)
+            self.service.store.apply_event("alice-session", event)
+            args = parser.parse_args(["embeddings", "results", "save", "--session", "alice-session", "--event", "6"])
+            args.func(self.client, {}, args)
+            code, listing = self.client.embedding_results()
+            self.assertEqual(code, 200)
+            name = listing["results"][0]["name"]
+            args = parser.parse_args(["embeddings", "results", "get", name, "--output", str(exported)])
+            args.func(self.client, {}, args)
+            record = json.loads(exported.read_text())["record"]
+            self.assertEqual(record["result"], result)
+            self.assertEqual(record["event_id"], 6)
 
 
 class EmbeddingServerTests(unittest.TestCase):

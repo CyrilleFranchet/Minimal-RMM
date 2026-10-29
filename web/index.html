@@ -594,8 +594,8 @@
 
   <dialog id="embedding-dialog" class="embedding-dialog" aria-labelledby="embedding-title">
     <h2 id="embedding-title">Document embeddings</h2>
-    <p>Save reusable model settings, embed explicit documents, and export result collections.</p>
-    <p class="ai-hint">Requires the autonomous DLL and an updated Windows Go agent. Text and DOCX only; long documents are truncated. Models must be compatible text encoders.</p>
+    <p>Save reusable model settings, embed selected files or directories, and export result collections.</p>
+    <p class="ai-hint">Requires the updated autonomous DLL and Windows Go agent. Supports text, Markdown, CSV, JSON, logs, and DOCX; no PDF or OCR. Long documents are chunked. Models must be compatible text encoders.</p>
     <label for="embedding-profiles">Saved profile</label><select id="embedding-profiles"></select>
     <label for="embedding-name">Profile name</label><input id="embedding-name" maxlength="64" placeholder="strategy-minilm" title="Unique name used to save and select this embedding profile." aria-description="Unique name used to save and select this embedding profile.">
     <fieldset><legend>Hugging Face model</legend><div class="embedding-grid">
@@ -614,10 +614,19 @@
     <div class="embedding-grid">
       <div><label for="embedding-prompt">Document prefix</label><input id="embedding-prompt" placeholder="Optional, for example passage: "></div>
       <div><label for="embedding-label_prompt">Label prefix</label><input id="embedding-label_prompt" placeholder="Empty uses document prefix"></div>
-      <div><label for="embedding-max_tokens">Maximum tokens (truncation)</label><input id="embedding-max_tokens" type="number" min="8" max="512" value="256"></div>
+      <div><label for="embedding-max_tokens">Maximum tokens per chunk</label><input id="embedding-max_tokens" type="number" min="8" max="512" value="256"></div>
     </div>
     <label for="embedding-labels">Optional classification labels (JSON array of name/text objects)</label>
     <textarea id="embedding-labels" rows="4" spellcheck="false">[]</textarea>
+    <fieldset><legend>Optional local copies</legend>
+      <label for="embedding-copy_documents"><input id="embedding-copy_documents" type="checkbox" aria-describedby="embedding-copy-help"> Copy matching documents on the target</label>
+      <p id="embedding-copy-help" class="ai-hint">Copies remain in a temporary directory on the target; they are not downloaded. Results include copy_directory and copied_to paths. Collect and delete copies manually when finished.</p>
+      <label for="embedding-copy_labels">Copy labels (JSON array of defined label names)</label>
+      <textarea id="embedding-copy_labels" rows="2" spellcheck="false" aria-describedby="embedding-copy-filters">[]</textarea>
+      <label for="embedding-copy_threshold">Minimum cosine similarity for copying (0–1)</label>
+      <input id="embedding-copy_threshold" type="number" min="0" max="1" step="any" value="0" aria-describedby="embedding-copy-filters">
+      <p id="embedding-copy-filters" class="ai-hint">Filters require copying enabled. An empty label list matches every label; 0 disables the threshold. A positive threshold requires classification labels. With no filters, every successfully embedded document is copied.</p>
+    </fieldset>
     <div class="embedding-actions">
       <button id="embedding-save" type="button">Save profile</button>
       <button id="embedding-delete" type="button" class="secondary">Delete selected</button>
@@ -626,8 +635,9 @@
     <label for="embedding-import">Import profile JSON, then save</label><input id="embedding-import" type="file" accept=".json,application/json">
     <fieldset><legend>Run on authorized documents</legend>
       <label for="embedding-session">Session ID or unique prefix</label><input id="embedding-session" list="embedding-sessions"><datalist id="embedding-sessions"></datalist>
-      <label for="embedding-documents">Windows document paths, one per line (maximum 32)</label>
-      <textarea id="embedding-documents" rows="4" placeholder="C:\Lab\strategy.docx" spellcheck="false"></textarea>
+      <label for="embedding-documents">Windows file or directory paths, one per line (maximum 32)</label>
+      <textarea id="embedding-documents" rows="4" placeholder="C:\Lab\strategy.docx" spellcheck="false" aria-describedby="embedding-path-help"></textarea>
+      <p id="embedding-path-help" class="ai-hint">Local and UNC share paths are supported. Directories expand recursively up to eight levels without following links. Expansion beyond 32 documents fails the run; unusable paths produce error rows.</p>
       <button id="embedding-run" type="button">Run saved profile</button>
     </fieldset>
     <fieldset><legend>Save and export results</legend>

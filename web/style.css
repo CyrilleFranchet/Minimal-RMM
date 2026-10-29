@@ -1949,6 +1949,7 @@ body.sidebar-resizing iframe {
 .embedding-dialog { width: min(900px, calc(100vw - 2rem)); max-height: 90vh; overflow: auto; }
 .embedding-dialog label { display: block; margin-top: 0.8rem; }
 .embedding-dialog input, .embedding-dialog select, .embedding-dialog textarea { width: 100%; box-sizing: border-box; }
+.embedding-dialog input[type="checkbox"] { width: auto; }
 .embedding-dialog fieldset { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border); }
 .embedding-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }
 .embedding-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.8rem 0; }

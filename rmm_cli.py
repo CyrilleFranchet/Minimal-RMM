@@ -280,7 +280,7 @@ class RmmApiClient:
         return self.request(method, path, {"config": config} if action == "save" else None)
 
     def run_embeddings(self, session_ref, profile, documents):
-        """Queue an explicit document batch using a saved profile."""
+        """Queue explicit file or directory paths using a saved profile."""
         return self.request("POST", "/api/v1/embeddings/run", {
             "session_ref": session_ref, "profile": profile, "documents": documents,
         })
@@ -2054,7 +2054,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = groups.add_parser("run", parents=[shared], help="Queue a document batch with a saved profile")
     run.add_argument("profile")
     run.add_argument("--session", "-s")
-    run.add_argument("--document", action="append", required=True, help="Explicit Windows path; repeat for each document")
+    run.add_argument("--document", action="append", required=True, help="Windows file or directory path, including UNC; repeat up to 32 paths (32 expanded documents maximum)")
     run.set_defaults(func=cmd_embeddings, embedding_action="run")
     for group in ("profiles", "results"):
         commands = groups.add_parser(group).add_subparsers(dest="embedding_action", required=True)

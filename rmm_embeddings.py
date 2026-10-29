@@ -41,7 +41,7 @@ def fields(value, allowed, label):
 
 def profile_config(value):
     """Validate and normalize a reusable secret-free plugin configuration."""
-    fields(value, ("model", "auth", "prompt", "label_prompt", "max_tokens", "labels"), "profile")
+    fields(value, ("model", "auth", "prompt", "label_prompt", "max_tokens", "labels", "copy_documents", "copy_labels", "copy_threshold"), "profile")
     model = fields(value.get("model"), ("repo", "revision", "onnx_file", "tokenizer_file", "sha256", "input_names", "output_name", "pooling"), "model")
     if not isinstance(model.get("repo"), str) or not REPO.fullmatch(model["repo"]) or ".." in model["repo"]:
         raise EmbeddingError("model.repo must be owner/repository")
@@ -78,9 +78,28 @@ def profile_config(value):
         text(label.get("text"), "label text", 512, multiline=True)
     if len({label["name"] for label in labels}) != len(labels):
         raise EmbeddingError("duplicate label names")
+    if "copy_documents" in value and type(value["copy_documents"]) is not bool:
+        raise EmbeddingError("copy_documents must be a boolean")
+    copy_documents = bool(value.get("copy_documents", False))
+    copy_labels = value.get("copy_labels", [])
+    copy_threshold = value.get("copy_threshold", 0)
+    if not copy_documents and (copy_labels or copy_threshold):
+        raise EmbeddingError("copy_labels and copy_threshold require copy_documents")
+    if not isinstance(copy_labels, list) or len(copy_labels) > 16:
+        raise EmbeddingError("at most 16 copy labels are supported")
+    label_names = {label["name"] for label in labels}
+    for name in copy_labels:
+        text(name, "copy label", 128)
+        if name not in label_names:
+            raise EmbeddingError("copy labels must reference defined label names")
+    if type(copy_threshold) not in (int, float) or not 0 <= copy_threshold <= 1:
+        raise EmbeddingError("copy_threshold must be between 0 and 1")
+    if copy_threshold > 0 and not labels:
+        raise EmbeddingError("copy_threshold requires labels")
     result = dict(model=dict(model), auth=dict(auth), max_tokens=tokens, labels=labels,
                   prompt=text(value.get("prompt", ""), "prompt", 512, empty=True, multiline=True),
-                  label_prompt=text(value.get("label_prompt", ""), "label_prompt", 512, empty=True, multiline=True))
+                  label_prompt=text(value.get("label_prompt", ""), "label_prompt", 512, empty=True, multiline=True),
+                  copy_documents=copy_documents, copy_labels=copy_labels, copy_threshold=copy_threshold)
     if len(encode(result).encode()) > 4000:
         raise EmbeddingError("profile leaves insufficient room in the 4096-byte plugin input")
     return result
@@ -109,26 +128,34 @@ def result_payload(event):
         value = json.loads(raw)
     except ValueError as exc:
         raise EmbeddingError("event does not contain embedding JSON") from exc
-    fields(value, ("model", "revision", "results"), "result")
+    fields(value, ("model", "revision", "copy_directory", "results"), "result")
     if not isinstance(value.get("model"), str) or not REPO.fullmatch(value["model"]):
         raise EmbeddingError("invalid result model")
     if not isinstance(value.get("revision"), str) or not re.fullmatch(r"[a-fA-F0-9]{40}", value["revision"]):
         raise EmbeddingError("invalid result revision")
+    if value.get("copy_directory") is not None:
+        text(value["copy_directory"], "copy directory", 1024)
     rows = value.get("results")
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 32:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 64:
         raise EmbeddingError("invalid document results")
     dimension = None
+    embedded = 0
     for row in rows:
-        fields(row, ("path", "embedding", "classification", "error"), "document result")
+        fields(row, ("path", "embedding", "classification", "error", "copied_to"), "document result")
         text(row.get("path"), "result path")
         vector = row.get("embedding")
         if row.get("error"):
             text(row["error"], "document error", 4096)
-            if vector or row.get("classification"):
-                raise EmbeddingError("failed document has an embedding or classification")
+            if vector or row.get("classification") or row.get("copied_to"):
+                raise EmbeddingError("failed document has an embedding, classification, or copy destination")
             continue
+        embedded += 1
+        if embedded > 32:
+            raise EmbeddingError("too many embedded documents")
         if not isinstance(vector, list) or not 1 <= len(vector) <= 4096 or any(type(v) not in (int, float) or abs(v) > 3.4028235e38 or not math.isfinite(v) for v in vector):
             raise EmbeddingError("invalid embedding vector")
+        if row.get("copied_to") is not None:
+            text(row["copied_to"], "copied path", 1024)
         if dimension is not None and dimension != len(vector):
             raise EmbeddingError("inconsistent embedding dimensions")
         dimension = len(vector)
