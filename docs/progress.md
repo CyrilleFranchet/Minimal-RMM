@@ -9,6 +9,15 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Restore workspace registry input compatibility
+
+- Preserve trimmed workspace IDs/tokens and the legacy `workspace_id` fallback
+  when validating environment overrides and saved configuration.
+- Report secret-safe JSON syntax or entry-validation errors at startup instead
+  of an uncaught settings traceback. Malformed credentials remain rejected.
+- Added regression coverage for both registry formats, normalization, and
+  executable startup diagnostics without credential disclosure.
+
 ### 2026-10-29 — Validate persistent settings and named tunnel integration
 
 - Completed startup configuration wiring across service consumers and client

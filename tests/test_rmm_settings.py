@@ -71,6 +71,34 @@ class SettingsTests(unittest.TestCase):
             self.store()
         self.assertEqual(self.path.read_text(), "not-json")
 
+    def test_workspace_environment_preserves_legacy_normalization(self):
+        from rmm_workspace import WorkspaceRegistry
+        for value in ({" alice ": " token "}, [{"id": " alice ", "token": " token "}],
+                      [{"id": "", "workspace_id": " alice ", "token": " token "}]):
+            with self.subTest(value=value):
+                store = self.store(environment={"RMM_WORKSPACES": json.dumps(value)})
+                self.assertEqual(store.effective["RMM_WORKSPACES"], {"alice": "token"})
+                with patch.object(rmm_settings, "_active", store):
+                    self.assertTrue(WorkspaceRegistry.from_environment().authenticate("alice", "token"))
+        store = self.store()
+        store.update({"settings": {"RMM_WORKSPACES": [{"workspace_id": " alice ", "token": " token "}]}})
+        self.assertEqual(json.loads(self.path.read_text())["settings"]["RMM_WORKSPACES"], {"alice": "token"})
+
+    def test_invalid_workspace_override_reports_safe_actionable_error(self):
+        for raw, explanation in (("{alice:private-secret}", "check shell quoting"),
+                                 ('{"alice":""}', "nonempty strings"),
+                                 ('{"invalid id":"private-secret"}', "IDs must contain")):
+            with self.subTest(raw=raw):
+                env = {key: value for key, value in os.environ.items() if not key.startswith("RMM_")}
+                env["RMM_WORKSPACES"] = raw
+                result = subprocess.run([sys.executable, str(ROOT / "server_rmm.py"), "--config", str(self.path)],
+                                        cwd=self.temp.name, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("RMM_WORKSPACES", result.stderr)
+                self.assertIn(explanation, result.stderr)
+                self.assertNotIn("private-secret", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_named_plugin_secrets_are_supported_and_redacted(self):
         store = self.store("workspace")
         store.update({"settings": {"RMM_PLUGIN_TOKEN_INTERNAL": "private-secret"}})

@@ -138,9 +138,12 @@ def validate(key, value, scope):
         if not good:
             raise SettingsError(f"{key} must be a valid URL without credentials")
     if key == "RMM_WORKSPACES":
-        rows = value.items() if isinstance(value, dict) else [(x.get("id", x.get("workspace_id")), x.get("token")) for x in value if isinstance(x, dict)]
-        if len(rows) != len(value) or any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", k) or not isinstance(v, str) or not v.strip() for k, v in rows):
-            raise SettingsError("RMM_WORKSPACES must map valid workspace IDs to nonempty tokens")
+        rows = value.items() if isinstance(value, dict) else [(x.get("id") or x.get("workspace_id"), x.get("token")) for x in value if isinstance(x, dict)]
+        if len(rows) != len(value) or any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", k.strip()) or not isinstance(v, str) or not v.strip() for k, v in rows):
+            raise SettingsError("RMM_WORKSPACES requires an ID-to-token JSON object or a list of {id, token} records; IDs must contain 1–64 letters, digits, dots, underscores, or hyphens, and tokens must be nonempty strings")
+        # Match the existing registry's whitespace and id/workspace_id fallback
+        # behavior without coercing malformed credentials into strings.
+        return {key.strip(): token.strip() for key, token in rows}
     if key == "RMM_RCLONE_PROFILES" and not isinstance(value, dict):
         raise SettingsError("RMM_RCLONE_PROFILES must be an object")
     return value
@@ -159,6 +162,10 @@ def _decode_environment(key, raw, scope):
         else:
             value = raw
         return validate(key, value, scope)
+    except json.JSONDecodeError as exc:
+        raise SettingsError(f"invalid environment override for {key}: expected valid JSON (line {exc.lineno}, column {exc.colno}); check shell quoting") from None
+    except SettingsError as exc:
+        raise SettingsError(f"invalid environment override for {key}: {exc}") from None
     except (ValueError, TypeError):
         raise SettingsError(f"invalid environment override for {key}") from None
 
@@ -255,7 +262,7 @@ class SettingsStore:
                 if value is None:
                     saved.pop(key, None)
                 else:
-                    saved[key] = value
+                    saved[key] = validate(key, value, self.scope)
             data = json.dumps({"schema": SCHEMA, "scope": self.scope, "settings": saved}, indent=2, allow_nan=False) + "\n"
             if len(data.encode()) > MAX_BYTES:
                 raise SettingsError("configuration exceeds size limit")
@@ -331,7 +338,10 @@ def bootstrap(scope, argv=None):
     else:
         root = "~/.minimal-rmm"
     path = args.config or os.environ.get("RMM_CONFIG_FILE") or str(Path(root).expanduser() / ("client-settings.json" if scope == "client" else "settings.json"))
-    _active = SettingsStore(path, scope)
+    try:
+        _active = SettingsStore(path, scope)
+    except SettingsError as exc:
+        parser.exit(2, f"Configuration error: {exc}\n")
     return _active
 
 

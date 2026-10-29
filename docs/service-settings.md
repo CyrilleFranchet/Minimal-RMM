@@ -122,6 +122,15 @@ The following are deliberately outside ordinary service configuration:
 
 ## Implementation
 
+If startup rejects `RMM_WORKSPACES`, supply valid JSON: either an object mapping
+workspace IDs to nonempty string tokens, or a list of `id`/`token` records
+(`workspace_id` is also accepted). IDs and tokens are trimmed as in the legacy
+registry. Shell assignments must quote the whole JSON value, for example
+`export RMM_WORKSPACES='{"alice":"replace-with-workspace-token"}'`.
+Startup errors distinguish JSON syntax from invalid entries without displaying
+credentials. An environment override still takes precedence over a saved value;
+remove it only after the intended registry has been saved in configuration.
+
 `rmm_settings.py` defines the shared typed configuration registry, validation,
 protected persistence, redacted public views, startup resolution, and offline
 administration commands. Its `getenv` accessor supplies the active snapshot to
