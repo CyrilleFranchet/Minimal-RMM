@@ -202,7 +202,18 @@
 
   async function perform(button, action) {
     button.disabled = true;
-    try { await action(); } catch (error) { message(error.message, true); }
+    const running = button === $("run");
+    if (running) {
+      $("run-status").textContent = "Validating saved profile…";
+      $("run-status").classList.toggle("error", false);
+    }
+    try { await action(); } catch (error) {
+      message(error.message, true);
+      if (running) {
+        $("run-status").textContent = `Run failed: ${error.message}`;
+        $("run-status").classList.toggle("error", true);
+      }
+    }
     finally { button.disabled = false; }
   }
 
@@ -231,6 +242,7 @@
     }
     bind("open", async () => {
       $("dialog").showModal(); message("Loading saved workspace configuration…");
+      if (!$("session").value.trim()) $("session").value = window.rmmState?.selectedId || "";
       if (!defaultProfile) {
         try {
           defaultProfile = (await request("defaults")).config;
@@ -287,9 +299,12 @@
       const documents = documentPaths();
       if (!$("session").value.trim()) throw new Error("Enter a session ID before running.");
       if (!documents.length || documents.length > 32) throw new Error("Enter 1 to 32 file or directory paths, one per line.");
+      $("run-status").textContent = "Submitting embedding run…";
       const data = await request("run", "POST", { session_ref: $("session").value.trim(), profile,
         documents });
-      message(`Queued for ${data.session_id}. Inspect the session output, then save its exact event ID below.`);
+      const status = `Queued for ${data.session_id}. Inspect the session output, then save its exact event ID below.`;
+      $("run-status").textContent = status;
+      message(status);
     });
     bind("save-result", async () => {
       await request("results", "POST", { session_ref: $("session").value.trim(), event_id: Number($("event").value) });

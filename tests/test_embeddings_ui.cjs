@@ -52,11 +52,11 @@ async function fixture(records = new Map(), savedResults = [], setupOptions = {}
     }
     if (url === '/embeddings/results') return { status: 200, data: { results: savedResults } };
     if (url.startsWith('/embeddings/results/')) return { status: 200, data: { record: savedResults.find((r) => r.name === url.split('/').pop()) } };
-    if (url === '/embeddings/run') return { status: 200, data: { session_id: 'fixture-session' } };
+    if (url === '/embeddings/run') return setupOptions.runResponse || { status: 200, data: { session_id: 'fixture-session' } };
     throw new Error(`Unexpected URL ${url}`);
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'web/embeddings.js'), 'utf8'), {
-    document, window: { rmmApi: request, confirm: () => true }, console, setTimeout,
+    document, window: { rmmApi: request, rmmState: { selectedId: setupOptions.selectedSession || '' }, confirm: () => true }, console, setTimeout,
     Option: class extends Element { constructor(label, value) { super(); this.textContent = label; this.value = value; } },
     Blob, URL: class extends URL {
       static createObjectURL(blob) { const url = `blob:fixture-${blobs.size}`; blobs.set(url, blob); return url; }
@@ -335,4 +335,21 @@ test('default loading failure disables the editor and reopening retries', async 
   await ui.click('close'); options.failDefaults = false; await ui.click('open');
   assert.equal(ui.get('editor').disabled, false);
   assert.equal(ui.label(0).name.value, 'strategic-financial');
+});
+
+test('run feedback stays beside the button for validation, API rejection, and success', async () => {
+  for (const runResponse of [{ status: 409, data: { error: 'embedding_plugin_not_installed' } }, { status: 200, data: { session_id: 'selected-agent' } }]) {
+    const ui = await fixture(new Map(), [], { selectedSession: 'selected-agent', runResponse });
+    assert.equal(ui.get('session').value, 'selected-agent');
+    await ui.click('run');
+    assert.match(ui.get('run-status').textContent, /Run failed: Save and select/);
+    assert.equal(ui.calls.filter((call) => call.url === '/embeddings/run').length, 0);
+    ui.get('name').value = 'strategy'; await ui.click('save');
+    ui.get('documents').value = 'C:\\Lab';
+    await ui.click('run');
+    assert.match(ui.get('run-status').textContent, runResponse.status === 200 ? /Queued for selected-agent/ : /Run failed: embedding_plugin_not_installed/);
+    assert.equal(ui.get('run').disabled, false);
+    ui.get('session').value = 'explicit-agent'; await ui.click('open');
+    assert.equal(ui.get('session').value, 'explicit-agent');
+  }
 });

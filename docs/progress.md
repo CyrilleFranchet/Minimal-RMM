@@ -9,6 +9,15 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Expose embedding panel run failures beside the button
+
+- Run validation, submission progress, API failures, and queue confirmation
+  now appear beside the run button instead of only at the dialog header.
+- Opening the panel prefills an empty session field from the selected session
+  while preserving explicit input.
+- All 18 embedding UI/shell tests pass. The reported live execution failure
+  still needs the actual validation or API error to establish its cause.
+
 ### 2026-10-29 — Execute embeddings directly from the WebUI shell
 
 - Added `embeddings run <profile> --document <path>` for the selected session,

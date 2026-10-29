@@ -201,6 +201,10 @@ REST/CLI default for an omitted `copy_documents` field remains `false`.
 4. Click **Save profile**. Unsaved edits must be saved before running.
 5. Enter a session ID or unique prefix and one Windows file or directory path
    per line, including UNC paths when needed.
+   Opening the panel fills an empty session field from the selected WebUI
+   session; an explicitly entered session is preserved. Run validation errors,
+   submission progress, and queue confirmation appear beside **Run saved
+   profile**, so they remain visible without scrolling to the dialog header.
    Review the live summary of session, input-path count, model, labels, and
    local copy behavior. Click **Run saved profile** and inspect the session
    transcript. Missing sessions or invalid path counts are rejected before
