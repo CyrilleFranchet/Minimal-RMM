@@ -69,6 +69,52 @@
     node.classList.toggle("error", error);
   }
 
+  async function currentBeaconUrl() {
+    let data;
+    try {
+      if (window.rmmApi) {
+        const response = await window.rmmApi("/transport");
+        if (response.status !== 200) throw new Error();
+        data = response.data;
+      } else {
+        const response = await fetch("/api/v1/transport", { headers: headers(false) });
+        if (!response.ok) throw new Error();
+        data = await response.json();
+      }
+      const value = data?.beacon_url;
+      const parsed = new URL(value);
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error();
+      window.rmmBeaconUrl = value.replace(/\/$/, "");
+      return window.rmmBeaconUrl;
+    } catch {
+      throw new Error("Unable to verify the current beacon URL. Check the connection and retry; your settings were preserved.");
+    }
+  }
+
+  function quickTunnelOrigin(value) {
+    try {
+      const parsed = new URL(value);
+      return parsed.hostname.endsWith(".trycloudflare.com") ? parsed.origin : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function useCurrentBeaconUrl() {
+    const button = $("#agent-go-use-origin");
+    if (button) button.disabled = true;
+    try {
+      const value = await currentBeaconUrl();
+      $("#agent-go-server-url").value = value;
+      savePrefs();
+      status("Current beacon URL selected.");
+    } catch (error) {
+      status(error.message, true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function build() {
     if (!token()) {
       status("Connect with an API token before compiling.", true);
@@ -94,8 +140,15 @@
     const button = $("#agent-go-build");
     button.disabled = true;
     $("#agent-go-download")?.classList.add("hidden");
-    status(`Compiling ${goos}/${goarch} on the RMM server…`);
+    status("Checking beacon transport…");
     try {
+      const currentUrl = await currentBeaconUrl();
+      const selectedQuick = quickTunnelOrigin(serverUrl);
+      const currentQuick = quickTunnelOrigin(currentUrl);
+      if (selectedQuick && currentQuick && selectedQuick !== currentQuick) {
+        throw new Error("The selected Quick Tunnel URL is no longer current. Use the current beacon URL before compiling.");
+      }
+      status(`Compiling ${goos}/${goarch} on the RMM server…`);
       const response = await fetch("/api/v1/agent/go/build", {
         method: "POST",
         headers: headers(true),
@@ -119,7 +172,7 @@
       link.textContent = `Download ZIP ${data.filename} (${data.size} bytes, SHA-256 ${data.sha256})`;
       link.dataset.downloadUrl = data.download_url;
       link.classList.remove("hidden");
-      status("Build complete. Download the ZIP and set the required environment variables before starting the agent.");
+      status("Build complete. The URL and beacon secret are embedded. Use the ZIP launcher to override stale environment settings; launching the executable directly keeps environment overrides.");
     } catch (error) {
       status(error.message, true);
     } finally {
@@ -131,13 +184,7 @@
     if (!$("#agent-go-panel")) return;
     applyPrefs();
     $("#agent-go-build")?.addEventListener("click", build);
-    $("#agent-go-use-origin")?.addEventListener("click", () => {
-      const input = $("#agent-go-server-url");
-      if (input) {
-        input.value = window.rmmBeaconUrl || window.location.origin.replace(/\/$/, "");
-        savePrefs();
-      }
-    });
+    $("#agent-go-use-origin")?.addEventListener("click", useCurrentBeaconUrl);
     window.refreshRmmTransport?.().then(() => {
       const input = $("#agent-go-server-url");
       if (input && !input.value.trim() && window.rmmBeaconUrl) {

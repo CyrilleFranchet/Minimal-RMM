@@ -9,6 +9,17 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-29 — Check Go agent Quick Tunnel connection configuration
+
+- Verified authenticated registration through a local HTTPS reverse proxy;
+  the beacon header is preserved and incorrect credentials produce HTTP 403.
+- Added pre-build checks for a stale Quick Tunnel hostname and a supplied secret
+  that differs from the server's active beacon secret. The current-URL button
+  refreshes transport metadata rather than using cached state.
+- Clarified embedded settings, launcher behavior, and target environment
+  precedence. The reported deployment failure still requires its exact error
+  to distinguish credentials from URL/origin connectivity.
+
 ### 2026-10-29 — Audit and repair shutdown paths
 
 - Added unconditional central cleanup for signals, console exits, partial bind

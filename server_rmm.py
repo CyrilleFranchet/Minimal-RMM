@@ -449,6 +449,22 @@ class BuildProcessManager:
             raise failure
 
 
+def validate_agent_connection(agent_config, public_url):
+    """Reject stale configured credentials/routes before compiling an agent."""
+    if not isinstance(agent_config, dict):
+        return
+    supplied_secret = str(agent_config.get("beacon_secret") or "").strip()
+    if supplied_secret and BEACON_SECRET and not secure_compare(supplied_secret, BEACON_SECRET):
+        raise ValueError("Beacon secret does not match this server's active RMM_BEACON_SECRET. Use the beacon secret, not the operator API token; saved service changes require a restart.")
+    try:
+        requested = urllib.parse.urlsplit(str(agent_config.get("base_url") or "").strip())
+        current = urllib.parse.urlsplit(public_url or "")
+    except ValueError:
+        raise ValueError("Invalid agent server URL") from None
+    if (requested.hostname or "").endswith(".trycloudflare.com") and (current.hostname or "").endswith(".trycloudflare.com") and requested.hostname != current.hostname:
+        raise ValueError("The selected Quick Tunnel URL is stale. Refresh transport status and use the current beacon URL before building.")
+
+
 def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None) -> dict:
     """Build a fixed repository Go agent for one allowlisted OS and architecture."""
     goos = str(goos or "").strip().lower()
@@ -574,11 +590,17 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
 
 Files:
 - {binary_filename}: compiled agent
-- {launcher_name}: launcher that checks required environment variables
+- {launcher_name}: launcher that applies this build's connection settings
 
-Required environment variables:
-- RMM_BASE_URL
-- RMM_BEACON_SECRET
+UI-configured builds embed the server URL and beacon secret. Run the supplied
+launcher to apply those values even when the host has old environment settings.
+If you run the executable directly, nonempty RMM_BASE_URL and RMM_BEACON_SECRET
+environment variables override its embedded values. Generic builds without
+connection settings require those variables to be supplied first.
+
+Quick Tunnel URLs change when the tunnel restarts. Generate a new configured
+archive with the current URL, or deliberately update the runtime configuration.
+The beacon secret is distinct from the operator API token and Cloudflare token.
 
 Optional variables include RMM_SESSION_ID, RMM_SLEEP_SECONDS,
 RMM_JITTER_PERCENT, RMM_HTTP_PROXY, and RMM_LOG_FILE. By default, startup and
@@ -586,13 +608,9 @@ connection errors are appended to the system temporary directory as
 minimal-rmm-agent.log.
 
 Windows PowerShell:
-  $env:RMM_BASE_URL = 'https://your-rmm-server'
-  $env:RMM_BEACON_SECRET = 'your-beacon-secret'
   .\\run-agent.ps1
 
 Linux/macOS shell:
-  export RMM_BASE_URL='https://your-rmm-server'
-  export RMM_BEACON_SECRET='your-beacon-secret'
   chmod +x run-agent.sh
   ./run-agent.sh
 
@@ -3986,6 +4004,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts == ["agent", "go", "build"]:
+            try:
+                validate_agent_connection(body.get("config"), srv.beacon_public_url)
+            except ValueError as exc:
+                self._json(400, {"error": "invalid_agent_connection", "detail": str(exc)})
+                return True
             try:
                 result = build_go_agent(
                     body.get("goos"),

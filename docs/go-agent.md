@@ -15,8 +15,10 @@ second registration or command path.
 4. Click **Compile on server** and download the returned ZIP archive.
 
 The archive contains the target binary, `README.txt`, and a launcher script:
-`run-agent.ps1` for Windows or `run-agent.sh` for Linux. Set
-`RMM_BASE_URL` and `RMM_BEACON_SECRET`, then run the launcher. Windows does
+`run-agent.ps1` for Windows or `run-agent.sh` for Linux. UI builds embed the
+selected URL and secret; the launcher also applies them to the environment,
+replacing stale inherited values. Generic builds with no connection settings
+require `RMM_BASE_URL` and `RMM_BEACON_SECRET` to be supplied first. Windows does
 not need `screen`; use the PowerShell launcher in a console, Task Scheduler,
 or a service wrapper when the agent must remain running after logout.
 
@@ -34,13 +36,13 @@ revision metadata.
 
 ## Runtime configuration
 
-The Go binary reads these environment variables on the target host:
+Nonempty target-host environment variables override embedded build values:
 
 | Variable | Required | Default |
 | --- | --- | --- |
-| `RMM_BASE_URL` | yes | — |
-| `RMM_BEACON_SECRET` | yes | — |
-| `RMM_SESSION_ID` | no | hostname plus timestamp |
+| `RMM_BASE_URL` | unless embedded | Build value |
+| `RMM_BEACON_SECRET` | unless embedded | Build value |
+| `RMM_SESSION_ID` | no | Build value or `go-` plus timestamp |
 | `RMM_SLEEP_SECONDS` | no | `60` |
 | `RMM_JITTER_PERCENT` | no | `30` |
 | `RMM_HTTP_PROXY` | no | direct connection |
@@ -50,6 +52,38 @@ commands, posts `/result`, and accepts `__CONFIG__`. Downloads are sent in
 2 MiB resumable chunks using the server's existing `upload_id` and `offset`
 protocol. On Windows it supports `cmd.exe`, `cmd:`, `PS:`, `powershell:`, and
 `pwsh:` dispatch. On Linux it uses `/bin/sh` and can use `pwsh` when installed.
+
+## Quick Tunnel connection checks
+
+The generator refreshes transport status before compiling. If its selected
+`trycloudflare.com` hostname differs from the active Quick Tunnel, it asks the
+operator to select the current beacon URL. That button now refreshes the URL
+instead of copying cached state. Custom/named routes are preserved.
+
+The build API's `validate_agent_connection` checks a supplied beacon secret
+against the server's active secret before invoking Go. It also rejects a known
+stale Quick Tunnel hostname. It never returns either secret. Generic builds
+without supplied connection settings remain supported.
+
+`currentBeaconUrl`, `quickTunnelOrigin`, and `useCurrentBeaconUrl` in
+`web/go-agent.js` fetch current transport metadata, distinguish Quick Tunnel
+origins, and update the form only when requested. Transport errors preserve edits.
+
+For a previously generated agent that cannot connect, inspect its connection
+error in `%TEMP%\minimal-rmm-agent.log` (or `RMM_LOG_FILE`):
+
+- `403 FORBIDDEN` from the RMM origin indicates a beacon-secret mismatch. Use
+  the active `RMM_BEACON_SECRET`, not the operator or Cloudflare token. Server
+  environment/startup flags override saved values; saved changes need a restart.
+- `404 Not Found` can indicate that the tunnel points to the administration
+  listener instead of the beacon listener.
+- DNS, Cloudflare routing errors, and `502` require checking the current public
+  URL and connector's origin listener before changing credentials.
+
+An old `RMM_BASE_URL` or `RMM_BEACON_SECRET` on the target overrides a new binary
+when it is launched directly. Use the configured archive's launcher or correct
+those overrides. Regression coverage exercises registration through a local
+HTTPS reverse proxy; it does not claim a live Cloudflare deployment test.
 
 ## Command dispatch
 
