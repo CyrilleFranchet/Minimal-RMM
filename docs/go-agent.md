@@ -27,6 +27,19 @@ repository source only, disable CGO, apply `-trimpath`, and write ZIP artifacts
 to `RMM_logs/agent-builds/`. The server accepts only the four target pairs
 listed above. Each successful build returns its byte count and SHA-256 digest.
 
+## Server-configured builds (AI/CLI autonomy)
+
+`POST /api/v1/agent/go/build` accepts `"use_server_config": true`: when the
+request's `config` omits the base URL or beacon secret, the server fills them
+from the active beacon transport and the server's own `RMM_BEACON_SECRET`. The
+AI tools `build_go_agent` (MCP) and the CLI command `agent go-build` use this
+mode, so an operator or the AI assistant can produce a fully configured archive
+without handling the secret manually. The build response includes the
+portable `artifact_ref` for staging through `queue_upload.local_path`, plus the
+usual filename, size, SHA-256, and download URL. The secret is never part of
+any response. When no beacon transport is active, the endpoint answers
+`no_active_beacon_url` instead of building against a stale URL.
+
 The server must have the Go toolchain installed and available as `go`. The
 build request has a 120-second timeout and does not execute shell text supplied
 by the browser. The server passes `-buildvcs=false` because source trees
@@ -152,3 +165,16 @@ parent or grandchildren created by arbitrary commands may leave processes
 behind. Windows GUI-subsystem shutdown behavior still needs native testing.
 The host regression suite tests SIGTERM during an in-flight registration, and
 Windows/Linux cross-builds validate the platform adapters.
+
+### Build artifact isolation
+
+Each build uses a unique server-side binary path and ZIP filename. The executable
+name inside the archive remains stable for its launcher. Concurrent builds for
+the same target cannot overwrite one another's artifacts or change previously
+returned artifact references.
+
+Workspace services forward `agent-builds` and `agent-deploy` artifact downloads
+to the authenticated central server, which owns these generated deployment
+files. Downloaded session data remains workspace-local. Workspace Go build
+requests use a 300-second proxy timeout to accommodate the compiler's
+120-second limit and archive generation.

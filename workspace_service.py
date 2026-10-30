@@ -1385,6 +1385,8 @@ class WorkspaceService:
                 return 400, {"error": "invalid_artifact_kind", "detail": str(exc)}, "application/json"
             return 200, {"kind": kind, "count": len(artifacts), "artifacts": artifacts, "workspace_local": True}, "application/json"
         if len(parts) == 3 and parts[0] == "artifacts":
+            if parts[1] in {"agent-builds", "agent-deploy"}:
+                return None
             path_obj = self.store.artifact_path(parts[1], parts[2])
             if not path_obj:
                 return 404, {"error": "not_found"}, "application/json"
@@ -1726,7 +1728,7 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
         elif method == "DELETE":
             result = self.service.delete_json(path)
         if result is None:
-            timeout = 300 if path.endswith("/exec") or path.endswith("/ai/chat") else 30
+            timeout = 300 if path.endswith("/exec") or path.endswith("/ai/chat") or path == "/api/v1/agent/go/build" else 30
             status, payload, content_type = self.service._proxy(method, path, body, timeout=timeout)
             result = (status, payload, content_type)
         status, payload, content_type = result

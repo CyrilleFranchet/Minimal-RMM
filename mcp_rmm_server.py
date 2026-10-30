@@ -45,6 +45,8 @@ from rmm_tools import (
     tool_clear_history,
     tool_exec_command,
     tool_get_agent_script,
+    tool_deploy_agent_script,
+    tool_build_go_agent,
     tool_get_events,
     tool_get_history_events,
     tool_get_history_session,
@@ -315,7 +317,7 @@ def queue_pe_load(
 
 @mcp.tool()
 def queue_upload(session_ref: str, local_path: str, remote_path: str) -> str:
-    """Upload a local file (on this machine) to a remote path on the agent."""
+    """Queue a local file or artifact_ref upload. Success means queued, not delivered. Record the get_events cursor before queuing, then wait for a new successful upload result matching this session and destination before copying, extracting, or executing. Missing results are inconclusive; do not blindly retry."""
     return tool_queue_upload(_client(), session_ref, local_path, remote_path)
 
 
@@ -432,6 +434,30 @@ def list_artifacts(kind: str = "downloads") -> str:
 def get_agent_script() -> str:
     """Fetch the full client_rmm.ps1 agent script from the server."""
     return tool_get_agent_script(_client())
+
+
+@mcp.tool()
+def deploy_agent_script(
+    session_id: str = "",
+    sleep_seconds: int = 60,
+    jitter_percent: int = 30,
+    http_proxy: str = "",
+) -> str:
+    """Render a ready-to-run client_rmm.ps1 configured with the active beacon URL and secret; returns a portable artifact_ref for queue_upload."""
+    return tool_deploy_agent_script(_client(), session_id, sleep_seconds, jitter_percent, http_proxy)
+
+
+@mcp.tool()
+def build_go_agent(
+    goos: str = "windows",
+    goarch: str = "amd64",
+    session_id: str = "",
+    sleep_seconds: int = 60,
+    jitter_percent: int = 30,
+    http_proxy: str = "",
+) -> str:
+    """Build the repository Go agent with the active connection settings embedded; returns the ZIP artifact_ref for queue_upload."""
+    return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy)
 
 
 @mcp.tool()

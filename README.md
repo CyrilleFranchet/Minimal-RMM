@@ -172,6 +172,8 @@ MCP tools mirror `rmm_cli.py` operator actions:
 | — | `list_session_downloads` |
 | — | `list_artifacts` |
 | — | `get_agent_script` |
+| `agent deploy-script` | `deploy_agent_script` |
+| `agent go-build` | `build_go_agent` |
 | — | `queue_keylog`, `install_persistence`, `remove_persistence` |
 
 Full REST ↔ MCP mapping: `docs/mcp-parity.md`.
@@ -252,6 +254,8 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `GET` | `/profile` | — | Installed and active RMM-Profile status |
 | `POST` | `/profile` | `{"name":"cloudflared"}` or `{"stop":true}` | Start or stop the selected profile |
 | `GET` | `/transport` | — | Administration URL, beacon URL, ports, and profile status |
+| `POST` | `/agent/deploy/script` | `{"session_id":"…","sleep_seconds":60,"jitter_percent":30,"http_proxy":"…"}` (all optional) | Render a configured `client_rmm.ps1` server-side with the active beacon URL and secret; returns the artifact path, size, and SHA-256 (never the secret) |
+| `POST` | `/agent/go/build` | `{"goos":"windows","goarch":"amd64","config":{},"use_server_config":true}` | Build the Go agent; `use_server_config` embeds the active beacon URL and secret when not supplied |
 | `GET` | `/assets` or `/assets/{kind}` | — | List URL-managed plugins, skills, and rclone files |
 | `POST` | `/assets/{kind}` | `{"url":"https://…","name":"optional.ext"}` | Download and store an operator asset |
 | `PATCH` | `/assets/{kind}/{name}` | `{"enabled":false}` | Enable or disable an asset |
@@ -450,6 +454,9 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `tun list` / `tun start` / `tun stop` | TUN relay through a Go agent; device ownership follows storage mode |
 | `assets list/add/enable/disable/remove` | Manage URL-installed plugins, AI skills, and rclone files |
 | `profile status/start/stop` | Manage the dynamic RMM-Profile connector |
+| `agent script [--out FILE]` | Fetch the `client_rmm.ps1` template |
+| `agent deploy-script [--session-id ID] [--sleep N] [--jitter N] [--proxy URL]` | Render a configured script server-side; prints the artifact path and digest |
+| `agent go-build [--goos windows] [--goarch amd64] [--no-server-config]` | Build the Go agent with the active connection embedded |
 | `events` | Poll result events (`--since`, `--limit`) |
 
 Global flags: `--url`, `--token` (or `RMM_SERVER_URL`, `RMM_API_TOKEN`).

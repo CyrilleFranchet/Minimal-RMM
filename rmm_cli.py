@@ -183,7 +183,26 @@ class RmmApiClient:
         return self.request("PATCH", f"/api/v1/sessions/{session_id}/config", body)
 
     def upload_file(self, session_id: str, local_path: str, remote_path: str):
-        content = base64.b64encode(Path(local_path).read_bytes()).decode()
+        if local_path.startswith("artifact:"):
+            reference = local_path[len("artifact:"):]
+            parts = reference.split("/")
+            if (len(parts) != 2 or parts[0] not in {"agent-builds", "agent-deploy"}
+                    or not parts[1] or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for c in parts[1])
+                    or parts[1] in {".", ".."}):
+                return 400, {"error": "invalid_artifact_reference"}
+            request = urllib.request.Request(
+                f"{self.base_url}/api/v1/artifacts/{reference}", headers=self._headers()
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    payload = response.read()
+            except urllib.error.HTTPError as exc:
+                return exc.code, {"error": "artifact_download_failed"}
+            except (urllib.error.URLError, TimeoutError, socket.timeout):
+                return 0, {"error": "artifact_download_failed"}
+        else:
+            payload = Path(local_path).read_bytes()
+        content = base64.b64encode(payload).decode()
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/upload",
@@ -444,6 +463,29 @@ class RmmApiClient:
 
     def get_agent_script(self):
         return self.request("GET", "/api/v1/agent/script")
+
+    def deploy_agent_script(self, session_id="", sleep_seconds=60, jitter_percent=30, http_proxy=""):
+        """Render a configured client_rmm.ps1 server-side; the secret never leaves the server."""
+        return self.request(
+            "POST",
+            "/api/v1/agent/deploy/script",
+            {
+                "session_id": session_id,
+                "sleep_seconds": sleep_seconds,
+                "jitter_percent": jitter_percent,
+                "http_proxy": http_proxy,
+            },
+            timeout=60,
+        )
+
+    def build_go_agent(self, goos="windows", goarch="amd64", config=None, use_server_config=True):
+        """Build the repository Go agent; use_server_config embeds the active URL and secret."""
+        return self.request(
+            "POST",
+            "/api/v1/agent/go/build",
+            {"goos": goos, "goarch": goarch, "config": config or {}, "use_server_config": use_server_config},
+            timeout=180,
+        )
 
 
 def load_state() -> dict:
@@ -961,9 +1003,46 @@ def cmd_profile(client: RmmApiClient, state: dict, args):
         print(f"Profile {action} requested")
 
 
+def cmd_agent(client: RmmApiClient, state: dict, args):
+    """Fetch the agent template or render server-configured deployment artifacts."""
+    action = getattr(args, "agent_cmd", "script")
+    if action == "script":
+        code, data = client.get_agent_script()
+        if code != 200:
+            die(f"agent script failed ({code}): {data}")
+        content = data.get("content") or ""
+        out = getattr(args, "out", None)
+        if out:
+            with open(out, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+            print(f"Wrote template to {out} ({len(content.encode('utf-8'))} bytes)")
+            return
+        print(json.dumps(data, indent=2))
+        return
+    if action == "deploy-script":
+        code, data = client.deploy_agent_script(
+            session_id=getattr(args, "session_id", "") or "",
+            sleep_seconds=int(getattr(args, "sleep", 60)),
+            jitter_percent=int(getattr(args, "jitter", 30)),
+            http_proxy=getattr(args, "proxy", "") or "",
+        )
+    elif action == "go-build":
+        code, data = client.build_go_agent(
+            goos=getattr(args, "goos", "windows"),
+            goarch=getattr(args, "goarch", "amd64"),
+            use_server_config=not getattr(args, "no_server_config", False),
+        )
+    else:
+        die(f"unknown agent action: {action}")
+        return
+    if code not in (200, 201):
+        die(f"agent {action} failed ({code}): {data}")
+    print(json.dumps(data, indent=2))
+
+
 def cmd_upload(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
-    if not os.path.isfile(args.local):
+    if not args.local.startswith("artifact:") and not os.path.isfile(args.local):
         die(f"Local file not found: {args.local}")
     code, data = client.upload_file(sid, args.local, args.remote)
     if code != 200:
@@ -1534,14 +1613,14 @@ def run_interactive(
                 continue
             if cmd == "upload":
                 if len(rest) < 2:
-                    warn("Usage: upload <local_file> <remote_path>")
+                    warn("Usage: upload <local_file_or_artifact_ref> <remote_path>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
                     continue
                 local, remote = rest[0], " ".join(rest[1:])
-                if not os.path.isfile(local):
+                if not local.startswith("artifact:") and not os.path.isfile(local):
                     warn(f"Not found: {local}")
                     continue
                 code, _ = client.upload_file(sid, local, remote)
@@ -2063,6 +2142,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp_assets_remove.add_argument("kind", choices=["plugins", "skills", "rclone"])
     sp_assets_remove.add_argument("name")
     sp_assets_remove.set_defaults(func=cmd_assets)
+
+    sp_agent = sub.add_parser("agent", help="Fetch the agent template or render configured deployment artifacts")
+    sp_agent_sub = sp_agent.add_subparsers(dest="agent_cmd", required=True)
+    sp_agent_script = sp_agent_sub.add_parser("script", parents=[shared], help="Fetch the client_rmm.ps1 template")
+    sp_agent_script.add_argument("--out", help="Optional path to write the template")
+    sp_agent_script.set_defaults(func=cmd_agent)
+    sp_agent_deploy = sp_agent_sub.add_parser("deploy-script", parents=[shared], help="Render a configured client_rmm.ps1 server-side")
+    sp_agent_deploy.add_argument("--session-id", help="Optional fixed session ID (default: generated at first run)")
+    sp_agent_deploy.add_argument("--sleep", type=int, default=60, help="Beacon sleep in seconds (default 60)")
+    sp_agent_deploy.add_argument("--jitter", type=int, default=30, help="Beacon jitter percent (default 30)")
+    sp_agent_deploy.add_argument("--proxy", help="Optional HTTP proxy URL used by the deployed agent")
+    sp_agent_deploy.set_defaults(func=cmd_agent)
+    sp_agent_go = sp_agent_sub.add_parser("go-build", parents=[shared], help="Build the Go agent with the active server connection")
+    sp_agent_go.add_argument("--goos", default="windows", choices=["windows", "linux", "darwin"])
+    sp_agent_go.add_argument("--goarch", default="amd64", choices=["amd64", "arm64"])
+    sp_agent_go.add_argument("--no-server-config", action="store_true", help="Build a generic agent without embedded connection settings")
+    sp_agent_go.set_defaults(func=cmd_agent)
 
     sp_profile = sub.add_parser("profile", help="Manage the dynamic RMM-Profile connector")
     sp_profile_sub = sp_profile.add_subparsers(dest="profile_cmd", required=True)

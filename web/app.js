@@ -1460,15 +1460,6 @@ function findPendingCommandBlock(ev) {
         return block;
       }
     }
-    if (evType === "output") {
-      for (const block of pending) {
-        if (block.kind === "upload" && block.remotePath) {
-          if (evCmd.includes(block.remotePath) || evCmd.includes("__UPLOAD__")) {
-            return block;
-          }
-        }
-      }
-    }
   }
 
   const typeKinds = {

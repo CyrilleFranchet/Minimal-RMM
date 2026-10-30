@@ -9,6 +9,45 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-30 — Confirm artifact delivery before deployment
+
+- Deployment and lateral-movement instructions now require a matching agent
+  upload success result before dependent copy, extraction, or execution.
+- Record an event cursor before queuing, exclude stale results, and verify the
+  staged digest when overlapping transfers make attribution ambiguous.
+  Unresolved delivery stops dependent actions without automatic re-upload.
+
+### 2026-10-30 — Autonomous agent deployment for the AI (server-configured artifacts)
+
+- Added `POST /api/v1/agent/deploy/script`: renders `client_rmm.ps1` with the
+  active beacon URL and the server's own `RMM_BEACON_SECRET`, stores it under
+  `RMM_logs/agent-deploy/` (served by `/artifacts/agent-deploy/`), and returns
+  path/size/SHA-256 — never the secret.
+- Extended `POST /api/v1/agent/go/build` with `use_server_config`: missing
+  connection values are filled from the active transport and server secret; the
+  build result now includes the server-local ZIP `path` for staging.
+- New operator tools across MCP, web AI, and CLI: `deploy_agent_script`,
+  `build_go_agent`, plus CLI `agent script|deploy-script|go-build`; parity
+  script updated (52 tools).
+- Rewrote the `agent-deployment` skill for the fully autonomous chain:
+  render/build → `queue_upload` → lateral copy/execute → registration check,
+  with `no_active_beacon_url`/profile prerequisites documented.
+- Added `tests/test_agent_deploy.py` (13+4 tests) covering render validation,
+  endpoint behavior, secret non-disclosure, and server-config fills.
+
+### 2026-10-30 — Add the agent deployment skill
+
+- Added `ai-skills/agent-deployment.md` (`default: false`) documenting how the
+  AI deploys an RMM agent on another authorized machine by composing existing
+  tools: `get_agent_script` for the template, operator-supplied or reused
+  config, `queue_upload`/lateral copy for staging, a lateral execution method,
+  and registration verification through `list_sessions`.
+- Guardrails: operator intent and authorized scope required, the beacon secret
+  and patched script stay out of chat output, and executed/registered/verified
+  are reported as distinct states.
+- Cross-referenced from the lateral-movement skill; Go agent builds remain a
+  WebUI/REST operator action.
+
 ### 2026-10-29 — Add the lateral movement technique-selection skill
 
 - Added `ai-skills/lateral-movement.md` (`default: false`) teaching the AI that
@@ -1312,3 +1351,33 @@ beacon_detector's inter-arrival distribution bimodal `[~70ms, ~5000ms]` instead 
 - SOCKS end-to-end confirmed: SMB negotiate + NTLM through `socks5://127.0.0.1:1080` on server host.
 - Wireshark on target path showed `STATUS_LOGON_FAILURE` (credentials), not relay failure.
 - WS stability fixes: task order (`824a086`), Aborted recv (`a965e4d`), socket lock (`9fd848c`).
+
+### 2026-10-30 — Deployment review fixes
+
+- Added portable `artifact_ref` responses for configured scripts and Go builds.
+  CLI and AI uploads fetch these through the authenticated artifact API, allowing
+  MCP and RMM to run on separate filesystems. Local uploads remain supported.
+- Reject non-object Go build configuration with HTTP 400 before invoking builds.
+- Added regression coverage for remote artifact uploads, reference validation,
+  AI tool forwarding, and invalid configuration types.
+
+### 2026-10-30 — Workspace deployment and isolated build artifacts
+
+- Forward generated deployment artifact downloads from workspace services to
+  central storage; allow authenticated workspace access to configured scripts
+  consistently with Go builds while retaining session-artifact restrictions.
+- Give Go compiler outputs and ZIP archives unique paths for every build while
+  preserving executable names inside archives. Extend the workspace build proxy
+  timeout to cover compilation.
+- `DeploymentArtifactTests` covers workspace routing, central artifact access,
+  and concurrent builds with distinct binaries, archives, and matching digests.
+
+### 2026-10-30 — Align upload surfaces
+
+- Interactive CLI uploads now accept artifact references like the command CLI.
+- MCP and web AI upload descriptions explain queued versus delivered and require
+  a fresh matching agent result before dependent actions. Shared responses
+  include delivery state and completion guidance.
+- Removed the WebUI fallback that associated unrelated upload results with a
+  pending upload. Added executable matching regressions for multiple uploads,
+  unrelated commands, similar paths, and already completed blocks.

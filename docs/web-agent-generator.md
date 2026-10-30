@@ -46,6 +46,17 @@ Form values are synchronized to the authenticated server/workspace SQLite UI
 state. Browser storage remains a short-lived cache. The generated script is
 built in the browser; only the template fetch hits the server.
 
+## Server-side configured rendering (AI/CLI autonomy)
+
+`POST /api/v1/agent/deploy/script` renders the template server-side with the
+active beacon URL and the server's own `RMM_BEACON_SECRET`, and stores the
+result under `RMM_logs/agent-deploy/`. The response contains the artifact
+path, size, SHA-256, base URL, and download URL — never the secret. The AI
+tool `deploy_agent_script` (MCP) and the CLI command `agent deploy-script`
+use this endpoint, so a deployment script can be produced, staged with
+`queue_upload`, and executed laterally without any manual WebUI step. When no
+beacon transport is active, the endpoint answers `no_active_beacon_url`.
+
 ## Go agent build
 
 The sidebar has a separate **Deploy agent (Go)** section below the PowerShell
@@ -58,3 +69,17 @@ section. It uses
 
 - Agent config block: `client_rmm.ps1` (lines 45–83)
 - README: Client (`client_rmm.ps1`) section
+
+### Portable artifact uploads
+
+Deployment and Go build responses include `artifact_ref`, such as
+`artifact:agent-deploy/client_rmm-example.ps1`. Pass this value as
+`queue_upload.local_path` or the CLI upload source. `RmmApiClient.upload_file`
+fetches the artifact from the configured server's authenticated artifact API
+before uploading its bytes; it does not require a shared filesystem or write
+secret-bearing files to the MCP host. Existing local file uploads still work.
+Artifact access retains the server's existing workspace authorization rules.
+Download failures stop the upload without returning artifact content.
+
+The Go build endpoint requires `config` to be a JSON object when supplied;
+null, arrays, strings, numbers, and booleans return HTTP 400.

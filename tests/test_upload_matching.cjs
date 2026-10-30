@@ -1,0 +1,20 @@
+// Exercise production matching logic without starting the browser UI.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+const logic = source.slice(source.indexOf('function normalizeCmdKey('), source.indexOf('function normalizeRemotePath('));
+const first = { kind: 'upload', remotePath: 'C:/first.ps1', matchKeys: ['__UPLOAD__ C:/first.ps1'], filled: false };
+const second = { kind: 'upload', remotePath: 'C:/second.ps1', matchKeys: ['__UPLOAD__ C:/second.ps1'], filled: false };
+const context = vm.createContext({ state: { pendingCommandBlocks: [first, second] } });
+vm.runInContext(logic, context);
+const match = command => context.findPendingCommandBlock({ type: 'output', command });
+assert.equal(match('__UPLOAD__ C:/second.ps1'), second);
+assert.equal(match('__UPLOAD__ C:/unknown.ps1'), null);
+assert.equal(match('__UPLOAD__ C:/first.ps1.bak'), null);
+assert.equal(match('echo C:/first.ps1'), null);
+assert.equal(match('__UPLOAD__ C:/first.ps1'), first);
+first.filled = true;
+assert.equal(match('__UPLOAD__ C:/first.ps1'), null);
+console.log('Upload result matching: 6 checks passed');

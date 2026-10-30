@@ -82,6 +82,8 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `DELETE /history/{id}` | `delete_history` | |
 | `DELETE /history` | `clear_history` | All ended archives |
 | `GET /agent/script` | `get_agent_script` | Full `client_rmm.ps1` text |
+| `POST /agent/deploy/script` | `deploy_agent_script` | Render a configured `client_rmm.ps1` server-side; returns the artifact path, never the secret |
+| `POST /agent/go/build` | `build_go_agent` | Build the Go agent with the active connection embedded (`use_server_config`) |
 | Agent `__KEYLOG__` | `queue_keylog` | Wrapper over `queue_command` |
 | Agent `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | `install_persistence`, `remove_persistence` | Lab only |
 | Agent `__STOP__` | `stop_persistent` | |
@@ -112,3 +114,15 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 - [ ] `mcp_rmm_server.py` exposes the tool
 - [ ] Parity tables updated (`docs/progress.md`, this file)
 - [ ] README MCP table updated when user-facing
+
+`queue_upload.local_path` accepts a local filesystem path or the `artifact_ref`
+returned by deployment/build tools. Artifact references are fetched through the
+configured server's authenticated API, so MCP does not need a shared filesystem.
+
+Upload completion semantics are shared across CLI, MCP, and web AI: successful
+queuing is not delivery. Both CLI upload modes accept `artifact_ref` values.
+The shared AI upload response includes `delivery_state: queued` and instructions
+to wait for a matching new agent result through `get_events`. MCP and web AI
+schemas require recording the cursor before queuing. The WebUI upload form
+matches results by command and destination, never by the upload marker alone.
+Run `node tests/test_upload_matching.cjs` to check result correlation.

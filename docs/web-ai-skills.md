@@ -93,6 +93,7 @@ another click. Default and always-enabled skills are marked in the list.
 | `ai-skills/ad-collection-analysis.md` | **Optional, off by default.** Collect scoped AD data with Python BloodHound and analyze it in place or transfer artifacts when needed; BloodHound import is optional. Deselect the competing ADWS-first skill for that workflow. Current-token identity checks still use the identity skill. |
 | `ai-skills/local-recon-before-network.md` | **Default.** Establish agent identity, token, OS, interfaces/routes, and domain context before network discovery; distinguish local DC hints from live directory lookups; then hunt scoped local secrets (scheduled tasks, web configs, etc.) to progress faster, with Seatbelt-style tools as a last resort. |
 | `ai-skills/lateral-movement.md` | **Optional, off by default.** Evaluate authorized remote-access attempts, verify completion before changing methods, and report success, partial completion, failure, or uncertainty with sanitized evidence. |
+| `ai-skills/agent-deployment.md` | **Optional, off by default.** Deploy an RMM agent on another authorized machine end to end: `deploy_agent_script` or `build_go_agent` produce server-configured artifacts, `queue_upload` stages them, a lateral technique executes them, and registration in `list_sessions` is the only success proof; artifact contents stay out of chat output. |
 
 ### Why `PS:` matters for the AI
 

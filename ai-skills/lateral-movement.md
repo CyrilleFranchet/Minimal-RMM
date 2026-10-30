@@ -50,6 +50,17 @@ NetExec run in Exegol and need their own route to the target — follow
 `exegol-rmm-pivot` before blaming the credential. Keep agent-side and
 Exegol-side attempts distinct in the report.
 
+When the objective is a durable RMM agent on the target rather than one-off
+commands, follow `agent-deployment`: it composes the script template, file
+staging, and one of these execution methods into a full deployment, verified
+by session registration.
+
+Before using a staged file, confirm that its transfer completed. `queue_upload`
+success means queued, not delivered: wait for the matching agent upload result
+before copying, extracting, or executing the file. This also applies when the
+next action uses a separate Exegol or remote-execution channel. Follow the
+event-correlation and inconclusive-result handling in `agent-deployment`.
+
 ## Failures are technique-specific
 
 One technique failing does not predict the next. A credential can work over
