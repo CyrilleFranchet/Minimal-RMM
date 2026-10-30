@@ -11,7 +11,7 @@ keeps it in the operator's local workspace database and artifact directory.
 |---------|---------|
 | Web UI | **Session history** list in sidebar; read-only transcript view |
 | REST API | `GET /api/v1/history`, `GET /api/v1/history/{id}`, `GET /api/v1/history/{id}/events`, `DELETE /api/v1/history/{id}` |
-| CLI / MCP | MCP: `list_history`, `get_history_session`, `get_history_events`, `delete_history`, `clear_history` (CLI subcommands not in v1) |
+| CLI / MCP | CLI: `events --history --session ID --forward`; MCP: `list_history`, `get_history_session`, `get_history_events`, `delete_history`, `clear_history` |
 
 ## Storage
 
@@ -63,6 +63,12 @@ GET /api/v1/history/{id}/events?since=0&limit=500
 ```
 
 `{id}` may be a full session UUID or unique prefix (4+ chars).
+
+Use `forward=1` with `since` and `limit` to retrieve ascending pages without
+skipping older events. Advance `since` to the last returned event ID and repeat
+until the page is empty. The WebUI loads retained live and archived transcripts
+this way. See [shell identity and recovery](shell-transcript-recovery.md) for
+AI session changes and storage limitations.
 
 ```http
 DELETE /api/v1/history/{id}

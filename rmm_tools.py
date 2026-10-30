@@ -143,12 +143,13 @@ def tool_exec_command(
         return _json_result({"ok": False, **info})
     code, data = client.exec_command(sid, command, timeout=timeout)
     if code == 408:
-        return _json_result({"ok": False, "error": "timeout", "command": command})
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": command})
     if code != 200:
-        return _json_result({"ok": False, "status": code, "data": data})
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
     ev = data.get("event") or {}
     return _json_result({
         "ok": True,
+        "session_id": sid,
         "command": command,
         "output": ev.get("body", ""),
         "event": ev,
@@ -192,11 +193,12 @@ def tool_get_events(
     session_ref: str,
     since: int = 0,
     limit: int = 50,
+    forward: bool = False,
 ) -> str:
     sid, info = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, **info})
-    code, data = client.get_events(sid, since=since, limit=limit)
+    code, data = client.get_events(sid, since=since, limit=limit, forward=forward)
     if code != 200:
         return _json_result({"ok": False, "status": code, "data": data})
     return _json_result({"ok": True, "session_id": sid, "events": data.get("events", [])})
@@ -475,13 +477,17 @@ def _resolve_history_ref(client: RmmApiClient, session_ref: str) -> tuple[str | 
     if code != 200:
         return None, {"error": "history_lookup_failed", "detail": data}
     ref_upper = ref.upper()
-    for row in data.get("sessions", []):
-        sid = row.get("session_id", "")
-        if sid == ref or sid.startswith(ref):
-            return sid, row
-        host = (row.get("hostname") or "").upper()
-        if host == ref_upper or host.startswith(ref_upper):
-            return sid, row
+    rows = data.get("sessions", [])
+    exact_ids = [row for row in rows if row.get("session_id") == ref]
+    exact_hosts = [row for row in rows if (row.get("hostname") or "").upper() == ref_upper]
+    prefixes = [row for row in rows if (row.get("session_id") or "").startswith(ref)
+                or (row.get("hostname") or "").upper().startswith(ref_upper)]
+    matches = exact_ids or exact_hosts or prefixes
+    if len(matches) == 1:
+        return matches[0]["session_id"], matches[0]
+    if len(matches) > 1:
+        return None, {"error": "ambiguous_session_ref", "session_ref": ref,
+                      "candidates": matches}
     return None, {"error": "history_not_found", "session_ref": ref}
 
 
@@ -508,11 +514,12 @@ def tool_get_history_events(
     session_ref: str,
     since: int = 0,
     limit: int = 500,
+    forward: bool = False,
 ) -> str:
     sid, info = _resolve_history_ref(client, session_ref)
     if not sid:
         return _json_result({"ok": False, **info})
-    code, data = client.get_history_events(sid, since=since, limit=limit)
+    code, data = client.get_history_events(sid, since=since, limit=limit, forward=forward)
     if code != 200:
         return _json_result({"ok": False, "status": code, "data": data})
     return _json_result({
@@ -694,7 +701,7 @@ TOOL_HANDLERS = {
         a.get("jitter_percent"),
     ),
     "get_events": lambda c, a: tool_get_events(
-        c, a["session_ref"], int(a.get("since", 0)), int(a.get("limit", 50))
+        c, a["session_ref"], int(a.get("since", 0)), int(a.get("limit", 50)), a.get("forward", False)
     ),
     "kill_session": lambda c, a: tool_kill_session(c, a["session_ref"]),
     "queue_download": lambda c, a: tool_queue_download(c, a["session_ref"], a["remote_path"]),
@@ -759,7 +766,7 @@ TOOL_HANDLERS = {
     "list_history": lambda c, a: tool_list_history(c),
     "get_history_session": lambda c, a: tool_get_history_session(c, a["session_ref"]),
     "get_history_events": lambda c, a: tool_get_history_events(
-        c, a["session_ref"], int(a.get("since", 0)), int(a.get("limit", 500))
+        c, a["session_ref"], int(a.get("since", 0)), int(a.get("limit", 500)), a.get("forward", False)
     ),
     "delete_history": lambda c, a: tool_delete_history(c, a["session_ref"]),
     "clear_history": lambda c, a: tool_clear_history(c),
@@ -911,6 +918,7 @@ OPENAI_TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "session_ref": {"type": "string"},
+                    "forward": {"type": "boolean", "description": "Read earliest events after since; advance since to the last returned ID for complete pagination."},
                     "since": {"type": "integer", "description": "Event id cursor"},
                     "limit": {"type": "integer"},
                 },
@@ -1315,6 +1323,7 @@ OPENAI_TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "session_ref": {"type": "string"},
+                    "forward": {"type": "boolean", "description": "Read earliest events after since; advance since to the last returned ID for complete pagination."},
                     "since": {"type": "integer", "description": "Event id cursor"},
                     "limit": {"type": "integer", "description": "Max events (default 500)"},
                 },

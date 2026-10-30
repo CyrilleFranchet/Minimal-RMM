@@ -139,6 +139,25 @@ class AIJobManager:
                     (owner, session_id),
                 )
 
+    def interrupt_session(self, session_id):
+        """Interrupt all active jobs bound to a deleted session, retaining audit state."""
+        if not session_id:
+            return
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE ai_jobs SET state='interrupted',updated_at=?,completed_at=?,error=? "
+                "WHERE session_id=? AND state IN ('queued','running')",
+                (_now(), _now(), "Session killed; execution was not replayed.", session_id),
+            )
+
+    def _check_active(self, job_id):
+        """Reject checkpoints for shutdown or interrupted jobs while holding the lock."""
+        if self._closed:
+            raise JobInterrupted("Server is stopping")
+        row = self._db.execute("SELECT state FROM ai_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None or row["state"] not in ("queued", "running"):
+            raise JobInterrupted("Job was interrupted")
+
     def submit(self, *, owner, session_id, request_id, run):
         """Durably admit a job before starting its in-memory runner.
 
@@ -187,8 +206,7 @@ class AIJobManager:
     def _progress(self, job_id, event):
         """Persist safe progress and stop a worker after server shutdown."""
         with self._lock:
-            if self._closed:
-                raise JobInterrupted("Server is stopping")
+            self._check_active(job_id)
             with self._db:
                 self._db.execute(
                     "UPDATE ai_jobs SET progress=?, updated_at=? WHERE id=? AND state='running'",
@@ -210,12 +228,10 @@ class AIJobManager:
         try:
             while not acquired:
                 with self._lock:
-                    if self._closed:
-                        raise JobInterrupted("Server is stopping")
+                    self._check_active(job_id)
                 acquired = self._slots.acquire(timeout=0.1)
             with self._lock:
-                if self._closed:
-                    raise JobInterrupted("Server is stopping")
+                self._check_active(job_id)
                 with self._db:
                     self._db.execute(
                         "UPDATE ai_jobs SET state='running',started_at=?,updated_at=? WHERE id=?",

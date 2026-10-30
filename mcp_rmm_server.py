@@ -179,9 +179,9 @@ def patch_config(
 
 
 @mcp.tool()
-def get_events(session_ref: str, since: int = 0, limit: int = 50) -> str:
+def get_events(session_ref: str, since: int = 0, limit: int = 50, forward: bool = False) -> str:
     """Fetch session event transcript (outputs, operator actions)."""
-    return tool_get_events(_client(), session_ref, since=since, limit=limit)
+    return tool_get_events(_client(), session_ref, since=since, limit=limit, forward=forward)
 
 
 @mcp.tool()
@@ -403,9 +403,9 @@ def get_history_session(session_ref: str) -> str:
 
 
 @mcp.tool()
-def get_history_events(session_ref: str, since: int = 0, limit: int = 500) -> str:
+def get_history_events(session_ref: str, since: int = 0, limit: int = 500, forward: bool = False) -> str:
     """Fetch read-only event transcript for an archived session."""
-    return tool_get_history_events(_client(), session_ref, since=since, limit=limit)
+    return tool_get_history_events(_client(), session_ref, since=since, limit=limit, forward=forward)
 
 
 @mcp.tool()

@@ -54,6 +54,10 @@ Use full session IDs from the authenticated session list when selecting an
 agent. If a tool returns `ambiguous_session_ref`, inspect the visible candidates
 and verify the intended host and identity before retrying with its full ID.
 Do not select the first candidate merely because its hostname matches.
+Pass the intended full session ID explicitly on every agent tool call when
+changing hosts. The originating AI chat and the selected browser shell do not
+retarget a tool call. Inspect commands and results in the target session's
+transcript; event IDs are scoped to that session, not globally unique.
 
 When the objective is a durable RMM agent on the target rather than one-off
 commands, follow `agent-deployment`: it composes the script template, file

@@ -136,6 +136,39 @@ class AIJobManagerTests(unittest.TestCase):
         with self.assertRaises(JobClosedError):
             self.submit(request_id="third", session_id="third")
 
+    def test_session_kill_interrupts_running_and_queued_jobs(self):
+        rejected = threading.Event()
+        called = threading.Event()
+
+        def run(progress):
+            self.release.wait(3)
+            try:
+                progress({"phase": "tool"})
+            except JobInterrupted:
+                rejected.set()
+                raise
+            called.set()
+            return {"ok": True}
+
+        first, _ = self.submit(run=run)
+        self.wait_for(first["id"], {"running"})
+        second, _ = self.submit(owner="other", run=lambda p: called.set())
+        self.manager.interrupt_session("session")
+        self.assertEqual(self.manager.get(first["id"], "operator")["status"], "interrupted")
+        self.assertEqual(self.manager.get(second["id"], "other")["status"], "interrupted")
+        self.release.set()
+        self.assertTrue(rejected.wait(2))
+        for worker in list(self.manager._threads):
+            worker.join(2)
+        self.assertFalse(called.is_set())
+        self.assertIsNone(self.manager.get(first["id"], "operator")["result"])
+
+    def test_session_kill_does_not_interrupt_unrelated_job(self):
+        job, _ = self.submit()
+        self.manager.interrupt_session("other-session")
+        self.release.set()
+        self.wait_for(job["id"], {"succeeded"})
+
     def test_restart_marks_unfinished_jobs_interrupted(self):
         timestamp = "2026-10-30T00:00:00+00:00"
         with sqlite3.connect(self.path) as connection:

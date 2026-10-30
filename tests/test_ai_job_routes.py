@@ -21,7 +21,7 @@ class AIJobRouteTests(unittest.TestCase):
             entered = threading.Event()
 
             class Handler(server_rmm.RMMHandler):
-                server_instance = SimpleNamespace(ai_jobs=lambda: manager, save_ai_chat=Mock())
+                server_instance = SimpleNamespace(ai_jobs=lambda: manager, save_ai_chat=Mock(), session_lock=threading.RLock(), killed_sessions=set())
                 def _api_authorized(self, *args):
                     return True
                 def _workspace_scope(self):
@@ -74,7 +74,7 @@ class AIJobRouteTests(unittest.TestCase):
         handler._api_token_from_request = Mock(return_value="operator-secret")
         handler._operator_api_base_url = Mock(return_value="http://127.0.0.1:8080")
         handler.headers = {"X-RMM-Workspace-Token": "workspace-secret"}
-        handler.server_instance = SimpleNamespace(ai_jobs=lambda: manager, save_ai_chat=Mock())
+        handler.server_instance = SimpleNamespace(ai_jobs=lambda: manager, save_ai_chat=Mock(), session_lock=threading.RLock(), killed_sessions=set())
         handler._json = Mock()
         return handler
 

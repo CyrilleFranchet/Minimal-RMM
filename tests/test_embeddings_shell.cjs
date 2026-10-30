@@ -5,13 +5,13 @@ const { test } = require('node:test');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../web/app.js'), 'utf8');
 function fixture(response = { status: 200, data: { queued: '__PE_LOAD__ fixture Run {}' } }) {
   const calls = [], echoes = [], errors = [];
-  const context = { state: { selectedId: 'go-session' },
+  const context = { state: { selectedId: 'go-session', viewMode: 'live', selectionGeneration: 1 },
     api: async (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); if (response instanceof Error) throw response; return response; },
     appendShellEcho: (...args) => echoes.push(args), appendShellError: (message) => errors.push(message),
     pollSessionEvents: async () => {},
   };
   vm.createContext(context);
-  vm.runInContext(source.slice(source.indexOf('function parseShellWords('), source.indexOf('function defaultExfilProfile(')) +
+  vm.runInContext(source.slice(source.indexOf('function captureShellTarget('), source.indexOf('async function postDownloadQueue(')) + source.slice(source.indexOf('function parseShellWords('), source.indexOf('function defaultExfilProfile(')) +
     source.slice(source.indexOf('async function dispatchShellMetaCommand('), source.indexOf('async function runCommand(')), context);
   return { context, calls, echoes, errors, run: (cmd) => context.dispatchShellMetaCommand(cmd) };
 }
@@ -41,4 +41,17 @@ test('missing session and API failures do not echo a queued command', async () =
     const f = fixture(response); await f.run(cmd);
     assert.equal(f.echoes.length, 0); assert.equal(f.errors.length, 1);
   }
+});
+test('delayed embedding acknowledgement stays out of the newly selected shell', async () => {
+  let resolve;
+  const response = new Promise(done => { resolve = done; });
+  const f = fixture(response);
+  const operation = f.run('embeddings run strategy --document C:\\Lab');
+  f.context.state.selectedId = 'other-session';
+  f.context.state.selectionGeneration++;
+  resolve({ status: 200, data: { queued: '__PE_LOAD__ fixture Run {}' } });
+  await operation;
+  assert.equal(f.calls[0].body.session_ref, 'go-session');
+  assert.equal(f.echoes.length, 0);
+  assert.equal(f.errors.length, 0);
 });

@@ -83,3 +83,26 @@ if the server never accepted the request, the outcome remains unresolved and
 the original payload cannot be reconstructed automatically. Inspect job and
 session history before starting replacement work. Accepted jobs remain
 recoverable without that browser payload.
+
+## Killing a session during AI work
+
+Deleting a session interrupts its queued and running background jobs immediately
+in the job store. `AIJobManager.interrupt_session` retains their audit records;
+`_check_active` rejects their next provider/tool/finalization checkpoint. Queued
+workers cannot start after interruption. Other sessions and sessionless jobs
+remain independent. Submission is serialized with deletion, and completed work
+cannot recreate the killed session's chat file.
+
+The current provider request or external tool call may still finish. Its effects
+cannot be undone by cancellation; the next checkpoint prevents further tool
+calls. The worker retains its capacity slot until that call returns. This is
+cooperative cancellation, not forced termination of remote processes.
+
+Session deletion wakes a pending `exec_and_wait` immediately; the exec endpoint
+returns HTTP 410 (`session_killed`). Server shutdown returns 503. A second
+simultaneous exec returns 409 (`session_busy`) instead of replacing the first
+waiter. `Session.wait_command` records the expected command: operator events and
+results echoing a different command do not satisfy its waiter. Legacy results
+without a command echo remain supported, but cannot be reliably attributed when
+other queued or persistent work overlaps; identical command strings also lack
+unique execution IDs.

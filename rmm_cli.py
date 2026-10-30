@@ -209,10 +209,10 @@ class RmmApiClient:
             {"content_b64": content, "remote_path": remote_path},
         )
 
-    def get_events(self, session_id: str, since: int = 0, limit: int = 50):
+    def get_events(self, session_id: str, since: int = 0, limit: int = 50, forward: bool = False):
         return self.request(
             "GET",
-            f"/api/v1/sessions/{session_id}/events?since={since}&limit={limit}",
+            f"/api/v1/sessions/{session_id}/events?since={since}&limit={limit}" + ("&forward=1" if forward else ""),
         )
 
     def queue_download(self, session_id: str, remote_path: str):
@@ -438,10 +438,10 @@ class RmmApiClient:
     def get_history_session(self, session_ref: str):
         return self.request("GET", f"/api/v1/history/{session_ref}")
 
-    def get_history_events(self, session_ref: str, since: int = 0, limit: int = 500):
+    def get_history_events(self, session_ref: str, since: int = 0, limit: int = 500, forward: bool = False):
         return self.request(
             "GET",
-            f"/api/v1/history/{session_ref}/events?since={since}&limit={limit}",
+            f"/api/v1/history/{session_ref}/events?since={since}&limit={limit}" + ("&forward=1" if forward else ""),
         )
 
     def delete_history(self, session_ref: str):
@@ -1348,7 +1348,7 @@ def _event_poller(client: RmmApiClient, state: dict, json_mode: bool):
             for s in data.get("sessions", []):
                 sid = s["id"]
                 since = cursor.get(sid, 0)
-                ec, edata = client.get_events(sid, since=since, limit=100)
+                ec, edata = client.get_events(sid, since=since, limit=100, forward=True)
                 if ec != 200:
                     continue
                 prefix = sid[:8]
@@ -1585,7 +1585,7 @@ def run_interactive(
                     warn("No session selected")
                     continue
                 since = int(rest[0]) if rest else 0
-                code, edata = client.get_events(sid, since=since)
+                code, edata = client.get_events(sid, since=since, forward=True)
                 if code != 200:
                     warn(f"events failed ({code})")
                     continue
@@ -1922,7 +1922,8 @@ def run_interactive(
 
 def cmd_events(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
-    code, data = client.get_events(sid, since=args.since, limit=args.limit)
+    fetch = client.get_history_events if args.history else client.get_events
+    code, data = fetch(sid, since=args.since, limit=args.limit, forward=args.forward)
     if code != 200:
         die(f"events failed ({code}): {data}")
     if args.json:
@@ -2224,6 +2225,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp_ev.add_argument("--session", "-s", default=None)
     sp_ev.add_argument("--since", type=int, default=0)
     sp_ev.add_argument("--limit", type=int, default=50)
+    sp_ev.add_argument("--history", action="store_true", help="Read an archived session transcript")
+    sp_ev.add_argument("--forward", action="store_true", help="Read earliest events after --since for gap-free pagination")
     sp_ev.set_defaults(func=cmd_events)
 
     sp_socks = sub.add_parser("socks", help="SOCKS relay management")

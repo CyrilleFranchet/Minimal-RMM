@@ -1178,20 +1178,10 @@ async function selectHistorySession(id) {
   updateShellPrompt();
   appendShellMeta(`Archived transcript — ${s.event_count || 0} events`);
 
-  const evRes = await api(`/history/${encodeURIComponent(id)}/events?since=0&limit=500`);
-  if (
-    selectionGeneration !== state.selectionGeneration ||
-    state.viewMode !== "history" ||
-    state.selectedHistoryId !== id
-  ) {
-    return;
-  }
-  if (evRes.status === 200) {
-    const events = (evRes.data.events || []).sort((a, b) => (a.id || 0) - (b.id || 0));
-    for (const ev of events) {
-      appendEvent(ev, { history: true });
-    }
-  }
+  await readShellEvents(`/history/${encodeURIComponent(id)}/events`, 0,
+    () => selectionGeneration === state.selectionGeneration && state.viewMode === "history" && state.selectedHistoryId === id,
+    (event) => appendEvent(event, { history: true, allowPast: true }));
+
 }
 
 function formatTime(iso) {
@@ -1312,7 +1302,7 @@ function enqueueLiveEvent(ev, sessionId) {
     .then(() => handleLiveEvent(ev, sessionId))
     .catch(() => {
       if (state.viewMode !== "live" || state.selectedId !== sessionId) return;
-      appendEvent(ev);
+      // Leave the cursor unchanged so the next poll can recover the event.
     });
 }
 
@@ -1327,15 +1317,9 @@ async function fetchFullLiveEvent(ev, sessionId) {
 }
 
 async function handleLiveEvent(ev, sessionId) {
-  if (!ev) return;
-  if (state.viewMode !== "live" || state.selectedId !== sessionId) return;
-  if (ev.body_truncated && typeof ev.id === "number") {
-    const fullEvent = await fetchFullLiveEvent(ev, sessionId);
-    if (state.viewMode !== "live" || state.selectedId !== sessionId) return;
-    appendEvent(fullEvent || ev, { allowPast: true });
-    return;
-  }
-  appendEvent(ev);
+  if (!ev || state.viewMode !== "live" || state.selectedId !== sessionId) return;
+  // Notifications can arrive out of order; recover the ordered transcript first.
+  await pollSessionEvents();
 }
 
 function disconnectWebSocket() {
@@ -1355,19 +1339,28 @@ function stopEventPolling() {
   }
 }
 
+async function readShellEvents(path, since, isCurrent, render) {
+  let cursor = since;
+  while (isCurrent()) {
+    const { status, data } = await api(`${path}?since=${cursor}&limit=500&forward=1`);
+    if (!isCurrent()) return;
+    if (status === 401) { disconnect(); return; }
+    if (status !== 200) throw new Error(`Transcript retrieval failed: HTTP ${status}`);
+    const events = (data.events || []).sort((a, b) => a.id - b.id);
+    for (const event of events) render(event);
+    const next = events.reduce((value, event) => Math.max(value, event.id), cursor);
+    if (events.length < 500 || next <= cursor) return;
+    cursor = next;
+  }
+}
+
 async function pollSessionEvents() {
-  if (!state.selectedId || (!state.token && !WORKSPACE_MODE)) return;
-  const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/events?since=${state.lastEventId}&limit=100`
-  );
-  if (status === 401) {
-    disconnect();
-    return;
-  }
-  if (status !== 200) return;
-  for (const ev of data.events || []) {
-    appendEvent(ev);
-  }
+  if (state.shellRecovering || !state.selectedId || (!state.token && !WORKSPACE_MODE)) return;
+  const id = state.selectedId;
+  const generation = state.selectionGeneration;
+  await readShellEvents(`/sessions/${encodeURIComponent(id)}/events`, state.lastEventId,
+    () => state.viewMode === "live" && state.selectedId === id && state.selectionGeneration === generation,
+    (event) => appendEvent(event, { allowPast: true }));
 }
 
 function startEventPolling() {
@@ -2479,7 +2472,7 @@ function renderSessionList() {
     const killBtn = document.createElement("button");
     killBtn.type = "button";
     killBtn.className = "session-kill danger";
-    killBtn.title = "Kill session (remote client exits on next beacon)";
+    killBtn.title = "Kill session and interrupt its AI job (remote shutdown on next beacon)";
     killBtn.setAttribute("aria-label", "Kill session");
     killBtn.textContent = "Kill";
     killBtn.addEventListener("click", (e) => {
@@ -2499,6 +2492,9 @@ function renderSessionList() {
 
 async function selectSession(id) {
   const selectionGeneration = ++state.selectionGeneration;
+  stopEventPolling();
+  disconnectWebSocket();
+  state.shellRecovering = true;
   state.viewMode = "live";
   state.selectedHistoryId = null;
   setConsoleReadOnly(false);
@@ -2530,31 +2526,20 @@ async function selectSession(id) {
   input.disabled = false;
   input.focus();
 
+  const transcript = [];
+  try {
+    await readShellEvents(`/sessions/${encodeURIComponent(id)}/events`, 0,
+      () => selectionGeneration === state.selectionGeneration && state.viewMode === "live" && state.selectedId === id,
+      (event) => { transcript.push(event); appendEvent(event, { history: true, allowPast: true }); });
+  } catch (error) {
+    if (selectionGeneration === state.selectionGeneration) appendShellError(error.message);
+  }
+  if (selectionGeneration !== state.selectionGeneration || state.selectedId !== id) return;
+  seedShellHistory(id, transcript);
+  state.shellRecovering = false;
   connectWebSocket();
   wsSubscribe(id);
   startEventPolling();
-
-  const { status, data } = await api(
-    `/sessions/${encodeURIComponent(id)}/events?since=0&limit=500`
-  );
-  if (
-    selectionGeneration !== state.selectionGeneration ||
-    state.viewMode !== "live" ||
-    state.selectedId !== id
-  ) {
-    return;
-  }
-  if (status === 200) {
-    const events = (data.events || []).sort((a, b) => (a.id || 0) - (b.id || 0));
-    seedShellHistory(id, events);
-    for (const ev of events) {
-      appendEvent(ev, { history: true });
-    }
-    if (events.length) {
-      state.lastEventId = events.reduce((m, e) => Math.max(m, e.id || 0), 0);
-      saveEventCursor(id, state.lastEventId);
-    }
-  }
   await refreshSocksRelays();
   await refreshTunRelays();
 }
@@ -2763,15 +2748,22 @@ function parseExfilShellArgs(rest) {
   return { remote, profile };
 }
 
-async function postDownloadQueue(remote) {
+function captureShellTarget(sessionId = state.selectedId) {
+  const generation = state.selectionGeneration;
+  return { sessionId, isCurrent: () => state.viewMode === "live" &&
+    state.selectedId === sessionId && state.selectionGeneration === generation };
+}
+
+async function postDownloadQueue(remote, target = captureShellTarget()) {
   const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/download`,
+    `/sessions/${encodeURIComponent(target.sessionId)}/download`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ remote_path: remote }),
     }
   );
+  if (!target.isCurrent()) return false;
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
     return false;
@@ -2780,15 +2772,16 @@ async function postDownloadQueue(remote) {
   return true;
 }
 
-async function postExfilQueue(remote, profile, mode = "auto") {
+async function postExfilQueue(remote, profile, mode = "auto", target = captureShellTarget()) {
   const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/exfil`,
+    `/sessions/${encodeURIComponent(target.sessionId)}/exfil`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ remote_path: remote, profile, mode }),
     }
   );
+  if (!target.isCurrent()) return false;
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
     return false;
@@ -2797,11 +2790,12 @@ async function postExfilQueue(remote, profile, mode = "auto") {
   return data;
 }
 
-async function postScreenshotQueue() {
+async function postScreenshotQueue(target = captureShellTarget()) {
   const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/screenshot`,
+    `/sessions/${encodeURIComponent(target.sessionId)}/screenshot`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
   );
+  if (!target.isCurrent()) return false;
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
     return false;
@@ -2810,15 +2804,16 @@ async function postScreenshotQueue() {
   return true;
 }
 
-async function postPeQueue(plugin, exportName, pluginInput) {
+async function postPeQueue(plugin, exportName, pluginInput, target = captureShellTarget()) {
   const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/pe`,
+    `/sessions/${encodeURIComponent(target.sessionId)}/pe`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ plugin, export: exportName, input: pluginInput }),
     }
   );
+  if (!target.isCurrent()) return false;
   if (status !== 200) {
     appendShellError(data.error || `HTTP ${status}`);
     return false;
@@ -2828,7 +2823,7 @@ async function postPeQueue(plugin, exportName, pluginInput) {
 }
 
 /** @returns {boolean} true if cmd was a meta command (handled locally). */
-async function dispatchShellMetaCommand(cmd) {
+async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   const words = parseShellWords(cmd);
   if (!words.length) return false;
   const verb = words[0].toLowerCase();
@@ -2846,15 +2841,16 @@ async function dispatchShellMetaCommand(cmd) {
       appendShellError('Usage: embeddings run <profile> --document "C:\\Lab\\documents" [--document <path> ...] (1–32 paths; uses the selected session)');
       return true;
     }
-    if (!state.selectedId) {
+    if (!target.sessionId) {
       appendShellError("Select a session before running embeddings.");
       return true;
     }
     try {
       const { status, data } = await api("/embeddings/run", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_ref: state.selectedId, profile: args[1], documents }),
+        body: JSON.stringify({ session_ref: target.sessionId, profile: args[1], documents }),
       });
+      if (!target.isCurrent()) return true;
       if (status !== 200) {
         appendShellError(data?.error || `HTTP ${status}`);
         return true;
@@ -2865,7 +2861,7 @@ async function dispatchShellMetaCommand(cmd) {
       });
       pollSessionEvents().catch(() => {});
     } catch (error) {
-      appendShellError(error.message || "Could not queue embeddings.");
+      if (target.isCurrent()) appendShellError(error.message || "Could not queue embeddings.");
     }
     return true;
   }
@@ -2906,7 +2902,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       meta: "(download queued)",
       matchKeys: [`download ${remote}`, `__DOWNLOAD__ ${remote}`],
     });
-    await postDownloadQueue(remote);
+    await postDownloadQueue(remote, target);
     return true;
   }
 
@@ -2928,8 +2924,8 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         `exfil ${remote} --profile ${profile}`,
       ],
     });
-    const data = await postExfilQueue(remote, profile);
-    if (data && data.execution_mode) {
+    const data = await postExfilQueue(remote, profile, "auto", target);
+    if (target.isCurrent() && data && data.execution_mode) {
       const block = state.pendingCommandBlocks.find(
         (item) => !item.filled && item.kind === "exfil" && item.remotePath === remote
       );
@@ -2949,7 +2945,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       meta: "(screenshot queued)",
       matchKeys: ["screenshot", "__SCREENSHOT__"],
     });
-    await postScreenshotQueue();
+    await postScreenshotQueue(target);
     return true;
   }
 
@@ -2968,7 +2964,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       meta: "(plugin load queued)",
       matchKeys: [cmd, queued],
     });
-    await postPeQueue(plugin, exportName, pluginInput);
+    await postPeQueue(plugin, exportName, pluginInput, target);
     return true;
   }
 
@@ -2980,57 +2976,67 @@ async function runCommand(wait) {
   const cmd = input.value.trim();
   if (!cmd || !state.selectedId) return;
 
-  if (await dispatchShellMetaCommand(cmd)) {
+  const target = captureShellTarget();
+  if (await dispatchShellMetaCommand(cmd, target)) {
+    if (!target.isCurrent()) return;
     clearShellInput();
     input.focus();
     return;
   }
 
-  clearShellInput();
-  appendShellEcho(cmd, {
-    block: !wait,
-    meta: wait ? null : "(queued — waiting for next beacon)",
-  });
-  input.disabled = true;
+  if (target.isCurrent()) {
+    clearShellInput();
+    appendShellEcho(cmd, {
+      block: !wait,
+      meta: wait ? null : "(queued — waiting for next beacon)",
+    });
+    input.disabled = true;
+  }
 
   try {
     if (wait) {
       const { status, data } = await api(
-        `/sessions/${encodeURIComponent(state.selectedId)}/exec`,
+        `/sessions/${encodeURIComponent(target.sessionId)}/exec`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ command: cmd, timeout: 120 }),
         }
       );
+      if (!target.isCurrent()) return;
       if (status === 408) {
         appendShellError(
           "Timed out — beacon interval may be long; try Enter to queue instead"
         );
       } else if (status === 200 && data.event) {
-        appendEvent(data.event);
+        await pollSessionEvents();
       } else {
         appendShellError(data.error || `HTTP ${status}`);
       }
     } else {
       const { status, data } = await api(
-        `/sessions/${encodeURIComponent(state.selectedId)}/commands`,
+        `/sessions/${encodeURIComponent(target.sessionId)}/commands`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ command: cmd, type: "oneshot" }),
         }
       );
+      if (!target.isCurrent()) return;
       if (status === 200) {
         pollSessionEvents().catch(() => {});
       } else {
         appendShellError(data.error || `HTTP ${status}`);
       }
     }
+  } catch (error) {
+    if (target.isCurrent()) appendShellError(error.message || "Command request failed.");
   } finally {
-    input.disabled = false;
-    clearShellInput();
-    input.focus();
+    if (target.isCurrent()) {
+      input.disabled = false;
+      clearShellInput();
+      input.focus();
+    }
   }
 }
 
@@ -3141,6 +3147,7 @@ async function refreshExfilStatus() {
 }
 
 async function queueExfil() {
+  const target = captureShellTarget();
   const remote = $("#exfil-remote").value.trim();
   const profileSelect = $("#exfil-profile");
   const profile = profileSelect && !profileSelect.disabled ? profileSelect.value.trim() : "";
@@ -3154,8 +3161,8 @@ async function queueExfil() {
     matchKeys: [`exfil ${remote} ${profile}`, `exfil ${remote}`, `exfil ${remote} --profile ${profile}`],
   });
   $("#exfil-remote").value = "";
-  const data = await postExfilQueue(remote, profile, mode);
-  if (data && data.execution_mode) {
+  const data = await postExfilQueue(remote, profile, mode, target);
+  if (target.isCurrent() && data && data.execution_mode) {
     const block = state.pendingCommandBlocks.find(
       (item) => !item.filled && item.kind === "exfil" && item.remotePath === remote
     );
@@ -3175,6 +3182,7 @@ async function queueScreenshot() {
 }
 
 async function queueUpload() {
+  const target = captureShellTarget();
   const fileInput = $("#upload-file");
   const remote = $("#upload-remote").value.trim();
   if (!state.selectedId || !fileInput.files?.length || !remote) return;
@@ -3196,13 +3204,14 @@ async function queueUpload() {
   const content_b64 = btoa(binary);
 
   const { status, data } = await api(
-    `/sessions/${encodeURIComponent(state.selectedId)}/upload`,
+    `/sessions/${encodeURIComponent(target.sessionId)}/upload`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ remote_path: remote, content_b64, src_filename: file.name }),
     }
   );
+  if (!target.isCurrent()) return;
   fileInput.value = "";
   $("#upload-remote").value = "";
   if (status !== 200) {
@@ -3211,16 +3220,17 @@ async function queueUpload() {
 }
 
 async function applyBeaconConfig(sessionId, sleep, jitter) {
+  const target = captureShellTarget(sessionId);
   const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}/config`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sleep_seconds: sleep, jitter_percent: jitter }),
   });
   if (status !== 200) {
-    appendShellError(data.error || `Beacon config failed (${status})`);
+    if (target.isCurrent()) appendShellError(data.error || `Beacon config failed (${status})`);
     return false;
   }
-  if (state.selectedId === sessionId) {
+  if (target.isCurrent()) {
     appendShellMeta(`Beacon config → sleep ${sleep}s, jitter ${jitter}%`);
   }
   await refreshSessions();
@@ -3293,7 +3303,7 @@ async function killSession(id) {
   const sessionId = id || state.selectedId;
   if (!sessionId) return;
   const shortId = sessionId.slice(0, 8);
-  if (!confirm(`Kill session ${shortId}? The remote client will exit.`)) return;
+  if (!confirm(`Kill session ${shortId} and interrupt its AI job? The remote client exits when it next contacts the server; a running command may delay shutdown.`)) return;
   const { status } = await api(`/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
   });

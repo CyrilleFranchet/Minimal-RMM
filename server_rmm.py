@@ -758,8 +758,10 @@ class Session:
         self.result_events = deque(maxlen=MAX_RESULT_EVENTS)
         self._event_seq = 0
         self.wait_lock = threading.Lock()
+        self.event_lock = threading.Lock()
         self.wait_event = None
         self.wait_result = None
+        self.wait_command = None
         self.download_artifacts = []
         self.pending_downloads = deque()
         self.pending_plugin_runs = deque()
@@ -1995,23 +1997,26 @@ class RMMServer:
         sid = validate_beacon_session_id(session_id)
         if not sid:
             return
-        normalized = self._normalize_ai_chat_messages(messages)
-        if len(normalized) > MAX_AI_CHAT_MESSAGES:
-            normalized = normalized[-MAX_AI_CHAT_MESSAGES:]
-        try:
-            session_dir = _history_session_dir(sid)
-        except ValueError:
-            return
-        os.makedirs(session_dir, exist_ok=True)
-        payload = {
-            "updated_at": datetime.now().isoformat(),
-            "messages": normalized,
-        }
-        try:
-            with open(self._ai_chat_path(sid), "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-        except OSError as e:
-            self.log(f"AI chat write failed for {sid[:8]}: {e}", "WARNING")
+        with self.session_lock:
+            if sid in self.killed_sessions:
+                return
+            normalized = self._normalize_ai_chat_messages(messages)
+            if len(normalized) > MAX_AI_CHAT_MESSAGES:
+                normalized = normalized[-MAX_AI_CHAT_MESSAGES:]
+            try:
+                session_dir = _history_session_dir(sid)
+            except ValueError:
+                return
+            os.makedirs(session_dir, exist_ok=True)
+            payload = {
+                "updated_at": datetime.now().isoformat(),
+                "messages": normalized,
+            }
+            try:
+                with open(self._ai_chat_path(sid), "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+            except OSError as e:
+                self.log(f"AI chat write failed for {sid[:8]}: {e}", "WARNING")
 
     def clear_ai_chat(self, session_id: str) -> bool:
         """Remove persisted AI chat for a session (no-op if missing)."""
@@ -2320,6 +2325,16 @@ class RMMServer:
         ).start()
 
     def _record_event(
+        self, session, event_type, body, command=None, artifact=None,
+        workspace_payload: dict | None = None,
+    ):
+        """Publish each session's durable events in their assigned ID order."""
+        with session.event_lock:
+            return self._record_event_ordered(
+                session, event_type, body, command, artifact, workspace_payload,
+            )
+
+    def _record_event_ordered(
         self,
         session,
         event_type,
@@ -2333,6 +2348,7 @@ class RMMServer:
             session._event_seq += 1
             ev = {
                 "id": session._event_seq,
+                "session_id": session.id,
                 "timestamp": datetime.now().isoformat(),
                 "type": event_type,
                 "body": body,
@@ -2364,7 +2380,9 @@ class RMMServer:
             daemon=True,
         ).start()
         with session.wait_lock:
-            if session.wait_event is not None:
+            if (session.wait_event is not None
+                    and event_type in {"output", "file_upload", "cloud_upload", "screenshot"}
+                    and (not command or command == getattr(session, "wait_command", None))):
                 session.wait_result = ev
                 session.wait_event.set()
 
@@ -2425,14 +2443,19 @@ class RMMServer:
         session = self.resolve_session(session_id_or_prefix)
         if not session:
             return False, "not_found"
-        self._finalize_session_history(session, reason="killed")
-        self.clear_ai_chat(session.id)
         with self.session_lock:
             self.killed_sessions.add(session.id)
+            if self._ai_jobs is not None:
+                self._ai_jobs.interrupt_session(session.id)
+            self._finalize_session_history(session, reason="killed")
+            self.clear_ai_chat(session.id)
             if session.id in self.sessions:
                 del self.sessions[session.id]
             if self.current_session == session.id:
                 self.current_session = None
+        with session.wait_lock:
+            if session.wait_event is not None:
+                session.wait_event.set()
         self.remove_persisted_session(session.id)
         self.event_hub.broadcast_sessions(self.sessions_to_json())
         if self.storage_mode == "workspace":
@@ -2645,8 +2668,11 @@ class RMMServer:
             return None, "not_found"
         event = threading.Event()
         with session.wait_lock:
+            if session.wait_event is not None:
+                return None, "session_busy"
             session.wait_event = event
             session.wait_result = None
+            session.wait_command = command
         if not self.set_command(session.id, command, "oneshot"):
             with session.wait_lock:
                 session.wait_event = None
@@ -2655,11 +2681,11 @@ class RMMServer:
             with session.wait_lock:
                 session.wait_event = None
             return None, "timeout"
-        if not self.running:
+        if session.id in self.killed_sessions or not self.running:
             with session.wait_lock:
                 session.wait_event = None
                 session.wait_result = None
-            return None, "server_stopped"
+            return None, "session_killed" if session.id in self.killed_sessions else "server_stopped"
         with session.wait_lock:
             result = session.wait_result
             session.wait_event = None
@@ -2671,7 +2697,13 @@ class RMMServer:
         if not session:
             return None
         with self.session_lock:
-            events = [e for e in session.result_events if e["id"] > since_id]
+            live_events = list(session.result_events)
+        persisted = []
+        if not live_events or since_id < live_events[0]["id"] - 1:
+            _, persisted = self.get_history_events(session.id, since_id=since_id, limit=0)
+        events_by_id = {e["id"]: e for e in persisted or []}
+        events_by_id.update({e["id"]: e for e in live_events if e["id"] > since_id})
+        events = sorted(events_by_id.values(), key=lambda event: event["id"])
         if limit > 0:
             events = events[-limit:]
         return events
@@ -2796,6 +2828,8 @@ class RMMServer:
             return False
         plugin_meta = plugin_command_metadata(command, session.agent_type)
         with self.session_lock:
+            if session.id in self.killed_sessions:
+                return False
             if command == "__STOP__":
                 session.persistent_cmd = None
                 return True
@@ -3799,7 +3833,10 @@ class RMMHandler(BaseHTTPRequestHandler):
             if workspace_id and not _resolve_api_session(self, parts[1]):
                 self._json(404, {"error": "session_not_found"})
                 return True
-            events = srv.get_events(parts[1], since_id=since_id, limit=limit)
+            forward = qs.get("forward", ["0"])[0] == "1"
+            events = srv.get_events(parts[1], since_id=since_id, limit=0 if forward else limit)
+            if forward and events is not None:
+                events = events[:max(1, min(1000, limit))]
             if events is None:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -3886,7 +3923,10 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             since_id = int(qs.get("since", ["0"])[0] or 0)
             limit = int(qs.get("limit", ["500"])[0] or 500)
-            session_id, events = srv.get_history_events(parts[1], since_id=since_id, limit=limit)
+            forward = qs.get("forward", ["0"])[0] == "1"
+            session_id, events = srv.get_history_events(parts[1], since_id=since_id, limit=0 if forward else limit)
+            if forward and events is not None:
+                events = sorted(events, key=lambda event: event["id"])[:max(1, min(1000, limit))]
             if session_id is None or events is None:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -4213,16 +4253,24 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "missing_command"})
                 return True
             session = _resolve_api_session(self, parts[1])
-            if session:
-                srv.record_operator_action(session, command, "exec")
-            result, status = srv.exec_and_wait(session.id if session else parts[1], command, timeout=timeout)
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            srv.record_operator_action(session, command, "exec")
+            result, status = srv.exec_and_wait(session.id, command, timeout=timeout)
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
+                return True
+            if status == "session_busy":
+                self._json(409, {"error": status})
+                return True
+            if status in ("session_killed", "server_stopped"):
+                self._json(410 if status == "session_killed" else 503, {"error": status})
                 return True
             if status == "timeout":
                 self._json(408, {"error": "timeout", "command": command})
                 return True
-            self._json(200, {"ok": True, "event": result})
+            self._json(200, {"ok": True, "session_id": session.id, "event": result})
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "upload":
@@ -4541,10 +4589,14 @@ class RMMHandler(BaseHTTPRequestHandler):
                         return result
 
                     try:
-                        job, created = srv.ai_jobs().submit(
-                            owner=f"workspace:{workspace_id}" if workspace_id else "operator",
-                            session_id=str(selected or ""), request_id=request_id, run=run_job,
-                        )
+                        with srv.session_lock:
+                            if selected and str(selected) in srv.killed_sessions:
+                                self._json(410, {"error": "session_killed"})
+                                return True
+                            job, created = srv.ai_jobs().submit(
+                                owner=f"workspace:{workspace_id}" if workspace_id else "operator",
+                                session_id=str(selected or ""), request_id=request_id, run=run_job,
+                            )
                     except JobConflictError:
                         self._json(409, {"error": "ai_job_conflict"})
                         return True

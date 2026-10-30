@@ -61,6 +61,7 @@ historical notes in `progress.md`.
 | PowerShell agent generation | [PowerShell agent generator](web-agent-generator.md) |
 | Hidden command execution and shell dispatch | [Client command execution](client-command-execution.md) |
 | Persistent session and artifact storage | [Session history](session-history.md) |
+| Shell identity, session switching, and complete retained event recovery | [Shell transcript recovery](shell-transcript-recovery.md) |
 | Versioned WebUI settings export/import | [WebUI configuration](web-ui-configuration.md) |
 
 ## Pivots and agent plugins

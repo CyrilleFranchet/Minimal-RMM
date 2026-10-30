@@ -9,6 +9,34 @@ implementation log.
 
 ## Current Status
 
+### 2026-10-30 — Verify cross-session shell routing and operator parity
+
+- Commands retain their captured full session ID across asynchronous UI work;
+  late responses cannot write into another selected shell or clear its input.
+- Events and successful exec responses carry session identity. Rejected scoped
+  exec lookups fail closed instead of falling back to global session lookup.
+- MCP, shared AI tools, CLI, and WebUI support forward transcript pagination;
+  CLI `events --history` reads archived transcripts. Added two-session provider,
+  browser response-order, and operator surface regressions.
+- Documentation distinguishes originating AI chat/job from each tool's target
+  session and explains the limits of session-bound job cancellation.
+
+### 2026-10-30 — Recover shell transcripts and interrupt killed-session AI jobs
+
+- Live and archived shells retrieve retained events in forward pages beyond the
+  500-event live buffer; reconnect notifications trigger ordered recovery.
+- Session deletion interrupts associated AI jobs and releases pending execution
+  waits. Concurrent executions are rejected; unrelated echoed results and
+  operator audit events cannot complete a command wait.
+- Per-session event publication is serialized so workspace cursors cannot skip
+  a delayed lower event ID. `_record_event` owns the session event lock;
+  `_record_event_ordered` persists and publishes while that lock is held.
+- Regression coverage includes transcript pagination, stale UI responses, job
+  interruption, waiter release, and concurrent event publication. Remote exit
+  remains cooperative at the next server contact. See
+  [transcript recovery](shell-transcript-recovery.md) and
+  [background jobs](ai-background-jobs.md).
+
 ### 2026-10-30 — Confirm artifact delivery before deployment
 
 - Deployment and lateral-movement instructions now require a matching agent

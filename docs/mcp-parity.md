@@ -28,6 +28,42 @@ When adding or changing an operator feature:
 
 CLI interactive commands and web-only UX (sidebar, file picker, WebSocket live updates) do not need duplicate MCP tools if the underlying API is covered.
 
+## Session identity and transcript retrieval
+
+Each command targets an explicit session ID. AI and MCP tools resolve an
+unambiguous `session_ref` before dispatch; switching the browser's selected
+session does not retarget an accepted command. `exec_command` results include
+the resolved `session_id` on success, timeout, and HTTP errors. Event IDs are
+local to a session, so correlate results by both session ID and event ID.
+Ambiguous live or archived references must be replaced with a full session ID.
+
+| Surface | Forward transcript retrieval |
+|---------|------------------------------|
+| REST | `GET /sessions/{id}/events?since=0&limit=500&forward=1` (or `/history/{id}/events`) |
+| MCP / web AI | `get_events(session_ref, since=0, limit=500, forward=True)` or `get_history_events` |
+| CLI | `events --session ID --since 0 --limit 500 --forward`; add `--history` for archived sessions |
+| WebUI | Live and archived shells automatically traverse retained forward pages |
+
+For explicit pagination, advance `since` to the last returned event ID and
+repeat until fewer than `limit` events remain. Omitting `forward` retains the
+central API's latest-events behavior. Workspace storage already returns
+ascending pages. The CLI background poller uses forward pages to avoid dropping
+bursts larger than its page size. Selecting a CLI session intentionally skips
+old activity; use `events` in the interactive shell or the explicit command
+above to inspect retained history. Interactive `events [since]` reads the next
+50 events in forward order.
+
+Execution returns HTTP 409 when a session already has an execution waiter,
+410 when that session is killed while waiting, and 503 when the server stops.
+MCP and web AI preserve those statuses in tool errors. Killing a session also
+interrupts its associated background AI job; remote shutdown remains
+cooperative at the next server contact.
+
+`tests/test_transcript_parity.py` exercises CLI request construction, shared
+AI/MCP handlers, result identity across session switches, and ambiguous
+archive rejection. The parity checker also verifies `forward` exists in the
+MCP signatures, AI schemas, and API client methods.
+
 ## Automated check
 
 ```bash

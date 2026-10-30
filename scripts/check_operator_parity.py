@@ -200,6 +200,16 @@ def main() -> int:
     mcp_tools = mcp_tools_from_server()
     api_methods = client_methods()
     shell_meta = web_shell_meta_commands()
+    mcp_ast = ast.parse((ROOT / "mcp_rmm_server.py").read_text())
+    mcp_parameters = {node.name: {arg.arg for arg in node.args.args}
+                      for node in mcp_ast.body if isinstance(node, ast.FunctionDef)}
+    for name in ("get_events", "get_history_events"):
+        schema = next(entry["function"]["parameters"]["properties"]
+                      for entry in tools_mod.OPENAI_TOOLS if entry["function"]["name"] == name)
+        if "forward" not in schema or "forward" not in mcp_parameters.get(name, set()):
+            errors.append(f"{name} must expose forward pagination in MCP and AI schemas")
+        if "forward" not in inspect.signature(getattr(tools_mod.RmmApiClient, name)).parameters:
+            errors.append(f"{name} must expose forward pagination in RmmApiClient")
 
     for label, actual, expected in (
         ("TOOL_HANDLERS", handler_tools, REQUIRED_MCP_TOOLS),

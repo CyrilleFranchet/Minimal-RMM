@@ -20,3 +20,9 @@ process cleanup and a child-exit race without running the beacon.
 
 The matching SOCKS PowerShell bundle must be updated from the plugins
 repository to obtain runspace cancellation and connection-finalizer fixes.
+
+Deleting a session while AI work is active also interrupts background jobs bound
+to that session and releases waiting exec requests. The remote client receives
+the exit instruction on its next beacon; an already executing command can delay
+that beacon. The server does not claim that a successful delete confirms remote
+process termination. Results arriving after session deletion are discarded.
