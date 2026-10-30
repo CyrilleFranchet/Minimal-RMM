@@ -126,3 +126,31 @@ to wait for a matching new agent result through `get_events`. MCP and web AI
 schemas require recording the cursor before queuing. The WebUI upload form
 matches results by command and destination, never by the upload marker alone.
 Run `node tests/test_upload_matching.cjs` to check result correlation.
+
+### Persistent AI job inspection
+
+| REST | CLI | MCP / web AI |
+| --- | --- | --- |
+| `GET /ai/jobs?session_id=...` | `ai jobs [--session-id ID]` | `list_ai_jobs(session_id="")` |
+| `GET /ai/jobs/{id}` | `ai job ID` | `get_ai_job(job_id)` |
+
+`RmmApiClient.list_ai_jobs` encodes the optional full session ID as a query;
+`get_ai_job` encodes the job ID as a path component. `cmd_ai` prints the API
+response as JSON. The `tool_list_ai_jobs` and `tool_get_ai_job` wrappers expose
+these read-only operations through MCP and web AI with consistent HTTP status
+handling. None of these inspection calls starts, retries, or resumes execution.
+An interrupted job may already have performed actions; inspect its evidence
+before submitting more work.
+
+Session discovery delegates authentication to the API, supporting both bearer
+and workspace credentials. `_resolve_session_id` uses only that API's visible
+session list: exact IDs take precedence, then exact case-insensitive hostnames,
+then ID/hostname prefixes. Multiple matches return `ambiguous_session_ref` with
+visible candidates; tools stop without executing until a full ID is supplied.
+
+CLI authentication precedence is: explicit `--token`, then the configured
+`RMM_WORKSPACE_ID`/`RMM_WORKSPACE_TOKEN` pair, then `RMM_API_TOKEN`. Direct
+central-server workspace access sends only workspace headers, even when an
+operator token is inherited. Incomplete or rejected workspace credentials never
+fall back to the operator token. For a workspace-local URL protected by a local
+bearer token, pass that token explicitly with `--token`.

@@ -464,6 +464,15 @@ class RmmApiClient:
     def get_agent_script(self):
         return self.request("GET", "/api/v1/agent/script")
 
+    def list_ai_jobs(self, session_id=""):
+        """List persisted AI jobs visible to the authenticated operator."""
+        query = urllib.parse.urlencode({"session_id": session_id}) if session_id else ""
+        return self.request("GET", "/api/v1/ai/jobs" + ("?" + query if query else ""))
+
+    def get_ai_job(self, job_id):
+        """Read persisted status and final output without starting another job."""
+        return self.request("GET", "/api/v1/ai/jobs/" + urllib.parse.quote(job_id, safe=""))
+
     def deploy_agent_script(self, session_id="", sleep_seconds=60, jitter_percent=30, http_proxy=""):
         """Render a configured client_rmm.ps1 server-side; the secret never leaves the server."""
         return self.request(
@@ -566,14 +575,26 @@ def warn(msg: str):
     say(msg, err=True)
 
 
-def ensure_client(url: str, token: str) -> tuple:
-    """Verify server reachability and API auth (operator token, not RMM_BEACON_SECRET)."""
+def ensure_client(url: str, token: str | None = None) -> tuple:
+    """Connect with explicit bearer auth, configured workspace auth, or default bearer auth."""
     url = (url or _default_server_url()).strip().rstrip("/")
     token = (token or "").strip()
-    client = RmmApiClient(url, token)
+    headers = {}
+    if not token:
+        workspace_id = settings_getenv("RMM_WORKSPACE_ID", "").strip()
+        workspace_token = settings_getenv("RMM_WORKSPACE_TOKEN", "").strip()
+        if workspace_id or workspace_token:
+            if not workspace_id or not workspace_token:
+                die("Set both RMM_WORKSPACE_ID and RMM_WORKSPACE_TOKEN; refusing to fall back to operator credentials.")
+            headers = {"X-RMM-Workspace": workspace_id, "X-RMM-Workspace-Token": workspace_token}
+        else:
+            token = DEFAULT_TOKEN
+    client = RmmApiClient(url, token, extra_headers=headers)
 
     say(f"Connecting to {url} ...")
-    if not token:
+    if headers:
+        say("  Using workspace-scoped authentication")
+    elif not token:
         say("  (no RMM_API_TOKEN — required unless server was started with --insecure)", err=True)
     code, data = client.health(timeout=5)
 
@@ -588,6 +609,8 @@ def ensure_client(url: str, token: str) -> tuple:
         )
 
     if code == 401:
+        if headers:
+            die(f"Workspace authentication failed (401) against {url}. Check RMM_WORKSPACE_ID and RMM_WORKSPACE_TOKEN. No operator-token fallback was attempted.")
         if not token:
             die(
                 f"API authentication required by {url}\n"
@@ -1001,6 +1024,17 @@ def cmd_profile(client: RmmApiClient, state: dict, args):
         print(f"Beacon URL: {data.get('beacon_public_url') or data.get('public_url') or 'not connected'}")
     else:
         print(f"Profile {action} requested")
+
+
+def cmd_ai(client: RmmApiClient, state: dict, args):
+    """Inspect asynchronous AI jobs without resubmitting their work."""
+    if args.ai_cmd == "jobs":
+        code, data = client.list_ai_jobs(args.session_id or "")
+    else:
+        code, data = client.get_ai_job(args.job_id)
+    if code != 200:
+        die(f"AI job lookup failed ({code}): {data}")
+    print(json.dumps(data, indent=2))
 
 
 def cmd_agent(client: RmmApiClient, state: dict, args):
@@ -2005,7 +2039,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_URL,
         help="Server URL (env: RMM_SERVER_URL or RMM_BASE_URL; default: %(default)s)",
     )
-    p.add_argument("--token", default=DEFAULT_TOKEN, help="API token (or RMM_API_TOKEN)")
+    p.add_argument("--token", default=None, help="Explicit bearer token; overrides workspace credentials. Otherwise use workspace credentials, then RMM_API_TOKEN.")
 
     sub = p.add_subparsers(dest="command", required=False)
     p.add_argument(
@@ -2143,6 +2177,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp_assets_remove.add_argument("name")
     sp_assets_remove.set_defaults(func=cmd_assets)
 
+    sp_ai = sub.add_parser("ai", help="Inspect server-owned AI jobs")
+    sp_ai_sub = sp_ai.add_subparsers(dest="ai_cmd", required=True)
+    sp_ai_jobs = sp_ai_sub.add_parser("jobs", parents=[shared])
+    sp_ai_jobs.add_argument("--session-id", default="")
+    sp_ai_jobs.set_defaults(func=cmd_ai)
+    sp_ai_job = sp_ai_sub.add_parser("job", parents=[shared])
+    sp_ai_job.add_argument("job_id")
+    sp_ai_job.set_defaults(func=cmd_ai)
+
     sp_agent = sub.add_parser("agent", help="Fetch the agent template or render configured deployment artifacts")
     sp_agent_sub = sp_agent.add_subparsers(dest="agent_cmd", required=True)
     sp_agent_script = sp_agent_sub.add_parser("script", parents=[shared], help="Fetch the client_rmm.ps1 template")
@@ -2261,7 +2304,7 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     state = load_state()
-    token = args.token or DEFAULT_TOKEN
+    token = args.token
 
     if args.command is None or getattr(args, "interactive", False):
         client, data = ensure_client(args.url, token)

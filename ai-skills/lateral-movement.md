@@ -50,6 +50,11 @@ NetExec run in Exegol and need their own route to the target — follow
 `exegol-rmm-pivot` before blaming the credential. Keep agent-side and
 Exegol-side attempts distinct in the report.
 
+Use full session IDs from the authenticated session list when selecting an
+agent. If a tool returns `ambiguous_session_ref`, inspect the visible candidates
+and verify the intended host and identity before retrying with its full ID.
+Do not select the first candidate merely because its hostname matches.
+
 When the objective is a durable RMM agent on the target rather than one-off
 commands, follow `agent-deployment`: it composes the script template, file
 staging, and one of these execution methods into a full deployment, verified

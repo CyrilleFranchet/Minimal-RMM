@@ -1001,6 +1001,7 @@ class RMMServer:
         self._shutdown_lock = threading.RLock()
         self._closed = False
         self.builds = BuildProcessManager()
+        self._ai_jobs = None
         self.event_hub = OperatorEventHub()
         self.socks = SocksManager(log_fn=self.log)
         self.tun_transport = SocksManager(log_fn=self.log)
@@ -1048,6 +1049,8 @@ class RMMServer:
             ("TUN transport", self.tun_transport.close),
             ("SOCKS relays", self.socks.close),
         ]
+        if self._ai_jobs is not None:
+            resources.insert(0, ("AI jobs", self._ai_jobs.close))
         if close_databases:
             resources.append(("databases", self.close_databases))
         for name, close in resources:
@@ -1055,6 +1058,17 @@ class RMMServer:
                 close()
             except Exception:
                 self.log(f"Could not complete cleanup for {name}", "WARNING")
+
+    def ai_jobs(self):
+        """Open the durable job store once and refuse new workers during shutdown."""
+        from rmm_ai_jobs import AIJobManager, JobClosedError
+
+        with self._shutdown_lock:
+            if self._closed:
+                raise JobClosedError("Server is stopping")
+            if self._ai_jobs is None:
+                self._ai_jobs = AIJobManager(os.path.join(LOG_DIR, "ai-jobs.sqlite3"))
+            return self._ai_jobs
 
     def close_databases(self) -> None:
         """Close storage after requests finish, without allowing it to reopen."""
@@ -3586,6 +3600,17 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts in (["settings"], ["ui", "config"]) and workspace_id:
             self._json(403, {"error": "administrator_required"})
             return True
+        if parts[:2] == ["ai", "jobs"]:
+            owner = f"workspace:{workspace_id}" if workspace_id else "operator"
+            if len(parts) == 2:
+                session_filter = qs.get("session_id", [None])[0]
+                self._json(200, {"jobs": srv.ai_jobs().list(owner=owner, session_id=session_filter)})
+            elif len(parts) == 3:
+                job = srv.ai_jobs().get(parts[2], owner=owner)
+                self._json(200 if job else 404, {"job": job} if job else {"error": "job_not_found"})
+            else:
+                self._json(404, {"error": "not_found"})
+            return True
         if parts == ["settings"]:
             status, payload = settings_api(srv.settings, "GET")
             self._json(status, payload)
@@ -4422,7 +4447,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(502, {"error": "provider_validation_failed", "detail": str(e)})
             return True
 
-        if parts == ["ai", "chat"]:
+        if parts in (["ai", "chat"], ["ai", "jobs"]):
+            asynchronous = parts == ["ai", "jobs"]
             provider = str(body.get("provider") or "openai").strip().lower()
             api_key = str(
                 body.get("api_key")
@@ -4438,6 +4464,17 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             model = str(body.get("model") or "")
             selected = body.get("selected_session_id")
+            if asynchronous:
+                request_id = body.get("request_id")
+                if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id):
+                    self._json(400, {"error": "invalid_request_id"})
+                    return True
+                if selected:
+                    session = _resolve_api_session(self, str(selected))
+                    if not session:
+                        self._json(404, {"error": "session_not_found"})
+                        return True
+                    selected = session.id
             skill_ids = body.get("skill_ids")
             if skill_ids is not None and not isinstance(skill_ids, list):
                 self._json(400, {"error": "invalid_skill_ids"})
@@ -4472,7 +4509,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             try:
                 from rmm_ai import run_ai_chat
 
-                result = run_ai_chat(
+                run_args = dict(
                     rmm_base_url=self._operator_api_base_url(),
                     rmm_token=rmm_token,
                     rmm_headers=rmm_headers,
@@ -4487,6 +4524,36 @@ class RMMHandler(BaseHTTPRequestHandler):
                     skill_ids=skill_ids,
                     skill_documents=skill_documents,
                 )
+                if asynchronous:
+                    from rmm_ai_jobs import JobCapacityError, JobClosedError, JobConflictError
+
+                    def run_job(progress):
+                        """Run independently of the request and persist the final transcript."""
+                        result = run_ai_chat(**run_args, progress=progress)
+                        progress({"phase": "finalizing"})
+                        if result.get("ok"):
+                            stored = list(messages)
+                            stored.append({"role": "assistant", "content": result.get("message", ""),
+                                           "tool_calls_made": result.get("tool_calls_made", [])})
+                            if selected:
+                                srv.save_ai_chat(str(selected), stored)
+                            result["chat_messages"] = stored
+                        return result
+
+                    try:
+                        job, created = srv.ai_jobs().submit(
+                            owner=f"workspace:{workspace_id}" if workspace_id else "operator",
+                            session_id=str(selected or ""), request_id=request_id, run=run_job,
+                        )
+                    except JobConflictError:
+                        self._json(409, {"error": "ai_job_conflict"})
+                        return True
+                    except (JobCapacityError, JobClosedError):
+                        self._json(503, {"error": "ai_jobs_unavailable"})
+                        return True
+                    self._json(202 if created else 200, {"job": job})
+                    return True
+                result = run_ai_chat(**run_args)
                 if result.get("ok") and selected:
                     stored = list(messages)
                     reply = result.get("message")
@@ -4614,6 +4681,16 @@ class RMMHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "plugin-sources":
             return self._handle_plugin_sources("DELETE", urllib.parse.unquote(parts[1]))
         srv = self.server_instance
+        workspace_id = getattr(self, "_workspace_scope", lambda: None)()
+        if parts == ["ai", "jobs"]:
+            from rmm_ai_jobs import JobConflictError
+            try:
+                srv.ai_jobs().dismiss(owner=f"workspace:{workspace_id}" if workspace_id else "operator", session_id="")
+            except JobConflictError:
+                self._json(409, {"error": "ai_job_active"})
+                return True
+            self._json(200, {"ok": True})
+            return True
 
         if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":
             if getattr(self, "_workspace_scope", lambda: None)() and not _resolve_api_session(self, parts[1]):
@@ -4622,6 +4699,12 @@ class RMMHandler(BaseHTTPRequestHandler):
             session_id, _messages = srv.get_ai_chat(parts[1])
             if session_id is None:
                 self._json(404, {"error": "session_not_found"})
+                return True
+            from rmm_ai_jobs import JobConflictError
+            try:
+                srv.ai_jobs().dismiss(owner=f"workspace:{workspace_id}" if workspace_id else "operator", session_id=session_id)
+            except JobConflictError:
+                self._json(409, {"error": "ai_job_active"})
                 return True
             srv.clear_ai_chat(session_id)
             self._json(200, {"ok": True, "session_id": session_id})
@@ -4679,7 +4762,7 @@ class RMMHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        qs = urllib.parse.parse_qs(parsed.query)
+        qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=path == f"{API_PREFIX}/ai/jobs")
 
         if not self._path_allowed(path, method="GET"):
             self._respond(404, "Not Found")

@@ -244,6 +244,7 @@ async def _run_provider_loop(
     call_tool: Callable[[str, dict], Awaitable[str]],
     max_rounds: int,
     via: str,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run one provider's native chat and tool-calling protocol until a final reply."""
     tool_log: list[dict] = []
@@ -266,6 +267,8 @@ async def _run_provider_loop(
         url = OPENAI_CHAT_URL if provider == "openai" else MISTRAL_CHAT_URL
         convo = _build_openai_convo(messages, system)
         for round_index in range(total_rounds):
+            if progress:
+                progress({"phase": "model", "round": round_index + 1})
             if round_index and round_index % max_rounds == 0:
                 add_continuation_prompt(convo)
             response = _json_request(
@@ -303,7 +306,11 @@ async def _run_provider_loop(
                 except json.JSONDecodeError:
                     arguments = {}
                 name = str(function.get("name") or "")
+                if progress:
+                    progress({"phase": "tool", "round": round_index + 1, "tool": name, "status": "running"})
                 result = await call_tool(name, arguments)
+                if progress:
+                    progress({"phase": "tool", "round": round_index + 1, "tool": name, "status": "completed"})
                 tool_log.append(
                     {"name": name, "arguments": arguments, "result_preview": result[:500]}
                 )
@@ -320,6 +327,8 @@ async def _run_provider_loop(
     else:
         convo = _build_anthropic_messages(messages)
         for round_index in range(total_rounds):
+            if progress:
+                progress({"phase": "model", "round": round_index + 1})
             if round_index and round_index % max_rounds == 0:
                 add_continuation_prompt(convo)
             response = _json_request(
@@ -354,7 +363,11 @@ async def _run_provider_loop(
             for call in calls:
                 name = str(call.get("name") or "")
                 arguments = call.get("input") if isinstance(call.get("input"), dict) else {}
+                if progress:
+                    progress({"phase": "tool", "round": round_index + 1, "tool": name, "status": "running"})
                 result = await call_tool(name, arguments)
+                if progress:
+                    progress({"phase": "tool", "round": round_index + 1, "tool": name, "status": "completed"})
                 tool_log.append(
                     {"name": name, "arguments": arguments, "result_preview": result[:500]}
                 )
@@ -388,6 +401,7 @@ def _run_ai_chat_mcp(
     exegol_mcp_token: str | None = None,
     skill_ids: list[str] | None = None,
     skill_documents: list[dict] | None = None,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run a provider chat loop using the local RMM MCP server and optional Exegol MCP."""
     from rmm_mcp_client import run_with_mcp_session
@@ -409,6 +423,7 @@ def _run_ai_chat_mcp(
             call_tool=mcp.call_tool,
             max_rounds=max_rounds,
             via="mcp",
+            progress=progress,
         )
 
     try:
@@ -441,6 +456,7 @@ def _run_ai_chat_direct(
     max_rounds: int,
     skill_ids: list[str] | None = None,
     skill_documents: list[dict] | None = None,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run a provider chat loop with direct in-process RMM tool execution."""
     client = make_client(rmm_base_url, rmm_token, extra_headers=rmm_headers)
@@ -465,6 +481,7 @@ def _run_ai_chat_direct(
             call_tool=call_tool,
             max_rounds=max_rounds,
             via="direct",
+            progress=progress,
         )
     )
 
@@ -485,6 +502,7 @@ def run_ai_chat(
     exegol_mcp_token: str | None = None,
     skill_ids: list[str] | None = None,
     skill_documents: list[dict] | None = None,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run an AI provider agent loop and return its final response and tool activity."""
     started_at = datetime.now(timezone.utc)
@@ -519,6 +537,7 @@ def run_ai_chat(
         "max_rounds": max_rounds,
         "skill_ids": skill_ids,
         "skill_documents": skill_documents,
+        "progress": progress,
     }
     if use_mcp_for_ai() and mcp_available():
         result = _run_ai_chat_mcp(

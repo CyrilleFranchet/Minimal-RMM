@@ -36,6 +36,8 @@ if __name__ == "__main__":
 from mcp.server.fastmcp import FastMCP
 
 from rmm_tools import (
+    tool_list_ai_jobs,
+    tool_get_ai_job,
     make_client,
     tool_settings,
     tool_embedding_profiles,
@@ -428,6 +430,18 @@ def list_session_downloads(session_ref: str) -> str:
 def list_artifacts(kind: str = "downloads") -> str:
     """List downloads or screenshots from every agent."""
     return tool_list_artifacts(_client(), kind)
+
+
+@mcp.tool()
+def list_ai_jobs(session_id: str = "") -> str:
+    """List persisted AI jobs, optionally filtered by full session ID; never starts or retries work."""
+    return tool_list_ai_jobs(_client(), session_id)
+
+
+@mcp.tool()
+def get_ai_job(job_id: str) -> str:
+    """Read an AI job's status, progress, and result. Interrupted jobs may have executed actions; do not blindly resubmit."""
+    return tool_get_ai_job(_client(), job_id)
 
 
 @mcp.tool()

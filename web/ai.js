@@ -1,5 +1,5 @@
 /**
- * Web AI assistant — provider-neutral chat via MCP at POST /api/v1/ai/chat
+ * Web AI assistant — provider-neutral, server-owned AI jobs with reconnectable status
  */
 (function () {
   const PROVIDERS = ["openai", "anthropic", "mistral"];
@@ -24,6 +24,10 @@
   let chatLoadToken = 0;
   let sending = false;
   let aiSkills = [];
+  let jobPollTimer = null;
+  let pendingSubmission = null;
+  const JOB_STATE_KEY = "rmm_ai_job_state_v1";
+  const JOB_POLL_MS = 2000;
   const providerValidationTokens = {};
 
   function escapeHtml(s) {
@@ -411,55 +415,200 @@
     }
   }
 
+  function jobState(sessionId) {
+    try {
+      return JSON.parse(localStorage.getItem(JOB_STATE_KEY) || "{}")[sessionId || "global"] || {};
+    } catch { return {}; }
+  }
+
+  function saveJobState(sessionId, value) {
+    try {
+      const all = JSON.parse(localStorage.getItem(JOB_STATE_KEY) || "{}");
+      all[sessionId || "global"] = value;
+      localStorage.setItem(JOB_STATE_KEY, JSON.stringify(all));
+    } catch { /* Server discovery still works when browser storage is unavailable. */ }
+  }
+
+  function currentChat(sessionId, token) {
+    return token === chatLoadToken && loadedChatSessionId === sessionId && activeSessionId() === sessionId;
+  }
+
+  function setJobBusy(busy) {
+    sending = busy;
+    for (const selector of ["#ai-chat-input", "#ai-send-btn", "#ai-chat-reset-btn"]) {
+      const control = $(selector);
+      if (control) control.disabled = busy;
+    }
+  }
+
+  function showJobStatus(message) {
+    const log = $("#ai-chat-log");
+    if (!log) return;
+    let status = $("#ai-job-status");
+    if (!status) {
+      status = document.createElement("div");
+      status.id = "ai-job-status";
+      status.className = "ai-msg ai-msg-assistant";
+      status.setAttribute("role", "status");
+      status.setAttribute("aria-live", "polite");
+      log.appendChild(status);
+    }
+    if (status.dataset.message !== message) {
+      status.textContent = message;
+      status.dataset.message = message;
+    }
+  }
+
+  function scheduleJobPoll(sessionId, token, jobId = null) {
+    clearTimeout(jobPollTimer);
+    if (!currentChat(sessionId, token)) return;
+    jobPollTimer = setTimeout(() => refreshAiJob(sessionId, token, jobId), JOB_POLL_MS);
+  }
+
+  function jobCreatedAt(job) {
+    return typeof job.created_at === "number" ? job.created_at * 1000 : Date.parse(job.created_at || "") || 0;
+  }
+
+  function displayAiJob(job, sessionId, token) {
+    if (!currentChat(sessionId, token)) return;
+    const saved = jobState(sessionId);
+    if (pendingSubmission?.body.request_id === job.request_id) pendingSubmission = null;
+    saveJobState(sessionId, { ...saved, job_id: job.id, request_id: job.request_id });
+    if (["queued", "running"].includes(job.status)) {
+      setJobBusy(true);
+      const progress = typeof job.progress === "string" ? job.progress : [
+        job.progress?.phase,
+        job.progress?.round ? "round " + job.progress.round : "",
+        job.progress?.tool,
+        job.progress?.status,
+      ].filter(Boolean).join(" · ");
+      showJobStatus(
+        "Task " + job.status + (progress ? ": " + progress : ".") +
+        " You can close this browser; execution continues on the server."
+      );
+      scheduleJobPoll(sessionId, token, job.id);
+      return;
+    }
+    clearTimeout(jobPollTimer);
+    setJobBusy(false);
+    if (job.status === "succeeded") {
+      const result = job.result || {};
+      if (Array.isArray(result.chat_messages)) {
+        chatHistory = normalizeStoredMessages(result.chat_messages);
+      } else if (typeof result.message === "string" && !chatHistory.some((m) => m.role === "assistant" && m.content === result.message)) {
+        chatHistory.push({ role: "assistant", content: result.message, toolCalls: result.tool_calls_made });
+      }
+      renderChatLog();
+      showJobStatus("Task completed on the server.");
+    } else {
+      showJobStatus(job.status === "interrupted"
+        ? "Task interrupted by server shutdown. Check completed actions before starting another task; it was not automatically replayed."
+        : "Task failed. " + (typeof job.error === "string" ? job.error : job.result?.error || "Inspect the task and agent history before retrying."));
+    }
+  }
+
+  async function refreshAiJob(sessionId, token, jobId = null) {
+    if (!currentChat(sessionId, token) || !window.rmmApi) return;
+    try {
+      const path = jobId ? "/ai/jobs/" + encodeURIComponent(jobId)
+        : "/ai/jobs?session_id=" + encodeURIComponent(sessionId || "");
+      const { status, data } = await window.rmmApi(path);
+      if (!currentChat(sessionId, token)) return;
+      if (status !== 200) throw new Error("Task status unavailable");
+      const saved = jobState(sessionId);
+      const jobs = (jobId ? [data.job] : (data.jobs || [])).filter((job) => job && !job.dismissed &&
+        (job.session_id || null) === sessionId);
+      jobs.sort((a, b) => jobCreatedAt(b) - jobCreatedAt(a));
+      const unresolvedRequest = saved.request_id && !saved.job_id;
+      const job = jobs.find((item) => ["queued", "running"].includes(item.status))
+        || (unresolvedRequest ? jobs.find((item) => item.request_id === saved.request_id) : jobs[0]);
+      if (job) {
+        displayAiJob(job, sessionId, token);
+      } else if (saved.request_id && !saved.job_id) {
+        setJobBusy(true);
+        showJobStatus("Submission outcome is unknown. Checking the server; do not start a duplicate task.");
+        if (pendingSubmission?.sessionId === sessionId && pendingSubmission.body.request_id === saved.request_id && !$("#ai-job-status")?.querySelector("button")) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "Retry the same submission";
+          button.addEventListener("click", () => {
+            const pending = pendingSubmission;
+            if (!pending || !currentChat(sessionId, token)) return;
+            clearTimeout(jobPollTimer);
+            submitAiJob(pending.body, sessionId, token);
+          });
+          $("#ai-job-status")?.appendChild(button);
+        } else if (!pendingSubmission || pendingSubmission.sessionId !== sessionId || pendingSubmission.body.request_id !== saved.request_id) {
+          showJobStatus("Submission outcome is unknown and its original request is no longer in this browser. Checking the server; inspect task history before starting a new task.");
+        }
+        scheduleJobPoll(sessionId, token);
+      } else {
+        setJobBusy(false);
+      }
+    } catch {
+      if (!currentChat(sessionId, token)) return;
+      setJobBusy(true);
+      showJobStatus("Connection lost. The task may still be running on the server. Reconnecting without resubmitting…");
+      scheduleJobPoll(sessionId, token, jobId);
+    }
+  }
+
   async function syncAiChatWithSession(sessionId) {
-    if (loadedChatSessionId === sessionId) return;
+    if (loadedChatSessionId === sessionId) {
+      await refreshAiJob(sessionId, chatLoadToken);
+      return;
+    }
+    clearTimeout(jobPollTimer);
     loadedChatSessionId = sessionId;
     const token = ++chatLoadToken;
-
-    if (!sessionId) {
-      chatHistory = [];
-      renderChatLog();
-      return;
-    }
-
+    setJobBusy(true);
+    chatHistory = [];
     const apiFn = window.rmmApi;
-    if (!apiFn || !window.rmmState?.token) {
-      chatHistory = [];
+    if (!apiFn || (!window.rmmState?.token && !window.RMM_WORKSPACE_MODE)) {
       renderChatLog();
+      setJobBusy(false);
       return;
     }
-
-    try {
-      const { status, data } = await apiFn(
-        `/sessions/${encodeURIComponent(sessionId)}/ai/chat`
-      );
-      if (token !== chatLoadToken || loadedChatSessionId !== sessionId) return;
-      chatHistory = status === 200 ? normalizeStoredMessages(data.messages) : [];
-    } catch {
-      if (token !== chatLoadToken) return;
-      chatHistory = [];
+    if (sessionId) {
+      try {
+        const { status, data } = await apiFn(
+          `/sessions/${encodeURIComponent(sessionId)}/ai/chat`
+        );
+        if (!currentChat(sessionId, token)) return;
+        chatHistory = status === 200 ? normalizeStoredMessages(data.messages) : [];
+      } catch {
+        if (!currentChat(sessionId, token)) return;
+      }
     }
+    if (!currentChat(sessionId, token)) return;
     renderChatLog();
+    await refreshAiJob(sessionId, token);
   }
 
   async function resetAiChatForCurrentSession() {
+    if (sending) return;
     const sessionId = loadedChatSessionId;
+    const token = chatLoadToken;
     const label = sessionId ? `session ${sessionId.slice(0, 8)}` : "this chat";
     if (!confirm(`Clear the AI chat for ${label}? This cannot be undone.`)) {
       return;
     }
 
-    if (sessionId && window.rmmApi && window.rmmState?.token) {
+    if (window.rmmApi && (window.rmmState?.token || window.RMM_WORKSPACE_MODE)) {
       try {
-        await window.rmmApi(`/sessions/${encodeURIComponent(sessionId)}/ai/chat`, {
+        const path = sessionId ? `/sessions/${encodeURIComponent(sessionId)}/ai/chat` : "/ai/jobs";
+        const { status } = await window.rmmApi(path, {
           method: "DELETE",
         });
+        if (status !== 200) throw new Error("Reset rejected");
       } catch {
-        appendChatMessage("error", "Failed to clear AI chat on server.");
+        if (currentChat(sessionId, token)) appendChatMessage("error", "Failed to clear AI chat on server. A task may still be active.");
         return;
       }
     }
 
+    saveJobState(sessionId, { reset_at: Date.now() });
+    if (!currentChat(sessionId, token)) return;
     chatHistory = [];
     renderChatLog();
   }
@@ -509,58 +658,56 @@
     chatHistory.push({ role: "user", content: text.trim() });
     appendChatMessage("user", text.trim());
 
+    const token = chatLoadToken;
     const input = $("#ai-chat-input");
-    const sendBtn = $("#ai-send-btn");
-    sending = true;
-    if (input) input.disabled = true;
-    if (sendBtn) sendBtn.disabled = true;
+    setJobBusy(true);
+    if (input) input.value = "";
+    const random = crypto.getRandomValues(new Uint8Array(16));
+    const requestId = Array.from(random, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const body = {
+      request_id: requestId,
+      provider,
+      api_key: apiKey,
+      model,
+      messages: chatHistory.map((message) => ({ ...message })),
+      selected_session_id: sessionId,
+      exegol_mcp_enabled: exegol.enabled,
+      exegol_mcp_url: exegol.enabled ? exegol.url : null,
+      exegol_mcp_token: exegol.enabled ? exegol.token || null : null,
+      skill_ids: getEnabledSkillIds(),
+    };
+    pendingSubmission = { body, sessionId };
+    saveJobState(sessionId, { reset_at: jobState(sessionId).reset_at, request_id: requestId });
+    await submitAiJob(body, sessionId, token);
+  }
 
+  async function submitAiJob(body, sessionId, token) {
+    if (!currentChat(sessionId, token)) return;
+    setJobBusy(true);
+    showJobStatus("Submitting task to the server…");
     try {
-      const { status, data } = await apiFn("/ai/chat", {
+      const { status, data } = await window.rmmApi("/ai/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider,
-          api_key: apiKey,
-          model: getModel(),
-          messages: chatHistory,
-          selected_session_id: sessionId,
-          exegol_mcp_enabled: exegol.enabled,
-          exegol_mcp_url: exegol.enabled ? exegol.url : null,
-          exegol_mcp_token: exegol.enabled ? exegol.token || null : null,
-          skill_ids: getEnabledSkillIds(),
-        }),
+        body: JSON.stringify(body),
       });
-
-      if (status !== 200 || !data.ok) {
-        const err =
-          data.detail || data.error || (typeof data.message === "string" ? data.message : `HTTP ${status}`);
-        const failedTools = Array.isArray(data.tool_calls_made) ? data.tool_calls_made : [];
-        appendChatMessage("error", String(err), renderToolCalls(failedTools));
-        chatHistory.pop();
-        return;
+      if ([200, 202].includes(status) && data.job) {
+        saveJobState(sessionId, { ...jobState(sessionId), job_id: data.job.id });
+        if (pendingSubmission?.body.request_id === body.request_id) pendingSubmission = null;
+        displayAiJob(data.job, sessionId, token);
+      } else if (status >= 400 && status < 500 && ![408, 409].includes(status)) {
+        saveJobState(sessionId, { reset_at: jobState(sessionId).reset_at });
+        if (pendingSubmission?.body.request_id === body.request_id) pendingSubmission = null;
+        if (!currentChat(sessionId, token)) return;
+        setJobBusy(false);
+        showJobStatus("Task was not accepted: " + (data.detail || data.error || `HTTP ${status}`));
+      } else {
+        throw new Error("Submission outcome unknown");
       }
-
-      const reply = data.message || "(empty response)";
-      const toolCalls = data.tool_calls_made || [];
-      const toolsHtml = renderToolCalls(toolCalls);
-      chatHistory.push({
-        role: "assistant",
-        content: reply,
-        toolCalls: toolCalls.length ? toolCalls : undefined,
-      });
-      appendChatMessage("assistant", reply, toolsHtml);
-    } catch (e) {
-      appendChatMessage("error", e.message || String(e));
-      chatHistory.pop();
-    } finally {
-      sending = false;
-      if (input) {
-        input.disabled = false;
-        input.value = "";
-        input.focus();
-      }
-      if (sendBtn) sendBtn.disabled = false;
+    } catch {
+      if (!currentChat(sessionId, token)) return;
+      showJobStatus("Connection lost during submission. Checking for the task without resubmitting…");
+      scheduleJobPoll(sessionId, token);
     }
   }
 
@@ -664,6 +811,11 @@
     }
     renderChatLog();
     fetchAiSkills().catch(() => {});
+    syncAiChatWithSession(activeSessionId());
+    window.addEventListener("online", () => {
+      clearTimeout(jobPollTimer);
+      refreshAiJob(loadedChatSessionId, chatLoadToken);
+    });
   }
 
   window.initAiPanel = initAiPanel;

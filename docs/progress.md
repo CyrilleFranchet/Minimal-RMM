@@ -1381,3 +1381,30 @@ beacon_detector's inter-arrival distribution bimodal `[~70ms, ~5000ms]` instead 
 - Removed the WebUI fallback that associated unrelated upload results with a
   pending upload. Added executable matching regressions for multiple uploads,
   unrelated commands, similar paths, and already completed blocks.
+
+### 2026-10-30 — Server-owned background AI jobs
+
+- Added persisted asynchronous AI jobs with owner-scoped status, idempotent
+  submission, progress checkpoints, and restart interruption without replay.
+- WebUI submits once and reconnects to job results; workspace proxies short job
+  requests. CLI/MCP expose job inspection. Existing synchronous chat remains.
+- Documented execution ownership, sensitive result storage, reset behavior,
+  and recovery limits in `docs/ai-background-jobs.md`.
+
+### 2026-10-30 — Workspace AI session selection
+
+- Removed the bearer-only precheck from AI session discovery; the API validates
+  operator or workspace credentials and filters sessions.
+- Resolve references from visible sessions and reject duplicate hostnames or
+  ambiguous prefixes. Preserve resolution errors through session tools rather
+  than silently choosing the first candidate.
+- Added regression coverage for workspace authentication, ambiguity, exact
+  matching, and refusal to execute against invisible sessions.
+
+### 2026-10-30 — Direct CLI workspace authentication
+
+- `ensure_client` now sends workspace headers for direct central-server access.
+  Workspace credentials take priority over inherited operator credentials;
+  explicit `--token` remains available for local or administrator access.
+- Incomplete workspace configuration and rejected workspace credentials fail
+  without an operator-token fallback. Added authentication precedence tests.

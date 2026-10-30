@@ -1288,6 +1288,11 @@ class WorkspaceService:
     def get_json(self, path: str, qs: dict[str, list[str]]) -> tuple[int, Any, str] | None:
         """Handle local JSON GET endpoints or return ``None`` for proxying."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts[:2] == ["ai", "jobs"]:
+            upstream_path = path
+            if len(parts) == 2 and "session_id" in qs:
+                upstream_path += "?" + urllib.parse.urlencode({"session_id": qs["session_id"][0]})
+            return self._proxy("GET", upstream_path)
         if parts == ["settings"]:
             status, payload = settings_api(self.settings, "GET")
             return status, payload, "application/json"
@@ -1523,7 +1528,7 @@ class WorkspaceService:
                 }
             )
             return 200, response, "application/json"
-        if parts == ["ai", "chat"]:
+        if parts in (["ai", "chat"], ["ai", "jobs"]):
             forwarded = dict(body)
             if forwarded.get("provider", "openai") == "openai" and not (forwarded.get("api_key") or forwarded.get("openai_api_key")):
                 forwarded["api_key"] = settings_getenv("OPENAI_API_KEY", "")
@@ -1536,8 +1541,8 @@ class WorkspaceService:
             if skill_ids is not None and not isinstance(skill_ids, list):
                 return 400, {"error": "invalid_skill_ids"}, "application/json"
             forwarded["skill_documents"] = self.store.selected_skill_documents(skill_ids)
-            status, payload, content_type = self._proxy("POST", path, forwarded, timeout=300)
-            if status == 200 and isinstance(payload, dict) and payload.get("ok") and body.get("selected_session_id"):
+            status, payload, content_type = self._proxy("POST", path, forwarded, timeout=30 if parts == ["ai", "jobs"] else 300)
+            if parts == ["ai", "chat"] and status == 200 and isinstance(payload, dict) and payload.get("ok") and body.get("selected_session_id"):
                 messages = list(body.get("messages") or [])
                 reply = payload.get("message")
                 if isinstance(reply, str):
@@ -1605,6 +1610,9 @@ class WorkspaceService:
                 return (409 if error == "session_still_active" else 404), {"error": error}, "application/json"
             return 200, {"ok": True, "session_id": session_id}, "application/json"
         if len(parts) == 4 and parts[0] == "sessions" and parts[2:4] == ["ai", "chat"]:
+            status, payload, content_type = self._proxy("DELETE", path)
+            if status != 200:
+                return status, payload, content_type
             if not self.store.clear_ai_chat(parts[1]):
                 return 404, {"error": "session_not_found"}, "application/json"
             return 200, {"ok": True, "session_id": parts[1]}, "application/json"
@@ -1701,7 +1709,7 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
         """Dispatch one local HTTP request."""
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        qs = urllib.parse.parse_qs(parsed.query)
+        qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=path == "/api/v1/ai/jobs")
         # The login page and its static assets must load before the browser can
         # submit an API token. Operator data and actions still require auth.
         if method == "GET" and self._static(path):

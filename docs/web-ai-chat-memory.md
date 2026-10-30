@@ -114,3 +114,15 @@ The web UI clears the panel when the current session is killed or deleted.
 | `web/ai.js` | Load, render, reset |
 | `web/app.js` | Session lifecycle hooks |
 | `docs/session-history.md` | Transcript storage layout |
+
+## Background jobs and reconnect recovery
+
+The WebUI now submits `/api/v1/ai/jobs` rather than waiting on `/ai/chat`.
+Accepted work continues in the central server when the browser disconnects.
+The server persists scoped job status and final `result.chat_messages`; the UI
+recovers that transcript on reconnect, including in workspace mode. Ordinary
+workspace chat storage remains local, while reconnectable execution results
+are stored in the central job database. Reset dismisses completed jobs so old
+results do not repopulate cleared chat; active jobs prevent reset.
+See [Background AI jobs](ai-background-jobs.md) for API, storage, and restart
+semantics. Server restart interrupts work without automatically replaying it.

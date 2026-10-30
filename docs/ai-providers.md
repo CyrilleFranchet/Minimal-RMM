@@ -37,3 +37,12 @@ Chat history is owned by Minimal-RMM and stored per selected session. The provid
 7. Send a chat request and confirm the selected provider and model produce a response with RMM tool activity when appropriate.
 8. Start validation and confirm the key input and validation button are disabled until the request completes.
 9. With a custom model selected, type a provider key and confirm focus remains in that key field.
+
+## Background execution
+
+The WebUI uses the asynchronous `/api/v1/ai/jobs` API with the same provider
+configuration and a unique request ID. The legacy `/ai/chat` API stays
+synchronous. Provider loops accept an optional progress callback, invoked at
+model/tool boundaries, which records safe job metadata and checks shutdown.
+See [Background AI jobs](ai-background-jobs.md). Request credentials stay in
+worker memory; completed chat and tool traces remain sensitive persisted data.
