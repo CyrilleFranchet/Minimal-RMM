@@ -7,6 +7,7 @@ from rmm_settings import getenv as settings_getenv
 import asyncio
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
@@ -207,10 +208,19 @@ def _chat_completion_message(provider: str, response: dict) -> dict:
     return {"content": "".join(content_parts), "tool_calls": tool_calls}
 
 
+def _final_response_error(text: str, truncated: bool) -> str | None:
+    """Reject output-limit stops and tool-call markup returned as plain text."""
+    if truncated:
+        return "provider_output_truncated"
+    if re.search(r"<\s*/?\s*(?:tool_call|arg_key|arg_value)\b", text, re.IGNORECASE):
+        return "malformed_tool_call_text"
+    return None
+
+
 def _append_task_timing(result: dict, started_at: datetime, completed_at: datetime) -> dict:
-    """Append server-generated UTC task timing to a successful AI response."""
+    """Append authoritative timing and available round counts to an AI response."""
     message = result.get("message")
-    if not result.get("ok") or not isinstance(message, str):
+    if not isinstance(message, str):
         return result
     started = (
         started_at.astimezone(timezone.utc)
@@ -225,11 +235,22 @@ def _append_task_timing(result: dict, started_at: datetime, completed_at: dateti
         .replace("+00:00", "Z")
     )
     enriched = dict(result)
+    if result.get("error") == "malformed_tool_call_text":
+        message += (
+            "\n\n## Response status\n"
+            "Incomplete: the provider returned tool-call markup as plain text. "
+            "That text was not executed. Inspect prior tool history before retrying."
+        )
     enriched["message"] = (
         f"{message.rstrip()}\n\n## Task timing\n"
         f"- Started (UTC): {started}\n"
         f"- Completed (UTC): {completed}"
     )
+    if "rounds_used" in result:
+        enriched["message"] += (
+            f"\n- Rounds consumed: {result['rounds_used']} / {result['max_tool_rounds']}"
+            " (provider requests, including the final response)"
+        )
     return enriched
 
 
@@ -284,9 +305,15 @@ async def _run_provider_loop(
             message = _chat_completion_message(provider, response)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
+                truncated = response["choices"][0].get("finish_reason") == "length"
+                text = _message_text(message.get("content"))
+                error = _final_response_error(text, truncated)
                 return {
-                    "ok": True,
-                    "message": _message_text(message.get("content")),
+                    "ok": error is None,
+                    **({"error": error} if error else {}),
+                    "rounds_used": round_index + 1,
+                    "max_tool_rounds": total_rounds,
+                    "message": text,
                     "tool_calls_made": tool_log,
                     "usage": response.get("usage"),
                     "via": via,
@@ -345,13 +372,18 @@ async def _run_provider_loop(
             blocks = response.get("content") or []
             calls = [block for block in blocks if block.get("type") == "tool_use"]
             if not calls:
+                truncated = response.get("stop_reason") == "max_tokens"
                 text = "".join(
                     str(block.get("text", ""))
                     for block in blocks
                     if block.get("type") == "text"
                 )
+                error = _final_response_error(text, truncated)
                 return {
-                    "ok": True,
+                    "ok": error is None,
+                    **({"error": error} if error else {}),
+                    "rounds_used": round_index + 1,
+                    "max_tool_rounds": total_rounds,
                     "message": text,
                     "tool_calls_made": tool_log,
                     "usage": response.get("usage"),
@@ -378,6 +410,14 @@ async def _run_provider_loop(
     return {
         "ok": False,
         "error": "max_tool_rounds_exceeded",
+        "rounds_used": total_rounds,
+        "message": (
+            "## Task report\n\n"
+            f"- Work completed: {len(tool_log)} tool calls returned results.\n"
+            "- Result: Task completion is unconfirmed; the round limit was reached.\n"
+            "- Evidence: Inspect the tool history before retrying; returned tool results "
+            "do not establish that each operation succeeded."
+        ),
         "tool_calls_made": tool_log,
         "max_tool_rounds": total_rounds,
         "via": via,

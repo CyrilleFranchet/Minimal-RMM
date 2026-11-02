@@ -11,6 +11,53 @@ import rmm_ai
 class AiProviderTests(unittest.TestCase):
     """Validate provider-specific HTTP shapes without live provider credentials."""
 
+    def test_truncated_responses_preserve_text_and_count_rounds(self):
+        async def call_tool(name, arguments):
+            self.fail("No tools should run")
+
+        for provider, response in (
+            ("openai", {"choices": [{"message": {"content": "Partial"}, "finish_reason": "length"}]}),
+            ("mistral", {"choices": [{"message": {"content": "Partial"}, "finish_reason": "length"}]}),
+            ("anthropic", {"content": [{"type": "text", "text": "Partial"}], "stop_reason": "max_tokens"}),
+        ):
+            with self.subTest(provider=provider), patch("rmm_ai._json_request", return_value=response):
+                result = asyncio.run(rmm_ai._run_provider_loop(
+                    provider=provider, api_key="test", messages=[], model="test",
+                    system="test", tools=[], call_tool=call_tool, max_rounds=2, via="direct",
+                ))
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], "provider_output_truncated")
+                self.assertEqual(result["message"], "Partial")
+                self.assertEqual(result["rounds_used"], 1)
+                now = datetime.now(timezone.utc)
+                report = rmm_ai._append_task_timing(result, now, now)
+                self.assertIn("Rounds consumed: 1 /", report["message"])
+                self.assertIn("Partial", report["message"])
+
+    def test_malformed_tool_text_is_rejected_without_execution(self):
+        async def call_tool(name, arguments):
+            self.fail("No tools should run")
+
+        for provider, response in (
+            ("openai", {"choices": [{"message": {"content": "<tool_call>placeholder</arg_value>"}, "finish_reason": "stop"}]}),
+            ("mistral", {"choices": [{"message": {"content": "<tool_call>placeholder</arg_value>"}, "finish_reason": "stop"}]}),
+            ("anthropic", {"content": [{"type": "text", "text": "<tool_call>placeholder</arg_value>"}], "stop_reason": "end_turn"}),
+        ):
+            with self.subTest(provider=provider), patch("rmm_ai._json_request", return_value=response):
+                result = asyncio.run(rmm_ai._run_provider_loop(
+                    provider=provider, api_key="test", messages=[], model="test",
+                    system="test", tools=[], call_tool=call_tool, max_rounds=2, via="direct",
+                ))
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], "malformed_tool_call_text")
+                self.assertEqual(result["message"], "<tool_call>placeholder</arg_value>")
+                self.assertEqual(result["rounds_used"], 1)
+                now = datetime.now(timezone.utc)
+                report = rmm_ai._append_task_timing(result, now, now)
+                self.assertIn("Rounds consumed: 1 /", report["message"])
+                self.assertIn("<tool_call>placeholder</arg_value>", report["message"])
+                self.assertIn("That text was not executed", report["message"])
+
     def test_max_tool_rounds_reads_positive_environment_value(self):
         with patch.dict("os.environ", {"RMM_AI_MAX_TOOL_ROUNDS": "48"}):
             self.assertEqual(rmm_ai._max_tool_rounds(), 48)

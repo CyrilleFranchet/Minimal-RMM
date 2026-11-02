@@ -130,3 +130,18 @@ are stored in the central job database. Reset dismisses completed jobs so old
 results do not repopulate cleared chat; active jobs prevent reset.
 See [Background AI jobs](ai-background-jobs.md) for API, storage, and restart
 semantics. Server restart interrupts work without automatically replaying it.
+
+## Task completion diagnostics
+
+Final provider responses include server-counted rounds consumed and the total
+round budget under Task timing. A round is one provider request, including
+the final response. Exhausting the round budget produces an explicit incomplete
+report with timing and counts. Provider output-limit stops are marked failed
+(`provider_output_truncated`); their partial text is retained for inspection.
+These diagnostics do not establish that the requested task succeeded.
+
+`_final_response_error` also rejects plain-text tool-call markup such as
+`<tool_call>`, `<arg_key>`, or `<arg_value>` with `malformed_tool_call_text`.
+The preserved response includes an incomplete-status notice, timing, and rounds.
+No command is parsed or executed from this text, and no automatic retry occurs.
+This conservative check also flags literal examples of these tags in answers.

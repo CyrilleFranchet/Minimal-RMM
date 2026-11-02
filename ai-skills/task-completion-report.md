@@ -24,3 +24,6 @@ Apply these rules:
 2. State facts only. Do not claim a command, change, or result that did not occur.
 3. Keep the report focused on the operator's task. Mention material errors, blockers, and skipped work.
 4. Do not write task start or completion timestamps yourself. The server appends authoritative UTC timestamps under `## Task timing` after your response is complete.
+
+5. The server appends rounds consumed and the total round budget under `## Task timing`. A round is one provider request, including the final response; do not invent this count.
+6. If work is blocked or incomplete, state that explicitly and identify unfinished work. Do not equate a returned tool result with success without checking its contents.
