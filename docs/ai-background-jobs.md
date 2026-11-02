@@ -63,6 +63,21 @@ existing clients. It does not gain reconnectable job semantics.
 
 ## Validation
 
+### Failure diagnostics
+
+Unhandled worker exceptions persist `result.diagnostics.exception_chain` in the
+existing job record, accessible through `ai job JOB_ID` and the owner-scoped API.
+Each entry contains the exception type, up to 12 traceback line numbers, and an
+HTTP status for urllib HTTP errors. `_failure_diagnostics` follows at most eight
+causes or unsuppressed contexts and handles cycles. It excludes exception
+messages, URLs, headers, source text, and local variables. The existing `progress`
+field identifies the last model round or tool checkpoint; it is not proof that
+the corresponding operation failed or had no effects. No partial tool outputs
+are retained by this diagnostic mechanism.
+
+Deploy and restart the server to enable this for future failures. Existing failed
+jobs cannot recover discarded exception details. No database migration is needed.
+
 Tests cover job lifecycle, persistence, ownership, idempotency, bounded admission,
 interruption, HTTP handler independence, workspace routing, CLI/MCP inspection,
 and browser reconnection. These use fake providers and tools and do not execute

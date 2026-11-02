@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 
 from rmm_ai_jobs import AIJobManager, JobCapacityError, JobClosedError, JobConflictError, JobInterrupted
@@ -194,6 +195,30 @@ class AIJobManagerTests(unittest.TestCase):
         job, _ = self.submit(run=run)
         final = self.wait_for(job["id"], {"failed"})
         self.assertNotIn("private-token", json.dumps(final))
+        self.assertNotIn(b"private-token", self.path.read_bytes())
+
+    def test_wrapped_provider_failure_retains_safe_diagnostics(self):
+        def run(progress):
+            progress({"phase": "model", "round": 33})
+            try:
+                raise urllib.error.HTTPError("https://private-host/private-token", 429,
+                                             "Bearer private-token", {}, None)
+            except urllib.error.HTTPError as error:
+                raise RuntimeError("private-token") from error
+
+        job, _ = self.submit(run=run)
+        final = self.wait_for(job["id"], {"failed"})
+        self.assertEqual(final["progress"], {"phase": "model", "round": 33})
+        chain = final["result"]["diagnostics"]["exception_chain"]
+        self.assertEqual([item["type"] for item in chain], ["RuntimeError", "HTTPError"])
+        self.assertEqual(chain[1]["http_status"], 429)
+        self.assertTrue(chain[0]["traceback_lines"])
+        self.assertIsNone(self.manager.get(job["id"], "other"))
+        self.assertNotIn("private-token", json.dumps(final))
+        self.assertNotIn("private-host", json.dumps(final))
+        with sqlite3.connect(self.path) as connection:
+            stored = connection.execute("SELECT result FROM ai_jobs WHERE id=?", (job["id"],)).fetchone()[0]
+        self.assertEqual(json.loads(stored), final["result"])
         self.assertNotIn(b"private-token", self.path.read_bytes())
 
     def test_dismiss_preserves_history_and_owner_scope(self):

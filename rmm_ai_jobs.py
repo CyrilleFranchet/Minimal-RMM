@@ -6,6 +6,7 @@ import re
 import sqlite3
 import threading
 import uuid
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +30,30 @@ class JobInterrupted(RuntimeError):
 def _now():
     """Return an ISO 8601 UTC timestamp for persisted job transitions."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _failure_diagnostics(error):
+    """Extract bounded exception metadata without messages, locals, or URLs."""
+    chain = []
+    seen = set()
+    while error is not None and id(error) not in seen and len(chain) < 8:
+        seen.add(id(error))
+        name = type(error).__name__
+        item = {"type": name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else "Exception"}
+        if isinstance(error, urllib.error.HTTPError):
+            code = error.code
+            if type(code) is int and 100 <= code <= 599:
+                item["http_status"] = code
+        # Line numbers locate failures without exposing paths or source text.
+        frames = []
+        frame = error.__traceback__
+        while frame is not None:
+            frames.append(frame.tb_lineno)
+            frame = frame.tb_next
+        item["traceback_lines"] = frames[-12:]
+        chain.append(item)
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    return {"exception_chain": chain}
 
 
 def _safe_progress(event):
@@ -243,9 +268,13 @@ class AIJobManager:
             self._finish(job_id, "succeeded" if result.get("ok") else "failed", result=result)
         except JobInterrupted:
             self._finish(job_id, "interrupted", error="Server stopped; execution was not replayed.")
-        except Exception:
+        except Exception as exc:
             # Provider/tool exceptions may contain credentials or raw requests.
-            self._finish(job_id, "failed", error="AI execution failed. Inspect server diagnostics and session events before retrying.")
+            self._finish(
+                job_id, "failed",
+                result={"ok": False, "diagnostics": _failure_diagnostics(exc)},
+                error="AI execution failed. Inspect job result diagnostics and session events before retrying.",
+            )
         finally:
             if acquired:
                 self._slots.release()
