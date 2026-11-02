@@ -23,11 +23,25 @@ function setup(api) {
   const context = vm.createContext({ window, document: { querySelector: s => nodes.get(s) || null, createElement: element },
     localStorage, sessionStorage: localStorage, crypto, setTimeout: () => 1, clearTimeout() {}, confirm: () => true });
   const exposed = source.replace(/\}\)\(\);\s*$/, `window.test = { syncAiChatWithSession, sendAiMessage, refreshAiJob, resetAiChatForCurrentSession,
-    state: () => ({ history: chatHistory, token: chatLoadToken, sending }), jobState }; })();`);
+    formatAiFailureDetails, displayAiJob, state: () => ({ history: chatHistory, token: chatLoadToken, sending }), jobState }; })();`);
   vm.runInContext(exposed, context);
   return { window, test: window.test, nodes, storage };
 }
 (async () => {
+  const diagnosticUi = setup(async () => ({ status: 200, data: { messages: [] } }));
+  await diagnosticUi.test.syncAiChatWithSession('a');
+  const failed = { id: 'job-failed', status: 'failed', progress: { phase: 'model', round: 7 },
+    result: { message: 'Partial report', diagnostics: { exception_chain: [
+      { type: 'HTTPError', http_status: 429, traceback_lines: [55], message: 'secret-token' }
+    ] } } };
+  diagnosticUi.test.displayAiJob(failed, 'a', diagnosticUi.test.state().token);
+  assert.equal(diagnosticUi.test.state().history.at(-1).content, 'Partial report');
+  const details = diagnosticUi.test.formatAiFailureDetails(failed);
+  assert.match(details, /HTTP 429/);
+  assert.match(details, /Last recorded round: 7/);
+  assert.ok(!details.includes('secret-token'));
+  diagnosticUi.test.displayAiJob(failed, 'a', diagnosticUi.test.state().token);
+  assert.equal(diagnosticUi.test.state().history.filter(m => m.content === 'Partial report').length, 1);
   const calls = [];
   let jobs = [];
   let failPost = true;

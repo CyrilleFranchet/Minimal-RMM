@@ -469,6 +469,31 @@
     return typeof job.created_at === "number" ? job.created_at * 1000 : Date.parse(job.created_at || "") || 0;
   }
 
+  function formatAiFailureDetails(job) {
+    const label = value => typeof value === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(value) ? value : "";
+    const details = [];
+    if (label(job.id)) details.push("Job: " + job.id);
+    const progress = job.progress || {};
+    if (Number.isInteger(progress.round) && progress.round >= 0) details.push("Last recorded round: " + progress.round);
+    const location = [label(progress.phase), label(progress.tool), label(progress.status)].filter(Boolean);
+    if (location.length) details.push("Last activity: " + location.join(" / "));
+    const chain = job.result?.diagnostics?.exception_chain;
+    if (Array.isArray(chain)) {
+      for (const item of chain.slice(0, 8)) {
+        if (!item || !label(item.type)) continue;
+        let detail = item.type;
+        if (Number.isInteger(item.http_status) && item.http_status >= 100 && item.http_status <= 599) {
+          detail += " (HTTP " + item.http_status + ")";
+        }
+        const lines = Array.isArray(item.traceback_lines)
+          ? item.traceback_lines.filter(n => Number.isInteger(n) && n > 0).slice(-12) : [];
+        if (lines.length) detail += " [traceback lines: " + lines.join(", ") + "]";
+        details.push(detail);
+      }
+    }
+    return details.length ? " " + details.join(" · ") : "";
+  }
+
   function displayAiJob(job, sessionId, token) {
     if (!currentChat(sessionId, token)) return;
     const saved = jobState(sessionId);
@@ -491,19 +516,21 @@
     }
     clearTimeout(jobPollTimer);
     setJobBusy(false);
-    if (job.status === "succeeded") {
-      const result = job.result || {};
+    const result = job.result || {};
+    if (job.status === "succeeded" || typeof result.message === "string") {
       if (Array.isArray(result.chat_messages)) {
         chatHistory = normalizeStoredMessages(result.chat_messages);
       } else if (typeof result.message === "string" && !chatHistory.some((m) => m.role === "assistant" && m.content === result.message)) {
         chatHistory.push({ role: "assistant", content: result.message, toolCalls: result.tool_calls_made });
       }
       renderChatLog();
+    }
+    if (job.status === "succeeded") {
       showJobStatus("Task completed on the server.");
     } else {
       showJobStatus(job.status === "interrupted"
         ? "Task interrupted by server shutdown. Check completed actions before starting another task; it was not automatically replayed."
-        : "Task failed. " + (typeof job.error === "string" ? job.error : job.result?.error || "Inspect the task and agent history before retrying."));
+        : "Task failed. " + (typeof job.error === "string" ? job.error : job.result?.error || "Inspect the task and agent history before retrying.") + formatAiFailureDetails(job));
     }
   }
 

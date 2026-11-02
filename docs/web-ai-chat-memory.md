@@ -150,3 +150,9 @@ boundaries. Exhausted retries retain the failed response and incomplete notice.
 The result field `malformed_response_retries` records retries consumed.
 Transport errors and output-limit truncation are not automatically retried.
 This conservative check also flags literal examples of these tags in answers.
+
+The WebUI displays partial reports for failed jobs. `formatAiFailureDetails`
+adds the job ID, last recorded round/activity, and bounded server diagnostics
+(exception types, HTTP status, traceback line numbers) to the failure status.
+Raw exception messages, URLs, and credentials are excluded. The last recorded
+round is a progress checkpoint, not proof that the round completed.
