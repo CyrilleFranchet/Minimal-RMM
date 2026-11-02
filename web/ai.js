@@ -796,6 +796,18 @@
     $("#ai-panel-close")?.addEventListener("click", () => setAiPanelOpen(false));
     $("#ai-chat-reset-btn")?.addEventListener("click", resetAiChatForCurrentSession);
 
+    $("#ai-chat-input")?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        const input = e.currentTarget;
+        input.setRangeText("\n", input.selectionStart, input.selectionEnd, "end");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (!e.repeat) {
+        $("#ai-chat-form")?.requestSubmit();
+      }
+    });
+
     $("#ai-chat-form")?.addEventListener("submit", (e) => {
       e.preventDefault();
       const input = $("#ai-chat-input");

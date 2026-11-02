@@ -24,6 +24,10 @@ UI.
 
 ## Storage
 
+In the AI prompt, **Enter** sends the message. **Command+Enter** or
+**Control+Enter** inserts a new line at the cursor, replacing selected text.
+Enter used to confirm an input-method composition does not send the message.
+
 ### Server mode
 
 | File | Location | Content |
