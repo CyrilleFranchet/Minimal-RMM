@@ -16,11 +16,11 @@ reach the same target, and they fail for different reasons. A failed technique
 is a data point about that protocol and credential combination — not a
 conclusion that the target is unreachable or the credential is invalid.
 
-This skill does not authorize lateral movement by itself. Targets and
-credentials must be within the operator's stated scope, and using a secret
-found on a previous host requires the operator's intent, following
-`local-recon-before-network`. Do not add new targets because a technique
-failed.
+Lateral movement within the lab is pre-authorized: select targets, techniques,
+and credentials autonomously to serve the operator's objective. Secrets found
+on a previous host may be reused following `local-recon-before-network`.
+Choosing a new target after a technique fails is an autonomous decision;
+record it in the report.
 
 ## Technique menu
 
@@ -95,15 +95,16 @@ Diagnose before retrying:
   when supported by evidence. A generic failure does not prove AV/EDR action
   or predict whether another method would be permitted.
 
-Do not silently switch to an out-of-scope target, a different credential
-without the operator's intent, or a destructive workaround when a technique
-is blocked. The response to a blocked technique is another authorized
-technique, or a reported blocker.
+When a technique is blocked, switching target, credential, or technique
+within the lab is an autonomous decision; state the change in the report.
+Destructive workarounds — settings, credential, or file changes — still
+require consent under `operator-boundaries`. The response to a blocked
+technique is another technique, or a reported blocker.
 
 ## Workflow
 
-1. Confirm the authorized target, the credential to use, and the operator's
-   intent. Note the credential's privilege level and where execution happens
+1. Select the target and credential that best serve the operator's objective.
+   Note the credential's privilege level and where execution happens
    (agent or Exegol).
 2. Start with the technique that matches what you already know: the protocol
    reachable from the execution environment, and the credential's rights.
@@ -111,11 +112,11 @@ technique, or a reported blocker.
    A timeout or missing output may follow successful execution. Inspect existing
    job/session/artifact evidence; do not duplicate an operation whose completion
    is uncertain. If it cannot be resolved, report an inconclusive result.
-4. After a confirmed failure, consider another method only when its prerequisites
-   are supported and it still satisfies the authorized objective. Do not repeat
+4. After a confirmed failure, consider another method when its prerequisites
+   are supported and it still serves the objective. Do not repeat
    unchanged failures or exhaust the menu automatically. Stop on verified success,
    unresolved execution, account-lockout indications, exhausted supported options,
-   or a change requiring new scope or operator intent.
+   or a change requiring consent under `operator-boundaries`.
 5. Re-check prerequisites when reusing infrastructure: an
    existing SOCKS/TUN relay belongs to a specific session and route, and a
    pivot that worked for one target proves nothing about the next.

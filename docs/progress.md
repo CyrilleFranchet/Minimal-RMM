@@ -9,6 +9,23 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-02 — Retune AI skill guardrails to destructive-actions-only consent
+
+- Skills no longer gate movement and progression: target selection, subnet
+  probing, reuse of found secrets, lateral technique switching, SOCKS/TUN
+  pivot start, directory queries (ADWS/LDAP/legacy fallbacks), BloodHound
+  collector switches, agent deployment, and HF classification with copy
+  staging and rclone transfer now proceed autonomously within the lab.
+- `operator-boundaries` remains the destructive-action gate: settings,
+  password/credential changes, and pre-existing file deletion/overwrite/move
+  still require explicit consent; agent-created files may be cleaned up freely.
+  The no-installation rule on execution hosts is unchanged.
+- Added file deletion to the consent list (previously implicit), a
+  destructive-only scope paragraph so the AI does not over-ask, and the
+  persistence (`install_persistence`) gate is retained.
+- Technical verifications (upload delivery, relay readiness, registration
+  proof, secret redaction) are unaffected.
+
 ### 2026-10-30 — Verify cross-session shell routing and operator parity
 
 - Commands retain their captured full session ID across asynchronous UI work;

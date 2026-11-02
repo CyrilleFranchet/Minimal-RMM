@@ -55,8 +55,8 @@ configuration, and domain context before choosing targets or routes.
    Do not create a pivot just because the agent is selected.
 3. Check `list_socks` and `list_tun` so an existing relay is reused when it
    matches the selected session.
-4. Keep the target scope and routes supplied by the operator. Do not broaden a
-   route to `0.0.0.0/0` or scan unrelated networks.
+4. Choose the routes the task needs; lab subnets may be added without
+   confirmation. Do not broaden a route to `0.0.0.0/0`.
 
 Use the smallest transport that supports the requested Exegol tool:
 

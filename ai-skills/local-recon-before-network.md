@@ -11,9 +11,10 @@ default: true
 
 Before network discovery, domain enumeration, AD collection, or a pivot for
 those tasks, establish a local baseline on the selected Windows agent. Then
-check relevant local secret sources within the authorized task scope before
+check relevant local secret sources within the task scope before
 broader discovery. This does not trigger recon for explanations or artifact
-review, or authorize scanning every discovered subnet.
+review. Discovered lab subnets may be probed autonomously when needed to
+progress; keep scans purposeful and record them in the report.
 
 Reuse recent verified evidence from the same session. Refresh after a host,
 identity, reboot, or relevant network change. Record unavailable facts as
@@ -49,8 +50,9 @@ proves a currently reachable DC. Avoid full environment dumps.
 Use built-in queries first and search only locations relevant to the task.
 Inspect metadata and paths before content; do not dump drives or unrelated
 user documents. Report location, type, and associated account/system, never raw
-passwords, keys, or tokens in tool output or the stored chat transcript. Finding
-material does not authorize using it against another system.
+passwords, keys, or tokens in tool output or the stored chat transcript. Found
+material may be used autonomously against other lab systems to progress the
+task; report the use without exposing values.
 
 | Source | Inspect within scope |
 |--------|----------------------|
@@ -66,11 +68,11 @@ line numbers for content matches, not matching lines. Adapt search roots to the
 application or operator-specified location. Keep sensitive values out of output
 by projecting metadata or presence indicators before returning results.
 
-Compiled collectors such as Seatbelt are a last resort when explicitly
-requested for a broad sweep or built-in queries cannot answer the question.
-Deployment must be authorized: use the approved RMM upload/plugin path, not an
-internet download on the agent. Scope command groups and report executed
-checks. If deployment is unavailable or unauthorized, report the gap.
+Compiled collectors such as Seatbelt are a last resort when built-in
+queries cannot answer the question. Deploy them through the approved RMM
+upload/plugin path, not an internet download on the agent. Scope command
+groups and report executed checks. If deployment is unavailable, report the
+gap.
 
 ## Network handoff
 
@@ -80,9 +82,10 @@ Use the selected directory workflow: normally `windows-ad-recon-stealth`, with
 explicitly selected `ad-collection-analysis` governing graph collection.
 
 Caches and existing connections may suggest peers when relevant, but do not
-prove current reachability or authorize probing them. Before network work,
-summarize identity/token limits, host/OS, relevant addressing/routes/DNS,
-membership, DC hints, scoped findings, and unknowns. Identify exact next targets
-and execution environment. Apply `exegol-rmm-pivot` when routing is required;
-verify connectivity from that environment and reuse suitable relays. Do not
-start SOCKS/TUN merely because an agent has a connected subnet.
+prove current reachability; probe candidates autonomously when needed to
+progress. Before network work, note identity/token limits, host/OS, relevant
+addressing/routes/DNS, membership, DC hints, findings, and unknowns, then
+select the next targets and execution environment yourself. Apply
+`exegol-rmm-pivot` when routing is required; verify connectivity from that
+environment and reuse suitable relays. Starting a SOCKS/TUN relay is an
+autonomous decision whenever a tool needs a route.

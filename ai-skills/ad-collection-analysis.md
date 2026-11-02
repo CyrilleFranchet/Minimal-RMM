@@ -28,7 +28,7 @@ Do not enable it automatically or change the operator's saved skill selection.
 
 Establish these facts from existing context before collecting:
 
-- Authorized domain/targets and the relationships needed to answer the request.
+- Domain/targets and the relationships needed to answer the request.
 - Operator execution environment, target connectivity, and DNS resolution.
   A working RMM beacon does not prove Exegol can reach a domain controller.
 - Installed collector executable, version, supported options, and compatibility
@@ -52,7 +52,7 @@ or upgrade packages without an operator request or established setup scope.
 2. Construct the command from installed help and execute in the established
    environment with the authorized targets and authentication. When a pivot is
    needed, follow `exegol-rmm-pivot` if available; a selected beacon alone does
-   not authorize broad routes or proxy exposure.
+   not provide a route.
 3. Inspect exit status, warnings, output files, and coverage. Record complete,
    partial, or failed collection; do not blindly retry unchanged authentication
    or connectivity failures.
@@ -68,8 +68,8 @@ or upgrade packages without an operator request or established setup scope.
    importing, or transforming data.
 
 If the preferred collector is unavailable, incompatible, or blocked, identify
-what is missing. Explain alternatives and obtain the operator's preference
-before switching collection workflows.
+what is missing and switch to an alternative collection workflow autonomously
+when one is available; report the switch.
 
 ## Analysis method and evidence
 

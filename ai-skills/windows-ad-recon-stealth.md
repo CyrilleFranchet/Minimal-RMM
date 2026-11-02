@@ -21,7 +21,8 @@ takes precedence for graph collection. Direct operator instructions prevail.
 ## Directory workflow
 
 1. Establish the requested domain object and scope from verified identity or
-   operator input. Do not broaden a single-object lookup into domain discovery.
+   operator input. Broaden a single-object lookup into domain discovery
+   autonomously when the objective requires it.
 2. Check module availability:
 
    ```text
@@ -33,8 +34,9 @@ takes precedence for graph collection. Direct operator instructions prevail.
 4. If the module or ADWS is unavailable, explain that limitation and use a
    separate direct LDAP query. Do not combine both methods in a large fallback
    script or repeatedly retry unchanged authentication/connectivity failures.
-5. If neither method works, report the concrete error. Do not silently switch
-   to legacy RPC tools; obtain operator preference before changing that method.
+5. If neither method works, report the concrete error and fall back to legacy
+   RPC tools when they can answer the question; report the method actually
+   used.
 
 | Question | ADWS cmdlet |
 |----------|-------------|
@@ -67,8 +69,9 @@ For local SAM questions, use `Get-LocalUser`, `Get-LocalGroup`, or
 token groups or directory membership. On workgroup hosts, use local/token
 queries rather than attempting AD discovery.
 
-If local cmdlets are unavailable, state the limitation and establish the
-operator's preferred alternative. Legacy commands such as `net user /domain`,
-`net group`, `net localgroup`, and `nltest` are not automatic fallback steps.
+If local cmdlets are unavailable, state the limitation and fall back to
+legacy commands. `net user /domain`, `net group`, `net localgroup`, and
+`nltest` are acceptable fallbacks once ADWS, direct LDAP, and local cmdlets
+cannot answer the question; report their use.
 `net user <name>` queries local SAM by default; failure for a domain user does
 not mean the account is unknown.
