@@ -66,8 +66,8 @@ Add optional JSON field:
 { "skill_ids": ["windows-user-profile-path", "another-skill"] }
 ```
 
-- **Omitted** or **`null`**: skills with `default: true` in frontmatter.
-- **Empty array `[]`**: no skills (base prompt only).
+- **Omitted** or **`null`**: skills with `default: true` or `always: true` in frontmatter.
+- **Empty array `[]`**: only skills with `always: true`.
 - **Non-empty array**: those skill ids plus every `always: true` skill.
 
 ## Web UI
@@ -83,6 +83,7 @@ another click. Default and always-enabled skills are marked in the list.
 
 | File | Purpose |
 |------|---------|
+| `ai-skills/operator-boundaries.md` | **Always enabled.** Prohibit installations on execution hosts; require explicit, scoped operator consent before local or remote settings and password changes. |
 | `ai-skills/agent-command-dispatch.md` | **Default.** CMD vs PowerShell dispatch; always use `PS:` for PowerShell (CMD breaks `\|` in `powershell -Command`). |
 | `ai-skills/windows-identity-and-groups.md` | **Default.** Identity and groups via `whoami` / token; do not use `net user %USERNAME%` on domain accounts. |
 | `ai-skills/windows-ad-recon-stealth.md` | **Default.** Prefer **ADWS** (`Get-AD*`) over direct LDAP and `net.exe` RPC recon. |
@@ -94,6 +95,19 @@ another click. Default and always-enabled skills are marked in the list.
 | `ai-skills/local-recon-before-network.md` | **Default.** Establish agent identity, token, OS, interfaces/routes, and domain context before network discovery; distinguish local DC hints from live directory lookups; then hunt scoped local secrets (scheduled tasks, web configs, etc.) to progress faster, with Seatbelt-style tools as a last resort. |
 | `ai-skills/lateral-movement.md` | **Optional, off by default.** Evaluate authorized remote-access attempts, verify completion before changing methods, and report success, partial completion, failure, or uncertainty with sanitized evidence. |
 | `ai-skills/agent-deployment.md` | **Optional, off by default.** Deploy an RMM agent on another authorized machine end to end: `deploy_agent_script` or `build_go_agent` produce server-configured artifacts, `queue_upload` stages them, a lateral technique executes them, and registration in `list_sessions` is the only success proof; artifact contents stay out of chat output. |
+
+### Operator boundaries
+
+`operator-boundaries` applies across technique skills, including lateral
+movement and deployment. Existing authorization for a specific setting or
+credential change remains valid; broad task authorization does not supply it.
+Installations on execution hosts remain prohibited under this skill.
+
+These are model instructions, not a tool-level enforcement mechanism.
+`always: true` includes the skill regardless of chat skill selection, but
+runtime asset disable overrides, workspace overlays, or an alternate skills
+directory can still remove or replace it. Hard enforcement requires separate
+tool authorization controls.
 
 ### Why `PS:` matters for the AI
 
