@@ -270,6 +270,7 @@ async def _run_provider_loop(
     """Run one provider's native chat and tool-calling protocol until a final reply."""
     tool_log: list[dict] = []
     total_rounds = max_rounds * (MAX_TOOL_CONTINUATIONS + 1)
+    malformed_retries = 0
 
     def add_continuation_prompt(convo: list[dict]) -> None:
         """Tell the provider to continue a long task after an internal checkpoint."""
@@ -308,10 +309,22 @@ async def _run_provider_loop(
                 truncated = response["choices"][0].get("finish_reason") == "length"
                 text = _message_text(message.get("content"))
                 error = _final_response_error(text, truncated)
+                if error == "malformed_tool_call_text" and malformed_retries < 2 and round_index + 1 < total_rounds:
+                    malformed_retries += 1
+                    convo.append({"role": "assistant", "content": text})
+                    convo.append({"role": "user", "content": (
+                        "Your last response contained tool-call markup as plain text; "
+                        "that text was not executed. Use the native structured tool-call "
+                        "interface if further work is required, or provide a factual final report. "
+                        "Preserve prior results and do not repeat completed operations. "
+                        "All existing authorization and operator-consent boundaries still apply."
+                    )})
+                    continue
                 return {
                     "ok": error is None,
                     **({"error": error} if error else {}),
                     "rounds_used": round_index + 1,
+                    "malformed_response_retries": malformed_retries,
                     "max_tool_rounds": total_rounds,
                     "message": text,
                     "tool_calls_made": tool_log,
@@ -379,10 +392,22 @@ async def _run_provider_loop(
                     if block.get("type") == "text"
                 )
                 error = _final_response_error(text, truncated)
+                if error == "malformed_tool_call_text" and malformed_retries < 2 and round_index + 1 < total_rounds:
+                    malformed_retries += 1
+                    convo.append({"role": "assistant", "content": text})
+                    convo.append({"role": "user", "content": (
+                        "Your last response contained tool-call markup as plain text; "
+                        "that text was not executed. Use the native structured tool-call "
+                        "interface if further work is required, or provide a factual final report. "
+                        "Preserve prior results and do not repeat completed operations. "
+                        "All existing authorization and operator-consent boundaries still apply."
+                    )})
+                    continue
                 return {
                     "ok": error is None,
                     **({"error": error} if error else {}),
                     "rounds_used": round_index + 1,
+                    "malformed_response_retries": malformed_retries,
                     "max_tool_rounds": total_rounds,
                     "message": text,
                     "tool_calls_made": tool_log,
@@ -411,6 +436,7 @@ async def _run_provider_loop(
         "ok": False,
         "error": "max_tool_rounds_exceeded",
         "rounds_used": total_rounds,
+        "malformed_response_retries": malformed_retries,
         "message": (
             "## Task report\n\n"
             f"- Work completed: {len(tool_log)} tool calls returned results.\n"

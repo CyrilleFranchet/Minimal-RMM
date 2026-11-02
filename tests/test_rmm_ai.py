@@ -51,12 +51,35 @@ class AiProviderTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["error"], "malformed_tool_call_text")
                 self.assertEqual(result["message"], "<tool_call>placeholder</arg_value>")
-                self.assertEqual(result["rounds_used"], 1)
+                self.assertEqual(result["rounds_used"], 3)
+                self.assertEqual(result["malformed_response_retries"], 2)
                 now = datetime.now(timezone.utc)
                 report = rmm_ai._append_task_timing(result, now, now)
-                self.assertIn("Rounds consumed: 1 /", report["message"])
+                self.assertIn("Rounds consumed: 3 /", report["message"])
                 self.assertIn("<tool_call>placeholder</arg_value>", report["message"])
                 self.assertIn("That text was not executed", report["message"])
+
+    def test_malformed_response_retry_recovers(self):
+        async def call_tool(name, arguments):
+            self.fail("Plain-text calls must never execute")
+
+        for provider in ("openai", "mistral", "anthropic"):
+            def response(text):
+                if provider == "anthropic":
+                    return {"content": [{"type": "text", "text": text}], "stop_reason": "end_turn"}
+                return {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
+
+            with self.subTest(provider=provider), patch("rmm_ai._json_request", side_effect=[
+                response("<tool_call>placeholder"), response("Task could not be completed."),
+            ]) as request:
+                result = asyncio.run(rmm_ai._run_provider_loop(
+                    provider=provider, api_key="test", messages=[], model="test",
+                    system="test", tools=[], call_tool=call_tool, max_rounds=1, via="direct",
+                ))
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["rounds_used"], 2)
+                self.assertEqual(result["malformed_response_retries"], 1)
+                self.assertEqual(request.call_count, 2)
 
     def test_max_tool_rounds_reads_positive_environment_value(self):
         with patch.dict("os.environ", {"RMM_AI_MAX_TOOL_ROUNDS": "48"}):

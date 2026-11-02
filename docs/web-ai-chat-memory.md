@@ -143,5 +143,10 @@ These diagnostics do not establish that the requested task succeeded.
 `_final_response_error` also rejects plain-text tool-call markup such as
 `<tool_call>`, `<arg_key>`, or `<arg_value>` with `malformed_tool_call_text`.
 The preserved response includes an incomplete-status notice, timing, and rounds.
-No command is parsed or executed from this text, and no automatic retry occurs.
+No command is parsed or executed from this text. The server requests a corrected
+response up to twice per task, within the existing total round budget. Previous
+tool results remain in context, and the correction preserves operator-consent
+boundaries. Exhausted retries retain the failed response and incomplete notice.
+The result field `malformed_response_retries` records retries consumed.
+Transport errors and output-limit truncation are not automatically retried.
 This conservative check also flags literal examples of these tags in answers.
