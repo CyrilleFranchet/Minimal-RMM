@@ -131,3 +131,7 @@ request under its workspace identity. Completed jobs retain their result.
 Active jobs become interrupted immediately. Execution stops cooperatively at
 the next progress checkpoint; an in-flight provider request or dispatched tool
 may continue. Cancellation never rolls back actions or replays the task.
+
+The Stop control occupies the Send button position below the prompt while a
+job is active, outside the scrolling transcript. It shows Stopping while the
+cancellation request is pending and restores Send when the job terminates.

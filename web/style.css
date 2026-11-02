@@ -1939,6 +1939,13 @@ body.sidebar-resizing iframe {
 
 .ai-chat-form button {
   align-self: flex-end;
+  min-width: 6.5rem;
+  min-height: 2.5rem;
+}
+
+#ai-stop-btn:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 3px;
 }
 
 .ai-chat-form button:disabled {

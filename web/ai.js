@@ -435,6 +435,15 @@
 
   function setJobBusy(busy) {
     sending = busy;
+    $("#ai-send-btn")?.classList.toggle("hidden", busy && !!$("#ai-stop-btn")?.dataset.jobId);
+    if (!busy) {
+      const stop = $("#ai-stop-btn");
+      if (stop) {
+        stop.classList.add("hidden");
+        delete stop.dataset.jobId;
+        stop.onclick = null;
+      }
+    }
     for (const selector of ["#ai-chat-input", "#ai-send-btn", "#ai-chat-reset-btn"]) {
       const control = $(selector);
       if (control) control.disabled = busy;
@@ -511,25 +520,31 @@
         "Task " + job.status + (progress ? ": " + progress : ".") +
         " You can close this browser; execution continues on the server."
       );
-      const statusNode = $("#ai-job-status");
-      if (statusNode && !statusNode.querySelector("button")) {
-        const stop = document.createElement("button");
-        stop.type = "button";
-        stop.textContent = "Stop task";
-        stop.addEventListener("click", async () => {
+      const stop = $("#ai-stop-btn");
+      if (stop) {
+        stop.classList.remove("hidden");
+        $("#ai-send-btn")?.classList.add("hidden");
+        if (stop.dataset.jobId !== job.id) {
+          stop.dataset.jobId = job.id;
+          stop.disabled = false;
+          stop.textContent = "Stop";
+        }
+        stop.onclick = async () => {
           stop.disabled = true;
+          stop.textContent = "Stopping…";
           try {
             const { status, data } = await window.rmmApi("/ai/jobs/" + encodeURIComponent(job.id) + "/cancel", { method: "POST", body: "{}" });
             if (status !== 200 || !data.job) throw new Error("Stop request failed");
             displayAiJob(data.job, sessionId, token);
           } catch {
             if (currentChat(sessionId, token)) {
+              stop.disabled = false;
+              stop.textContent = "Stop";
               showJobStatus("Could not confirm cancellation. Check task status before retrying.");
               scheduleJobPoll(sessionId, token, job.id);
             }
           }
-        });
-        statusNode.appendChild(stop);
+        };
       }
       scheduleJobPoll(sessionId, token, job.id);
       return;

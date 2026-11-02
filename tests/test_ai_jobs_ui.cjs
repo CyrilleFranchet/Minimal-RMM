@@ -8,13 +8,13 @@ function setup(api) {
   const nodes = new Map();
   const storage = new Map();
   function element() {
-    return { children: [], dataset: {}, value: '', disabled: false, classList: { toggle() {} },
+    return { children: [], dataset: {}, value: '', disabled: false, classList: { toggle() {}, add() {}, remove() {} },
       querySelector() { return this.children.find(node => node.type === 'button') || null; },
       appendChild(node) { this.children.push(node); if (node.id) nodes.set('#' + node.id, node); },
       replaceChildren() { this.children = []; nodes.delete('#ai-job-status'); },
       setAttribute() {}, addEventListener(name, callback) { this[name] = callback; } };
   }
-  for (const key of ['#ai-chat-log', '#ai-chat-input', '#ai-send-btn', '#ai-chat-reset-btn', '#ai-provider-select', '#openai-key-input', '#ai-model-select']) nodes.set(key, element());
+  for (const key of ['#ai-chat-log', '#ai-chat-input', '#ai-send-btn', '#ai-stop-btn', '#ai-chat-reset-btn', '#ai-provider-select', '#openai-key-input', '#ai-model-select']) nodes.set(key, element());
   nodes.get('#ai-provider-select').value = 'openai';
   nodes.get('#openai-key-input').value = 'test-key';
   nodes.get('#ai-model-select').value = 'test-model';
@@ -52,9 +52,9 @@ function setup(api) {
   });
   await stopUi.test.syncAiChatWithSession('a');
   stopUi.test.displayAiJob({ id: 'stop-job', status: 'running' }, 'a', stopUi.test.state().token);
-  const stopButton = stopUi.nodes.get('#ai-job-status').children[0];
-  assert.equal(stopButton.textContent, 'Stop task');
-  await stopButton.click();
+  const stopButton = stopUi.nodes.get('#ai-stop-btn');
+  assert.equal(stopButton.textContent, 'Stop');
+  await stopButton.onclick();
   assert.equal(stopPath, '/ai/jobs/stop-job/cancel');
   assert.equal(stopUi.test.state().sending, false);
   const calls = [];
