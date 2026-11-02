@@ -3990,6 +3990,12 @@ class RMMHandler(BaseHTTPRequestHandler):
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
+        if len(parts) == 4 and parts[:2] == ["ai", "jobs"] and parts[3] == "cancel":
+            owner = f"workspace:{workspace_id}" if workspace_id else "operator"
+            job = srv.ai_jobs().cancel(parts[2], owner)
+            self._json(200 if job else 404, {"job": job} if job else {"error": "job_not_found"})
+            return True
+
         if parts == ["workspace", "claims"]:
             if not workspace_id:
                 self._json(403, {"error": "workspace_auth_required"})

@@ -34,6 +34,21 @@ class AIJobManagerTests(unittest.TestCase):
             time.sleep(0.005)
         self.fail(f"Job did not reach {states}")
 
+    def test_cancel_is_owner_scoped_and_prevents_late_completion(self):
+        job, _ = self.manager.submit(owner="operator", session_id="s", request_id="cancel-test", run=self.blocking_runner)
+        self.wait_for(job["id"], {"running"})
+        self.assertIsNone(self.manager.cancel(job["id"], "other"))
+        self.assertEqual(self.manager.get(job["id"], "operator")["status"], "running")
+        stopped = self.manager.cancel(job["id"], "operator")
+        self.assertEqual(stopped["status"], "interrupted")
+        self.assertEqual(self.manager.cancel(job["id"], "operator"), stopped)
+        with self.assertRaises(JobInterrupted):
+            self.manager._progress(job["id"], {"phase": "tool"})
+        self.release.set()
+        for worker in list(self.manager._threads):
+            worker.join(3)
+        self.assertEqual(self.manager.get(job["id"], "operator")["status"], "interrupted")
+
     def blocking_runner(self, progress):
         progress({"phase": "provider", "round": 1})
         self.release.wait(3)

@@ -164,6 +164,16 @@ class AIJobManager:
                     (owner, session_id),
                 )
 
+    def cancel(self, job_id, owner):
+        """Stop an owner's job at its next checkpoint, retaining terminal history."""
+        with self._lock, self._db:
+            self._db.execute(
+                "UPDATE ai_jobs SET state='interrupted',updated_at=?,completed_at=?,error=? "
+                "WHERE id=? AND owner=? AND state IN ('queued','running')",
+                (_now(), _now(), "Stopped by operator; already dispatched actions may continue.", job_id, owner),
+            )
+            return self.get(job_id, owner)
+
     def interrupt_session(self, session_id):
         """Interrupt all active jobs bound to a deleted session, retaining audit state."""
         if not session_id:

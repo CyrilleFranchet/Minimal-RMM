@@ -42,6 +42,21 @@ function setup(api) {
   assert.ok(!details.includes('secret-token'));
   diagnosticUi.test.displayAiJob(failed, 'a', diagnosticUi.test.state().token);
   assert.equal(diagnosticUi.test.state().history.filter(m => m.content === 'Partial report').length, 1);
+  let stopPath;
+  const stopUi = setup(async (path, options) => {
+    if (options?.method === 'POST') {
+      stopPath = path;
+      return { status: 200, data: { job: { id: 'stop-job', status: 'interrupted' } } };
+    }
+    return { status: 200, data: { messages: [] } };
+  });
+  await stopUi.test.syncAiChatWithSession('a');
+  stopUi.test.displayAiJob({ id: 'stop-job', status: 'running' }, 'a', stopUi.test.state().token);
+  const stopButton = stopUi.nodes.get('#ai-job-status').children[0];
+  assert.equal(stopButton.textContent, 'Stop task');
+  await stopButton.click();
+  assert.equal(stopPath, '/ai/jobs/stop-job/cancel');
+  assert.equal(stopUi.test.state().sending, false);
   const calls = [];
   let jobs = [];
   let failPost = true;

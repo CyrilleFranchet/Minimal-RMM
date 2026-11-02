@@ -1528,6 +1528,8 @@ class WorkspaceService:
                 }
             )
             return 200, response, "application/json"
+        if len(parts) == 4 and parts[:2] == ["ai", "jobs"] and parts[3] == "cancel":
+            return self._proxy("POST", path, {})
         if parts in (["ai", "chat"], ["ai", "jobs"]):
             forwarded = dict(body)
             if forwarded.get("provider", "openai") == "openai" and not (forwarded.get("api_key") or forwarded.get("openai_api_key")):

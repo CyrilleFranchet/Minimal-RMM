@@ -511,6 +511,26 @@
         "Task " + job.status + (progress ? ": " + progress : ".") +
         " You can close this browser; execution continues on the server."
       );
+      const statusNode = $("#ai-job-status");
+      if (statusNode && !statusNode.querySelector("button")) {
+        const stop = document.createElement("button");
+        stop.type = "button";
+        stop.textContent = "Stop task";
+        stop.addEventListener("click", async () => {
+          stop.disabled = true;
+          try {
+            const { status, data } = await window.rmmApi("/ai/jobs/" + encodeURIComponent(job.id) + "/cancel", { method: "POST", body: "{}" });
+            if (status !== 200 || !data.job) throw new Error("Stop request failed");
+            displayAiJob(data.job, sessionId, token);
+          } catch {
+            if (currentChat(sessionId, token)) {
+              showJobStatus("Could not confirm cancellation. Check task status before retrying.");
+              scheduleJobPoll(sessionId, token, job.id);
+            }
+          }
+        });
+        statusNode.appendChild(stop);
+      }
       scheduleJobPoll(sessionId, token, job.id);
       return;
     }
@@ -529,7 +549,7 @@
       showJobStatus("Task completed on the server.");
     } else {
       showJobStatus(job.status === "interrupted"
-        ? "Task interrupted by server shutdown. Check completed actions before starting another task; it was not automatically replayed."
+        ? "Task stopped. No further work will start after the next cancellation checkpoint. Already dispatched actions may continue; stopping does not undo them. The task was not automatically replayed."
         : "Task failed. " + (typeof job.error === "string" ? job.error : job.result?.error || "Inspect the task and agent history before retrying.") + formatAiFailureDetails(job));
     }
   }

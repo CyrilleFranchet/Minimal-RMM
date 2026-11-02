@@ -121,3 +121,13 @@ results echoing a different command do not satisfy its waiter. Legacy results
 without a command echo remain supported, but cannot be reliably attributed when
 other queued or persistent work overlaps; identical command strings also lack
 unique execution IDs.
+
+## Stop a task
+
+Use **Stop task** in the WebUI, or POST `/api/v1/ai/jobs/{id}/cancel`.
+`AIJobManager.cancel` scopes cancellation to the authenticated owner and is
+idempotent; unknown or other-owner IDs return 404. Workspace mode proxies the
+request under its workspace identity. Completed jobs retain their result.
+Active jobs become interrupted immediately. Execution stops cooperatively at
+the next progress checkpoint; an in-flight provider request or dispatched tool
+may continue. Cancellation never rolls back actions or replays the task.
