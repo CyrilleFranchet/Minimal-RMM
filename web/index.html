@@ -33,6 +33,16 @@
       <span id="ws-status" class="status-dot" title="WebSocket"></span>
       <h1>Minimal RMM</h1>
       <span id="deployment-mode" class="deployment-mode" role="status" aria-live="polite">Mode unknown</span>
+      <details class="connection-status">
+        <summary id="mcp-status-label">MCP · Not checked</summary>
+        <div class="connection-status-panel">
+          <strong>Workspace connections</strong>
+          <p id="exegol-mcp-status">Exegol MCP: Not checked</p>
+          <p>RMM MCP: Started on demand for AI requests; no persistent connection is monitored here.</p>
+          <p id="bloodhound-readiness" role="status" aria-live="polite"></p>
+          <p id="mcp-status-help">Status reflects the last workspace check.</p>
+        </div>
+      </details>
       <span class="spacer"></span>
       <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
       <button type="button" class="secondary" id="embedding-open">Embeddings</button>
@@ -43,7 +53,6 @@
       <button type="button" class="secondary" id="open-screenshots-dialog" title="Show screenshots from all agents">Screenshots</button>
       <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
     </header>
-    <p id="bloodhound-readiness" role="status" aria-live="polite"></p>
     <p id="workspace-access-notice" class="hidden" role="status">Central administration. Connect to your workspace WebUI for AI, BloodHound, operator history, and local pivots. A single-workspace deployment uses the same workspace service.</p>
     <p id="bloodhound-status" class="error-msg hidden" role="status" aria-live="polite"></p>
     <details id="bloodhound-operations">

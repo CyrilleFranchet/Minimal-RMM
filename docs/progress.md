@@ -9,6 +9,30 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-03 — Verify container-to-host MCP assumptions
+
+- Document that bridge-mode workspace processes require a reachable host MCP
+  address and listener; publishing RMM ports does not provide outbound MCP access.
+- Classify nested connection, authentication, HTTP, dependency, and timeout
+  failures without exposing exception text. Preserve uncertainty after dispatch.
+- All 440 Python tests and `make check` passed, including UI status and login
+  routing regressions. The remote Ubuntu/Exegol MCP network path remains unverified.
+
+### 2026-11-03 — Compact workspace connection status
+
+- Move Exegol/BloodHound readiness into a collapsible MCP control beside the
+  workspace badge, with last-check semantics and explicit on-demand RMM MCP status.
+- Clear verified indicators after disconnects or failed checks; retain diagnostic
+  codes in the details panel. Restore green login and header titles.
+- Add UI regressions for verified, failed, unavailable, and disconnected states.
+
+### 2026-11-03 — Canonical WebUI entry URL
+
+- Redirect `/ui` to `/ui/` on the workspace and central listeners so relative
+  CSS and JavaScript URLs resolve correctly. Previously `/ui` displayed unstyled
+  HTML and requested assets outside their public static route.
+- Extend workspace login HTTP coverage to bare and query-bearing `/ui` URLs.
+
 ### 2026-11-03 — Repeat failure-path and deployment verification
 
 - Isolate central and workspace child environments while preserving valid scoped overrides.

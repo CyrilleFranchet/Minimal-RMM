@@ -82,6 +82,7 @@ body {
 }
 
 .login-card h1 {
+  color: var(--success);
   margin: 0;
   font-size: 1.5rem;
   font-weight: 600;
@@ -205,6 +206,7 @@ button:disabled {
 }
 
 .app-header h1 {
+  color: var(--success);
   margin: 0;
   font-size: 1.1rem;
   font-weight: 600;
@@ -212,6 +214,32 @@ button:disabled {
 
 .app-header .spacer {
   flex: 1;
+}
+
+.connection-status { position: relative; font-size: 0.8rem; }
+.connection-status summary {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  white-space: nowrap;
+}
+.connection-status summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.connection-status summary[data-state="ready"] { color: var(--success); }
+.connection-status summary[data-state="error"] { color: var(--danger); }
+.connection-status-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  width: min(23rem, 80vw);
+  padding: 1rem;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: 0 8px 24px #0004;
+  z-index: 100;
+  overflow-wrap: anywhere;
 }
 
 .deployment-mode {

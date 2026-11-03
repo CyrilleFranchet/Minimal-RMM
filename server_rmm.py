@@ -3524,8 +3524,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         return True
 
     def _serve_web(self, path: str) -> bool:
-        """Serve static files from WEB_DIR under /ui/ (and redirect / → /ui/)."""
-        if path in ("", "/"):
+        """Serve static files under /ui/ and canonicalize entry URLs for relative assets."""
+        if path in ("", "/", "/ui"):
             self.send_response(302)
             self.send_header("Location", "/ui/")
             self.end_headers()

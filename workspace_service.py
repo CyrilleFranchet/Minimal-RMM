@@ -1773,7 +1773,7 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
 
     def _static(self, path: str) -> bool:
         """Serve the repository WebUI and mark it as polling-only."""
-        if path == "/" or path == "":
+        if path in ("", "/", "/ui"):
             self.send_response(302)
             self.send_header("Location", "/ui/")
             self.end_headers()

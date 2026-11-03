@@ -86,6 +86,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.snapshot['exegol_verified_at'], verified_at)
         self.assertEqual(list(self.root.glob('ce-identity-*')), [])
 
+    def test_nested_connection_failures_have_secret_free_diagnostics(self):
+        for error, code in (
+            (ConnectionRefusedError('secret URL'), 'exegol_mcp_connection_failed'),
+            (TimeoutError('secret token'), 'exegol_mcp_timeout'),
+            (ModuleNotFoundError('private path'), 'exegol_mcp_dependency_missing'),
+            (ValueError('private diagnostic'), 'exegol_runtime_failed'),
+        ):
+            with self.subTest(code=code), patch.object(self.runtime, '_check_and_start',
+                    AsyncMock(side_effect=ExceptionGroup('private wrapper', [error]))):
+                self.runtime._run()
+                self.assertEqual(self.runtime.snapshot['error'], code)
+                self.assertNotIn('secret', json.dumps(self.runtime.snapshot))
+                self.assertNotIn('private', json.dumps(self.runtime.snapshot))
+
+    def test_http_authentication_diagnostics(self):
+        error = RuntimeError('secret URL')
+        error.response = Mock(status_code=401)
+        with patch.object(self.runtime, '_check_and_start', AsyncMock(side_effect=error)):
+            self.runtime._run()
+        self.assertEqual(self.runtime.snapshot['error'], 'exegol_mcp_authentication_failed')
+
     def test_automatic_discovery_selects_matching_running_owner(self):
         self.values.pop('RMM_EXEGOL_CONTAINER')
         self.inventory = [{'name': 'other', 'status': 'running'}, {'name': 'stopped', 'status': 'exited'}, {'name': 'lab', 'status': 'running'}]

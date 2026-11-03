@@ -36,6 +36,38 @@ def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def runtime_failure_code(error):
+    """Classify nested MCP failures without exposing URLs, tokens, or exception text."""
+    pending, seen, codes = [error], set(), set()
+    while pending and len(seen) < 32:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        elif current.__context__ is not None:
+            pending.append(current.__context__)
+        status = getattr(getattr(current, 'response', None), 'status_code', None)
+        if status in (401, 403):
+            codes.add('exegol_mcp_authentication_failed')
+        elif isinstance(status, int) and status >= 400:
+            codes.add('exegol_mcp_http_error')
+        if isinstance(current, ImportError):
+            codes.add('exegol_mcp_dependency_missing')
+        elif isinstance(current, TimeoutError) or type(current).__name__ in ('ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout'):
+            codes.add('exegol_mcp_timeout')
+        elif isinstance(current, ConnectionError) or type(current).__name__ == 'ConnectError':
+            codes.add('exegol_mcp_connection_failed')
+    for code in ('exegol_mcp_dependency_missing', 'exegol_mcp_authentication_failed',
+                 'exegol_mcp_http_error', 'exegol_mcp_connection_failed', 'exegol_mcp_timeout'):
+        if code in codes:
+            return code
+    return 'exegol_runtime_failed'
+
+
 def configuration():
     """Validate fixed owner settings without accepting per-request destinations."""
     url = getenv('RMM_EXEGOL_MCP_URL', '').strip()
@@ -296,10 +328,10 @@ class ExegolRuntime:
             asyncio.run(asyncio.wait_for(self._check_and_start(), timeout=MCP_TIMEOUT))
         except RuntimeErrorCode as exc:
             self._update(state='blocked', exegol_status='unavailable', ready=False, error=str(exc))
-        except Exception:
+        except Exception as exc:
             uncertain = self._intent() == 'dispatched'
             values = dict(state='uncertain' if uncertain else 'failed', ready=False,
-                          error='bloodhound_startup_uncertain' if uncertain else 'exegol_runtime_failed')
+                          error='bloodhound_startup_uncertain' if uncertain else runtime_failure_code(exc))
             if self.snapshot['exegol_status'] != 'ready':
                 values.update(exegol_status='unavailable', mcp_status='error')
             self._update(**values)

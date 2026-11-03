@@ -3,6 +3,9 @@
   const button = document.getElementById("bloodhound-open");
   const status = document.getElementById("bloodhound-status");
   const readiness = document.getElementById("bloodhound-readiness");
+  const mcpLabel = document.getElementById("mcp-status-label");
+  const mcpStatus = document.getElementById("exegol-mcp-status");
+  const mcpHelp = document.getElementById("mcp-status-help");
   if (!button || !status) return;
   let healthTimer;
   let healthController;
@@ -65,6 +68,22 @@
   function showRuntime(runtime) {
     if (!readiness || !runtime) return;
     readiness.textContent = `Exegol: ${runtime.exegol_status || "unknown"} · BloodHound: ${runtime.bloodhound_status || runtime.state || "unknown"}${runtime.error ? ` (${runtime.error})` : ""}`;
+    const verified = ["connected", "verified"].includes(runtime.mcp_status);
+    const failed = !!runtime.error || runtime.mcp_status === "error";
+    if (mcpLabel) {
+      mcpLabel.textContent = failed ? "MCP · Check needed" : verified ? "MCP · Verified" : "MCP · Checking";
+      mcpLabel.dataset.state = failed ? "error" : verified ? "ready" : "checking";
+    }
+    if (mcpStatus) mcpStatus.textContent = `Exegol MCP: ${runtime.mcp_status || "not_checked"}${runtime.container ? ` · ${runtime.container}` : ""}`;
+    if (mcpHelp) mcpHelp.textContent = runtime.error
+      ? "Check the workspace Exegol MCP URL, authentication, and reachability from this container in Config. A recreated container may also need its Python MCP dependencies restored. This status does not identify the exact cause."
+      : "Last workspace check; this is not a persistent MCP connection. RMM MCP is checked when an AI request uses it.";
+  }
+
+  function resetMcpStatus(label) {
+    if (mcpLabel) { mcpLabel.textContent = `MCP · ${label}`; mcpLabel.dataset.state = "unknown"; }
+    if (mcpStatus) mcpStatus.textContent = "Exegol MCP: Not checked";
+    if (mcpHelp) mcpHelp.textContent = "No current workspace connection verification is available.";
   }
 
   function pause(signal) {
@@ -105,6 +124,7 @@
       document.getElementById("bloodhound-submit").disabled = false;
     }
     if (readiness) readiness.textContent = "";
+    resetMcpStatus("Not checked");
   }
 
   function startHealth() {
@@ -119,9 +139,15 @@
         const result = await operation({ action: "health" }, controller, { remaining: 30 });
         if (generation !== healthGeneration) return;
         if (result.status === 200 && result.data?.runtime) showRuntime(result.data.runtime);
-        else if (readiness) readiness.textContent = `BloodHound status unavailable: ${result.data?.error || "workspace did not respond"}`;
+        else {
+          resetMcpStatus("Unavailable");
+          if (readiness) readiness.textContent = `BloodHound status unavailable: ${result.data?.error || "workspace did not respond"}`;
+        }
       } catch (_error) {
-        if (generation === healthGeneration && readiness) readiness.textContent = "BloodHound status unavailable";
+        if (generation === healthGeneration) {
+          resetMcpStatus("Unavailable");
+          if (readiness) readiness.textContent = "BloodHound status unavailable";
+        }
       } finally {
         clearTimeout(timeout);
         if (generation === healthGeneration) healthTimer = setTimeout(refresh, 10000);

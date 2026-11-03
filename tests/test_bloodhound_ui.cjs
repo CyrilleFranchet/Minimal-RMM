@@ -9,10 +9,12 @@ function setup(api, blocked = false) {
   const button = { disabled: false, addEventListener(name, callback) { this[name] = callback; } };
   const status = { textContent: '', classList: { toggle() {} } };
   const readiness = { textContent: '' };
+  const mcpLabel = { textContent: '', dataset: {} }, mcpStatus = {}, mcpHelp = {};
   const form = { addEventListener(name, callback) { this[name] = callback; } };
   const action = { value: '', children: [], appendChild(child) { this.children.push(child); } };
   const runId = { value: '' }, options = { value: '{}' }, submit = { disabled: false }, response = { textContent: '' };
   const nodes = { 'bloodhound-open': button, 'bloodhound-status': status, 'bloodhound-readiness': readiness,
+    'mcp-status-label': mcpLabel, 'exegol-mcp-status': mcpStatus, 'mcp-status-help': mcpHelp,
     'bloodhound-operation-form': form, 'bloodhound-action': action, 'bloodhound-run-id': runId,
     'bloodhound-options': options, 'bloodhound-submit': submit, 'bloodhound-response': response };
   const events = [];
@@ -25,7 +27,7 @@ function setup(api, blocked = false) {
   vm.runInNewContext(source, { window, URL, AbortController,
     document: { getElementById: id => nodes[id] || null, createElement: () => ({}) },
     setTimeout(callback, delay) { if (delay === 1000) queueMicrotask(callback); return 1; }, clearTimeout() {} });
-  return { button, status, readiness, events, tab, window, form, action, runId, options, submit, response };
+  return { button, status, readiness, mcpLabel, mcpStatus, mcpHelp, events, tab, window, form, action, runId, options, submit, response };
 }
 
 (async () => {
@@ -127,13 +129,26 @@ function setup(api, blocked = false) {
   const healthActions = [];
   const monitor = setup(async (route, options) => {
     healthActions.push(JSON.parse(options.body).action);
-    return { status: 200, data: { runtime: { state: 'ready', exegol_status: 'connected', bloodhound_status: 'ready' } } };
+    return { status: 200, data: { runtime: { state: 'ready', mcp_status: 'verified', exegol_status: 'connected', bloodhound_status: 'ready' } } };
   });
   await monitor.window.startBloodHoundHealth();
   monitor.window.stopBloodHoundHealth();
   await monitor.window.startBloodHoundHealth();
   assert.deepEqual(healthActions, ['health', 'health']);
   assert.match(monitor.readiness.textContent, /BloodHound: ready/);
+  assert.equal(monitor.mcpLabel.dataset.state, 'ready');
+  assert.match(monitor.mcpHelp.textContent, /not a persistent/);
   monitor.window.stopBloodHoundHealth();
+  assert.equal(monitor.mcpLabel.textContent, 'MCP · Not checked');
+  const failedMonitor = setup(async () => ({ status: 200, data: { runtime: {
+    mcp_status: 'error', error: 'exegol_runtime_failed', exegol_status: 'unavailable'
+  } } }));
+  await failedMonitor.window.startBloodHoundHealth();
+  assert.equal(failedMonitor.mcpLabel.textContent, 'MCP · Check needed');
+  assert.equal(failedMonitor.mcpLabel.dataset.state, 'error');
+  assert.match(failedMonitor.readiness.textContent, /exegol_runtime_failed/);
+  const unavailableMonitor = setup(async () => { throw new Error('offline'); });
+  await unavailableMonitor.window.startBloodHoundHealth();
+  assert.equal(unavailableMonitor.mcpLabel.textContent, 'MCP · Unavailable');
   console.log('BloodHound UI tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

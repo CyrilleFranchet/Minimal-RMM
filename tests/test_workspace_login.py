@@ -40,9 +40,11 @@ class WorkspaceLoginTests(unittest.TestCase):
             connection.close()
 
     def test_login_assets_load_before_api_authentication(self):
-        status, headers, _ = self.request("GET", "/")
-        self.assertEqual(status, 302)
-        self.assertEqual(headers["Location"], "/ui/")
+        for path in ("/", "/ui", "/ui?source=bookmark"):
+            with self.subTest(entry=path):
+                status, headers, _ = self.request("GET", path)
+                self.assertEqual(status, 302)
+                self.assertEqual(headers["Location"], "/ui/")
         for path in ("/ui/", "/ui/app.js", "/ui/style.css", "/ui/workspace-config.js"):
             with self.subTest(path=path):
                 status, _, body = self.request("GET", path)

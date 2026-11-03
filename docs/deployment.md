@@ -167,6 +167,24 @@ The WebUI AI loop runs centrally. The configured Exegol MCP URL must be reachabl
 from both the workspace runtime and central server: `127.0.0.1:8000` refers to each caller's network
 namespace, not the operator's Exegol container. Configure an authenticated
 endpoint reachable over the trusted network when those services are separate.
+For a bridge container calling MCP on its Docker host, use a host address
+reachable from that container. A host MCP listener bound only to `127.0.0.1`
+cannot accept requests to the bridge gateway address. Bind MCP to an appropriate
+host interface and permit the container network through the host firewall.
+Publishing RMM ports does not configure this outbound connection.
+`host.docker.internal` must resolve inside the container before it can be used;
+the deployment launcher does not create that alias or discover the host endpoint.
+Test from inside the workspace container using the actual MCP URL. An HTTP error
+response proves reachability, but only successful MCP initialization and tool
+discovery establish protocol readiness.
+
+Runtime diagnostics distinguish `exegol_mcp_connection_failed`,
+`exegol_mcp_authentication_failed`, `exegol_mcp_http_error`,
+`exegol_mcp_dependency_missing`, and `exegol_mcp_timeout`.
+`runtime_failure_code` classifies bounded nested exception chains without exposing
+exception text or credentials. Unclassified failures retain `exegol_runtime_failed`;
+failures after startup dispatch retain the uncertainty state to prevent replay.
+
 Do not select a different MCP endpoint in an individual AI request. See the
 [BloodHound runtime and proxy guide](bloodhound-workflow.md) for readiness,
 uncertain startup handling, and browser-facing proxy settings.
