@@ -11,7 +11,10 @@ const SHELL_HISTORY_MAX = 100;
 const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
-const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "embeddings"];
+const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "embeddings", "bloodhound"];
+
+const BLOODHOUND_ACTIONS = ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "library_search", "library_get"];
+window.rmmBloodHoundActions = BLOODHOUND_ACTIONS;
 
 const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
@@ -2370,6 +2373,7 @@ async function connect() {
     await window.loadRmmUiConfig().catch(() => false);
   }
   showApp();
+  window.startBloodHoundHealth?.();
   if (typeof window.refreshAgentScriptTemplate === "function") {
     window.refreshAgentScriptTemplate();
   }
@@ -2399,6 +2403,7 @@ async function connect() {
 }
 
 function disconnect() {
+  window.stopBloodHoundHealth?.();
   window.renderRmmDeploymentMode?.();
   hideServerUnreachableDialog();
   disconnectWebSocket();
@@ -2824,9 +2829,36 @@ async function postPeQueue(plugin, exportName, pluginInput, target = captureShel
 
 /** @returns {boolean} true if cmd was a meta command (handled locally). */
 async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
+  // Recognize the verb before parsing so malformed quoting cannot escape to the agent.
+  const verb = cmd.trim().split(/\s+/, 1)[0].toLowerCase();
+  if (verb === "bloodhound") {
+    try {
+      const args = parseShellWords(cmd, true).slice(1);
+      const body = { action: args[0], run_id: "", options: {} };
+      const seen = new Set();
+      if (!BLOODHOUND_ACTIONS.includes(body.action)) throw new Error("Unknown BloodHound action.");
+      for (let i = 1; i < args.length; i += 2) {
+        const key = args[i], value = args[i + 1];
+        if (!["--run-id", "--options-json"].includes(key) || seen.has(key) || value === undefined) throw new Error("Invalid BloodHound options.");
+        seen.add(key);
+        if (key === "--run-id") body.run_id = value;
+        else body.options = JSON.parse(value);
+      }
+      if (!body.options || Array.isArray(body.options) || typeof body.options !== "object") throw new Error("Options must be a JSON object.");
+      const result = await api("/bloodhound", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (target.isCurrent()) {
+        appendShellEcho(cmd);
+        appendShellLine("output", `<pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>`);
+      }
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(`${error.message} Usage: bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']`);
+    }
+    return true;
+  }
   const words = parseShellWords(cmd);
   if (!words.length) return false;
-  const verb = words[0].toLowerCase();
   const rest = words.slice(1);
 
   if (verb === "embeddings") {
@@ -2882,6 +2914,8 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   embeddings run &lt;profile&gt; --document &lt;path&gt; [--document &lt;path&gt; ...]
                                    Run a saved embedding profile on this session
   pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
+  bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
+                                   Operate workspace BloodHound; never sent to the agent
 
 Any other command is sent to the selected agent. Prefix commands with
 cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side interpreter.</pre>`

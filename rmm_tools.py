@@ -78,6 +78,12 @@ def tool_settings(client, action="show", settings=None):
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
+def tool_bloodhound(client, action="preflight", run_id="", options=None):
+    """Operate the storage-owner-local BloodHound workflow without exposing credentials."""
+    code, data = client.bloodhound(action, run_id, options)
+    return _json_result({"ok": 200 <= code < 300, "status": code, "data": data})
+
+
 def tool_embedding_profiles(client, action="list", name="", config=None):
     """Manage secret-free embedding profiles in the selected storage owner."""
     code, data = client.embedding_profiles(action, name, config)
@@ -679,6 +685,7 @@ def tool_remove_persistence(client: RmmApiClient, session_ref: str) -> str:
 
 
 TOOL_HANDLERS = {
+    "bloodhound": lambda c, a: tool_bloodhound(c, a.get("action", "preflight"), a.get("run_id", ""), a.get("options")),
     "list_ai_jobs": lambda c, a: tool_list_ai_jobs(c, a.get("session_id", "")),
     "get_ai_job": lambda c, a: tool_get_ai_job(c, a["job_id"]),
     "settings": lambda c, a: tool_settings(c, a.get("action", "show"), a.get("settings")),
@@ -808,6 +815,18 @@ def execute_tool(client: RmmApiClient, name: str, arguments: dict | str) -> str:
 
 
 OPENAI_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "bloodhound",
+            "description": "Operate BloodHound CE at its storage owner. library_search searches the full reference library with options {text, platform, category, offset, limit} (limit 1-25); library_get fetches one original query with options {id: GUID}. Reference queries are never directly executable; use mapped local template IDs with query. queries lists executable templates and deferred blockers. health reads readiness; ensure starts the deterministic MCP check/startup pass without replaying uncertain launches; ui ensures readiness then returns a proxy launch link. Other actions: preflight, create, collect, import, status, verify, query, report. If workspace_request_id is returned, poll result with that ID as run_id instead of resubmitting. Poll health for startup; status for collection/import. Credentials belong in service settings.",
+            "parameters": {"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "library_search", "library_get"]},
+                "run_id": {"type": "string"},
+                "options": {"type": "object"},
+            }},
+        },
+    },
     {
         "type": "function",
         "function": {

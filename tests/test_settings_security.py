@@ -20,7 +20,10 @@ class ScopedHandler:
 
     def __init__(self):
         self.responses = []
-        self.server_instance = SimpleNamespace(save_ai_chat=Mock())
+        broker = Mock()
+        broker.resolve_ai_context.return_value = (200, {
+            'exegol_mcp_enabled': True, 'exegol_mcp_url': 'http://trusted:8000/mcp', 'exegol_mcp_token': 'trusted-token'})
+        self.server_instance = SimpleNamespace(save_ai_chat=Mock(), bloodhound_broker=broker)
         self.headers = {"X-RMM-Workspace-Token": "workspace-secret"}
 
     def _api_authorized(self, *_args):
@@ -43,6 +46,22 @@ class ScopedHandler:
 
 
 class SettingsSecurityTests(unittest.TestCase):
+    def setUp(self):
+        runtime = patch('rmm_exegol_runtime.get_runtime')
+        self.runtime = runtime.start().return_value
+        self.runtime.status.return_value = {'exegol_status': 'ready'}
+        self.addCleanup(runtime.stop)
+
+    def test_workspace_ai_rejects_missing_exegol_without_forwarding(self):
+        service = WorkspaceService.__new__(WorkspaceService)
+        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'))
+        service._proxy = Mock()
+        self.runtime.status.return_value = {'state': 'blocked', 'exegol_status': 'unavailable'}
+        status, payload, _ = service.post_json('/api/v1/ai/jobs', {'messages': []})
+        self.assertEqual(status, 503)
+        self.assertEqual(payload['error'], 'exegol_workspace_not_ready')
+        service._proxy.assert_not_called()
+
     """Keep workspace configuration separate from central administration."""
 
     def test_workspace_cannot_read_or_write_central_settings_or_ui_secrets(self):
@@ -69,10 +88,14 @@ class SettingsSecurityTests(unittest.TestCase):
         ) as run:
             RMMHandler._handle_api_post(handler, "/api/v1/ai/chat", {
                 "provider": "openai", "api_key": "provider-secret", "skill_documents": [],
+                "exegol_mcp_enabled": False, "exegol_mcp_url": "http://untrusted:8000/mcp", "exegol_mcp_token": "untrusted",
                 "messages": [{"role": "user", "content": "show settings"}],
             })
         self.assertEqual(handler.responses[0][0], 200)
         self.assertEqual(run.call_args.kwargs["rmm_token"], "")
+        self.assertEqual(run.call_args.kwargs["exegol_mcp_url"], "http://trusted:8000/mcp")
+        self.assertEqual(run.call_args.kwargs["exegol_mcp_token"], "trusted-token")
+        self.assertTrue(run.call_args.kwargs["exegol_mcp_enabled"])
         self.assertEqual(run.call_args.kwargs["rmm_headers"], {
             "X-RMM-Workspace": "alice", "X-RMM-Workspace-Token": "workspace-secret"})
 
@@ -140,9 +163,9 @@ class SettingsSecurityTests(unittest.TestCase):
                 self.assertNotIn("RMM_WORKSPACE_ID", env)
                 self.assertNotIn("RMM_WORKSPACE_TOKEN", env)
 
-    def test_workspace_forwards_saved_ai_defaults_but_preserves_request_values(self):
+    def test_workspace_forwards_provider_defaults_but_strips_mcp_overrides(self):
         service = WorkspaceService.__new__(WorkspaceService)
-        service.store = SimpleNamespace(selected_skill_documents=lambda _ids: [])
+        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'), selected_skill_documents=lambda _ids: [])
         service._proxy = Mock(return_value=(200, {"ok": True}, "application/json"))
         defaults = {"OPENAI_API_KEY": "saved-key", "RMM_EXEGOL_MCP_URL": "http://exegol:8000",
                     "RMM_EXEGOL_MCP_TOKEN": "saved-exegol-token"}
@@ -150,18 +173,18 @@ class SettingsSecurityTests(unittest.TestCase):
             service.post_json("/api/v1/ai/chat", {"messages": []})
             forwarded = service._proxy.call_args.args[2]
             self.assertEqual(forwarded["api_key"], "saved-key")
-            self.assertEqual(forwarded["exegol_mcp_token"], "saved-exegol-token")
-            self.assertTrue(forwarded["exegol_mcp_enabled"])
+            self.assertNotIn("exegol_mcp_token", forwarded)
+            self.assertNotIn("exegol_mcp_enabled", forwarded)
             service.post_json("/api/v1/ai/chat", {"api_key": "request-key", "exegol_mcp_enabled": False,
                                                 "exegol_mcp_url": "http://request:8000", "messages": []})
             forwarded = service._proxy.call_args.args[2]
             self.assertEqual(forwarded["api_key"], "request-key")
-            self.assertEqual(forwarded["exegol_mcp_url"], "http://request:8000")
-            self.assertFalse(forwarded["exegol_mcp_enabled"])
+            self.assertNotIn("exegol_mcp_url", forwarded)
+            self.assertNotIn("exegol_mcp_enabled", forwarded)
 
     def test_workspace_does_not_send_saved_exegol_token_to_request_url(self):
         service = WorkspaceService.__new__(WorkspaceService)
-        service.store = SimpleNamespace(selected_skill_documents=lambda _ids: [])
+        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'), selected_skill_documents=lambda _ids: [])
         service._proxy = Mock(return_value=(200, {"ok": True}, "application/json"))
         defaults = {"OPENAI_API_KEY": "saved-key", "RMM_EXEGOL_MCP_URL": "http://trusted:8000",
                     "RMM_EXEGOL_MCP_TOKEN": "trusted-token"}
@@ -170,7 +193,8 @@ class SettingsSecurityTests(unittest.TestCase):
                                                 "exegol_mcp_url": "http://different:8000", "messages": []})
         forwarded = service._proxy.call_args.args[2]
         self.assertEqual(forwarded.get("api_key") or forwarded.get("openai_api_key"), "legacy-request-key")
-        self.assertFalse(forwarded.get("exegol_mcp_token"))
+        self.assertNotIn("exegol_mcp_url", forwarded)
+        self.assertNotIn("exegol_mcp_token", forwarded)
 
     def test_explicit_flags_override_environment_and_saved_values(self):
         with tempfile.TemporaryDirectory() as root:

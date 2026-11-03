@@ -36,12 +36,29 @@
       <span class="spacer"></span>
       <button type="button" class="secondary theme-toggle-btn" aria-label="Switch to light mode" title="Switch to light mode">&#9728;</button>
       <button type="button" class="secondary" id="embedding-open">Embeddings</button>
+      <button type="button" class="secondary" id="bloodhound-open" title="Open workspace or standalone BloodHound CE in a new tab">Open BloodHound</button>
       <button type="button" class="secondary" id="config-toggle-btn" title="Manage plugins, assets, transport, and settings">Config</button>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
       <button type="button" class="secondary" id="open-downloads-dialog" title="Show downloads from all agents">Downloads</button>
       <button type="button" class="secondary" id="open-screenshots-dialog" title="Show screenshots from all agents">Screenshots</button>
       <button type="button" class="secondary" id="disconnect-btn">Disconnect</button>
     </header>
+    <p id="bloodhound-readiness" role="status" aria-live="polite"></p>
+    <p id="bloodhound-status" class="error-msg hidden" role="status" aria-live="polite"></p>
+    <details id="bloodhound-operations">
+      <summary>BloodHound operations</summary>
+      <form id="bloodhound-operation-form">
+        <label for="bloodhound-action">Action</label>
+        <select id="bloodhound-action"></select>
+        <label for="bloodhound-run-id">Run or workspace request ID</label>
+        <input id="bloodhound-run-id" autocomplete="off">
+        <label for="bloodhound-options">Options (JSON object)</label>
+        <textarea id="bloodhound-options" rows="4" spellcheck="false">{}</textarea>
+        <button type="submit" id="bloodhound-submit">Run action</button>
+      </form>
+      <p>For a workspace request ID, use result to retrieve its response. Use status for a collection/import run and health for startup. Credentials belong in Config.</p>
+      <pre id="bloodhound-response" role="status" aria-live="polite"></pre>
+    </details>
 
     <div id="app-body" class="app-body">
       <aside class="sidebar">
@@ -406,16 +423,12 @@
             </div>
           </details>
           <details class="ai-settings">
-            <summary>Exegol MCP (optional)</summary>
+            <summary>Exegol MCP (required)</summary>
             <label class="ai-checkbox">
-              <input type="checkbox" id="exegol-mcp-enabled">
-              Connect to Exegol MCP
+              <input type="checkbox" id="exegol-mcp-enabled" checked disabled>
+              Required for operator workspaces and AI tools
             </label>
-            <label for="exegol-mcp-url-input">Server URL</label>
-            <input type="url" id="exegol-mcp-url-input" placeholder="http://127.0.0.1:8000/mcp" autocomplete="off" title="Exegol MCP endpoint reachable from the service running the AI assistant." aria-description="Exegol MCP endpoint reachable from the service running the AI assistant.">
-            <label for="exegol-mcp-token-input">Bearer token</label>
-            <input type="password" id="exegol-mcp-token-input" placeholder="from exegol-mcp startup log" autocomplete="off" title="Bearer token issued by Exegol MCP. Separate from the RMM API token." aria-description="Bearer token issued by Exegol MCP. Separate from the RMM API token.">
-            <p class="ai-hint">Run <code>pipx install exegol-mcp</code> then <code>exegol-mcp</code> on the RMM server host. Token is printed at startup. Or set <code>RMM_EXEGOL_MCP_URL</code> / <code>RMM_EXEGOL_MCP_TOKEN</code> on the server.</p>
+            <p class="ai-hint">Configure the MCP endpoint, credentials, and container in <strong>Config → Service settings</strong> on the owning workspace or standalone service. AI chat uses those saved settings; browser overrides are disabled.</p>
           </details>
         </div>
         <div id="ai-chat-log" class="ai-chat-log"></div>
@@ -704,6 +717,7 @@
   <script src="assets.js"></script>
   <script src="plugin-releases.js"></script>
   <script src="embeddings.js"></script>
+  <script src="bloodhound.js"></script>
   <script src="agent-gen.js"></script>
   <script src="go-agent.js"></script>
   <script src="ai.js"></script>

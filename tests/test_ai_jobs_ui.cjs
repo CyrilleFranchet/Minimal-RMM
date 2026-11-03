@@ -18,17 +18,24 @@ function setup(api) {
   nodes.get('#ai-provider-select').value = 'openai';
   nodes.get('#openai-key-input').value = 'test-key';
   nodes.get('#ai-model-select').value = 'test-model';
-  const localStorage = { getItem: k => storage.get(k) || null, setItem: (k,v) => storage.set(k,v) };
+  const localStorage = { getItem: k => storage.get(k) || null, setItem: (k,v) => storage.set(k,v), removeItem: k => storage.delete(k) };
   const window = { rmmState: { token: 'operator', selectedId: 'a' }, rmmApi: api };
   const context = vm.createContext({ window, document: { querySelector: s => nodes.get(s) || null, createElement: element },
     localStorage, sessionStorage: localStorage, crypto, setTimeout: () => 1, clearTimeout() {}, confirm: () => true });
   const exposed = source.replace(/\}\)\(\);\s*$/, `window.test = { syncAiChatWithSession, sendAiMessage, refreshAiJob, resetAiChatForCurrentSession,
-    formatAiFailureDetails, displayAiJob, state: () => ({ history: chatHistory, token: chatLoadToken, sending }), jobState }; })();`);
+    formatAiFailureDetails, displayAiJob, loadEnabledSkillIds, state: () => ({ history: chatHistory, token: chatLoadToken, sending }), jobState }; })();`);
   vm.runInContext(exposed, context);
   return { window, test: window.test, nodes, storage };
 }
 (async () => {
   const diagnosticUi = setup(async () => ({ status: 200, data: { messages: [] } }));
+  diagnosticUi.storage.set('rmm_ai_skills_enabled', JSON.stringify(['ad-collection-analysis', 'bloodhound-analysis']));
+  assert.deepEqual(Array.from(diagnosticUi.test.loadEnabledSkillIds()), ['python-bloodhound-collection', 'bloodhound-analysis']);
+  const webTopics = ['sqli', 'xss', 'ssrf', 'ssti', 'xxe', 'idor', 'file-upload', 'rce',
+    'deserialization', 'race-condition', 'request-smuggling', 'open-redirect',
+    'parameter-pollution', 'graphql', 'waf-bypass', 'business-logic'];
+  diagnosticUi.storage.set('rmm_ai_skills_enabled', JSON.stringify([...webTopics.map(t => 'offensive-' + t), 'offensive-netexec', 'web-sqli']));
+  assert.deepEqual(Array.from(diagnosticUi.test.loadEnabledSkillIds()), [...webTopics.map(t => 'web-' + t), 'offensive-netexec']);
   await diagnosticUi.test.syncAiChatWithSession('a');
   const failed = { id: 'job-failed', status: 'failed', progress: { phase: 'model', round: 7 },
     result: { message: 'Partial report', diagnostics: { exception_chain: [
@@ -70,10 +77,16 @@ function setup(api) {
     return { status: 200, data: path.includes('?') ? { jobs } : { job: jobs[0] } };
   });
   await ui.test.syncAiChatWithSession('a');
+  ui.storage.set('rmm_exegol_mcp_token', 'legacy-browser-token');
+  ui.storage.set('rmm_exegol_mcp_enabled', '0');
   await ui.test.sendAiMessage('Do the task');
   assert.equal(ui.test.state().history.length, 1, 'lost POST retains user history');
   assert.equal(calls.filter(c => c.options.method === 'POST').length, 1);
   const request = JSON.parse(calls.find(c => c.options.method === 'POST').options.body);
+  assert.equal(request.exegol_mcp_enabled, true);
+  assert.equal(request.exegol_mcp_url, undefined);
+  assert.equal(request.exegol_mcp_token, undefined);
+  assert.equal(ui.storage.has('rmm_exegol_mcp_token'), false);
   jobs = [{ id: 'older', request_id: 'old-request', session_id: 'a', status: 'succeeded', created_at: new Date(Date.now() - 10000).toISOString(), result: { message: 'Old answer' } }];
   await ui.test.refreshAiJob('a', ui.test.state().token);
   assert.equal(ui.test.state().sending, true, 'an older task cannot resolve unknown submission');

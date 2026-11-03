@@ -14,6 +14,11 @@ from workspace_service import WorkspaceService
 
 
 class AIJobRouteTests(unittest.TestCase):
+    def setUp(self):
+        runtime = patch('rmm_exegol_runtime.get_runtime')
+        runtime.start().return_value.status.return_value = {'exegol_status': 'ready'}
+        self.addCleanup(runtime.stop)
+
     def test_http_disconnect_and_new_connection_recover_finished_job(self):
         with tempfile.TemporaryDirectory() as tmp:
             manager = AIJobManager(tmp + "/jobs.db")
@@ -21,7 +26,7 @@ class AIJobRouteTests(unittest.TestCase):
             entered = threading.Event()
 
             class Handler(server_rmm.RMMHandler):
-                server_instance = SimpleNamespace(ai_jobs=lambda: manager, save_ai_chat=Mock(), session_lock=threading.RLock(), killed_sessions=set())
+                server_instance = SimpleNamespace(storage_mode='server', ai_jobs=lambda: manager, save_ai_chat=Mock(), session_lock=threading.RLock(), killed_sessions=set())
                 def _api_authorized(self, *args):
                     return True
                 def _workspace_scope(self):
@@ -74,7 +79,10 @@ class AIJobRouteTests(unittest.TestCase):
         handler._api_token_from_request = Mock(return_value="operator-secret")
         handler._operator_api_base_url = Mock(return_value="http://127.0.0.1:8080")
         handler.headers = {"X-RMM-Workspace-Token": "workspace-secret"}
-        handler.server_instance = SimpleNamespace(ai_jobs=lambda: manager, save_ai_chat=Mock(), session_lock=threading.RLock(), killed_sessions=set())
+        handler.server_instance = SimpleNamespace(storage_mode='server', ai_jobs=lambda: manager, save_ai_chat=Mock(), session_lock=threading.RLock(), killed_sessions=set())
+        handler.server_instance.bloodhound_broker = Mock()
+        handler.server_instance.bloodhound_broker.resolve_ai_context.return_value = (200, {
+            'exegol_mcp_enabled': True, 'exegol_mcp_url': 'http://workspace:8000/mcp', 'exegol_mcp_token': ''})
         handler._json = Mock()
         return handler
 

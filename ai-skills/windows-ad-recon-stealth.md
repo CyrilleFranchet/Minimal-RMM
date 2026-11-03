@@ -15,7 +15,7 @@ produce observable activity, and visibility depends on the environment.
 
 Use `PS:` for PowerShell via RMM, following `agent-command-dispatch`. Reuse the
 baseline from `local-recon-before-network`. Current-token questions belong to
-`windows-identity-and-groups`; explicitly selected `ad-collection-analysis`
+`windows-identity-and-groups`; explicitly selected `python-bloodhound-collection`
 takes precedence for graph collection. Direct operator instructions prevail.
 
 ## Directory workflow

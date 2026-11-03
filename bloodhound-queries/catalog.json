@@ -1,0 +1,480 @@
+{
+  "schema_version": 1,
+  "api": "BloodHound CE /api/v2/graphs/cypher",
+  "queries": [
+    {
+      "id": "domain",
+      "question": "Is the expected domain present in the graph?",
+      "required_collection": [
+        "ObjectProps"
+      ],
+      "parameters": {
+        "domain": "domain"
+      },
+      "query": "MATCH (d:Domain) WHERE d.name = {domain} RETURN d LIMIT 1",
+      "result_limit": 1,
+      "interpretation": "A domain node exists; this alone does not prove it came from this run.",
+      "limitations": "The BloodHound graph can contain older or merged data. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "category": "identity",
+      "required_properties": [
+        "Domain.name"
+      ],
+      "required_edges": [],
+      "sources": [
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/domains.py"
+      ]
+    },
+    {
+      "id": "identity",
+      "question": "Resolve one principal by its exact SID.",
+      "required_collection": [
+        "ObjectProps"
+      ],
+      "parameters": {
+        "sid": "sid"
+      },
+      "query": "MATCH (n) WHERE n.objectid = {sid} RETURN n LIMIT 1",
+      "result_limit": 1,
+      "interpretation": "The returned node identifies the requested principal.",
+      "limitations": "Presence does not establish credentials, privileges, or current activity. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "category": "identity",
+      "required_properties": [
+        "Base.objectid"
+      ],
+      "required_edges": [],
+      "sources": [
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/memberships.py"
+      ]
+    },
+    {
+      "id": "memberships",
+      "question": "Which groups are reachable through membership from this principal?",
+      "required_collection": [
+        "Group"
+      ],
+      "parameters": {
+        "sid": "sid"
+      },
+      "query": "MATCH p=(n)-[:MemberOf*1..5]->(g:Group) WHERE n.objectid = {sid} RETURN p LIMIT 25",
+      "result_limit": 25,
+      "interpretation": "Membership subgraph within five hops; returned edges retain their direction.",
+      "limitations": "Bounded output may omit other membership chains. Graph presence is not an effective-token check. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "category": "membership",
+      "required_properties": [
+        "Base.objectid"
+      ],
+      "required_edges": [
+        "MemberOf"
+      ],
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/All%20Domain%20Admins.yml"
+      ]
+    },
+    {
+      "id": "candidate_path",
+      "question": "Is there a bounded candidate path between two specified principals?",
+      "required_collection": [
+        "Group",
+        "ACL",
+        "ObjectProps"
+      ],
+      "parameters": {
+        "source_sid": "sid",
+        "target_sid": "sid"
+      },
+      "query": "MATCH (s), (t) WHERE s.objectid = {source_sid} AND t.objectid = {target_sid} MATCH p=shortestPath((s)-[:MemberOf|GenericAll|GenericWrite|WriteDacl|WriteOwner|Owns|ForceChangePassword|AddMember*1..6]->(t)) RETURN p LIMIT 1",
+      "result_limit": 1,
+      "interpretation": "Candidate relationship chain, not an executed or confirmed attack path.",
+      "limitations": "At most six hops and the listed edge types only. Does not cover sessions, local administration, all delegation or trust behavior. Missing paths do not establish safety. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "category": "candidate_path",
+      "required_properties": [
+        "Base.objectid"
+      ],
+      "required_edges": [
+        "MemberOf",
+        "GenericAll",
+        "GenericWrite",
+        "WriteDacl",
+        "WriteOwner",
+        "Owns",
+        "ForceChangePassword",
+        "AddMember"
+      ],
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Shortest%20paths%20to%20Domain%20Admins.yml"
+      ]
+    },
+    {
+      "id": "domain_admin_groups",
+      "question": "Which Domain Admins group belongs to the selected domain?",
+      "category": "membership",
+      "required_collection": [
+        "Group",
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Group.domain",
+        "Group.objectid"
+      ],
+      "required_edges": [],
+      "parameters": {
+        "domain": "domain"
+      },
+      "query": "MATCH (g:Group) WHERE g.domain = {domain} AND g.objectid ENDS WITH '-512' RETURN g LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Identifies the domain-specific RID-512 group without relying on its localized name.",
+      "limitations": "This is group identification, not an effective-privilege or current-membership check. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/All%20Domain%20Admins.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/memberships.py"
+      ]
+    },
+    {
+      "id": "domain_admin_members",
+      "question": "Which enabled users have a membership chain to Domain Admins in this domain?",
+      "category": "membership",
+      "required_collection": [
+        "Group",
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Group.domain",
+        "Group.objectid",
+        "User.enabled"
+      ],
+      "required_edges": [
+        "MemberOf"
+      ],
+      "parameters": {
+        "domain": "domain"
+      },
+      "query": "MATCH p=(u:User)-[:MemberOf*1..5]->(g:Group) WHERE g.domain = {domain} AND g.objectid ENDS WITH '-512' AND u.enabled = true RETURN p LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Shows enabled-user membership chains up to five hops into the domain RID-512 group.",
+      "limitations": "Computers, disabled users, deeper chains, missing enabled properties, and effective-token details are outside this query. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/All%20Domain%20Admins.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/memberships.py"
+      ]
+    },
+    {
+      "id": "kerberoastable_users",
+      "question": "Which enabled ordinary user accounts have SPNs in the selected domain?",
+      "category": "kerberos",
+      "required_collection": [
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "User.domain",
+        "User.hasspn",
+        "User.enabled",
+        "User.objectid",
+        "User.gmsa",
+        "User.msa"
+      ],
+      "required_edges": [],
+      "parameters": {
+        "domain": "domain"
+      },
+      "query": "MATCH (u:User) WHERE u.domain = {domain} AND u.hasspn = true AND u.enabled = true AND NOT u.objectid ENDS WITH '-502' AND NOT COALESCE(u.gmsa, false) = true AND NOT COALESCE(u.msa, false) = true RETURN u LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Identifies SPN-bearing enabled users for further assessment; no ticket request or password recovery occurs.",
+      "limitations": "Missing gmsa/msa metadata is treated as false, so managed accounts may remain. SPN presence does not establish weak credentials, obtainable tickets, or successful cracking. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/All%20Kerberoastable%20users.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/memberships.py"
+      ]
+    },
+    {
+      "id": "asrep_roastable_users",
+      "question": "Which enabled users have Kerberos preauthentication disabled in this domain?",
+      "category": "kerberos",
+      "required_collection": [
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "User.domain",
+        "User.dontreqpreauth",
+        "User.enabled"
+      ],
+      "required_edges": [],
+      "parameters": {
+        "domain": "domain"
+      },
+      "query": "MATCH (u:User) WHERE u.domain = {domain} AND u.dontreqpreauth = true AND u.enabled = true RETURN u LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Identifies the collected account configuration; no AS-REP request or credential recovery occurs.",
+      "limitations": "Missing properties and uncollected identities are omitted. Current KDC behavior, password strength, and usable authentication remain unverified. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/AS-REP%20Roastable%20users%20%28DontReqPreAuth%29.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/memberships.py"
+      ]
+    },
+    {
+      "id": "unconstrained_delegation_computers",
+      "question": "Which enabled computers have unconstrained delegation configured in this domain?",
+      "category": "delegation",
+      "required_collection": [
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Computer.domain",
+        "Computer.unconstraineddelegation",
+        "Computer.enabled"
+      ],
+      "required_edges": [],
+      "parameters": {
+        "domain": "domain"
+      },
+      "query": "MATCH (c:Computer) WHERE c.domain = {domain} AND c.unconstraineddelegation = true AND c.enabled = true RETURN c LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Finds the collected unconstrained-delegation setting on enabled computers, including domain controllers.",
+      "limitations": "Domain controllers are deliberately included: this collector does not directly emit isdc. Configuration alone proves neither a usable ticket nor an active privileged session. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Non-Tier%20Zero%20account%20with%20unconstrained%20delegation.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/ad/computer.py"
+      ]
+    },
+    {
+      "id": "constrained_delegation",
+      "question": "Which computers are configured delegation destinations for this principal?",
+      "category": "delegation",
+      "required_collection": [
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Base.objectid"
+      ],
+      "required_edges": [
+        "AllowedToDelegate"
+      ],
+      "parameters": {
+        "sid": "sid"
+      },
+      "query": "MATCH p=(n)-[:AllowedToDelegate]->(c:Computer) WHERE n.objectid = {sid} RETURN p LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Shows configured outbound constrained-delegation relationships from the exact SID.",
+      "limitations": "Only direct relationships and resolved destinations appear. Credentials, allowed services, protocol-transition prerequisites, protected users, and effective use require separate validation. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Principals%20with%20outbound%20constrained%20delegation.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/ad/computer.py",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/memberships.py"
+      ]
+    },
+    {
+      "id": "resource_based_constrained_delegation",
+      "question": "Which principals have resource-based constrained delegation to this computer SID?",
+      "category": "delegation",
+      "required_collection": [
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Computer.objectid"
+      ],
+      "required_edges": [
+        "AllowedToAct"
+      ],
+      "parameters": {
+        "sid": "sid"
+      },
+      "query": "MATCH p=(n)-[:AllowedToAct]->(c:Computer) WHERE c.objectid = {sid} RETURN p LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Shows incoming configured RBCD relationships to the selected computer; no Tier Zero classification is assumed.",
+      "limitations": "The msDS-AllowedToActOnBehalfOfOtherIdentity attribute must be readable and schema-resolved. Principal credentials, service reachability, and effective impersonation are not established. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Non-Tier%20Zero%20computers%20with%20inbound%20resource-based%20constrained%20delegation.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/ad/computer.py"
+      ]
+    },
+    {
+      "id": "outbound_object_control",
+      "question": "Which objects have a direct selected control relationship from this exact principal?",
+      "category": "object_control",
+      "required_collection": [
+        "ACL",
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Base.objectid"
+      ],
+      "required_edges": [
+        "GenericAll",
+        "GenericWrite",
+        "WriteDacl",
+        "WriteOwner",
+        "Owns",
+        "ForceChangePassword",
+        "AddMember"
+      ],
+      "parameters": {
+        "sid": "sid"
+      },
+      "query": "MATCH p=(s)-[:GenericAll|GenericWrite|WriteDacl|WriteOwner|Owns|ForceChangePassword|AddMember]->(t) WHERE s.objectid = {sid} RETURN p LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Shows selected direct object-control edges, retaining target type and relationship direction.",
+      "limitations": "Group-derived rights are not expanded. These edges have different prerequisites and consequences; control does not prove a mutation or compromise. Modern or unlisted ACL edge types are omitted. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Principals%20With%20Direct%20Rights%20Assignment.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/acls.py"
+      ]
+    },
+    {
+      "id": "inbound_object_control",
+      "question": "Which principals have a direct selected control relationship to this exact object SID?",
+      "category": "object_control",
+      "required_collection": [
+        "ACL",
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Base.objectid"
+      ],
+      "required_edges": [
+        "GenericAll",
+        "GenericWrite",
+        "WriteDacl",
+        "WriteOwner",
+        "Owns",
+        "ForceChangePassword",
+        "AddMember"
+      ],
+      "parameters": {
+        "sid": "sid"
+      },
+      "query": "MATCH p=(s)-[:GenericAll|GenericWrite|WriteDacl|WriteOwner|Owns|ForceChangePassword|AddMember]->(t) WHERE t.objectid = {sid} RETURN p LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Finds selected direct controllers of a SID-addressable object for follow-up membership and prerequisite analysis.",
+      "limitations": "The SID parameter cannot address GUID-only objects such as GPOs. Group-derived rights and unlisted ACL types are not expanded; relationships are opportunities, not executed actions. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Principals%20With%20Direct%20Rights%20Assignment.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/acls.py"
+      ]
+    },
+    {
+      "id": "gpo_control",
+      "question": "Which GPOs have a direct control relationship from this principal SID?",
+      "category": "gpo",
+      "required_collection": [
+        "ACL",
+        "Container",
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Base.objectid"
+      ],
+      "required_edges": [
+        "GenericAll",
+        "GenericWrite",
+        "WriteDacl",
+        "WriteOwner",
+        "Owns"
+      ],
+      "parameters": {
+        "sid": "sid"
+      },
+      "query": "MATCH p=(s)-[:GenericAll|GenericWrite|WriteDacl|WriteOwner|Owns]->(g:GPO) WHERE s.objectid = {sid} RETURN p LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Finds direct control of GPO directory objects from the selected principal without requiring a GPO SID.",
+      "limitations": "Group-derived permissions are not expanded. Directory-object control alone does not establish SYSVOL write access, effective GPO application, filtering, inheritance, or code execution. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Principals%20With%20Direct%20Rights%20Assignment.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/memberships.py"
+      ]
+    },
+    {
+      "id": "replication_rights_candidates",
+      "question": "Which principals have direct graph relationships indicating replication control over this domain?",
+      "category": "replication",
+      "required_collection": [
+        "ACL",
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Domain.name"
+      ],
+      "required_edges": [
+        "DCSync",
+        "AllExtendedRights",
+        "GenericAll"
+      ],
+      "parameters": {
+        "domain": "domain"
+      },
+      "query": "MATCH p=(n)-[:DCSync|AllExtendedRights|GenericAll]->(d:Domain) WHERE d.name = {domain} RETURN p LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Shows direct DCSync or broader domain-control candidates; group nodes require membership follow-up.",
+      "limitations": "DCSync is derived from the combination of GetChanges and GetChangesAll, not either alone. Graph analysis must have completed; group-derived combinations, authentication and live replication success are not proved. No replication request is sent. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Principals%20with%20DCSync%20privileges.yml",
+        "https://bloodhound.specterops.io/resources/edges/dc-sync",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/acls.py"
+      ]
+    },
+    {
+      "id": "foreign_group_memberships",
+      "question": "Which direct members of groups in this domain have a different collected domain SID?",
+      "category": "cross_domain",
+      "required_collection": [
+        "Group",
+        "ObjectProps"
+      ],
+      "required_properties": [
+        "Group.domain",
+        "Base.domainsid",
+        "Group.domainsid"
+      ],
+      "required_edges": [
+        "MemberOf"
+      ],
+      "parameters": {
+        "domain": "domain"
+      },
+      "query": "MATCH p=(s)-[:MemberOf]->(g:Group) WHERE g.domain = {domain} AND s.domainsid <> g.domainsid RETURN p LIMIT 50",
+      "result_limit": 50,
+      "interpretation": "Highlights direct cross-domain memberships into groups in the selected domain.",
+      "limitations": "Missing source/domain SID metadata is omitted, and DCOnly may leave foreign principals unresolved. Membership does not prove a traversable trust, effective access, or complete foreign-domain coverage. Results are instance-wide and may include older or merged data; LIMIT bounds returned rows, not total query work.",
+      "sources": [
+        "https://github.com/SpecterOps/BloodHoundQueryLibrary/blob/b1fee8f5715f8fb3358e187ca3f1bddbfd125f93/queries/Principals%20with%20foreign%20domain%20group%20membership.yml",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/enumeration/memberships.py"
+      ]
+    }
+  ],
+  "deferred_queries": [
+    {
+      "id": "local_privilege_edges",
+      "question": "Which principals have host-local token privilege relationships?",
+      "blockers": [
+        "PR 1999 was closed without merging on 2026-10-10; its proposed privilege edges are absent from the reviewed CE v9.9.0 AD schema.",
+        "Current Python BloodHound DCOnly does not collect host-local token privileges."
+      ],
+      "sources": [
+        "https://github.com/SpecterOps/BloodHound/pull/1999",
+        "https://github.com/SpecterOps/BloodHound/blob/v9.9.0/packages/go/graphschema/ad/ad.go"
+      ]
+    },
+    {
+      "id": "sessions_and_local_administrators",
+      "question": "Which principals have live sessions or host-local administration relationships?",
+      "blockers": [
+        "Current DCOnly coverage excludes Session and LocalAdmin collection.",
+        "Older instance-wide edges cannot be attributed to the current run; a separate collector/coverage implementation is required."
+      ],
+      "sources": [
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/__init__.py",
+        "https://www.piirates.fr/bloodhound/"
+      ]
+    },
+    {
+      "id": "adcs_attack_paths",
+      "question": "Which certificate enrollment configurations form ADCS candidate paths?",
+      "blockers": [
+        "This adapter has no validated ADCS collection coverage or corresponding artifact validation.",
+        "Do not treat imported legacy or unrelated ADCS edges as evidence from this DCOnly run."
+      ],
+      "sources": [
+        "https://bloodhound.specterops.io/resources/edges/adcs-esc1",
+        "https://github.com/dirkjanm/BloodHound.py/blob/f7c0144902f8cacaf16af7beaf1064ee79d0c56b/bloodhound/__init__.py"
+      ]
+    }
+  ]
+}

@@ -91,6 +91,14 @@ FIELDS = {
     "OPENAI_API_KEY": field("Default OpenAI API key", "AI", secret=True),
     "RMM_EXEGOL_MCP_URL": field("Exegol MCP URL", "AI"),
     "RMM_EXEGOL_MCP_TOKEN": field("Exegol MCP token", "AI", secret=True),
+    "RMM_EXEGOL_CONTAINER": field("Required Exegol workspace container name", "AI"),
+    "RMM_BLOODHOUND_URL": field("BloodHound CE URL", "BloodHound", default="http://127.0.0.1:1030", scopes=S + W),
+    "RMM_BLOODHOUND_UI_BIND": field("BloodHound UI proxy bind address", "BloodHound", default="127.0.0.1", scopes=S + W),
+    "RMM_BLOODHOUND_UI_PORT": field("BloodHound UI proxy port", "BloodHound", default="1031", scopes=S + W),
+    "RMM_BLOODHOUND_UI_PUBLIC_URL": field("Browser-facing BloodHound proxy origin", "BloodHound", default="http://127.0.0.1:1031", scopes=S + W),
+    "RMM_BLOODHOUND_TOKEN_ID": field("BloodHound API token ID", "BloodHound", secret=True, scopes=S + W),
+    "RMM_BLOODHOUND_TOKEN_KEY": field("BloodHound API token key", "BloodHound", secret=True, scopes=S + W),
+    "RMM_BLOODHOUND_COLLECTOR": field("BloodHound CE collector executable", "BloodHound", default="bloodhound-ce-python", scopes=S + W),
 }
 
 

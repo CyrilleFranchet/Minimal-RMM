@@ -3,7 +3,7 @@ PYTHON ?= python3
 
 PY_MODULES := rmm_settings.py rmm_plugin_sources.py rmm_plugin_releases.py rmm_embeddings.py server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
 	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_ai_jobs.py rmm_run_on_host.py rmm_kill_host_sessions.py \
-	rmm_workspace.py workspace_pivot.py workspace_service.py rmm_asset_store.py rmm_profile.py
+	rmm_workspace.py workspace_pivot.py workspace_service.py rmm_asset_store.py rmm_profile.py rmm_bloodhound.py rmm_bloodhound_broker.py rmm_bloodhound_proxy.py rmm_exegol_runtime.py rmm_bloodhound_library.py scripts/import_bloodhound_library.py
 
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
@@ -73,5 +73,7 @@ check-parity:
 
 check-web-contracts:
 	@$(PYTHON) scripts/check_web_contracts.py
+	@node tests/test_bloodhound_ui.cjs
+	@node tests/test_bloodhound_shell.cjs
 
 check: test check-parity check-web-contracts lint

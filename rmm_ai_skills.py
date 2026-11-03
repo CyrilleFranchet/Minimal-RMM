@@ -10,6 +10,36 @@ import os
 import re
 
 _SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+SKILL_REPLACEMENTS = {'ad-collection-analysis': ('python-bloodhound-collection', 'bloodhound-analysis')}
+WEB_SKILL_TOPICS = (
+    'sqli', 'xss', 'ssrf', 'ssti', 'xxe', 'idor', 'file-upload', 'rce',
+    'deserialization', 'race-condition', 'request-smuggling', 'open-redirect',
+    'parameter-pollution', 'graphql', 'waf-bypass', 'business-logic',
+)
+SKILL_REPLACEMENTS.update({f'offensive-{topic}': (f'web-{topic}',) for topic in WEB_SKILL_TOPICS})
+
+
+def expand_skill_ids(skill_ids):
+    """Resolve retired or renamed IDs to their on-demand replacements."""
+    if skill_ids is None:
+        return None
+    result = []
+    for raw in skill_ids:
+        skill_id = str(raw or '').strip().lower()
+        for replacement in SKILL_REPLACEMENTS.get(skill_id, (skill_id,)):
+            if replacement and replacement not in result:
+                result.append(replacement)
+    return result
+
+
+def expand_skill_overrides(overrides):
+    """Preserve legacy disablement unless a replacement has an explicit setting."""
+    result = dict(overrides or {})
+    for old, replacements in SKILL_REPLACEMENTS.items():
+        if old in result:
+            for replacement in replacements:
+                result.setdefault(replacement, result[old])
+    return result
 
 
 def ai_skills_dir() -> str:
@@ -87,6 +117,7 @@ def list_ai_skills(
     enabled_overrides: dict[str, bool] | None = None,
 ) -> list[dict]:
     """Return skill metadata for the operator UI (no body text)."""
+    enabled_overrides = expand_skill_overrides(enabled_overrides)
     rows_by_id: dict[str, dict] = {}
     for directory in _skill_directories(directories):
         if not os.path.isdir(directory):
@@ -100,7 +131,7 @@ def list_ai_skills(
             if not os.path.isfile(path):
                 continue
             skill = load_skill_file(path)
-            if not skill:
+            if not skill or skill['id'] in SKILL_REPLACEMENTS:
                 continue
             rows_by_id[skill["id"]] = {
                 "id": skill["id"],
@@ -116,7 +147,7 @@ def list_ai_skills(
         if enabled_overrides and skill_id in enabled_overrides:
             row["enabled"] = bool(enabled_overrides[skill_id])
         else:
-            row["enabled"] = bool(row["default"] or row["always"])
+            row["enabled"] = True
         rows.append(row)
     return sorted(rows, key=lambda row: row["id"])
 
@@ -129,9 +160,11 @@ def resolve_ai_skills(
     """
     Load full skill bodies.
 
-    - skill_ids is None: skills marked default: true or always: true in frontmatter
+    - skill_ids is None: all available skills (optional bodies load on demand)
     - skill_ids is a list: those ids plus all always: true skills
     """
+    skill_ids = expand_skill_ids(skill_ids)
+    enabled_overrides = expand_skill_overrides(enabled_overrides)
     available = {
         row["id"]: row
         for row in (_load_all_skills_full(directories))
@@ -139,11 +172,7 @@ def resolve_ai_skills(
     }
     always = [skill for skill in available.values() if skill.get("always")]
     if skill_ids is None:
-        return [
-            skill
-            for skill in available.values()
-            if skill.get("default") or skill.get("always")
-        ]
+        return list(available.values())
     chosen: list[dict] = []
     included = set()
     for skill in always:
@@ -172,7 +201,7 @@ def _load_all_skills_full(directories: list[str] | None = None) -> list[dict]:
             if not os.path.isfile(path):
                 continue
             skill = load_skill_file(path)
-            if skill:
+            if skill and skill['id'] not in SKILL_REPLACEMENTS:
                 rows_by_id[skill["id"]] = skill
     return sorted(rows_by_id.values(), key=lambda row: row["id"])
 

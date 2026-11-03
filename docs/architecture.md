@@ -7,6 +7,18 @@ protocol notes remain in the linked feature pages.
 
 ## System map
 
+The [BloodHound CE workflow](bloodhound-workflow.md) executes at the storage
+owner: workspace-local in Exegol mode and server-local in standalone mode.
+Exegol is mandatory at that operator storage owner for AI and mutating
+BloodHound operations. Standalone server mode therefore runs inside Exegol;
+the separate central server in workspace storage mode remains independent.
+An owner-local runtime checks MCP/container identity and starts or reuses CE
+at service startup. Reconnecting browsers read health; CE failures leave the
+workspace and agent-management paths available.
+It persists run checkpoints and artifacts, invokes an installed CE collector,
+and uses a configured CE API. It never moves collection onto the Windows agent
+or forwards workspace artifacts to the central control plane.
+
 Minimal-RMM has four boundaries:
 
 1. **Operator surface** — WebUI, CLI, MCP, and the WebUI AI loop send actions

@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Canonical MCP / OPENAI_TOOLS / TOOL_HANDLERS tool names.
 REQUIRED_MCP_TOOLS = frozenset({
+    "bloodhound",
     "list_ai_jobs",
     "get_ai_job",
     "settings",
@@ -75,6 +76,7 @@ REQUIRED_MCP_TOOLS = frozenset({
 
 # MCP tool -> RmmApiClient method (wrappers may share queue_command).
 TOOL_CLIENT_METHOD: dict[str, str] = {
+    "bloodhound": "bloodhound",
     "list_ai_jobs": "list_ai_jobs",
     "get_ai_job": "get_ai_job",
     "settings": "settings",
@@ -133,6 +135,7 @@ TOOL_CLIENT_METHOD: dict[str, str] = {
 
 # Web shell meta verbs -> MCP tool (web/app.js dispatchShellMetaCommand).
 WEB_SHELL_META: dict[str, str] = {
+    "bloodhound": "bloodhound",
     "download": "queue_download",
     "exfil": "queue_exfil",
     "screenshot": "queue_screenshot",
@@ -199,6 +202,20 @@ def main() -> int:
     openai_tools = openai_tool_names(tools_mod)
     mcp_tools = mcp_tools_from_server()
     api_methods = client_methods()
+    cli = sys.modules["rmm_cli_parity"]
+    cli_parser = cli.build_parser()
+    subparsers = next(action for action in cli_parser._actions if hasattr(action, "choices") and isinstance(action.choices, dict))
+    bh_cli_actions = set(next(action for action in subparsers.choices["bloodhound"]._actions if action.dest == "action").choices)
+    bh_schema = next(tool["function"]["parameters"] for tool in tools_mod.OPENAI_TOOLS if tool["function"]["name"] == "bloodhound")
+    bh_ai_actions = set(bh_schema["properties"]["action"]["enum"])
+    web_source = (ROOT / "web" / "app.js").read_text()
+    bh_web = re.search(r"const BLOODHOUND_ACTIONS = \[(.*?)\];", web_source, re.DOTALL)
+    bh_web_actions = set(re.findall(r'"([^"]+)"', bh_web.group(1))) if bh_web else set()
+    broker = _load_module("rmm_bloodhound_broker_parity", ROOT / "rmm_bloodhound_broker.py")
+    if not bh_cli_actions == bh_ai_actions == bh_web_actions == set(broker.ACTIONS) | {"result"}:
+        errors.append("BloodHound action sets differ between CLI, WebUI, AI/MCP tool schema, and workspace broker")
+    if "bloodhound" not in cli.RMM_CLI_COMMANDS:
+        errors.append("Interactive CLI missing BloodHound completion")
     shell_meta = web_shell_meta_commands()
     mcp_ast = ast.parse((ROOT / "mcp_rmm_server.py").read_text())
     mcp_parameters = {node.name: {arg.arg for arg in node.args.args}

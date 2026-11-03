@@ -34,6 +34,25 @@ response, not that every requested remote operation succeeded.
 
 ## Persistence and restart behavior
 
+### Model request timeout recovery
+
+`rmm_ai._model_request` retries a timed-out model request at most twice,
+waiting one second and then two seconds. Each attempt retains the existing
+180-second socket timeout. OpenAI, Mistral, and Anthropic use this wrapper;
+provider validation requests do not. HTTP errors and malformed responses are
+not retried by this mechanism.
+
+Retries keep the same conversation, including completed tool results, and do
+not replay tool execution or consume another model round. Progress reports
+`retry_wait` and `retrying` statuses and checks job interruption before another
+request. A timed-out request may still have been processed by the provider,
+so a retry can incur another model charge. After three failed attempts the
+original exception chain is retained in job diagnostics. Recovery is in memory;
+it does not resume already failed jobs or survive a server restart.
+
+`tests/test_ai_model_retry.py` covers retained tool results across all providers,
+bounded exhaustion, timeout classification, and interruption before retry.
+
 `rmm_ai_jobs.AIJobManager` owns the SQLite job database at
 `RMM_logs/ai-jobs.sqlite3`, a bounded worker pool, and owner-scoped queries.
 Its submit/get/list/dismiss methods enforce idempotency, session exclusivity,
@@ -135,3 +154,20 @@ may continue. Cancellation never rolls back actions or replays the task.
 The Stop control occupies the Send button position below the prompt while a
 job is active, outside the scrolling transcript. It shows Stopping while the
 cancellation request is pending and restores Send when the job terminates.
+
+## Execution details in AI chat
+
+Each new job reports its resolved tool path, MCP status,
+Exegol status, and loaded skill IDs in the chat. MCP is marked connected only
+once session initialization and tool discovery succeed. AI now requires Exegol
+and MCP; disabling Exegol produces `exegol_required`, with no direct fallback.
+Missing MCP support or
+`RMM_AI_USE_MCP=0` produces `exegol_requires_mcp` instead of silently dropping
+Exegol tools. Existing jobs without this metadata show details as unavailable.
+
+`run_ai_chat.report_execution` attaches resolved context to each progress event.
+The job store retains bounded skill IDs and status labels, not skill bodies,
+endpoint URLs, tokens, or tool arguments. Skills are resolved once per run so
+reported IDs match the prompt snapshot; loading does not prove the model used
+or followed each instruction. A connection error reports MCP error; a later
+model failure does not reclassify an established MCP connection as failed.

@@ -92,14 +92,17 @@ configuration stores.
 | Authentication and connection | `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, `RMM_WORKSPACES`, `RMM_C2_URL`, `RMM_WORKSPACE_ID`, `RMM_WORKSPACE_TOKEN`, `RMM_WORKSPACE_LOCAL_TOKEN` |
 | Listeners | `RMM_ADMIN_BIND`, `RMM_ADMIN_PORT`, `RMM_BEACON_PORT`, `RMM_BEACON_BIND`, `RMM_WORKSPACE_BIND`, `RMM_WORKSPACE_PORT`; explicit flags still win |
 | Assets and helper paths | `RMM_PLUGINS_DIR`, `RMM_ASSETS_DIR`, `RMM_PROFILES_DIR`, `RMM_UI_STATE_DB`, `RMM_TUN_HELPER`, `RMM_WORKSPACE_TUN_HELPER`, `RMM_TUN_LOG_LEVEL`, `RMM_RCLONE_BIN` |
-| AI | Server-only engine controls: `RMM_AI_MAX_TOOL_ROUNDS`, `RMM_AI_USE_MCP`. Owner-scoped defaults: `RMM_AI_SKILLS_DIR`, `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `OPENAI_API_KEY` |
+| AI | Server-only engine controls: `RMM_AI_MAX_TOOL_ROUNDS`, `RMM_AI_USE_MCP`. Owner-scoped defaults: `RMM_AI_SKILLS_DIR`, `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_EXEGOL_CONTAINER`, `OPENAI_API_KEY` |
+| BloodHound | Owner-local `RMM_BLOODHOUND_URL`, `RMM_BLOODHOUND_TOKEN_ID`, `RMM_BLOODHOUND_TOKEN_KEY`, `RMM_BLOODHOUND_COLLECTOR`, `RMM_BLOODHOUND_UI_BIND`, `RMM_BLOODHOUND_UI_PORT`, `RMM_BLOODHOUND_UI_PUBLIC_URL`; see [lifecycle and proxy configuration](bloodhound-workflow.md) |
 | Plugin sources | `RMM_PLUGIN_REPOSITORY` seeds the default source; edit existing repositories/branches through the source editor. Store credentials using `RMM_PLUGIN_GITHUB_TOKEN` or the source's `RMM_PLUGIN_TOKEN_<NAME>` reference |
 | Rclone | `RMM_RCLONE_DEFAULT_PROFILE`, `RMM_RCLONE_MAX_BYTES`, `RMM_RCLONE_PROFILES`, `RMM_RCLONE_PROFILES_FILE`; managed profile assets remain available |
 
-Workspace AI requests carry their configured provider/Exegol defaults to the
-central execution service. Explicit request values win; a saved Exegol token
-is used only for its configured endpoint. AI engine limits and MCP execution
-mode belong to the central server. Internal AI tools retain the requesting
+Workspace AI requests carry their configured provider defaults to the central
+execution service; explicit provider request values take precedence. Exegol
+configuration is resolved from the owning service through a private relay;
+browser/request Exegol overrides are ignored. AI engine limits and MCP
+execution mode belong to the central server. Disabling MCP blocks AI instead
+of selecting a direct fallback. Internal AI tools retain the requesting
 workspace's credentials and cannot administer central settings.
 
 The following are deliberately outside ordinary service configuration:

@@ -25,6 +25,7 @@ import glob
 import json
 import os
 import queue
+import shlex
 import socket
 import sys
 import threading
@@ -52,6 +53,7 @@ except ImportError:
     _PTCompleterBase = object
 
 RMM_CLI_COMMANDS = [
+    "bloodhound",
     "list",
     "use",
     "info",
@@ -296,6 +298,12 @@ class RmmApiClient:
             f"/api/v1/sessions/{session_id}/screenshot",
             {},
         )
+
+    def bloodhound(self, action="preflight", run_id="", options=None):
+        """Operate the BloodHound workflow at the connected storage owner."""
+        return self.request("POST", "/api/v1/bloodhound", {
+            "action": action, "run_id": run_id, "options": options or {},
+        })
 
     def embedding_profiles(self, action="list", name="", config=None):
         """Manage reusable profiles at the server or local workspace API."""
@@ -1237,6 +1245,7 @@ Config:   rclone-config   (rclone profiles + bootstrap status)
 Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
           tun list | tun start <session> <device> | tun stop <session>
 Other:    events [since] | health | help | quit
+BloodHound: bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
 
 Tip: agent output and config_ack events stream for all connected sessions (prefix [session8]).
 Tip: TAB completes commands and session id prefixes (after list).
@@ -1449,6 +1458,9 @@ def run_interactive(
                 continue
             if cmd == "clear":
                 _ptk_emit("\x1b[2J\x1b[H")
+                continue
+            if cmd == "bloodhound":
+                dispatch_interactive_bloodhound(client, state, line)
                 continue
             if cmd == "health":
                 code, hdata = client.health()
@@ -1997,6 +2009,32 @@ def cmd_settings(client, state, args):
     print_json(data)
 
 
+def dispatch_interactive_bloodhound(client, state, line):
+    """Reuse the one-shot parser locally; invalid input never reaches an agent."""
+    try:
+        args = build_parser().parse_args(shlex.split(line))
+        cmd_bloodhound(client, state, args)
+    except ValueError as exc:
+        warn(f"Invalid BloodHound command: {exc}")
+    except SystemExit:
+        # argparse and die already display the error; keep the operator shell alive.
+        pass
+
+
+def cmd_bloodhound(client, state, args):
+    """Send typed workflow options without accepting credentials on the command line."""
+    try:
+        options = json.loads(args.options_json)
+        if not isinstance(options, dict):
+            raise ValueError("options must be an object")
+    except ValueError as exc:
+        die(f"Invalid BloodHound options: {exc}")
+    code, data = client.bloodhound(args.action, args.run_id, options)
+    if not 200 <= code < 300:
+        die(f"BloodHound workflow failed ({code}): {data}")
+    print_json(data)
+
+
 def cmd_embeddings(client, state, args):
     """Dispatch profile management, execution, and result export for the CLI."""
     action = args.embedding_action
@@ -2277,6 +2315,12 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--value-file", help="Read value from a file; - reads standard input without placing secrets in argv")
         if action == "import":
             command.add_argument("file", help='JSON file containing {"settings": {...}}; - reads standard input')
+
+    bloodhound = sub.add_parser("bloodhound", parents=[shared], help="BloodHound CE collection, ingestion, and graph evidence")
+    bloodhound.add_argument("action", choices=("preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "library_search", "library_get"))
+    bloodhound.add_argument("--run-id", default="")
+    bloodhound.add_argument("--options-json", default="{}", help="Action options as JSON; credentials belong in service settings")
+    bloodhound.set_defaults(func=cmd_bloodhound)
 
     embeddings = sub.add_parser("embeddings", help="Saved document embedding profiles and results")
     groups = embeddings.add_subparsers(dest="embedding_group", required=True)

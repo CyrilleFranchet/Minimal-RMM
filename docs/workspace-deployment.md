@@ -140,6 +140,9 @@ Workspace service variables:
 | `RMM_WORKSPACE_TUN_HELPER` | Local `rmm-tun` path; default `tools/rmm-tun` |
 | `RMM_WORKSPACE_AUTO_CLAIM` | Claim every unassigned session when set to `1` |
 | `RMM_WORKSPACE_POLL_INTERVAL` | Session/event sync interval in seconds; default `1` |
+| `RMM_EXEGOL_MCP_URL` | Required MCP endpoint reachable by both this runtime and the central AI process |
+| `RMM_EXEGOL_MCP_TOKEN` | MCP credential when the endpoint requires authentication |
+| `RMM_EXEGOL_CONTAINER` | Required exact Exegol container hosting this workspace and its network namespace |
 | `RMM_WORKSPACE_MAX_BODY` | Local upload size cap; set 128 MiB for all current plugins |
 | `RMM_ASSET_MAX_BYTES` | Local download/install size cap; set 128 MiB for all current plugins |
 | `RMM_PLUGIN_GITHUB_TOKEN`, `RMM_PLUGIN_TOKEN_<NAME>` | Private GitHub credentials referenced by saved plugin sources; never returned by the source API |
@@ -218,14 +221,21 @@ login form. API requests still require the configured local token.
 ### AI tool scope
 
 The local AI request is proxied to the central `/api/v1/ai/chat` endpoint with
-the workspace headers. The central handler passes those headers to both the
-direct `rmm_tools` client and the stdio `mcp_rmm_server.py` child. The child
+the workspace headers. The central handler passes those headers to the
+stdio `mcp_rmm_server.py` child. The child
 therefore lists and controls only sessions claimed by the current workspace.
 The provider API key is stored in the workspace's owner-controlled SQLite UI
 state after validation. AI requests, including the supplied provider key,
 transit the central AI handler before reaching the provider; workspace
 persistence does not make the central broker blind to this traffic. Keep the
 workspace data directory private and trust the central service accordingly.
+
+Exegol MCP is mandatory for AI; there is no direct-tool fallback. Owner-local
+service settings choose its endpoint and credential, rather than each chat
+request. The workspace runtime verifies container ownership and starts or
+reuses CE asynchronously when the service starts. Browser reconnects only
+check readiness. CE startup failure does not prevent ordinary agent management
+or configuration. See [BloodHound lifecycle](bloodhound-workflow.md).
 
 ### Rclone profile scope
 

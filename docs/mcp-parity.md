@@ -6,7 +6,42 @@ boundaries.
 
 Every **operator REST capability** exposed by `server_rmm.py` under `/api/v1/*` must be reachable through **`mcp_rmm_server.py`** (and shared `rmm_tools.py` / `OPENAI_TOOLS` for the web AI panel).
 
-## Service configuration
+## BloodHound CE workflow
+
+`POST /api/v1/bloodhound` maps to `RmmApiClient.bloodhound`, standalone CLI
+`bloodhound ACTION --run-id ID --options-json JSON`, shared `tool_bloodhound`,
+and MCP/Web AI `bloodhound(action, run_id, options)`. Collection/import return
+asynchronous acceptance; `status` inspects the persisted run. Requests remain
+at the storage owner; workspace-scoped central calls return a relay request ID
+retrieved with `result`, without executing at the central server. Both the
+standalone interactive CLI and WebUI shell intercept `bloodhound` locally,
+including invalid syntax; it never falls through to the agent. See the
+[workflow contract](bloodhound-workflow.md).
+
+The WebUI's **BloodHound operations** form exposes the same fifteen actions,
+run/request ID, and JSON options without requiring an agent session or AI.
+It displays HTTP status and response data, including asynchronous acceptance
+and relay IDs. As in the CLI, explicitly use `result`, `status`, or `health`
+to check progress; the form does not retry mutations. **Open BloodHound** is
+the convenience button that waits for readiness and opens the proxy link.
+
+`dispatch_interactive_bloodhound` reuses the CLI parser and dispatch function
+while keeping parse failures inside the interactive shell. The WebUI
+`dispatchShellMetaCommand` branch validates structured options and displays
+escaped responses; the form submit handler validates JSON and renders with
+`textContent`. `BLOODHOUND_ACTIONS` supplies both browser entry points.
+`check_operator_parity.py` checks their action set against the CLI, shared tool
+schema, and workspace broker; transport tests exercise actual dispatch.
+
+This establishes parity for the BloodHound workflow. It does not imply that
+every other operator capability has a dedicated manual WebUI control; the
+shared AI/MCP tool registry and the manual UI are separate surfaces.
+
+The same surfaces expose `library_search` (paginated metadata) and `library_get`
+(one original query by GUID). These read-only actions require no run or Exegol
+startup and do not add upstream Cypher to the execution allowlist.
+
+## Service configuration endpoints
 
 `GET /api/v1/settings` maps to `rmm_cli.py settings show` and MCP
 `settings(action="show")`. `PATCH /api/v1/settings` maps to CLI
@@ -82,6 +117,8 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `exfil` | `queue_exfil` | `POST …/exfil` |
 | `screenshot` | `queue_screenshot` | `POST …/screenshot` |
 | `pe` | `queue_pe_load` | `POST …/pe` |
+| `embeddings` | `run_embeddings` | `POST /embeddings/run` |
+| `bloodhound` | `bloodhound` | `POST /bloodhound` |
 
 `upload` is intentionally **not** a shell meta command (browser file picker only). See intentional exceptions.
 

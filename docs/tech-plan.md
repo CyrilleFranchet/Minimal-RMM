@@ -772,7 +772,8 @@ Today deployment is manual:
 - Typical lab start (e.g. inside Exegol):  
   `python server_rmm.py --rclone-profiles tools/rclone/profiles.json --rclone-max-bytes 0 --token … --beacon-secret … 8081`
 - Default HTTP bind is `127.0.0.1` — fine on host, **insufficient inside a container** (agents and port publishing need `--bind 0.0.0.0`)
-- Exegol MCP remains optional HTTP (`RMM_EXEGOL_MCP_URL`); it can run in the
+- Exegol MCP is required for AI/BloodHound (`RMM_EXEGOL_MCP_URL` and exact
+  `RMM_EXEGOL_CONTAINER`); it can run in the
   workspace network or be reached through the workspace container
 
 The **Windows agent** (`client_rmm.ps1`) is deployed separately on managed hosts and is **not** containerized — Docker targets the operator/server side only.
@@ -983,6 +984,22 @@ Or the same command inside an Exegol container (current workflow).
 ---
 
 ## Backlog (referenced elsewhere)
+
+### AD collection: ldeep as a second method
+
+- [ ] Add a separate `ldeep-collection` skill and explicit collector selection;
+  retain `python-bloodhound-collection` with CE `DCOnly` as the first method.
+- [ ] Validate the installed ldeep version, authentication modes, supported
+  output schemas, and directory coverage in the Exegol workspace.
+- [ ] Define an evidence manifest independent of the collector: method/version,
+  identity, scope, timestamps, coverage, artifact hashes, and completion state.
+- [ ] Determine which ldeep artifacts can support graph ingestion or direct
+  analysis; do not assume compatibility with the Python BloodHound CE importer.
+- [ ] Test coverage gaps, partial collection, restart recovery, and observable
+  LDAP traffic before enabling the method. Do not add an automatic fallback.
+
+ldeep is planned, not implemented. Analysis skills must report the collection
+method and evidence coverage rather than assuming all methods are equivalent.
 
 Items tracked in `docs/progress.md` **Up Next** but not spec’d here yet:
 

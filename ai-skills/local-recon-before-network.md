@@ -10,9 +10,11 @@ default: true
 ## Scope and order
 
 Before network discovery, domain enumeration, AD collection, or a pivot for
-those tasks, establish a local baseline on the selected Windows agent. Then
-check relevant local secret sources within the task scope before
-broader discovery. This does not trigger recon for explanations or artifact
+those tasks, establish the local facts needed on the selected Windows agent.
+Check local secret sources only when the requested task requires authentication
+and existing authorized authentication is insufficient. Capture validation,
+connectivity diagnostics, and artifact analysis do not require secret hunting.
+This does not trigger recon for explanations or artifact
 review. Discovered lab subnets may be probed autonomously when needed to
 progress; keep scans purposeful and record them in the report.
 
@@ -79,7 +81,7 @@ gap.
 Live DC discovery requires a separate, scoped DNS/directory step when needed.
 `nltest /dsgetdc`, `Get-ADDomain`, and BloodHound are not purely local evidence.
 Use the selected directory workflow: normally `windows-ad-recon-stealth`, with
-explicitly selected `ad-collection-analysis` governing graph collection.
+explicitly selected `python-bloodhound-collection` governing graph collection.
 
 Caches and existing connections may suggest peers when relevant, but do not
 prove current reachability; probe candidates autonomously when needed to

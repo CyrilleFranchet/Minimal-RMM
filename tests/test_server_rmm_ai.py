@@ -12,7 +12,7 @@ class FakeHandler:
 
     def __init__(self):
         self.responses = []
-        self.server_instance = SimpleNamespace(save_ai_chat=lambda *_args: None)
+        self.server_instance = SimpleNamespace(storage_mode='server', save_ai_chat=lambda *_args: None)
 
     def _api_authorized(self):
         return True
@@ -35,6 +35,12 @@ class FakeHandler:
 
 class AiProviderRouteTests(unittest.TestCase):
     """Verify validation and chat route parameter forwarding and failures."""
+
+    def setUp(self):
+        runtime = patch('rmm_exegol_runtime.get_runtime')
+        self.runtime = runtime.start().return_value
+        self.runtime.status.return_value = {'exegol_status': 'ready'}
+        self.addCleanup(runtime.stop)
 
     def call(self, path, body):
         handler = FakeHandler()

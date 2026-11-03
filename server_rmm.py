@@ -64,6 +64,8 @@ from rmm_workspace import WorkspaceEventBroker, WorkspaceRegistry, valid_workspa
 from rmm_asset_store import AssetError, AssetStore, decode_asset_content
 from rmm_profile import ProfileError, ProfileManager, profile_directory
 from rmm_embeddings import EmbeddingStore, embedding_api
+from rmm_bloodhound import bloodhound_api
+from rmm_bloodhound_broker import BloodHoundBroker
 from rmm_plugin_releases import plugin_release_api
 from rmm_plugin_sources import plugin_sources_api
 from rmm_ui_state import UiStateError, UiStateStore
@@ -991,6 +993,7 @@ class RMMServer:
         self.storage_mode = configured_storage_mode()
         self.workspace_registry = WorkspaceRegistry.from_environment()
         self.workspace_events = WorkspaceEventBroker()
+        self.bloodhound_broker = BloodHoundBroker()
         self.sessions = {}
         self.killed_sessions = set()
         self._persisted_session_configs = self._load_persisted_session_configs()
@@ -3584,6 +3587,21 @@ class RMMHandler(BaseHTTPRequestHandler):
         self._json(status, payload)
         return True
 
+    def _handle_bloodhound(self, body):
+        """Keep BloodHound artifacts and credentials at their storage owner."""
+        srv = self.server_instance
+        owner = getattr(self, "_workspace_scope", lambda: None)()
+        if srv.storage_mode == "workspace" and owner:
+            status, payload = srv.bloodhound_broker.submit(owner, body)
+            self._json(status, payload)
+            return True
+        if srv.storage_mode != "server" or owner:
+            self._json(409, {"error": "bloodhound_is_workspace_local", "detail": "Use the local workspace API URL."})
+            return True
+        status, payload = bloodhound_api(os.path.join(LOG_DIR, "bloodhound"), body)
+        self._json(status, payload)
+        return True
+
     def _handle_embeddings(self, method, parts, body=None):
         """Serve embedding records only at their selected storage owner."""
         srv = self.server_instance
@@ -3622,6 +3640,13 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if parts == ["workspace", "bloodhound", "requests"]:
+            owner = self._workspace_scope()
+            if not owner:
+                self._json(403, {"error": "workspace_auth_required"})
+            else:
+                self._json(200, {"requests": self.server_instance.bloodhound_broker.pending(owner)})
+            return True
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("GET", parts)
         if parts == ["plugin-releases"]:
@@ -3981,6 +4006,16 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if len(parts) == 4 and parts[:3] == ["workspace", "bloodhound", "requests"]:
+            owner = self._workspace_scope()
+            if not owner:
+                self._json(403, {"error": "workspace_auth_required"})
+            else:
+                status, payload = self.server_instance.bloodhound_broker.complete(owner, parts[3], body)
+                self._json(status, payload)
+            return True
+        if parts == ["bloodhound"]:
+            return self._handle_bloodhound(body)
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("POST", parts, body)
         if parts == ["plugin-releases", "install"]:
@@ -4502,6 +4537,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts in (["ai", "chat"], ["ai", "jobs"]):
+            if not workspace_id and srv.storage_mode != "server":
+                self._json(409, {"error": "ai_requires_operator_workspace"})
+                return True
+            if not workspace_id and srv.storage_mode == "server":
+                from rmm_exegol_runtime import get_runtime
+                runtime = get_runtime(os.path.join(LOG_DIR, "bloodhound")).status()
+                if runtime.get("exegol_status") != "ready":
+                    self._json(503, {"error": "exegol_workspace_not_ready", "runtime": runtime})
+                    return True
+                body = dict(body, exegol_mcp_enabled=True,
+                            exegol_mcp_url=settings_getenv("RMM_EXEGOL_MCP_URL", ""),
+                            exegol_mcp_token=settings_getenv("RMM_EXEGOL_MCP_TOKEN", ""))
             asynchronous = parts == ["ai", "jobs"]
             provider = str(body.get("provider") or "openai").strip().lower()
             api_key = str(
@@ -4572,18 +4619,31 @@ class RMMHandler(BaseHTTPRequestHandler):
                     messages=messages,
                     model=model,
                     selected_session_id=selected,
-                    exegol_mcp_enabled=body.get("exegol_mcp_enabled"),
-                    exegol_mcp_url=body.get("exegol_mcp_url"),
-                    exegol_mcp_token=body.get("exegol_mcp_token"),
+                    exegol_mcp_enabled=body.get("exegol_mcp_enabled") if not workspace_id else None,
+                    exegol_mcp_url=body.get("exegol_mcp_url") if not workspace_id else None,
+                    exegol_mcp_token=body.get("exegol_mcp_token") if not workspace_id else None,
                     skill_ids=skill_ids,
                     skill_documents=skill_documents,
                 )
+                def run_assistant(progress=None):
+                    """Resolve workspace-owned MCP prerequisites without trusting browser overrides."""
+                    arguments = dict(run_args)
+                    if workspace_id:
+                        if progress:
+                            progress({"phase": "workspace_prerequisites"})
+                        code, context = srv.bloodhound_broker.resolve_ai_context(workspace_id)
+                        if code != 200:
+                            return {"ok": False, "error": context.get("error", "exegol_workspace_not_ready")}
+                        arguments.update({key: context[key] for key in
+                                          ("exegol_mcp_enabled", "exegol_mcp_url", "exegol_mcp_token")})
+                    return run_ai_chat(**arguments, progress=progress)
+
                 if asynchronous:
                     from rmm_ai_jobs import JobCapacityError, JobClosedError, JobConflictError
 
                     def run_job(progress):
                         """Run independently of the request and persist the final transcript."""
-                        result = run_ai_chat(**run_args, progress=progress)
+                        result = run_assistant(progress)
                         progress({"phase": "finalizing"})
                         if result.get("ok"):
                             stored = list(messages)
@@ -4611,7 +4671,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                         return True
                     self._json(202 if created else 200, {"job": job})
                     return True
-                result = run_ai_chat(**run_args)
+                result = run_assistant()
                 if result.get("ok") and selected:
                     stored = list(messages)
                     reply = result.get("message")
@@ -5665,6 +5725,7 @@ def run_server(server, args):
     http_servers = []
     http_threads = []
     previous_term = None
+    exegol_runtime = None
 
     def terminate(_signum, _frame):
         """Enter the same finally path as normal exit without reentrant cleanup."""
@@ -5717,6 +5778,10 @@ def run_server(server, args):
         ]
         for http_thread in http_threads:
             http_thread.start()
+        if server.storage_mode == "server":
+            from rmm_exegol_runtime import get_runtime
+            exegol_runtime = get_runtime(os.path.join(LOG_DIR, "bloodhound"))
+            exegol_runtime.ensure()
 
         profile_auto_start = settings_getenv("RMM_PROFILE_AUTOSTART", "1").strip().lower() in {"1", "true", "yes"}
         if profile_auto_start and args.profile and any(row["name"] == args.profile.strip().lower() for row in server.profile_manager.list()):
@@ -5765,6 +5830,8 @@ def run_server(server, args):
             previous_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
         server.running = False
+        if exegol_runtime is not None:
+            exegol_runtime.stop()
         try:
             # shutdown() may only be used while serve_forever runs on another
             # thread; calling it on a never-started listener deadlocks.

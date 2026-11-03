@@ -44,9 +44,11 @@ from rmm_rclone import (
     load_profiles,
     rclone_public_config,
 )
-from rmm_ai_skills import _load_all_skills_full, list_ai_skills
+from rmm_ai_skills import list_ai_skills, resolve_ai_skills
 from rmm_asset_store import AssetError, AssetStore, decode_asset_content
 from rmm_embeddings import EmbeddingStore, embedding_api
+from rmm_bloodhound import bloodhound_api
+from rmm_bloodhound_broker import execute_workspace_request
 from rmm_plugin_releases import plugin_release_api
 from rmm_plugin_sources import plugin_sources_api
 from rmm_ui_state import UiStateError, normalize_ui_state
@@ -200,23 +202,7 @@ class WorkspaceStore:
 
     def selected_skill_documents(self, skill_ids: list[str] | None) -> list[dict]:
         """Return selected local skill documents for forwarding to the central AI loop."""
-        available = {
-            row["id"]: row
-            for row in _load_all_skills_full(self.skill_directories())
-            if self.skill_overrides().get(row["id"], True)
-        }
-        if skill_ids is None:
-            selected = [
-                row for row in available.values()
-                if row.get("default") or row.get("always")
-            ]
-        else:
-            selected = []
-            ids = {str(value or "").strip().lower() for value in skill_ids}
-            for row in available.values():
-                if row["id"] in ids or row.get("always"):
-                    selected.append(row)
-        return selected
+        return resolve_ai_skills(skill_ids, self.skill_directories(), self.skill_overrides())
 
     def _init_schema(self) -> None:
         """Create the local workspace schema on first start."""
@@ -967,6 +953,7 @@ class WorkspaceService:
             raise
         self._running = True
         self._sync_thread = threading.Thread(target=self._sync_loop, name="workspace-sync", daemon=True)
+        self._bloodhound_thread = threading.Thread(target=self._bloodhound_loop, name="workspace-bloodhound", daemon=True)
         self.http_server: ThreadingHTTPServer | None = None
 
     def log(self, message: str, level: str = "INFO") -> None:
@@ -1119,6 +1106,28 @@ class WorkspaceService:
                     self.log(f"Workspace sync failed: {exc}", "WARNING")
             self._stop_event.wait(self.poll_interval)
 
+    def bloodhound_sync_once(self):
+        """Execute one scoped central AI request locally and return its cached reply."""
+        if not self._running:
+            return
+        status, payload, _ = self.upstream.request("GET", "/api/v1/workspace/bloodhound/requests", timeout=5)
+        if not self._running or status != 200 or not isinstance(payload, dict) or not isinstance(payload.get("requests"), list):
+            return
+        for task in payload.get("requests", [])[:1]:
+            code, result = execute_workspace_request(self.store.data_dir / "bloodhound", task)
+            self.upstream.request("POST", "/api/v1/workspace/bloodhound/requests/" + task["id"],
+                                  {"status": code, "payload": result}, timeout=5)
+
+    def _bloodhound_loop(self):
+        """Keep slow CE calls off the session and pivot synchronization thread."""
+        while self._running:
+            try:
+                self.bloodhound_sync_once()
+            except Exception:
+                if self._running:
+                    self.log("BloodHound workspace relay unavailable; pending requests are retained.", "WARNING")
+            self._stop_event.wait(self.poll_interval)
+
     def start(self) -> ThreadingHTTPServer:
         """Start the local HTTP service and its synchronization thread."""
         if self._stop_event.is_set():
@@ -1130,6 +1139,9 @@ class WorkspaceService:
             self.http_server = WorkspaceHTTPServer((self.bind, self.port), handler)
             self.port = int(self.http_server.server_address[1])
             self._sync_thread.start()
+            self._bloodhound_thread.start()
+            from rmm_exegol_runtime import get_runtime
+            get_runtime(self.store.data_dir / "bloodhound").ensure()
         except BaseException:
             self.stop()
             raise
@@ -1162,6 +1174,8 @@ class WorkspaceService:
             if self._closed:
                 return
             self.upstream.close()
+            from rmm_exegol_runtime import get_runtime
+            get_runtime(self.store.data_dir / "bloodhound").stop()
             try:
                 if self.http_server:
                     self.http_server.server_close()
@@ -1172,6 +1186,8 @@ class WorkspaceService:
                 finally:
                     if self._sync_thread.is_alive() and self._sync_thread is not threading.current_thread():
                         self._sync_thread.join()
+                    if self._bloodhound_thread.is_alive() and self._bloodhound_thread is not threading.current_thread():
+                        self._bloodhound_thread.join(timeout=2)
                     self.store.close()
                     self._closed = True
 
@@ -1405,6 +1421,9 @@ class WorkspaceService:
     def post_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local pivot and AI persistence endpoints or return ``None``."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if parts == ["bloodhound"]:
+            status, payload = bloodhound_api(self.store.data_dir / "bloodhound", body)
+            return status, payload, "application/json"
         if parts and parts[0] == "embeddings":
             return self._embedding_api("POST", parts, body)
         if parts == ["plugin-releases", "install"]:
@@ -1531,14 +1550,16 @@ class WorkspaceService:
         if len(parts) == 4 and parts[:2] == ["ai", "jobs"] and parts[3] == "cancel":
             return self._proxy("POST", path, {})
         if parts in (["ai", "chat"], ["ai", "jobs"]):
+            from rmm_exegol_runtime import get_runtime
+            runtime = get_runtime(self.store.data_dir / "bloodhound").status()
+            if runtime.get("exegol_status") != "ready":
+                return 503, {"error": "exegol_workspace_not_ready", "runtime": runtime}, "application/json"
             forwarded = dict(body)
             if forwarded.get("provider", "openai") == "openai" and not (forwarded.get("api_key") or forwarded.get("openai_api_key")):
                 forwarded["api_key"] = settings_getenv("OPENAI_API_KEY", "")
-            saved_url = settings_getenv("RMM_EXEGOL_MCP_URL", "")
-            forwarded.setdefault("exegol_mcp_url", saved_url)
-            saved_token = settings_getenv("RMM_EXEGOL_MCP_TOKEN", "") if str(forwarded["exegol_mcp_url"] or "").rstrip("/") == saved_url.rstrip("/") else ""
-            forwarded.setdefault("exegol_mcp_token", saved_token)
-            forwarded.setdefault("exegol_mcp_enabled", bool(forwarded["exegol_mcp_url"]))
+            # The central worker obtains these directly from the owner's runtime relay.
+            for key in ("exegol_mcp_url", "exegol_mcp_token", "exegol_mcp_enabled"):
+                forwarded.pop(key, None)
             skill_ids = forwarded.get("skill_ids")
             if skill_ids is not None and not isinstance(skill_ids, list):
                 return 400, {"error": "invalid_skill_ids"}, "application/json"

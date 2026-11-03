@@ -154,10 +154,20 @@ central administrator token. Do not share the administrator environment file
 with operators. Setting up the standalone MCP endpoint is separate from the
 WebUI AI loop; see [MCP parity](mcp-parity.md).
 
-The WebUI AI loop runs centrally. Its optional Exegol MCP URL must be reachable
-from the central server: `127.0.0.1:8000` refers to that server's network
+Exegol is required for the operator workspace's AI and BloodHound workflow.
+Configure `RMM_EXEGOL_MCP_URL`, its credential `RMM_EXEGOL_MCP_TOKEN` when
+required, and the exact `RMM_EXEGOL_CONTAINER` in owner-local settings. The
+workspace service must run in that container's filesystem and network namespace.
+It verifies ownership through MCP and ensures CE is running at startup, without
+an AI request. The WebUI shows readiness; reconnects only check health.
+
+The WebUI AI loop runs centrally. The configured Exegol MCP URL must be reachable
+from both the workspace runtime and central server: `127.0.0.1:8000` refers to each caller's network
 namespace, not the operator's Exegol container. Configure an authenticated
 endpoint reachable over the trusted network when those services are separate.
+Do not select a different MCP endpoint in an individual AI request. See the
+[BloodHound runtime and proxy guide](bloodhound-workflow.md) for readiness,
+uncertain startup handling, and browser-facing proxy settings.
 
 ## 4. Claim sessions and install plugins
 
@@ -262,11 +272,16 @@ when using that feature.
 ## Standalone server alternative
 
 For a shared single-server lab, set `RMM_STORAGE_MODE=server`, provide the
-central API/beacon secrets, and start `server_rmm.py` directly. Operators point
+central API/beacon secrets, and start `server_rmm.py` inside Exegol. Configure
+the same required Exegol MCP endpoint and exact container identity there.
+Operators point
 CLI/MCP/WebUI at the central admin URL and use its administrator token. There
 is no separate workspace service or per-operator plugin isolation in this mode.
 History, settings, plugins, SOCKS, and TUN belong to the server. Prepare the
-TUN helper there only if using TUN.
+TUN helper there only if using TUN. Missing Exegol prerequisites block AI and
+mutating BloodHound operations; settings, diagnostics, and ordinary agent
+management remain available. The separate central server in workspace storage
+mode does not require Exegol or start CE.
 
 ## Verify, update, and preserve data
 

@@ -9,6 +9,170 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-03 — Repeat technical verification
+
+- Correct read-only relay result retention to start thirty seconds at completion,
+  not submission; add a slow-reply regression test for health and library actions.
+- All 384 Python tests passed with no skips using cached MCP 1.30.0 dependencies
+  in an isolated temporary directory. Registered MCP invocation now passes;
+  the downstream API is mocked and live Exegol remains untested.
+- Rechecked operator parity, browser contracts/tests, documentation lint and
+  links, catalog counts/provenance, AI job UI recovery, and whitespace.
+
+### 2026-11-03 — Technical, operator parity, and documentation audit
+
+- Fix BloodHound fallthrough in both interactive shells; add a session-independent
+  WebUI operations form and action-set parity checks for all fifteen actions.
+- Invalidate Exegol readiness on owner configuration changes, reject malformed
+  API options, and prevent partial-file ingestion failures from becoming ready.
+- Harden library metadata errors and GUID lookup; add a real localhost HTTP
+  discovery test, browser dispatch tests, and a registered MCP invocation test.
+- Correct owner configuration, skill loading, workflow, and reference-library
+  documentation. See the [audit findings and parity matrix](bloodhound-technical-audit.md).
+- Full Python suite: 383 tests, 382 passed, one skipped because the development
+  interpreter lacks the MCP SDK. Live Exegol/CE validation remains pending.
+- `make check` passed (parity, WebUI contracts, browser/shell tests, lint), as
+  did AI job UI recovery tests and `git diff --check`.
+
+### 2026-11-03 — Import the complete official BloodHound query library
+
+- Preserve all 236 queries from the pinned SpecterOps snapshot, including
+  original Cypher/metadata, raw source, revision, paths, and checksums.
+- Add paginated metadata search and single-entry retrieval across REST,
+  CLI, MCP, and AI, without injecting the library into the model prompt.
+- Keep originals reference-only and map reviewed adaptations to the separate
+  sixteen-template execution allowlist; expose conservative compatibility notes.
+- Provide a deterministic local importer and tests; no live queries or
+  automatic upstream updates are performed.
+- Validation: all 374 regression tests passed, followed by all four catalog
+  tests after adding a source-mapping regression check. `make check`, AI job UI
+  checks, and `git diff --check` passed. Live Exegol/CE validation remains pending.
+
+### 2026-11-03 — Name web skills explicitly
+
+- Rename all sixteen web skill files and IDs from `offensive-*` to `web-*`;
+  update internal skill references while preserving upstream attribution URLs.
+- Migrate saved selections and disable flags across server/workspace/browser;
+  keep NetExec and privilege-escalation IDs unchanged and optional bodies lazy.
+
+### 2026-11-03 — Expand the DCOnly BloodHound investigation catalog
+
+- Expand four templates to sixteen bounded graph queries using pinned
+  SpecterOps query-library and Python collector sources with MIT attribution.
+- Cover privileged membership, account flags, delegation, direct object/GPO
+  control, replication-right candidates, and foreign group membership.
+- Enforce requested-method coverage before network execution and preserve
+  query provenance, catalog hash, interpretation, and completeness warnings.
+- Expose non-executable deferred ideas for local privileges, sessions/local
+  administrators, and ADCS. PR #1999 was closed unmerged; its proposed local
+  privilege edges are not assumed available in the deployed CE schema.
+- Update analysis guidance; see [query catalog](bloodhound-query-catalog.md).
+  Live CE query-engine compatibility remains a deployment validation step.
+- Validation: 362 Python tests, `make check`, and whitespace checks passed;
+  query tests use fixtures and do not contact the Ludus directory or live CE.
+
+### 2026-11-03 — Separate AD collection and adapt Claude-Red investigation skills
+
+- Split Python BloodHound CE/DCOnly collection from evidence-driven graph
+  analysis. Preserve legacy skill selections and explicit disablement.
+- Adapt NetExec, Windows/Linux privilege escalation, and all 16 upstream web
+  skills as individual on-demand entries with pinned provenance and MIT notice.
+- Keep two core skill bodies in the initial prompt; optional bodies remain
+  lazy. Add discovery and selection-migration regression coverage.
+- Add ldeep as a second-method backlog item with explicit coverage and output
+  compatibility work. It is not implemented or used as a fallback.
+- See [Claude-Red adaptations](claude-red-adaptations.md). No live lab actions
+  or technique validation were performed while editing these skills.
+- Validation: 359 Python tests, AI/BloodHound UI logic tests, `make check`,
+  and whitespace checks passed. Stale combined-skill overlays are excluded.
+
+### 2026-11-03 — Require Exegol and manage CE startup deterministically
+
+- Require the configured Exegol operator workspace for AI and mutating
+  BloodHound operations; preserve configuration and agent-management access
+  when prerequisites fail. The separate central server remains independent.
+- Start the CE lifecycle in the workspace/standalone service through MCP,
+  with container/namespace verification, single-flight startup, and durable
+  uncertain-dispatch handling. No model or loaded skill controls startup.
+- Add shared `health` and `ensure` actions and WebUI readiness. Reconnects
+  inspect health; opening CE can recover a confirmed stopped service.
+- Keep DCOnly collection and the dedicated-origin browser proxy. Exegol MCP,
+  CE local login, and Ludus behavior still require live deployment validation.
+- Resolve central AI MCP settings through a private owner-runtime relay;
+  ignore browser overrides and keep credentials out of the disk journal.
+- Validation: 355 Python tests, both browser logic suites, `make check`, and
+  whitespace checks passed. No live deployment was performed.
+
+### 2026-11-03 — Open BloodHound through the workspace or standalone proxy
+
+- Add an owner-local, separate-origin browser proxy and an Open BloodHound
+  WebUI button. REST/CLI/MCP expose the same `ui` launch action.
+- Exchange short-lived one-use links for browser admission while retaining
+  CE's own login. Keep adapter credentials out of browser requests.
+- Document remote workspace port/hostname configuration, local-login scope,
+  session lifetime, and the distinction from the central workflow relay.
+- Added proxy transport/security, UI launch, and operator-surface tests.
+  Live Exegol CE and Ludus browser validation is still pending.
+
+### 2026-11-03 — Route BloodHound CE startup through Exegol MCP
+
+- AD workflow now checks/reuses CE in the selected workspace container and
+  starts the existing service through Exegol MCP only when needed.
+- Separate service startup from adapter collection/import/query operations;
+  require authenticated readiness and retain DCOnly enforcement.
+- No automatic install, database reset, credential reset, or live startup.
+
+### 2026-11-03 — Add persisted BloodHound CE collection and graph workflow
+
+- Add owner-local REST, CLI, MCP, and Web AI actions for readiness, run creation,
+  asynchronous collection/import, ingestion polling, verification, and queries.
+- Relay central AI calls to their authenticated workspace with cached replies
+  and durable local intent so request redelivery does not repeat operations.
+- Use an existing matching Kerberos cache and CE collector; validate CE v6
+  artifacts, hashes, expected identities, and complete ingestion before queries.
+- Save bounded query evidence and directed candidate paths. Preserve ambiguous
+  operations without automatic replay; keep detection explicitly unverified.
+- Add a four-query catalog and rewrite the AD skill around the actual adapter.
+  See [workflow](bloodhound-workflow.md) for setup, limits, and live validation.
+- Tests cover a signed loopback CE API and failure/recovery cases. No live
+  Ludus collection, BloodHound deployment, or detector validation performed.
+
+### 2026-11-03 — Load optional AI skills on demand
+
+- Inject only operator boundaries and completion reporting initially; expose
+  optional metadata and a read-only `load_skill` tool for both tool transports.
+- Keep per-run snapshots, exact-ID lookup, duplicate-load suppression, and
+  truthful loaded-ID progress. Saved exclusions remain respected.
+- Without an explicit selection, server and workspace offer all enabled skills.
+  Add tests for body isolation, lookup rejection, per-run state, and collisions.
+
+### 2026-11-03 — Align lab skills with demo execution and evidence
+
+- Document the targeted Claude-Red comparison without importing its catalog.
+  PCAP recording is a project outcome in the Ludus range, not an AI skill.
+- Bound prerequisite discovery to the task, clarify route authorization,
+  preserve protocol requirements across collector fallbacks, and retain
+  completion evidence before retrying long operations.
+- Document deployment trials and runtime limitations in
+  [lab skill review](lab-skill-review.md). No live lab validation performed.
+
+### 2026-11-03 — Show AI execution context and enforce Exegol prerequisites
+
+- AI chat shows the resolved tool path, MCP and Exegol status, and loaded skill
+  IDs from persisted job progress, including after reconnecting.
+- Exegol requests fail explicitly when MCP is disabled or unavailable.
+- Resolve skills once per run and distinguish loaded instructions from proven
+  execution. Runtime details exclude URLs, credentials, and skill bodies.
+
+### 2026-11-03 — Recover model request timeouts without replaying tools
+
+- Retry model transport timeouts twice with bounded backoff, preserving the
+  current conversation and completed tool results for all three providers.
+- Check interruption before retrying and retain exception diagnostics on
+  exhaustion. HTTP errors and malformed responses still fail without retry.
+- Add regression coverage for recovery, exhaustion, and interruption; see
+  [background jobs](ai-background-jobs.md) for runtime limits.
+
 ### 2026-11-02 — Retune AI skill guardrails to destructive-actions-only consent
 
 - Skills no longer gate movement and progression: target selection, subnet

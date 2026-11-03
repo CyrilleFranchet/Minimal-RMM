@@ -12,7 +12,6 @@
   const EXEGOL_TOKEN_STORAGE = "rmm_exegol_mcp_token";
   const AI_SKILLS_ENABLED_STORAGE = "rmm_ai_skills_enabled";
   const LEGACY_AI_CHAT_STORAGE_KEY = "rmm_ai_chat_v1";
-  const DEFAULT_EXEGOL_MCP_URL = "http://127.0.0.1:8000/mcp";
   const CUSTOM_MODEL_VALUE = "__custom__";
 
   const $ = (sel) => document.querySelector(sel);
@@ -60,10 +59,7 @@
   }
 
   function welcomeText() {
-    const exegolOn = sessionStorage.getItem(EXEGOL_ENABLED_STORAGE) === "1";
-    return exegolOn
-      ? "RMM tools (sessions, commands, config) plus Exegol MCP (containers, in-container pentest tools). Select an RMM session in the sidebar for beacon context."
-      : "RMM tools via MCP (list sessions, run commands, change beacon sleep, etc.). Enable Exegol MCP in settings to add container orchestration and offensive tools.";
+    return "RMM tools plus required Exegol MCP. Configure Exegol in the owning service's Config settings. Select an RMM session in the sidebar for beacon context.";
   }
 
   function getProviderState() {
@@ -257,18 +253,14 @@
   }
 
   function getExegolMcpSettings() {
-    const enabled = $("#exegol-mcp-enabled")?.checked ?? false;
-    const url = ($("#exegol-mcp-url-input")?.value || "").trim() || DEFAULT_EXEGOL_MCP_URL;
-    const token = ($("#exegol-mcp-token-input")?.value || "").trim();
-    return { enabled, url, token };
+    return { enabled: true };
   }
 
   function persistExegolMcpSettings() {
-    const { enabled, url, token } = getExegolMcpSettings();
-    sessionStorage.setItem(EXEGOL_ENABLED_STORAGE, enabled ? "1" : "0");
-    sessionStorage.setItem(EXEGOL_URL_STORAGE, url);
-    sessionStorage.setItem(EXEGOL_TOKEN_STORAGE, token);
-    window.persistRmmUiConfig?.();
+    // Browser preferences no longer control or retain MCP endpoint credentials.
+    sessionStorage.removeItem(EXEGOL_ENABLED_STORAGE);
+    sessionStorage.removeItem(EXEGOL_URL_STORAGE);
+    sessionStorage.removeItem(EXEGOL_TOKEN_STORAGE);
   }
 
   function loadEnabledSkillIds() {
@@ -277,7 +269,15 @@
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          return parsed.map((id) => String(id).trim()).filter(Boolean);
+          return [...new Set(parsed.map((id) => String(id).trim()).filter(Boolean)
+            .flatMap((id) => {
+              if (id === "ad-collection-analysis") return ["python-bloodhound-collection", "bloodhound-analysis"];
+              const webTopics = ["sqli", "xss", "ssrf", "ssti", "xxe", "idor", "file-upload", "rce",
+                "deserialization", "race-condition", "request-smuggling", "open-redirect",
+                "parameter-pollution", "graphql", "waf-bypass", "business-logic"];
+              return [id.startsWith("offensive-") && webTopics.includes(id.slice(10))
+                ? `web-${id.slice(10)}` : id];
+            }))];
         }
       } catch {
         /* ignore */
@@ -332,7 +332,7 @@
       const text = document.createElement("span");
       text.className = "ai-skill-label";
       text.title = skill.description || skill.id;
-      const marker = skill.always ? " · always" : skill.default ? " · default" : "";
+      const marker = ["operator-boundaries", "task-completion-report"].includes(skill.id) ? " · always loaded" : " · load on demand";
       text.textContent = `${skill.title || skill.id}${marker}`;
       label.appendChild(input);
       label.appendChild(text);
@@ -505,6 +505,17 @@
 
   function displayAiJob(job, sessionId, token) {
     if (!currentChat(sessionId, token)) return;
+    let execution = $("#ai-job-execution");
+    if (!execution) {
+      execution = document.createElement("div");
+      execution.id = "ai-job-execution";
+      execution.className = "ai-msg ai-msg-assistant";
+      $("#ai-chat-log").appendChild(execution);
+    }
+    const context = job.progress || {};
+    execution.textContent = context.tool_path
+      ? `Tools: ${context.tool_path} · MCP: ${context.mcp_status} · Exegol: ${context.exegol_status}. Skills loaded: ${(context.skills || []).join(", ") || "none"}. Loaded skills are instructions, not proof that a technique ran.`
+      : "Execution details are not available for this job.";
     const saved = jobState(sessionId);
     if (pendingSubmission?.body.request_id === job.request_id) pendingSubmission = null;
     saveJobState(sessionId, { ...saved, job_id: job.id, request_id: job.request_id });
@@ -734,8 +745,6 @@
       messages: chatHistory.map((message) => ({ ...message })),
       selected_session_id: sessionId,
       exegol_mcp_enabled: exegol.enabled,
-      exegol_mcp_url: exegol.enabled ? exegol.url : null,
-      exegol_mcp_token: exegol.enabled ? exegol.token || null : null,
       skill_ids: getEnabledSkillIds(),
     };
     pendingSubmission = { body, sessionId };
@@ -824,28 +833,11 @@
     }
     window.addEventListener("rmm-config-imported", () => {
       refreshProviderInputs();
-      if (exegolEnabled) exegolEnabled.checked = sessionStorage.getItem(EXEGOL_ENABLED_STORAGE) === "1";
-      if (exegolUrl) exegolUrl.value = sessionStorage.getItem(EXEGOL_URL_STORAGE) || DEFAULT_EXEGOL_MCP_URL;
-      if (exegolToken) exegolToken.value = sessionStorage.getItem(EXEGOL_TOKEN_STORAGE) || "";
+      persistExegolMcpSettings();
       setAiPanelOpen(sessionStorage.getItem(AI_PANEL_OPEN_STORAGE) === "1");
     });
 
-    const exegolEnabled = $("#exegol-mcp-enabled");
-    const exegolUrl = $("#exegol-mcp-url-input");
-    const exegolToken = $("#exegol-mcp-token-input");
-    if (exegolEnabled) {
-      exegolEnabled.checked = sessionStorage.getItem(EXEGOL_ENABLED_STORAGE) === "1";
-      exegolEnabled.addEventListener("change", persistExegolMcpSettings);
-    }
-    if (exegolUrl) {
-      exegolUrl.value =
-        sessionStorage.getItem(EXEGOL_URL_STORAGE) || DEFAULT_EXEGOL_MCP_URL;
-      exegolUrl.addEventListener("change", persistExegolMcpSettings);
-    }
-    if (exegolToken) {
-      exegolToken.value = sessionStorage.getItem(EXEGOL_TOKEN_STORAGE) || "";
-      exegolToken.addEventListener("change", persistExegolMcpSettings);
-    }
+    persistExegolMcpSettings();
 
     if (sessionStorage.getItem(AI_PANEL_OPEN_STORAGE) === "1") {
       setAiPanelOpen(true);

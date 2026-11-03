@@ -22,6 +22,18 @@ connected, say so and use the Minimal-RMM tools that can complete the task.
 
 ## Choose the right tool surface
 
+First inspect the live tool list. A selected skill or saved Exegol setting is
+not evidence that Exegol tools are connected. If the requested workflow depends
+on Exegol and those tools are missing, report the prerequisite explicitly;
+do not present agent-side execution as equivalent.
+
+For connectivity diagnostics, use a few agent-side checks to establish a
+baseline. For a larger requested network inventory, prefer an existing Exegol
+scanner with bounded scope and saved output over constructing serial PowerShell
+loops. Reuse a working route; establishing a new pivot is not always necessary.
+Distinguish refusal, timeout, DNS failure, and missing route. A short timeout
+does not establish that a port is closed.
+
 | Task | Prefer | Reason |
 |------|--------|--------|
 | Find or identify a managed host | RMM `list_sessions`, then `get_session` | The RMM session is the authoritative agent identity and capability record. |
@@ -55,8 +67,9 @@ configuration, and domain context before choosing targets or routes.
    Do not create a pivot just because the agent is selected.
 3. Check `list_socks` and `list_tun` so an existing relay is reused when it
    matches the selected session.
-4. Choose the routes the task needs; lab subnets may be added without
-   confirmation. Do not broaden a route to `0.0.0.0/0`.
+4. Choose only routes covered by the task and existing operator consent.
+   Apply `operator-boundaries` to route changes; reuse session authorization
+   instead of asking again. Do not broaden a route to `0.0.0.0/0`.
 
 Use the smallest transport that supports the requested Exegol tool:
 

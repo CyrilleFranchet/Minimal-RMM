@@ -43,3 +43,20 @@ the cmdlet is absent. Use `PS:` for logic beyond simple CMD commands.
   queues for a later beacon and is suitable when sleep/jitter is long. Queue
   acceptance is not execution completion.
 - Pass the exact command string, including its prefix, to either RMM tool.
+
+## Long operations and recovery
+
+Before a long command, estimate its upper bound from targets, per-target
+timeouts, retries, and beacon latency. Use the tool's supported wait budget or
+queued execution when that estimate exceeds the synchronous wait. Do not
+assume a background AI job extends a tool's own timeout.
+
+Record the session and event cursor before dispatch. Keep the returned job or
+operation identifier when available; retrieve matching completion evidence
+through existing event/result tools. Return a short summary and artifact path
+instead of repeatedly sending full output to the model.
+
+A wait timeout means completion is unknown. Inspect matching events and output
+artifacts before another dispatch. Do not rerun a command merely because the
+model request timed out. After confirmed completion, preserve its result in the
+task report and continue from the next unfinished step.

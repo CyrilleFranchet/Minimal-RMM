@@ -36,6 +36,7 @@ if __name__ == "__main__":
 from mcp.server.fastmcp import FastMCP
 
 from rmm_tools import (
+    tool_bloodhound,
     tool_list_ai_jobs,
     tool_get_ai_job,
     make_client,
@@ -112,6 +113,12 @@ def _client():
             settings_getenv("RMM_API_TOKEN") or None,
         )
     return _cached_client
+
+
+@mcp.tool()
+def bloodhound(action: str = "preflight", run_id: str = "", options: dict | None = None) -> str:
+    """Operate BloodHound CE: preflight/create/collect/import/status/verify/query/queries/report. library_search accepts options {text, platform, category, offset, limit} (limit 1-25); library_get accepts {id: GUID} and returns one full reference query. Originals are not executable; use mapped local template IDs with query. health reads readiness; ensure performs guarded MCP startup; ui waits for readiness then returns a proxy link. For workspace_request_id poll result with that ID as run_id. Poll status for collection/import and health for startup. Keep credentials in service settings."""
+    return tool_bloodhound(_client(), action, run_id, options)
 
 
 @mcp.tool()

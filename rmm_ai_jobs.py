@@ -61,7 +61,7 @@ def _safe_progress(event):
     if not isinstance(event, dict):
         return {}
     clean = {}
-    for key in ("phase", "tool", "status"):
+    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status"):
         value = event.get(key)
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", value):
             clean[key] = value
@@ -69,6 +69,9 @@ def _safe_progress(event):
         value = event.get(key)
         if type(value) is int and 0 <= value <= 1000000:
             clean[key] = value
+    if isinstance(event.get("skills"), list):
+        clean["skills"] = [s for s in event["skills"][:100]
+                           if isinstance(s, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", s)]
     return clean
 
 

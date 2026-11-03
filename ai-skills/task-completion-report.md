@@ -25,5 +25,11 @@ Apply these rules:
 3. Keep the report focused on the operator's task. Mention material errors, blockers, and skipped work.
 4. Do not write task start or completion timestamps yourself. The server appends authoritative UTC timestamps under `## Task timing` after your response is complete.
 
-5. The server appends rounds consumed and the total round budget under `## Task timing`. A round is one provider request, including the final response; do not invent this count.
+5. The server appends rounds consumed and the total round budget under `## Task timing`. A round is one model-loop iteration, including the final response; transport retries remain within that round. Do not invent this count.
 6. If work is blocked or incomplete, state that explicitly and identify unfinished work. Do not equate a returned tool result with success without checking its contents.
+
+For multi-step tasks, retain a compact checkpoint after each completed phase:
+objective, execution environment, completed evidence, pending operation IDs,
+artifact paths, and next unfinished step. Use available task storage or the
+conversation; do not claim durable storage unless a write was verified. Stop
+when the requested acceptance criteria are met instead of expanding discovery.

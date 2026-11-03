@@ -13,7 +13,8 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
-from rmm_ai_skills import compose_system_prompt
+from rmm_ai_skills import compose_system_prompt, resolve_ai_skills
+from rmm_ai_skill_context import CORE_SKILLS, prepare_skill_context
 from rmm_tools import OPENAI_TOOLS, SYSTEM_PROMPT, execute_tool, make_client
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
@@ -254,6 +255,24 @@ def _append_task_timing(result: dict, started_at: datetime, completed_at: dateti
     return enriched
 
 
+async def _model_request(url, headers, body, *, progress, round_number):
+    """Retry only transport timeouts, preserving the current model request."""
+    for attempt in range(3):
+        if attempt and progress:
+            progress({"phase": "model", "round": round_number, "status": "retrying"})
+        try:
+            return _json_request(url, headers, body)
+        except RuntimeError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, urllib.error.URLError):
+                cause = cause.reason
+            if not isinstance(cause, TimeoutError) or attempt == 2:
+                raise
+            if progress:
+                progress({"phase": "model", "round": round_number, "status": "retry_wait"})
+            await asyncio.sleep(2 ** attempt)
+
+
 async def _run_provider_loop(
     *,
     provider: str,
@@ -293,7 +312,7 @@ async def _run_provider_loop(
                 progress({"phase": "model", "round": round_index + 1})
             if round_index and round_index % max_rounds == 0:
                 add_continuation_prompt(convo)
-            response = _json_request(
+            response = await _model_request(
                 url,
                 _provider_headers(provider, api_key),
                 {
@@ -302,6 +321,7 @@ async def _run_provider_loop(
                     "tools": tools,
                     "tool_choice": "auto",
                 },
+                progress=progress, round_number=round_index + 1,
             )
             message = _chat_completion_message(provider, response)
             tool_calls = message.get("tool_calls") or []
@@ -371,7 +391,7 @@ async def _run_provider_loop(
                 progress({"phase": "model", "round": round_index + 1})
             if round_index and round_index % max_rounds == 0:
                 add_continuation_prompt(convo)
-            response = _json_request(
+            response = await _model_request(
                 ANTHROPIC_MESSAGES_URL,
                 _provider_headers(provider, api_key),
                 {
@@ -381,6 +401,7 @@ async def _run_provider_loop(
                     "messages": convo,
                     "tools": _anthropic_tools(tools),
                 },
+                progress=progress, round_number=round_index + 1,
             )
             blocks = response.get("content") or []
             calls = [block for block in blocks if block.get("type") == "tool_use"]
@@ -471,22 +492,30 @@ def _run_ai_chat_mcp(
 ) -> dict:
     """Run a provider chat loop using the local RMM MCP server and optional Exegol MCP."""
     from rmm_mcp_client import run_with_mcp_session
+    connected = False
 
     async def chat(mcp) -> dict:
+        nonlocal connected
+        connected = True
+        core, catalog, tools, call_tool = prepare_skill_context(
+            skill_documents, mcp.openai_tools, mcp.call_tool, progress,
+        )
+        if progress:
+            progress({"phase": "ready", "mcp_status": "connected", "tool_count": len(mcp.openai_tools)})
         system = compose_system_prompt(
             mcp.server_instructions or SYSTEM_PROMPT,
             skill_ids=skill_ids,
             session_context=_selected_session_context(selected_session_id),
-            skill_documents=skill_documents,
-        )
+            skill_documents=core,
+        ) + catalog
         return await _run_provider_loop(
             provider=provider,
             api_key=api_key,
             messages=messages,
             model=model,
             system=system,
-            tools=mcp.openai_tools,
-            call_tool=mcp.call_tool,
+            tools=tools,
+            call_tool=call_tool,
             max_rounds=max_rounds,
             via="mcp",
             progress=progress,
@@ -503,6 +532,8 @@ def _run_ai_chat_mcp(
             exegol_mcp_token=exegol_mcp_token,
         )
     except Exception as e:
+        if progress and not connected:
+            progress({"phase": "failed", "mcp_status": "error"})
         raise RuntimeError(
             f"MCP server failed: {e}. Install MCP support: "
             "pip install -r requirements-mcp.txt (Python 3.10+)."
@@ -526,15 +557,18 @@ def _run_ai_chat_direct(
 ) -> dict:
     """Run a provider chat loop with direct in-process RMM tool execution."""
     client = make_client(rmm_base_url, rmm_token, extra_headers=rmm_headers)
+    async def execute(name: str, arguments: dict) -> str:
+        return execute_tool(client, name, arguments)
+
+    core, catalog, tools, call_tool = prepare_skill_context(
+        skill_documents, OPENAI_TOOLS, execute, progress,
+    )
     system = compose_system_prompt(
         SYSTEM_PROMPT,
         skill_ids=skill_ids,
         session_context=_selected_session_context(selected_session_id),
-        skill_documents=skill_documents,
-    )
-
-    async def call_tool(name: str, arguments: dict) -> str:
-        return execute_tool(client, name, arguments)
+        skill_documents=core,
+    ) + catalog
 
     return asyncio.run(
         _run_provider_loop(
@@ -543,7 +577,7 @@ def _run_ai_chat_direct(
             messages=messages,
             model=model,
             system=system,
-            tools=OPENAI_TOOLS,
+            tools=tools,
             call_tool=call_tool,
             max_rounds=max_rounds,
             via="direct",
@@ -589,7 +623,40 @@ def run_ai_chat(
         )
     resolved_model = (model or "").strip() or DEFAULT_MODELS[provider]
 
-    from rmm_mcp_client import mcp_available, use_mcp_for_ai
+    from rmm_mcp_client import mcp_available, use_mcp_for_ai, resolve_exegol_mcp_config
+
+    exegol_enabled, _, _ = resolve_exegol_mcp_config(
+        enabled=exegol_mcp_enabled, url=exegol_mcp_url, token=exegol_mcp_token,
+    )
+    mcp_selected = use_mcp_for_ai()
+    mcp_installed = mcp_available()
+    use_mcp = mcp_selected and mcp_installed
+    if skill_documents is None:
+        skill_documents = resolve_ai_skills(skill_ids)
+    execution = {
+        "tool_path": "mcp" if use_mcp else "direct",
+        "mcp_status": "connecting" if use_mcp else ("unavailable" if mcp_selected else "disabled"),
+        "exegol_status": "requested" if exegol_enabled else "disabled",
+        "skills": [s.get("id", "") for s in skill_documents if isinstance(s, dict) and s.get("id") in CORE_SKILLS and str(s.get("body") or "").strip()],
+    }
+    original_progress = progress
+
+    def report_execution(event):
+        """Attach the resolved execution context to every job checkpoint."""
+        execution.update({k: event[k] for k in ("mcp_status", "skills") if k in event})
+        if event.get("mcp_status") == "connected" and exegol_enabled:
+            execution["exegol_status"] = "connected"
+        if original_progress:
+            original_progress({**execution, **event})
+
+    progress = report_execution
+    progress({"phase": "initializing"})
+    if not exegol_enabled:
+        return {"ok": False, "error": "exegol_required",
+                "message": "AI requires the configured Exegol MCP workspace. Configure the owner service and check BloodHound health."}
+    if not use_mcp:
+        return {"ok": False, "error": "exegol_requires_mcp",
+                "message": "Exegol requires MCP. Enable RMM_AI_USE_MCP and install MCP support in the server environment."}
 
     common = {
         "rmm_base_url": rmm_base_url,
@@ -605,7 +672,7 @@ def run_ai_chat(
         "skill_documents": skill_documents,
         "progress": progress,
     }
-    if use_mcp_for_ai() and mcp_available():
+    if use_mcp:
         result = _run_ai_chat_mcp(
             **common,
             exegol_mcp_enabled=exegol_mcp_enabled,

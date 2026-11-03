@@ -93,6 +93,8 @@ historical notes in `progress.md`.
 | Provider validation and request format | [AI providers](ai-providers.md) |
 | Model selection | [AI model selection](web-ai-models.md) |
 | Server-side AI skills | [AI skills](web-ai-skills.md) |
+| BloodHound CE collection, ingestion, and candidate paths | [BloodHound workflow](bloodhound-workflow.md) |
+| BloodHound technical validation and operator parity | [Audit findings](bloodhound-technical-audit.md) |
 | Workspace and URL-installed AI skills | [Operator-managed assets](operator-assets.md) |
 | Per-session chat persistence | [AI chat memory](web-ai-chat-memory.md) |
 | Light and dark theme | [WebUI theme](web-ui-theme.md) |
@@ -106,6 +108,11 @@ historical notes in `progress.md`.
 | Completed work, open gaps, and validation notes | [Progress log](progress.md) |
 
 ## Quick navigation by code area
+
+For the on-demand investigation library, see
+[Claude-Red adaptations and attribution](claude-red-adaptations.md).
+For supported graph investigations, see the
+[BloodHound query catalog](bloodhound-query-catalog.md).
 
 | Code area | Primary documentation |
 | --- | --- |
