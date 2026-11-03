@@ -45,9 +45,10 @@ Current unified-workspace verification results are recorded in
 
 - Interactive CLI and WebUI shell BloodHound commands could fall through to
   the target agent. Both now intercept valid and invalid BloodHound syntax.
-- The manual WebUI lacked access to the full workflow. Its BloodHound operations
-  form now exposes all fifteen actions without an agent selection or AI.
-  Disconnects cancel pending form requests and suppress stale responses.
+- All fifteen actions remain available through the intercepted WebUI shell.
+  The raw operations form was subsequently removed from the main page to keep
+  normal use focused on Open BloodHound and connection status; CLI/MCP retain
+  advanced access without selecting an agent session.
 - Exegol readiness survived owner configuration changes. Verification is now
   bound to the MCP endpoint/token/container and CE endpoint, with rechecks
   during startup and before readiness publication.
@@ -65,7 +66,7 @@ Current unified-workspace verification results are recorded in
 
 | Capability | CLI | Manual WebUI | MCP / Web AI |
 |------------|-----|--------------|--------------|
-| All fifteen BloodHound actions | One-shot and interactive commands | Operations form and intercepted shell command | Shared `bloodhound` tool |
+| All fifteen BloodHound actions | One-shot and interactive commands | Intercepted shell command | Shared `bloodhound` tool |
 | Library search and selected query retrieval | JSON options | JSON options | Structured options |
 | Create, collect, import, verify, query, report | Same owner API | Same owner API | Same owner API |
 | Async run and relay inspection | Explicit status/result actions | Explicit status/result actions | Explicit status/result actions |

@@ -65,12 +65,10 @@ standalone interactive CLI and WebUI shell intercept `bloodhound` locally,
 including invalid syntax; it never falls through to the agent. See the
 [workflow contract](bloodhound-workflow.md).
 
-The WebUI's **BloodHound operations** form exposes the same fifteen actions,
-run/request ID, and JSON options without requiring an agent session or AI.
-It displays HTTP status and response data, including asynchronous acceptance
-and relay IDs. As in the CLI, explicitly use `result`, `status`, or `health`
-to check progress; the form does not retry mutations. **Open BloodHound** is
-the convenience button that waits for readiness and opens the proxy link.
+The WebUI shell exposes the same fifteen actions; the main page does not expose
+a raw JSON operations form. Use CLI or MCP for advanced actions without selecting
+an agent session. **Open BloodHound** waits for readiness and opens the proxy link;
+the connection status panel shows runtime readiness and diagnostics.
 
 `dispatch_interactive_bloodhound` reuses the CLI parser and dispatch function
 while keeping parse failures inside the interactive shell. The WebUI

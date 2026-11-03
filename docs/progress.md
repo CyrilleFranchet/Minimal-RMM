@@ -9,6 +9,29 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-03 — Verify simplified BloodHound UI and connectivity
+
+- Confirm removal of form markup, event handlers, and obsolete current documentation;
+  preserve Open BloodHound, runtime status, and advanced operator commands.
+- Ignore canceled requests and responses from a previous connection when updating
+  connectivity indicators. Add regressions for cancellation, logout races, failure,
+  and recovery, without changing the workspace's HTTP polling transport.
+
+### 2026-11-03 — Remove the raw BloodHound operations form
+
+- Remove the main-page action selector, run ID, JSON editor, and raw response
+  form with its unused JavaScript. Keep Open BloodHound and connection status.
+- Preserve CLI, MCP, REST, and intercepted WebUI shell actions. Update current
+  workflow and parity documentation to reflect the simpler main page.
+
+### 2026-11-03 — Correct the connection dot, not the title
+
+- Restore the original title text color. The adjacent status dot now reflects
+  successful HTTP responses in workspace mode, clears after failed requests or
+  disconnect, and retains WebSocket status for central administration.
+- `setWsStatus` keeps WebSocket transport state separate from the polling
+  indicator, so workspace polling remains enabled when the dot is green.
+
 ### 2026-11-03 — Verify container-to-host MCP assumptions
 
 - Document that bridge-mode workspace processes require a reachable host MCP

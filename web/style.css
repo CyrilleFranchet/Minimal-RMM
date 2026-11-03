@@ -82,7 +82,6 @@ body {
 }
 
 .login-card h1 {
-  color: var(--success);
   margin: 0;
   font-size: 1.5rem;
   font-weight: 600;
@@ -206,7 +205,6 @@ button:disabled {
 }
 
 .app-header h1 {
-  color: var(--success);
   margin: 0;
   font-size: 1.1rem;
   font-weight: 600;

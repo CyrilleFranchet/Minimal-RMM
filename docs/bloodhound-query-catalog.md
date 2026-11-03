@@ -26,8 +26,8 @@ CLI equivalents use `bloodhound library_search --options-json
 '{"text":"delegation","limit":10}'` and `bloodhound library_get --options-json
 '{"id":"<upstream GUID>"}'`. The same syntax works in the standalone interactive
 shell and WebUI shell, where it is intercepted as an operator action and never
-forwarded to an agent. The WebUI's **BloodHound operations** form offers the
-same action/options contract without requiring an agent session.
+forwarded to an agent. CLI and MCP also expose these actions without requiring
+an agent session; the main WebUI does not expose a raw JSON form.
 REST uses the existing authenticated `POST /api/v1/bloodhound` route.
 Workspace mode relays discovery to the owning workspace; these read-only
 operations do not create durable relay journals, and completed relay replies

@@ -38,7 +38,6 @@
         <div class="connection-status-panel">
           <strong>Workspace connections</strong>
           <p id="exegol-mcp-status">Exegol MCP: Not checked</p>
-          <p>RMM MCP: Started on demand for AI requests; no persistent connection is monitored here.</p>
           <p id="bloodhound-readiness" role="status" aria-live="polite"></p>
           <p id="mcp-status-help">Status reflects the last workspace check.</p>
         </div>
@@ -55,20 +54,6 @@
     </header>
     <p id="workspace-access-notice" class="hidden" role="status">Central administration. Connect to your workspace WebUI for AI, BloodHound, operator history, and local pivots. A single-workspace deployment uses the same workspace service.</p>
     <p id="bloodhound-status" class="error-msg hidden" role="status" aria-live="polite"></p>
-    <details id="bloodhound-operations">
-      <summary>BloodHound operations</summary>
-      <form id="bloodhound-operation-form">
-        <label for="bloodhound-action">Action</label>
-        <select id="bloodhound-action"></select>
-        <label for="bloodhound-run-id">Run or workspace request ID</label>
-        <input id="bloodhound-run-id" autocomplete="off">
-        <label for="bloodhound-options">Options (JSON object)</label>
-        <textarea id="bloodhound-options" rows="4" spellcheck="false">{}</textarea>
-        <button type="submit" id="bloodhound-submit">Run action</button>
-      </form>
-      <p>For a workspace request ID, use result to retrieve its response. Use status for a collection/import run and health for startup. Credentials belong in Config.</p>
-      <pre id="bloodhound-response" role="status" aria-live="polite"></pre>
-    </details>
 
     <div id="app-body" class="app-body">
       <aside class="sidebar">

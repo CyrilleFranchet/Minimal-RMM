@@ -168,9 +168,8 @@ storage, or environment files. Controller tests cover all four display states.
 
 The MCP control beside the workspace badge opens a connection status panel.
 It shows the last Exegol MCP check, selected container, BloodHound readiness,
-and diagnostic codes without a persistent header error banner. RMM MCP is
-started on demand for AI requests; the panel does not claim a persistent healthy
-connection or run an artificial AI request to test it. Disconnects and failed
+and diagnostic codes without a persistent header error banner. The panel covers
+Exegol MCP and BloodHound only. Disconnects and failed
 health requests clear the previous verified indicator.
 
 `showRuntime` renders the last runtime snapshot; `resetMcpStatus` clears stale

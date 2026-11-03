@@ -44,9 +44,9 @@ These commands are handled in the browser instead of being sent to the agent she
 | `pe <plugin> [export] [input]` | `POST …/pe` | Loads a Go PE plugin through the selected agent; export defaults to `Run` |
 | `bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
 
-BloodHound shell output includes the HTTP status and response data. The
-**BloodHound operations** form exposes the same actions without selecting an
-agent; the shell itself remains inside a selected session view.
+BloodHound shell output includes the HTTP status and response data. The shell
+remains inside a selected session view; use CLI or MCP for advanced actions
+without selecting an agent. The main page retains **Open BloodHound**.
 
 The REST, CLI, and MCP surfaces also support plugin-owned command dispatch by
 passing `command`. Those commands remain in the plugin and are not added to

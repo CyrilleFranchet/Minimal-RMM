@@ -136,6 +136,7 @@ function ensureWebSocketConnected() {
 }
 
 async function api(path, options = {}) {
+  const connectionGeneration = state.connectionGeneration || 0;
   const headers = {
     Accept: "application/json",
     ...(options.headers || {}),
@@ -147,10 +148,16 @@ async function api(path, options = {}) {
   try {
     res = await fetch(`/api/v1${path}`, { ...options, headers });
   } catch (err) {
-    noteServerUnreachable(err.message || "Cannot reach the RMM server.");
+    if (connectionGeneration === (state.connectionGeneration || 0) && !options.signal?.aborted && err.name !== "AbortError") {
+      if (WORKSPACE_MODE) { state.workspaceReachable = false; setWsStatus(false); }
+      noteServerUnreachable(err.message || "Cannot reach the RMM server.");
+    }
     return { status: 0, data: { error: err.message || "network_error" } };
   }
-  noteServerReachable();
+  if (connectionGeneration === (state.connectionGeneration || 0)) {
+    if (WORKSPACE_MODE) state.workspaceReachable = res.ok;
+    noteServerReachable();
+  }
   let data = {};
   const text = await res.text();
   if (text) {
@@ -1231,8 +1238,11 @@ function escapeHtml(s) {
 function setWsStatus(connected) {
   state.wsConnected = connected;
   const dot = $("#ws-status");
-  dot.classList.toggle("connected", connected);
-  dot.title = connected ? "WebSocket connected" : "WebSocket disconnected";
+  const reachable = WORKSPACE_MODE ? !!state.workspaceReachable : connected;
+  dot.classList.toggle("connected", reachable);
+  dot.title = WORKSPACE_MODE
+    ? (reachable ? "Workspace connected (HTTP polling)" : "Workspace disconnected or request failed")
+    : (connected ? "WebSocket connected" : "WebSocket disconnected");
 }
 
 function wsUrl() {
@@ -1326,6 +1336,8 @@ async function handleLiveEvent(ev, sessionId) {
 }
 
 function disconnectWebSocket() {
+  state.connectionGeneration = (state.connectionGeneration || 0) + 1;
+  state.workspaceReachable = false;
   clearWebSocketReconnectTimer();
   if (state.ws) {
     state.ws.onclose = null;
@@ -2357,7 +2369,7 @@ function showApp() {
 
 function configureWorkspaceAccess(health) {
   const operatorWorkspace = typeof health.workspace_id === "string" && !!health.workspace_id;
-  for (const id of ["bloodhound-open", "bloodhound-operations", "ai-toggle-btn"]) {
+  for (const id of ["bloodhound-open", "ai-toggle-btn"]) {
     document.getElementById(id)?.classList.toggle("hidden", !operatorWorkspace);
   }
   const workspaceNotice = document.getElementById("workspace-access-notice");

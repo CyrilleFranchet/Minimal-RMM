@@ -10,55 +10,7 @@
   let healthTimer;
   let healthController;
   let launchController;
-  let operationController;
   let healthGeneration = 0;
-
-  // A workspace-level form keeps all actions available without selecting an agent.
-  const form = document.getElementById("bloodhound-operation-form");
-  if (form) {
-    const action = document.getElementById("bloodhound-action");
-    const runId = document.getElementById("bloodhound-run-id");
-    const options = document.getElementById("bloodhound-options");
-    const submit = document.getElementById("bloodhound-submit");
-    const response = document.getElementById("bloodhound-response");
-    for (const value of window.rmmBloodHoundActions) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = value;
-      action.appendChild(option);
-    }
-    action.value = "health";
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (submit.disabled) return;
-      let controller;
-      let timeout;
-      const generation = healthGeneration;
-      try {
-        const parsed = JSON.parse(options.value);
-        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("Options must be a JSON object.");
-        submit.disabled = true;
-        controller = new AbortController();
-        operationController = controller;
-        timeout = setTimeout(() => controller.abort(), 120000);
-        response.textContent = "Waiting for response…";
-        const result = await window.rmmApi("/bloodhound", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: action.value, run_id: runId.value.trim(), options: parsed }),
-          signal: controller.signal,
-        });
-        if (generation === healthGeneration) response.textContent = JSON.stringify(result, null, 2);
-      } catch (error) {
-        if (generation === healthGeneration) response.textContent = controller?.signal.aborted
-          ? "Response timed out. The action may still have executed; inspect status before resubmitting."
-          : `BloodHound request failed: ${error.message}`;
-      } finally {
-        clearTimeout(timeout);
-        if (operationController === controller) operationController = null;
-        if (generation === healthGeneration) submit.disabled = false;
-      }
-    });
-  }
 
   function message(text) {
     status.textContent = text;
@@ -77,7 +29,7 @@
     if (mcpStatus) mcpStatus.textContent = `Exegol MCP: ${runtime.mcp_status || "not_checked"}${runtime.container ? ` · ${runtime.container}` : ""}`;
     if (mcpHelp) mcpHelp.textContent = runtime.error
       ? "Check the workspace Exegol MCP URL, authentication, and reachability from this container in Config. A recreated container may also need its Python MCP dependencies restored. This status does not identify the exact cause."
-      : "Last workspace check; this is not a persistent MCP connection. RMM MCP is checked when an AI request uses it.";
+      : "Last workspace check; this is not a persistent MCP connection.";
   }
 
   function resetMcpStatus(label) {
@@ -117,12 +69,6 @@
     clearTimeout(healthTimer);
     healthController?.abort();
     launchController?.abort();
-    operationController?.abort();
-    operationController = null;
-    if (form) {
-      document.getElementById("bloodhound-response").textContent = "";
-      document.getElementById("bloodhound-submit").disabled = false;
-    }
     if (readiness) readiness.textContent = "";
     resetMcpStatus("Not checked");
   }

@@ -10,13 +10,8 @@ function setup(api, blocked = false) {
   const status = { textContent: '', classList: { toggle() {} } };
   const readiness = { textContent: '' };
   const mcpLabel = { textContent: '', dataset: {} }, mcpStatus = {}, mcpHelp = {};
-  const form = { addEventListener(name, callback) { this[name] = callback; } };
-  const action = { value: '', children: [], appendChild(child) { this.children.push(child); } };
-  const runId = { value: '' }, options = { value: '{}' }, submit = { disabled: false }, response = { textContent: '' };
   const nodes = { 'bloodhound-open': button, 'bloodhound-status': status, 'bloodhound-readiness': readiness,
-    'mcp-status-label': mcpLabel, 'exegol-mcp-status': mcpStatus, 'mcp-status-help': mcpHelp,
-    'bloodhound-operation-form': form, 'bloodhound-action': action, 'bloodhound-run-id': runId,
-    'bloodhound-options': options, 'bloodhound-submit': submit, 'bloodhound-response': response };
+    'mcp-status-label': mcpLabel, 'exegol-mcp-status': mcpStatus, 'mcp-status-help': mcpHelp };
   const events = [];
   const tab = { opener: {}, closed: false, document: { title: '', body: {} },
     location: { replace(url) { events.push(['navigate', url]); } },
@@ -27,34 +22,10 @@ function setup(api, blocked = false) {
   vm.runInNewContext(source, { window, URL, AbortController,
     document: { getElementById: id => nodes[id] || null, createElement: () => ({}) },
     setTimeout(callback, delay) { if (delay === 1000) queueMicrotask(callback); return 1; }, clearTimeout() {} });
-  return { button, status, readiness, mcpLabel, mcpStatus, mcpHelp, events, tab, window, form, action, runId, options, submit, response };
+  return { button, status, readiness, mcpLabel, mcpStatus, mcpHelp, events, tab, window };
 }
 
 (async () => {
-  const operation = setup(async () => ({ status: 202, data: { workspace_request_id: 'a'.repeat(32) } }));
-  // No agent/session state is present: the form operates directly at the owner.
-  operation.action.value = 'library_search';
-  operation.options.value = '{"text":"Tier Zero"}';
-  await operation.form.submit({ preventDefault() {} });
-  assert.deepEqual(JSON.parse(operation.events[0][2].body), { action: 'library_search', run_id: '', options: { text: 'Tier Zero' } });
-  assert.match(operation.response.textContent, /workspace_request_id/);
-  assert.equal(operation.submit.disabled, false);
-  for (const invalid of ['[]', 'null', 'bad json']) {
-    operation.options.value = invalid;
-    await operation.form.submit({ preventDefault() {} });
-    assert.equal(operation.events.length, 1);
-    assert.match(operation.response.textContent, /request failed/);
-  }
-  let finish;
-  const stale = setup(() => new Promise(resolve => { finish = resolve; }));
-  const running = stale.form.submit({ preventDefault() {} });
-  stale.window.stopBloodHoundHealth();
-  assert.equal(stale.events[0][2].signal.aborted, true);
-  finish({ status: 200, data: { previous_owner: true } });
-  await running;
-  assert.equal(stale.response.textContent, '');
-  assert.equal(stale.submit.disabled, false);
-
   const ui = setup(async () => ({ status: 200, data: { url: 'http://localhost:1031/launch?ticket=one-use' } }));
   await ui.button.click();
   assert.deepEqual(ui.events.map(e => e[0]), ['open', 'request', 'navigate']);

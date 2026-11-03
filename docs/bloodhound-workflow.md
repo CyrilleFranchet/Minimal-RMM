@@ -195,10 +195,9 @@ collection command strings, or ownership selectors.
 The standalone CLI, its interactive shell, and the WebUI shell expose
 `bloodhound ACTION --run-id ID --options-json JSON` (omit optional flags when
 not needed). The WebUI intercepts this as an operator command; it never sends
-it to the selected Windows agent. The header's **BloodHound operations** form
-also provides action, run ID, and JSON options without requiring an agent
-session. It displays replies; use `result` for pending relay requests and
-`status` for workflow progress, as with the CLI.
+it to the selected Windows agent. Use `result` for pending relay requests and
+`status` for workflow progress. The main page offers **Open BloodHound** and
+connection status; advanced actions remain in CLI, MCP, and the WebUI shell.
 The MCP and Web AI tool is `bloodhound(action, run_id, options)`.
 Load `python-bloodhound-collection` for Python
 BloodHound CE/DCOnly collection, import, and verification; load
