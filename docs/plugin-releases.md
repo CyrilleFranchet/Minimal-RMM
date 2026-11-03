@@ -88,9 +88,8 @@ CLI secret-file input, or offline configuration. GitHub credentials are never
 sent to the agent or central broker in workspace mode, and configuration reads
 do not return them. See [service settings](service-settings.md).
 
-For Compose, `.env.example` provides `RMM_WORKSPACE_PLUGIN_GITHUB_TOKEN` and
-`RMM_SERVER_PLUGIN_GITHUB_TOKEN`; populate only the storage owner's value.
-Compose maps that value to `RMM_PLUGIN_GITHUB_TOKEN` in the selected service.
+For Compose, `.env.example` provides `RMM_WORKSPACE_PLUGIN_GITHUB_TOKEN`.
+Compose maps that value to `RMM_PLUGIN_GITHUB_TOKEN` only in the workspace.
 Protect the environment file and exclude it from source control. Each separately
 deployed workspace can use its own repository credential.
 For additional named credentials, save `RMM_PLUGIN_TOKEN_<NAME>` through
@@ -143,8 +142,8 @@ the central server. A synchronization error reports that the local install
 succeeded; retry installation to republish it. Existing workspace startup
 synchronization also republishes persisted files. The central server rejects
 these release endpoints for workspace mode and workspace-scoped credentials.
-In server mode, files persist under the server asset store and are atomically
-copied to `RMM_PLUGINS_DIR`. Existing enabled/disabled settings are preserved.
+Server-owned plugin installation is retired. Existing workspace enabled/disabled
+settings are preserved; there is no global central fallback.
 
 ## API and MCP
 

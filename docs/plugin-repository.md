@@ -1,11 +1,11 @@
 # External agent plugin repository
 
 This page defines the repository split for agent plugins. The runtime already
-separates plugin **artifacts** from the server through `/app/plugins`. The
+keeps plugin **artifacts** in workspace-owned storage. The
 private [`CyrilleFranchet/Minimal-RMM-plugins`](https://github.com/CyrilleFranchet/Minimal-RMM-plugins)
 repository now owns the plugin source history, tests, build pipeline, and
 release bundle. Minimal-RMM is being migrated to consume those artifacts from
-the runtime store.
+the workspace asset store.
 
 ## Decision
 
@@ -89,9 +89,9 @@ plugin CI release
         │
         ▼
 operator or deployment automation
-        │ atomic copy / rename
+        │ workspace release or asset API
         ▼
-RMM_PLUGIN_STORE or Docker volume mounted at /app/plugins
+Workspace assets/plugins → workspace-scoped central delivery cache
         │
         ▼
 server_rmm.py inventories and serves artifacts
@@ -105,11 +105,9 @@ or plugin-specific dependencies at runtime. Adding or replacing a one-shot
 plugin artifact remains hot-loadable. A running SOCKS or TUN child keeps the
 artifact it loaded at startup; restart that pivot to use a replacement.
 
-For a named Docker volume, the deployment automation needs a controlled way to
-copy the release bundle into the volume. For a host bind mount, set
-`RMM_PLUGIN_STORE` and copy the bundle into that directory. Both paths should
-write a temporary filename and rename it into place so the server never sees a
-partially written DLL or script.
+Use workspace release controls or the asset API to install artifacts. The
+workspace publishes delivery copies atomically to central; operators do not
+write into the central cache directly.
 
 ## Boundary implemented in Minimal-RMM
 
@@ -133,7 +131,7 @@ protocol contracts between the server and the agent.
 
 1. Build a Windows bundle in the external repository's CI or on a host with
    `x86_64-w64-mingw32-gcc`.
-2. Install the bundle's `*.dll` and `*.ps1` files through `RMM_PLUGIN_STORE`.
+2. Install the bundle's `*.dll` and `*.ps1` files through the workspace release or asset API.
 3. Verify `GET /api/v1/plugins`, a PowerShell plugin fetch, a Go one-shot load,
    and SOCKS/TUN pivot startup against a lab agent.
 4. Keep the manifest with the release metadata; the current server uses the

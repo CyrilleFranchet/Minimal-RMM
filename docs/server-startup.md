@@ -85,14 +85,15 @@ workspace. This setting does not compile or install it. Linux TUN also needs
 
 In workspace mode, install plugins from the workspace's [release controls](plugin-releases-operator.md).
 The workspace owns sources and files; the central server serves its synchronized
-workspace-specific runtime cache. The central `/app/plugins` volume can also
-hold administrator-seeded shared plugins, but it is not the operator's normal
-installation path.
+workspace-specific delivery cache. There is no administrator-seeded shared
+plugin fallback. `RMM_PLUGIN_CACHE_DIR` selects the central cache root, defaulting
+to `RMM_LOG_DIR/plugin-cache`; workspace assets remain authoritative.
 
-Compose's `RMM_PLUGIN_STORE` and `RMM_PROFILE_STORE` select host bind mounts or
-named volumes. Python's `RMM_PLUGINS_DIR` and `RMM_PROFILES_DIR` select runtime
-paths. These names are not interchangeable. Profile bundles stay centrally
-owned regardless of workspace count.
+Compose's `RMM_PROFILE_STORE` selects a profile bind mount or named volume.
+Python's `RMM_PROFILES_DIR` selects the runtime profile path. These names are
+not interchangeable. Profile bundles stay centrally owned regardless of workspace
+count. The old `RMM_PLUGIN_STORE` and `RMM_PLUGINS_DIR` no longer select an
+installation location; see [migration guidance](workspace-migration.md).
 
 ## Migrate existing launch commands
 

@@ -9,6 +9,30 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-03 — Verify same-name plugin delivery and revocation
+
+- Test actual plugin serving for Alice and Bob with different bytes under the
+  same filename, including a change of session ownership.
+- Fix deletion reporting success when central revocation failed: retain a disabled
+  workspace record and return 502 until a retry confirms removal from the cache.
+- Document the shared beacon-secret trust boundary and cache revocation delay.
+- All 446 Python tests, `make check`, Compose configuration, and whitespace
+  checks passed. No live lab execution was performed.
+
+### 2026-11-03 — Make central plugin storage a delivery cache only
+
+- Remove global plugin fallback and central installation/source management.
+  Resolve agent downloads and pivot readiness exclusively through session ownership.
+- Use `RMM_PLUGIN_CACHE_DIR` (default `central/plugin-cache`) for authenticated
+  workspace publications. Old `RMM_PLUGINS_DIR` settings remain readable but ignored.
+- Remove the Compose plugin-store mount and central GitHub credential override;
+  retain central profile storage. Preserve old files and document workspace migration.
+- Add owner isolation, missing-owner, global-fallback rejection, central CRUD
+  rejection, and scoped publish/disable regression coverage.
+- Validation: all 444 Python tests passed with isolated MCP dependencies;
+  `make check`, Compose configuration validation, shell syntax, and whitespace
+  checks passed. No live Exegol deployment or artifact migration was performed.
+
 ### 2026-11-03 — Verify simplified BloodHound UI and connectivity
 
 - Confirm removal of form markup, event handlers, and obsolete current documentation;

@@ -277,7 +277,7 @@ class ReleaseTransportTests(unittest.TestCase):
 class ReleaseOwnerTests(unittest.TestCase):
     """Exercise authenticated workspace routing and central ownership rejection."""
 
-    def test_server_routes_install_verified_bytes_into_runtime_store(self):
+    def test_central_cannot_install_even_with_legacy_server_mode(self):
         with tempfile.TemporaryDirectory() as root:
             store = AssetStore(Path(root) / "assets")
             runtime = Path(root) / "plugins"
@@ -289,22 +289,23 @@ class ReleaseOwnerTests(unittest.TestCase):
             _, _, responses = fixture()
             with patch("server_rmm.asset_store", return_value=store), patch("server_rmm.plugin_directory", return_value=str(runtime)), patch.object(PluginReleases, "_request", side_effect=lambda endpoint, *a, **kw: responses[endpoint]):
                 RMMHandler._handle_api_get(handler, "/api/v1/plugin-releases", {"tag": ["latest"]})
-                self.assertEqual(handler._json.call_args.args[0], 200)
+                self.assertEqual(handler._json.call_args.args[0], 409)
                 RMMHandler._handle_api_post(handler, "/api/v1/plugin-releases/install", {"tag": TAG, "name": "test.dll"})
-                self.assertEqual(handler._json.call_args.args[0], 200)
-                self.assertEqual((runtime / "test.dll").read_bytes(), CONTENT)
-                server.log.assert_called_once()
+                self.assertEqual(handler._json.call_args.args[0], 409)
+                self.assertFalse((runtime / "test.dll").exists())
+                self.assertEqual(store.list("plugins"), [])
+                server.log.assert_not_called()
 
     def test_central_rejects_workspace_requests_before_github_access(self):
         handler = SimpleNamespace(server_instance=SimpleNamespace(storage_mode="workspace"), _json=Mock())
-        with patch("server_rmm.plugin_release_api") as api:
+        with patch("server_rmm.asset_store") as store:
             RMMHandler._handle_plugin_releases(handler, "GET")
             self.assertEqual(handler._json.call_args.args[0], 409)
             handler.server_instance.storage_mode = "server"
             handler._workspace_scope = lambda: "alice"
             RMMHandler._handle_plugin_releases(handler, "POST", body={"tag": TAG, "name": "test.dll"})
             self.assertEqual(handler._json.call_args.args[0], 409)
-            api.assert_not_called()
+            store.assert_not_called()
 
     def test_workspace_http_auth_install_and_failed_sync(self):
         with tempfile.TemporaryDirectory() as root:

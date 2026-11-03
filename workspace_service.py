@@ -1721,14 +1721,22 @@ class WorkspaceService:
         else:
             kind = name = None
         if kind and name:
+            if kind in {"plugins", "plugin"}:
+                try:
+                    self.store.asset_store.set_enabled(kind, name, False)
+                except AssetError:
+                    return 404, {"error": "asset_not_found"}, "application/json"
+                # Retain a disabled record until central acknowledges revocation.
+                # Startup synchronization can retry it after a connection failure.
+                if not self._sync_plugin_asset({"name": name}, removed=True):
+                    return 502, {"error": "central_plugin_cache_sync_failed",
+                                 "detail": "Plugin disabled locally; retry deletion to confirm central revocation."}, "application/json"
             try:
                 removed = self.store.asset_store.remove(kind, name)
             except AssetError:
                 removed = False
             if not removed:
                 return 404, {"error": "asset_not_found"}, "application/json"
-            if kind in {"plugins", "plugin"}:
-                self._sync_plugin_asset({"name": name}, removed=True)
             return 200, {"ok": True, "kind": kind, "name": name}, "application/json"
         return None
 

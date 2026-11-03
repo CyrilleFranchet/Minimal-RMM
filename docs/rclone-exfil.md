@@ -14,9 +14,9 @@ The REST, CLI, MCP, and Web AI surfaces accept `mode`:
 - `plugin`: require the isolated plugin child. The request fails if the agent does not advertise Go PE plugin support or the server has no `rclone-exfil*.dll` artifact.
 - `binary`: force the existing rclone executable path.
 
-The plugin artifact remains in the central runtime plugin store. In Docker
-that is the persistent `/app/plugins` volume; the binary fallback remains
-supported for PowerShell agents and compatibility testing.
+The workspace owns the plugin artifact and publishes a session-owner-scoped
+delivery copy to central. The binary fallback remains supported for PowerShell
+agents and compatibility testing.
 
 Every successful queue response includes both `mode` (the requested mode)
 and `execution_mode` (the resolved method, `plugin` or `binary`). The server

@@ -88,29 +88,27 @@ class PluginSourceStoreTests(unittest.TestCase):
 class PluginSourceRouteTests(unittest.TestCase):
     """Verify authenticated routes and per-owner source storage."""
 
-    def test_server_crud_and_workspace_scope_rejection(self):
+    def test_central_rejects_source_management_in_all_storage_modes(self):
         with tempfile.TemporaryDirectory() as root:
             assets = AssetStore(root)
             server = SimpleNamespace(storage_mode="server")
             handler = SimpleNamespace(server_instance=server, _json=Mock(), _api_authorized=lambda *args: True,
                                       _api_path_parts=lambda path: path.removeprefix("/api/v1/").split("/"))
             handler._handle_plugin_sources = RMMHandler._handle_plugin_sources.__get__(handler)
-            with patch("server_rmm.asset_store", return_value=assets):
-                RMMHandler._handle_api_post(handler, "/api/v1/plugin-sources/dev", CONFIG)
-                self.assertEqual(handler._json.call_args.args[0], 200)
-                RMMHandler._handle_api_get(handler, "/api/v1/plugin-sources", {})
-                self.assertEqual(len(handler._json.call_args.args[1]["sources"]), 2)
-                RMMHandler._handle_api_delete(handler, "/api/v1/plugin-sources/dev")
-                self.assertEqual(handler._json.call_args.args[0], 200)
-            with patch("server_rmm.plugin_sources_api") as api:
-                server.storage_mode = "workspace"
-                handler._handle_plugin_sources("GET")
-                self.assertEqual(handler._json.call_args.args[0], 409)
-                server.storage_mode = "server"
-                handler._workspace_scope = lambda: "alice"
-                handler._handle_plugin_sources("POST", "dev", CONFIG)
-                self.assertEqual(handler._json.call_args.args[0], 409)
-                api.assert_not_called()
+            with patch("server_rmm.asset_store", return_value=assets) as store:
+                for mode in ("server", "workspace"):
+                    for owner in (None, "alice"):
+                        server.storage_mode = mode
+                        handler._workspace_scope = lambda: owner
+                        with self.subTest(mode=mode, owner=owner):
+                            RMMHandler._handle_api_post(handler, "/api/v1/plugin-sources/dev", CONFIG)
+                            self.assertEqual(handler._json.call_args.args[0], 409)
+                            RMMHandler._handle_api_get(handler, "/api/v1/plugin-sources", {})
+                            self.assertEqual(handler._json.call_args.args[0], 409)
+                            RMMHandler._handle_api_delete(handler, "/api/v1/plugin-sources/dev")
+                            self.assertEqual(handler._json.call_args.args[0], 409)
+                store.assert_not_called()
+                self.assertFalse((Path(root) / "plugin-sources.json").exists())
 
     def test_workspace_http_auth_persistence_and_owner_isolation(self):
         with tempfile.TemporaryDirectory() as root:

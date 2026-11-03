@@ -51,13 +51,32 @@ files and restores prepared settings exactly; it never cleans up source data.
 
 ## What becomes available
 
+### Legacy global plugin stores
+
+The central global plugin store is retired. Existing `plugin-store` directories,
+Docker plugin volumes, and files under the old central `plugins/` directory are
+not deleted, but they are no longer a fallback for agent downloads. Preserve them
+as rollback data. Install the required releases through each workspace's release
+controls or URL asset API, then verify the workspace runtime inventory before
+loading a plugin. A file present only in the old global store is not installed
+for any workspace.
+
+The new central cache defaults to `RMM_LOG_DIR/plugin-cache/workspaces/<id>/`
+(`RMM_PLUGIN_CACHE_DIR` changes its root). Workspaces republish authoritative
+plugin assets after restart; do not move the old global directory into this cache.
+`RMM_PLUGIN_STORE` is no longer used by Compose. Remove obsolete `RMM_PLUGINS_DIR`
+overrides when updating configuration. `RMM_PROFILE_STORE` and `RMM_PROFILES_DIR`
+remain valid because beacon transport profiles are centrally owned.
+
+### Imported operator data
+
 | Legacy data | Result |
 |-------------|--------|
 | `sessions.json`, `history/*/meta.json` | Archived workspace sessions |
 | `history/*/events.jsonl` | Workspace transcript events with local artifact links where files exist |
 | `history/*/ai_chat.json` | Workspace chat records, preserving stored message metadata |
 | `downloads`, `screenshots`, `keylogs` | Workspace artifact directories; session-prefixed downloads indexed |
-| `assets` | Workspace assets, including stored skills and profiles |
+| `assets` | Workspace assets, including plugins, skills, and rclone profiles; beacon transport bundles remain central |
 | Workspace-compatible saved settings | Merged into workspace settings; prepared values win |
 | All source files | Preserved under `legacy-server/`; SQLite databases are consistent backups |
 

@@ -188,7 +188,7 @@ hashes the actual runtime files; workspace requests use the workspace-visible
 central inventory. Comparing both filename and digest prevents a successful
 local download with a missing or outdated runtime copy from being treated as
 deployed. Matching content already available through the workspace inventory
-counts as installed even if it comes from the shared central plugin directory.
+counts as installed only within that workspace’s scoped central delivery cache.
 
 This is runtime availability, not proof that a plugin has executed on an agent.
 If inventory lookup fails, the UI reports that comparison is unavailable and

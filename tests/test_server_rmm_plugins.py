@@ -1,5 +1,6 @@
 """Unit coverage for the PE plugin operator endpoints and plugin serving."""
 
+import base64
 import hashlib
 import os
 import tempfile
@@ -14,7 +15,14 @@ from server_rmm import API_PREFIX, CommandInterface, RMMHandler
 
 
 def _fake_session(session_id="12345678-1234-1234-1234-123456789012"):
-    return SimpleNamespace(id=session_id)
+    return SimpleNamespace(id=session_id, workspace_id="alice")
+
+
+def _plugin_file(root, name):
+    """Return a fixture file in Alice's delivery cache."""
+    directory = os.path.join(root, "workspaces", "alice")
+    os.makedirs(directory, exist_ok=True)
+    return os.path.join(directory, name)
 
 
 class FakeApiHandler:
@@ -71,14 +79,14 @@ class PluginDirectoryTests(unittest.TestCase):
 
     def test_listing_skips_unsafe_names_and_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
-            plugin = os.path.join(tmp, "tool.dll")
+            plugin = _plugin_file(tmp, "tool.dll")
             with open(plugin, "wb") as handle:
                 handle.write(b"MZpayload")
             os.makedirs(os.path.join(tmp, "subdir"))
-            with open(os.path.join(tmp, "bad name!.dll"), "wb") as handle:
+            with open(_plugin_file(tmp, "bad name!.dll"), "wb") as handle:
                 handle.write(b"skip")
-            with patch("server_rmm.PLUGINS_DIR", tmp):
-                plugins = server_rmm.list_plugin_files()
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
+                plugins = server_rmm.list_plugin_files("alice")
         self.assertEqual(len(plugins), 1)
         self.assertEqual(plugins[0]["name"], "tool.dll")
         self.assertEqual(plugins[0]["size"], len(b"MZpayload"))
@@ -94,9 +102,35 @@ class PluginDirectoryTests(unittest.TestCase):
             owner = SimpleNamespace(
                 get_session=lambda _session_id: SimpleNamespace(workspace_id="alice")
             )
-            with patch("server_rmm.PLUGINS_DIR", tmp):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
                 resolved = server_rmm.plugin_path_for_session("tool.dll", "session-id", owner)
             self.assertEqual(resolved, os.path.realpath(path))
+
+    def test_global_and_other_workspace_plugins_never_fall_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "global.dll"), "wb") as handle:
+                handle.write(b"legacy global bytes")
+            with open(_plugin_file(tmp, "alice.dll"), "wb") as handle:
+                handle.write(b"alice bytes")
+            sessions = {
+                "alice-session": SimpleNamespace(workspace_id="alice"),
+                "bob-session": SimpleNamespace(workspace_id="bob"),
+                "unowned-session": SimpleNamespace(workspace_id=None),
+            }
+            owner = SimpleNamespace(get_session=sessions.get)
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
+                self.assertEqual(server_rmm.list_plugin_files(), [])
+                self.assertEqual(server_rmm.list_plugin_files("bob"), [])
+                self.assertEqual([row["name"] for row in server_rmm.list_plugin_files("alice")], ["alice.dll"])
+                for session_id in ("alice-session", "bob-session", "unowned-session", "unknown", None):
+                    with self.subTest(session=session_id):
+                        self.assertIsNone(server_rmm.plugin_path_for_session("global.dll", session_id, owner))
+                for session_id in ("bob-session", "unowned-session", "unknown", None):
+                    self.assertIsNone(server_rmm.plugin_path_for_session("alice.dll", session_id, owner))
+                self.assertIsNotNone(server_rmm.plugin_path_for_session("alice.dll", "alice-session", owner))
+                for invalid in (None, "", "../alice"):
+                    with self.subTest(workspace=invalid), self.assertRaises(ValueError):
+                        server_rmm.plugin_directory(invalid)
 
 
 class PluginApiTests(unittest.TestCase):
@@ -104,6 +138,7 @@ class PluginApiTests(unittest.TestCase):
 
     def call_get(self, path, session=None):
         handler = FakeApiHandler(session=session)
+        handler._workspace_scope = lambda: "alice"
         RMMHandler._handle_api_get(handler, path, {})
         return handler
 
@@ -114,13 +149,59 @@ class PluginApiTests(unittest.TestCase):
 
     def test_get_plugins_lists_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "tool.dll"), "wb") as handle:
+            with open(_plugin_file(tmp, "tool.dll"), "wb") as handle:
                 handle.write(b"MZpayload")
-            with patch("server_rmm.PLUGINS_DIR", tmp):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
                 handler = self.call_get(f"{API_PREFIX}/plugins")
         status, body = handler.responses[-1]
         self.assertEqual(status, 200)
         self.assertEqual([p["name"] for p in body["plugins"]], ["tool.dll"])
+
+    def test_central_plugin_asset_routes_reject_global_management(self):
+        for kind in ("plugin", "plugins"):
+            for method in ("get", "post", "patch", "delete"):
+                with self.subTest(kind=kind, method=method), patch("server_rmm.asset_store") as store:
+                    handler = FakeApiHandler()
+                    path = f"{API_PREFIX}/assets/{kind}/tool.dll"
+                    route = getattr(RMMHandler, f"_handle_api_{method}")
+                    route(handler, path, {}) if method != "delete" else route(handler, path)
+                    self.assertEqual(handler.responses[-1][0], 409)
+                    self.assertEqual(handler.responses[-1][1]["error"], "plugins_are_workspace_local")
+                    store.assert_not_called()
+        handler = FakeApiHandler()
+        RMMHandler._handle_api_post(handler, f"{API_PREFIX}/plugins", {"url": "https://example.invalid/tool.dll"})
+        self.assertEqual(handler.responses[-1][0], 409)
+
+    def test_workspace_publish_and_disable_are_scoped_to_authenticated_owner(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
+            payload = b"alice plugin bytes"
+            bob_dir = os.path.join(tmp, "workspaces", "bob")
+            os.makedirs(bob_dir)
+            bob_path = os.path.join(bob_dir, "tool.dll")
+            with open(bob_path, "wb") as handle:
+                handle.write(b"bob plugin bytes")
+            handler = FakeApiHandler(server_instance=SimpleNamespace(log=Mock()))
+            handler._workspace_scope = lambda: "alice"
+            RMMHandler._handle_api_post(handler, f"{API_PREFIX}/workspace/assets/plugins", {
+                "name": "tool.dll", "enabled": True, "workspace_id": "bob",
+                "content_b64": base64.b64encode(payload).decode(),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            })
+            self.assertEqual(handler.responses[-1][0], 200)
+            with open(_plugin_file(tmp, "tool.dll"), "rb") as handle:
+                self.assertEqual(handle.read(), payload)
+            RMMHandler._handle_api_post(handler, f"{API_PREFIX}/workspace/assets/plugins", {
+                "name": "tool.dll", "enabled": False, "workspace_id": "bob",
+            })
+            self.assertEqual(handler.responses[-1][0], 200)
+            self.assertFalse(os.path.exists(_plugin_file(tmp, "tool.dll")))
+            with open(bob_path, "rb") as handle:
+                self.assertEqual(handle.read(), b"bob plugin bytes")
+            handler._workspace_scope = lambda: None
+            RMMHandler._handle_api_post(handler, f"{API_PREFIX}/workspace/assets/plugins", {
+                "name": "tool.dll", "enabled": False,
+            })
+            self.assertEqual(handler.responses[-1][0], 403)
 
     def test_pe_load_queues_full_command(self):
         handler = self.call_post({"plugin": "tool.dll", "export": "Run", "input": "hello world"})
@@ -305,14 +386,34 @@ class TunApiTests(unittest.TestCase):
 class PluginServeTests(unittest.TestCase):
     """Verify _serve_plugin_tool serving and rejection paths."""
 
+    def test_same_filename_downloads_follow_current_session_owner(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
+            sessions = {name: SimpleNamespace(workspace_id=name) for name in ("alice", "bob")}
+            for name in sessions:
+                directory = server_rmm.plugin_directory(name)
+                with open(os.path.join(directory, "tool.dll"), "wb") as handle:
+                    handle.write(name.encode())
+            owner = SimpleNamespace(log=Mock(), get_session=sessions.get)
+            for name in sessions:
+                handler = FakeServeHandler()
+                handler.server_instance = owner
+                RMMHandler._serve_plugin_tool(handler, "tool.dll", name)
+                self.assertEqual(handler.status, 200)
+                self.assertEqual(handler.body, name.encode())
+            sessions["alice"].workspace_id = "bob"
+            handler = FakeServeHandler()
+            handler.server_instance = owner
+            RMMHandler._serve_plugin_tool(handler, "tool.dll", "alice")
+            self.assertEqual(handler.body, b"bob")
+
     def test_serves_plugin_bytes(self):
         payload = b"MZpayload"
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "tool.dll"), "wb") as handle:
+            with open(_plugin_file(tmp, "tool.dll"), "wb") as handle:
                 handle.write(payload)
-            with patch("server_rmm.PLUGINS_DIR", tmp):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
                 handler = FakeServeHandler()
-                handler.server_instance = SimpleNamespace(log=Mock())
+                handler.server_instance = SimpleNamespace(log=Mock(), get_session=lambda _sid: _fake_session())
                 served = RMMHandler._serve_plugin_tool(
                     handler,
                     "tool.dll",
@@ -330,7 +431,7 @@ class PluginServeTests(unittest.TestCase):
         self.assertEqual(handler.responses[-1][0], 400)
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("server_rmm.PLUGINS_DIR", tmp):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
                 handler = FakeServeHandler()
                 served = RMMHandler._serve_plugin_tool(handler, "missing.dll")
         self.assertTrue(served)
@@ -339,7 +440,7 @@ class PluginServeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "notes.txt"), "wb") as handle:
                 handle.write(b"not a plugin")
-            with patch("server_rmm.PLUGINS_DIR", tmp):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
                 handler = FakeServeHandler()
                 served = RMMHandler._serve_plugin_tool(handler, "notes.txt")
         self.assertTrue(served)
@@ -350,12 +451,12 @@ class PluginServeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             plugin_dir = os.path.join(tmp, "artifacts")
             os.makedirs(plugin_dir)
-            plugin_path = os.path.join(plugin_dir, "socks.ps1")
+            plugin_path = _plugin_file(plugin_dir, "socks.ps1")
             with open(plugin_path, "wb") as handle:
                 handle.write(payload)
-            with patch("server_rmm.PLUGINS_DIR", plugin_dir):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", plugin_dir):
                 handler = FakeServeHandler()
-                handler.server_instance = SimpleNamespace(log=Mock())
+                handler.server_instance = SimpleNamespace(log=Mock(), get_session=lambda _sid: _fake_session())
                 served = RMMHandler._serve_plugin_tool(
                     handler,
                     "socks.ps1",
@@ -371,12 +472,12 @@ class PluginServeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             plugin_dir = os.path.join(tmp, "artifacts")
             os.makedirs(plugin_dir)
-            plugin_path = os.path.join(plugin_dir, "screenshot.ps1")
+            plugin_path = _plugin_file(plugin_dir, "screenshot.ps1")
             with open(plugin_path, "wb") as handle:
                 handle.write(payload)
-            with patch("server_rmm.PLUGINS_DIR", plugin_dir):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", plugin_dir):
                 handler = FakeServeHandler()
-                handler.server_instance = SimpleNamespace(log=Mock())
+                handler.server_instance = SimpleNamespace(log=Mock(), get_session=lambda _sid: _fake_session())
                 served = RMMHandler._serve_plugin_tool(
                     handler,
                     "screenshot.ps1",
@@ -467,7 +568,9 @@ class PivotPluginReadinessTests(unittest.TestCase):
     """Verify pivot start rejects sessions whose agent plugin is unavailable."""
 
     def _server(self):
-        return object.__new__(server_rmm.RMMServer)
+        server = object.__new__(server_rmm.RMMServer)
+        server.get_session = lambda _sid: _fake_session()
+        return server
 
     def test_go_requires_plugin_capability(self):
         session = SimpleNamespace(agent_type="go", capabilities=[])
@@ -475,11 +578,11 @@ class PivotPluginReadinessTests(unittest.TestCase):
         self.assertIn("socks-plugin", detail)
 
     def test_go_accepts_built_plugin(self):
-        session = SimpleNamespace(agent_type="go", capabilities=["socks-plugin"])
+        session = SimpleNamespace(id="session", workspace_id="alice", agent_type="go", capabilities=["socks-plugin"])
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "socks.dll"), "wb") as handle:
+            with open(_plugin_file(tmp, "socks.dll"), "wb") as handle:
                 handle.write(b"MZpayload")
-            with patch("server_rmm.PLUGINS_DIR", tmp):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
                 self.assertIsNone(self._server().pivot_plugin_error(session))
 
     def test_tun_requires_tun_plugin_capability(self):
@@ -488,24 +591,24 @@ class PivotPluginReadinessTests(unittest.TestCase):
         self.assertIn("tun-plugin", detail)
 
     def test_tun_accepts_built_transport_and_helper(self):
-        session = SimpleNamespace(agent_type="go", capabilities=["tun-plugin"])
+        session = SimpleNamespace(id="session", workspace_id="alice", agent_type="go", capabilities=["tun-plugin"])
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "tun.dll"), "wb") as handle:
+            with open(_plugin_file(tmp, "tun.dll"), "wb") as handle:
                 handle.write(b"MZpayload")
             helper = os.path.join(tmp, "rmm-tun")
             with open(helper, "wb") as handle:
                 handle.write(b"helper")
             os.chmod(helper, 0o700)
-            with patch("server_rmm.PLUGINS_DIR", tmp):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
                 with patch("server_rmm.TUN_HELPER", helper):
                     self.assertIsNone(self._server().tun_plugin_error(session))
 
     def test_powershell_uses_deployed_plugin(self):
-        session = SimpleNamespace(agent_type="powershell", capabilities=["socks-plugin"])
+        session = SimpleNamespace(id="session", workspace_id="alice", agent_type="powershell", capabilities=["socks-plugin"])
         with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "socks.ps1"), "wb") as handle:
+            with open(_plugin_file(tmp, "socks.ps1"), "wb") as handle:
                 handle.write(b"function global:Start-RmmSocksChannelPlugin {}")
-            with patch("server_rmm.PLUGINS_DIR", tmp):
+            with patch("server_rmm.PLUGIN_CACHE_DIR", tmp):
                 self.assertIsNone(self._server().pivot_plugin_error(session))
 
     def test_unknown_agent_type_is_rejected(self):

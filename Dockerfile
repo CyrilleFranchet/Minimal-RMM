@@ -16,7 +16,6 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     RMM_STORAGE_MODE=workspace \
-    RMM_PLUGINS_DIR=/app/plugins \
     RMM_PROFILES_DIR=/app/profiles \
     RMM_WORKSPACE_TUN_HELPER=/app/tools/rmm-tun
 

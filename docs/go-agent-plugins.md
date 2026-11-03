@@ -262,9 +262,9 @@ plugin input and output contents are not written to the lifecycle log.
 
 ## Server plugin directory
 
-- Plugins are read from the runtime plugin store (Docker uses `/app/plugins`;
-  local server mode defaults to `RMM_logs/plugins/`, overridden with
-  `RMM_PLUGINS_DIR`).
+- Plugins are owned by workspaces. Agent downloads resolve only their session’s
+  workspace cache under `RMM_PLUGIN_CACHE_DIR/workspaces/<id>/`; the cache root
+  defaults to `RMM_LOG_DIR/plugin-cache`. No global fallback is available.
 - Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`; anything else is
   rejected by both the API and the serving path.
 - `GET /api/v1/plugins` returns name, size, and SHA-256 for every plugin.

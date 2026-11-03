@@ -52,6 +52,22 @@ class SettingsSecurityTests(unittest.TestCase):
         self.runtime.status.return_value = {'exegol_status': 'ready'}
         self.addCleanup(runtime.stop)
 
+    def test_retired_global_plugin_path_does_not_override_delivery_cache(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "settings.json"
+            path.write_text(json.dumps({"schema": rmm_settings.SCHEMA, "scope": "server",
+                                        "settings": {"RMM_PLUGINS_DIR": "/legacy/global-plugins"}}))
+            store = rmm_settings.SettingsStore(path, "server", environment={"RMM_LOG_DIR": root})
+            self.assertEqual(store.saved_at_start["RMM_PLUGINS_DIR"], "/legacy/global-plugins")
+            rows = {row["key"]: row for row in store.snapshot()["settings"]}
+            self.assertIn("ignored", rows["RMM_PLUGINS_DIR"]["label"])
+            self.assertEqual(rows["RMM_PLUGIN_CACHE_DIR"]["value"], str(Path(root) / "plugin-cache"))
+            overridden = rmm_settings.SettingsStore(path, "server", environment={
+                "RMM_LOG_DIR": root, "RMM_PLUGIN_CACHE_DIR": "/custom/delivery-cache"})
+            rows = {row["key"]: row for row in overridden.snapshot()["settings"]}
+            self.assertEqual(rows["RMM_PLUGIN_CACHE_DIR"]["value"], "/custom/delivery-cache")
+            self.assertEqual(rows["RMM_PLUGIN_CACHE_DIR"]["source"], "environment")
+
     def test_workspace_ai_rejects_missing_exegol_without_forwarding(self):
         service = WorkspaceService.__new__(WorkspaceService)
         service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'))

@@ -212,9 +212,9 @@ In the **workspace UI**, open **Config → Plugins**.
 Save the operator's repository/branch source, select **Load plugins**, check the
 required files, and select **Install selected**. Or use `plugin sources`, `plugin releases`, and `plugin install`
 through the local CLI. See [plugin source and release controls](plugin-releases-operator.md).
-The workspace stores the binaries and synchronizes a workspace-specific cache
-on Ubuntu. Manual copying into the shared central plugin directory is not
-required for this flow.
+The workspace stores the binaries and synchronizes a workspace-specific delivery
+cache on Ubuntu. Central does not offer a shared global plugin installation
+directory; install through the workspace instead.
 
 Do not confuse saved plugin sources with beacon transport profiles. Sources
 select compiled plugin releases; an RMM-Profile is a central transport process

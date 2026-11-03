@@ -40,7 +40,7 @@ flowchart LR
     subgraph control["RMM control plane"]
         server["server_rmm.py\nHTTP server"]
         state["Session registry\ncommand queues\nbeacon authentication"]
-        artifacts[("Plugin artifact store\n/app/plugins or RMM_logs/plugins")]
+        artifacts[("Workspace delivery cache\nRMM_logs/plugin-cache/workspaces")]
         server --- state
         server --- artifacts
     end
@@ -120,7 +120,7 @@ workspace that creates the TUN device.
 flowchart LR
     subgraph central["Docker control plane"]
         c2["rmm-control\nserver_rmm.py"]
-        plugins[("rmm-plugin-store\n/app/plugins")]
+        plugins[("Scoped plugin cache\ncentral state volume")]
         c2 --- plugins
     end
 

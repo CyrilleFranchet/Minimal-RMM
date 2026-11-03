@@ -66,8 +66,6 @@ from rmm_profile import ProfileError, ProfileManager, profile_directory
 from rmm_embeddings import EmbeddingStore, embedding_api
 from rmm_bloodhound import bloodhound_api
 from rmm_bloodhound_broker import BloodHoundBroker
-from rmm_plugin_releases import plugin_release_api
-from rmm_plugin_sources import plugin_sources_api
 from rmm_ui_state import UiStateError, UiStateStore
 from rmm_rclone import (
     RcloneConfigError,
@@ -107,9 +105,8 @@ CLIENT_SCRIPT = os.path.join(
 GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-go")
 GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
 AGENT_DEPLOY_DIR = os.path.join(LOG_DIR, "agent-deploy")
-# Operator PE and script plugins served to the agent. Deploy release artifacts
-# here from the external Minimal-RMM-plugins repository.
-PLUGINS_DIR = settings_getenv("RMM_PLUGINS_DIR", "").strip() or os.path.join(LOG_DIR, "plugins")
+# Workspace-published delivery copies; never an operator-owned plugin store.
+PLUGIN_CACHE_DIR = settings_getenv("RMM_PLUGIN_CACHE_DIR", "").strip() or os.path.join(LOG_DIR, "plugin-cache")
 ASSETS_DIR = settings_getenv("RMM_ASSETS_DIR", "").strip() or os.path.join(LOG_DIR, "assets")
 UI_STATE_DB = settings_getenv("RMM_UI_STATE_DB", "").strip() or os.path.join(LOG_DIR, "ui-state.db")
 PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -243,10 +240,10 @@ def write_atomic_bytes(path: str, content: bytes) -> None:
 
 
 def plugin_directory(workspace_id: str | None = None) -> str:
-    """Return a runtime PE plugin directory, optionally scoped to a workspace."""
-    base = PLUGINS_DIR
-    if workspace_id and valid_workspace_id(str(workspace_id)):
-        base = os.path.join(base, "workspaces", str(workspace_id))
+    """Return only an authenticated workspace's agent-delivery cache directory."""
+    if not isinstance(workspace_id, str) or not valid_workspace_id(workspace_id):
+        raise ValueError("Plugin delivery requires a workspace owner")
+    base = os.path.join(PLUGIN_CACHE_DIR, "workspaces", workspace_id)
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -291,16 +288,10 @@ def _list_plugin_files_in(directory: str) -> list[dict]:
 
 
 def list_plugin_files(workspace_id: str | None = None) -> list[dict]:
-    """List global and workspace PE plugins with workspace files taking precedence."""
-    global_rows = {
-        row["name"]: row
-        for row in _list_plugin_files_in(plugin_directory())
-        if asset_store().enabled("plugins", row["name"], True)
-    }
-    rows = global_rows
-    if workspace_id:
-        rows.update({row["name"]: row for row in _list_plugin_files_in(plugin_directory(workspace_id))})
-    return [rows[name] for name in sorted(rows)]
+    """List only the selected workspace's published delivery artifacts."""
+    if not isinstance(workspace_id, str) or not valid_workspace_id(workspace_id):
+        return []
+    return _list_plugin_files_in(plugin_directory(workspace_id))
 
 
 def asset_store() -> AssetStore:
@@ -323,7 +314,7 @@ def plugin_path_for_session(
     session_id: str | None = None,
     server: object | None = None,
 ) -> str | None:
-    """Resolve a plugin from a session workspace first, then the global store."""
+    """Resolve a plugin only from its session owner's delivery cache."""
     if not PLUGIN_NAME_RE.fullmatch(str(name or "")):
         return None
     session = None
@@ -338,11 +329,7 @@ def plugin_path_for_session(
         path = _workspace_plugin_path(workspace_id, name)
         if path and os.path.isfile(path):
             return path
-    try:
-        path = safe_join_under(plugin_directory(), name)
-    except ValueError:
-        return None
-    return path if os.path.isfile(path) else None
+    return None
 
 
 def plugin_command_metadata(command: str, agent_type: str | None = None) -> dict | None:
@@ -2513,16 +2500,16 @@ class RMMServer:
         if agent_type == "go":
             if "socks-plugin" not in capabilities:
                 return "the Go agent does not advertise socks-plugin support"
-            plugin_path = plugin_path_for_session(GO_SOCKS_PLUGIN_FILE, getattr(session, "id", None))
+            plugin_path = plugin_path_for_session(GO_SOCKS_PLUGIN_FILE, getattr(session, "id", None), self)
             if not plugin_path:
                 return (
                     "install socks.dll from the external plugin bundle into "
-                    "RMM_PLUGINS_DIR"
+                    "the owning workspace and wait for synchronization"
                 )
         elif agent_type == "powershell" and not plugin_path_for_session(
-            "socks.ps1", getattr(session, "id", None)
+            "socks.ps1", getattr(session, "id", None), self
         ):
-            return "the deployed PowerShell SOCKS plugin is missing from RMM_PLUGINS_DIR"
+            return "the deployed PowerShell SOCKS plugin is missing from the owning workspace delivery cache"
         elif agent_type != "powershell":
             return f"no SOCKS pivot plugin is available for agent type {agent_type or 'unknown'}"
         return None
@@ -2569,8 +2556,8 @@ class RMMServer:
             return f"the TUN pivot currently requires a Go agent, got {agent_type or 'unknown'}"
         if "tun-plugin" not in capabilities:
             return "the Go agent does not advertise tun-plugin support"
-        if not plugin_path_for_session(GO_TUN_PLUGIN_FILE, getattr(session, "id", None)):
-            return "install tun.dll from the external plugin bundle into RMM_PLUGINS_DIR"
+        if not plugin_path_for_session(GO_TUN_PLUGIN_FILE, getattr(session, "id", None), self):
+            return "install tun.dll from the external plugin bundle in the owning workspace and wait for synchronization"
         if self.storage_mode != "workspace" and (not os.path.isfile(TUN_HELPER) or not os.access(TUN_HELPER, os.X_OK)):
             return f"build the server TUN helper first (make tun-build; expected {TUN_HELPER})"
         return None
@@ -3566,33 +3553,12 @@ class RMMHandler(BaseHTTPRequestHandler):
 
     def _handle_plugin_sources(self, method, source_id=None, body=None):
         """Persist source configuration only at the selected operator storage owner."""
-        srv = self.server_instance
-        if srv.storage_mode != "server" or getattr(self, "_workspace_scope", lambda: None)():
-            self._json(409, {"error": "plugin_sources_are_workspace_local", "detail": "Use the local workspace API URL."})
-            return True
-        status, payload = plugin_sources_api(asset_store().root, method, source_id, body)
-        self._json(status, payload)
+        self._json(409, {"error": "plugin_sources_are_workspace_local", "detail": "Use the local workspace API URL."})
         return True
 
     def _handle_plugin_releases(self, method, *, tag="latest", source="default", body=None):
         """Keep GitHub credentials and installation at the selected storage owner."""
-        srv = self.server_instance
-        if srv.storage_mode != "server" or getattr(self, "_workspace_scope", lambda: None)():
-            self._json(409, {"error": "plugin_releases_are_workspace_local", "detail": "Use the local workspace API URL."})
-            return True
-        store = asset_store()
-
-        def publish(row):
-            """Atomically copy verified store bytes into the server runtime cache."""
-            content = store.read("plugins", row["name"], enabled_only=False)
-            if hashlib.sha256(content).hexdigest() != row["sha256"]:
-                return False
-            write_atomic_bytes(safe_join_under(plugin_directory(), row["name"]), content)
-            srv.log(f"Plugin installed: {row['name']} sha256={row['sha256']}")
-            return True
-
-        status, payload = plugin_release_api(store, method, tag=tag, source=source, body=body, publish=publish)
-        self._json(status, payload)
+        self._json(409, {"error": "plugin_releases_are_workspace_local", "detail": "Use the local workspace API URL."})
         return True
 
     def _handle_bloodhound(self, body):
@@ -3662,6 +3628,9 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts is None:
             return False
         if RMMHandler._relay_local_operator(self, 'GET', path, qs=qs):
+            return True
+        if len(parts) >= 2 and parts[0] == "assets" and parts[1] in {"plugin", "plugins"}:
+            self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
             return True
         if parts == ["workspace", "bloodhound", "requests"]:
             owner = self._workspace_scope()
@@ -4009,7 +3978,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts == ["assets"]:
-            rows = asset_store().list()
+            rows = [row for row in asset_store().list() if row.get("kind") != "plugins"]
             self._json(200, {"assets": rows, "count": len(rows), "workspace_local": False})
             return True
 
@@ -4033,6 +4002,9 @@ class RMMHandler(BaseHTTPRequestHandler):
         if parts is None:
             return False
         if RMMHandler._relay_local_operator(self, 'POST', path, payload=body):
+            return True
+        if len(parts) >= 2 and parts[0] == "assets" and parts[1] in {"plugin", "plugins"}:
+            self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
             return True
         if len(parts) == 4 and parts[:3] == ["workspace", "bloodhound", "requests"]:
             owner = self._workspace_scope()
@@ -4151,7 +4123,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "assets":
             asset_kind = parts[1]
         elif parts == ["plugins"]:
-            asset_kind = "plugins"
+            self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
+            return True
         elif parts == ["ai", "skills"]:
             asset_kind = "skills"
         elif parts == ["rclone", "profiles"]:
@@ -4181,9 +4154,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                         name=name,
                         enabled=bool(body.get("enabled", True)),
                     )
-                if asset_kind == "plugins":
-                    content = asset_store().read("plugins", row["name"], enabled_only=False)
-                    write_atomic_bytes(safe_join_under(plugin_directory(), row["name"]), content)
             except AssetError as exc:
                 self._json(400, {"error": str(exc)})
                 return True
@@ -4751,6 +4721,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if RMMHandler._relay_local_operator(self, 'PATCH', path, payload=body):
             return True
+        if len(parts) >= 2 and parts[0] == "assets" and parts[1] in {"plugin", "plugins"}:
+            self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
+            return True
         srv = self.server_instance
 
         if parts in (["settings"], ["ui", "config"]) and self._workspace_scope():
@@ -4828,6 +4801,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if RMMHandler._relay_local_operator(self, 'DELETE', path):
             return True
+        if len(parts) >= 2 and parts[0] == "assets" and parts[1] in {"plugin", "plugins"}:
+            self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
+            return True
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("DELETE", parts)
         if len(parts) == 2 and parts[0] == "plugin-sources":
@@ -4895,10 +4871,6 @@ class RMMHandler(BaseHTTPRequestHandler):
             kind, name = parts[1], urllib.parse.unquote(parts[2])
             try:
                 removed = asset_store().remove(kind, name)
-                if kind == "plugins":
-                    path = safe_join_under(plugin_directory(), name)
-                    if os.path.isfile(path):
-                        os.unlink(path)
             except (AssetError, ValueError, OSError) as exc:
                 self._json(404, {"error": "asset_not_found", "detail": str(exc)})
                 return True

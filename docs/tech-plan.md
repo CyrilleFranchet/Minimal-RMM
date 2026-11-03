@@ -887,8 +887,8 @@ loop when skills need live edits.
 - `.dockerignore`: `RMM_logs/`, `.git`, `**/.venv`, `docker-data/`
 - Build the checked-in `rmm-tun` helper in a Go builder stage; agent plugins
   come from the external plugin repository
-- Mount `/app/plugins` from the persistent `rmm-plugin-store` volume and
-  install release artifacts there independently of control-plane image updates
+- Keep authoritative plugin artifacts in workspace assets; central keeps only
+  workspace-scoped delivery copies in its existing state volume
 - Default to `RMM_STORAGE_MODE=workspace` and run the central server on
   `0.0.0.0:8080`
 - The same image can run `workspace_service.py`; only that service receives the

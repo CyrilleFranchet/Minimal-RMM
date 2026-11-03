@@ -58,8 +58,8 @@ In workspace mode the central server keeps only control-plane state:
 - active session metadata and workspace ownership in `RMM_logs/sessions.json`;
 - command queues and pivot transport state in memory;
 - a bounded transient event queue per workspace;
-- the persistent central plugin volume at `/app/plugins`, which contains
-  externally built agent plugin artifacts;
+- workspace-scoped delivery copies under `RMM_LOG_DIR/plugin-cache/workspaces/`,
+  republished from authoritative workspace assets;
 - the persistent profile volume at `/app/profiles`, which contains trusted
   RMM-Profile bundles and runs the selected external transport;
 - server build artifacts such as `rmm-tun` in the configured image or tools
@@ -382,9 +382,9 @@ Linux Exegol host is required for a usable `/dev/net/tun`; container device
 behavior is not equivalent to a native Linux host.
 
 The Dockerfile builds only the checked-in TUN helper into the image. The
-control plane mounts `/app/plugins` from the persistent plugin volume; install
-the Windows amd64 pivot DLLs and PowerShell scripts from the external plugin
-repository before launching a pivot. Outside Docker, run `make tun-build`
+workspace owns Windows amd64 pivot DLLs and PowerShell scripts installed through
+its release or asset API. Central receives only workspace-scoped delivery copies
+before a pivot can launch. Outside Docker, run `make tun-build`
 explicitly on the workspace host before using TUN. Set `RMM_WORKSPACE_TUN_HELPER`
 when the helper is installed at a custom path. Startup never compiles it.
 New plugin commands stay in their plugin artifact and

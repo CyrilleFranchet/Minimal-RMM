@@ -5,65 +5,33 @@ See the [documentation wiki](README.md) for navigation and the
 The source split is implemented in the private
 [external plugin repository](plugin-repository.md).
 
-Minimal-RMM keeps the server-side plugin delivery mechanism in the Docker
-image, while plugin artifacts that are added or replaced after deployment live
-in the persistent plugin volume. The server does not need to be rebuilt or
-restarted when an artifact is added to that volume.
+Minimal-RMM keeps plugin delivery in the control plane, while each workspace
+owns its installed artifacts and release configuration. Installing a plugin
+does not require rebuilding or restarting the server.
 
 ## Runtime boundary
 
 ```text
-Docker image
-  ├── Python control plane
-  ├── server-only helpers such as rmm-tun
-  └── no agent plugin source or build toolchain
-
-Persistent plugin volume (/app/plugins)
-  ├── socks.dll
-  ├── tun.dll
-  ├── screenshot.dll
-  └── operator-installed plugins
-
-Go agent
-  └── generic PE loader + child process host
+Workspace data/assets/plugins/  (authoritative operator-owned artifacts)
+        │ authenticated workspace publication
+        ▼
+Central data/plugin-cache/workspaces/<workspace-id>/  (delivery copies only)
+        │ session-scoped beacon download
+        ▼
+Go or PowerShell agent
 ```
 
-The `rmm-control` service mounts the plugin volume at `/app/plugins`. The
-container entrypoint creates the directory but does not build or seed agent
-plugins. This keeps plugin release cadence independent from control-plane image
-updates.
+Install release artifacts through the workspace WebUI, CLI, or MCP release
+controls or URL asset API. The workspace persists source files and republishes
+them to central after startup. Central serves only the cache belonging to the
+requesting agent's workspace; there is no shared global plugin fallback.
+See [operator-managed assets](operator-assets.md).
 
-Set `RMM_PLUGIN_STORE=./plugin-store` in `.env` when a host directory is more
-convenient than a named Docker volume. The directory is mounted at
-`/app/plugins`, so copying a plugin into it makes the artifact visible to the
-server immediately:
-
-```bash
-mkdir -p plugin-store
-cp my-command.dll plugin-store/
-```
-
-Operators can also install `.dll` and `.ps1` artifacts from the WebUI, CLI, or
-MCP with the URL asset API. In workspace mode, the source copy persists in the
-operator's Exegol data directory and the central volume receives only the
-runtime copy required by the beacon endpoint. See
-[operator-managed assets](operator-assets.md).
-
-For a named volume, use a dedicated short-lived container or a plugin sync
-service to copy the release bundle into the volume. Do not copy plugin source
-code into the control-plane container at runtime.
-
-For the default Compose project, the short-lived copy can be performed with:
-
-```bash
-docker run --rm \
-  -v minimal-rmm_rmm-plugin-store:/plugins \
-  -v "$PWD/dist:/bundle:ro" \
-  alpine:3.20 sh -c 'cp /bundle/*.dll /bundle/*.ps1 /plugins/'
-```
-
-Use the actual Compose project volume name when it differs from
-`minimal-rmm_rmm-plugin-store`.
+The cache defaults to `RMM_LOG_DIR/plugin-cache`, configurable with
+`RMM_PLUGIN_CACHE_DIR`. Compose keeps it in the existing central state volume;
+there is no separate plugin-store mount. Do not install files directly into
+the cache or share it as an operator asset store. Profile bundles remain
+centrally owned under `RMM_PROFILES_DIR`.
 
 ## Plugin-owned commands
 
@@ -127,14 +95,9 @@ than source bundles consumed by the RMM server. A release should contain:
 - a signature or trusted release checksum when the deployment requires supply
   chain verification.
 
-Installation should copy the artifact into the plugin volume atomically: write
-to a temporary name, flush and close it, then rename it into place. The server
-will observe the new file on the next inventory request and serve it to agents
-without a restart.
-
-The server has no agent-plugin build endpoint. Production and development
-deployments install release artifacts into the volume and keep the server image
-focused on the control plane.
+Install through the workspace's release or asset API. Publication writes the
+central delivery copy atomically; subsequent agent downloads use the new file.
+The server has no agent-plugin build endpoint or global installation store.
 
 ## Scope of hot loading
 
@@ -148,11 +111,32 @@ protocol.
 
 | Item | Role |
 | --- | --- |
-| `docker-entrypoint.sh` | Create the persistent plugin volume directory |
-| `server_rmm.py:plugin_directory` | Resolve the runtime plugin store |
-| `server_rmm.py:list_plugin_files` | Inventory artifacts from the runtime store |
+| `docker-entrypoint.sh` | Start services and prepare the central profile directory |
+| `server_rmm.py:plugin_directory` | Resolve a workspace-scoped delivery cache |
+| `server_rmm.py:list_plugin_files` | Inventory artifacts for one workspace |
+| `server_rmm.py:plugin_path_for_session` | Resolve only the registered session owner's cache; no global fallback |
 | `server_rmm.py:RMMHandler._serve_plugin_tool` | Serve an authenticated artifact to an agent |
 | `agent-go/main.go:loadPluginCommand` | Parse a generic plugin load or command request |
 | `agent-go/main.go:pluginCommandEnvelope` | Pass a plugin-owned command to `Run` |
 | `agent-go/pe_loader_windows.go:loadPluginPE` | Fetch, isolate, map, and invoke the plugin |
 | `rmm_cli.py:RmmApiClient.queue_pe_load` | Queue a plugin command from the operator CLI |
+
+`PluginDirectoryTests` and `PluginServeTests` verify scoped inventory and delivery;
+the `_plugin_file` test helper creates artifacts under a workspace cache. Route
+regressions reject central installation and verify that publishing or disabling
+Alice's plugin cannot change Bob's copy.
+
+The settings loader accepts the retired `RMM_PLUGINS_DIR` key only to keep older
+saved configurations readable. Runtime code ignores it; remove it after migration.
+
+Plugin deletion disables the workspace asset before requesting central revocation.
+If synchronization fails, the API returns 502 and retains the disabled record;
+retry deletion after restoring connectivity. Workspace startup synchronization
+also republishes disabled records to revoke their cached copies. Until central
+acknowledges revocation, its existing copy may still be downloadable.
+`WorkspacePluginRevocationTests` covers this failure and retry sequence.
+
+Workspace partitioning is not per-agent cryptographic authentication. Beacon
+downloads still use the deployment's shared beacon secret and a registered session
+ID. They resolve that session's current owner; this does not defend against a
+caller possessing the shared secret and impersonating another known session.

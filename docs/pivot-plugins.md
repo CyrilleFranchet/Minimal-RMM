@@ -100,17 +100,10 @@ active.
 
 ## Operator setup
 
-Install the matching artifacts from the external plugin repository before
-starting a pivot for a Windows amd64 Go session:
-
-```text
-plugin-store/socks.ps1
-plugin-store/socks.dll
-plugin-store/tun.dll
-```
-
-The default local runtime store is `RMM_logs/plugins/`; Docker deployments
-mount the persistent `/app/plugins` volume. A public SOCKS relay requires the Go
+Before starting a Windows amd64 Go pivot, install the matching `socks.ps1`,
+`socks.dll`, and `tun.dll` artifacts through the workspace release
+controls or asset API. The workspace owns these files; central serves synchronized
+copies from that workspace’s delivery cache. A public SOCKS relay requires the Go
 `socks-plugin` capability and `socks.dll`; a TUN relay requires `tun-plugin`
 and `tun.dll`. Existing `/socks` REST, CLI, MCP, and WebUI controls remain
 stable; the WebUI exposes TUN routing in the Pivots tab of the main workspace.
