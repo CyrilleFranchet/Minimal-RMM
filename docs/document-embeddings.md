@@ -35,20 +35,22 @@ export RMM_WORKSPACE_MAX_BODY=67108864
 ```
 
 The defaults are 32 MiB and cannot accept this DLL as a base64 JSON upload.
-For Docker Compose, set both variables in `.env`; the Compose services pass
-them through, and `.env.example` includes the 64 MiB values. Recreate the
-services after changing these environment settings.
-The asset download limit defaults to 64 MiB. In server mode, copying the DLL
-into the configured plugin directory avoids the JSON upload limit. In
-workspace mode, install through the local asset manager; it owns the source
+For Docker Compose, add these values to the corresponding service's environment
+mapping or save them in its persistent settings. Adding an unused variable to
+`.env` alone does not pass it into a container. Recreate or restart the services
+after changing their effective settings.
+The asset download limit defaults to 64 MiB. Install through the workspace's
+local asset manager; it owns the source
 artifact and synchronizes its runtime copy to the central broker.
 
 ## Storage ownership
 
 | Mode | Durable database | Scope |
 | --- | --- | --- |
-| Server | `RMM_logs/embeddings.db` | Shared operator namespace; no individual user accounts |
 | Workspace | `RMM_WORKSPACE_DATA/workspace.db` | One operator workspace |
+
+Legacy `RMM_logs/embeddings.db` is preserved as an archive during migration,
+not automatically imported into the workspace database.
 
 Profiles and results use the `embedding_records` table, separately from the
 browser configuration blob. The database and containing directory are
@@ -293,7 +295,7 @@ Server-mode Web AI can use the shared server-owned profiles.
 | `EmbeddingStore.__init__`, `close` | Owner-only SQLite setup and connection lifecycle |
 | `EmbeddingStore.get`, `put`, `delete` | Parameterized record access and atomic writes |
 | `embedding_api` | Shared profile, queue, and result REST dispatch |
-| `RMMServer.embedding_store` | Lazy server-mode database, refused in workspace mode |
+| `RMMServer.embedding_store` | Legacy helper; central storage operations are refused |
 | `RMMHandler._handle_embeddings`, nested `queue`/`event` | Server scope guard, execution, exact history lookup |
 | `WorkspaceService._embedding_api`, nested `queue`/`event` | Local persistence, central execution forwarding, owned event lookup |
 | `RmmApiClient.embedding_profiles`, `run_embeddings`, `embedding_results` | CLI/MCP HTTP operations |

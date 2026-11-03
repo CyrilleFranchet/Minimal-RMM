@@ -150,9 +150,13 @@ def _env_int(name: str, default: int) -> int:
 
 
 def configured_storage_mode() -> str:
-    """Return the central persistence mode, defaulting to legacy server storage."""
-    value = settings_getenv("RMM_STORAGE_MODE", "server").strip().lower()
-    return value if value in {"server", "workspace"} else "server"
+    """Require workspace ownership for single- and multi-workspace deployments."""
+    value = settings_getenv("RMM_STORAGE_MODE", "workspace").strip().lower()
+    if value not in {"", "workspace"}:
+        raise ValueError("RMM_STORAGE_MODE=server is retired. Prepare a single-workspace "
+                         "deployment with rmm_deployment.py and migrate existing data before "
+                         "removing the legacy setting; the central server no longer owns operator storage.")
+    return "workspace"
 
 
 # Per HTTP POST (each download chunk). Override with RMM_MAX_BODY_BYTES.
@@ -986,7 +990,7 @@ def _run_cli_readline(server, cli):
 
 
 class RMMServer:
-    storage_mode = "server"
+    storage_mode = "workspace"
 
     def __init__(self):
         self.settings = active_store("server", os.path.join(LOG_DIR, "settings.json"))
@@ -2739,6 +2743,10 @@ class RMMServer:
                 persisted_workspace = str(persisted_record.get("workspace_id") or "").strip()
                 if valid_workspace_id(persisted_workspace):
                     session.workspace_id = persisted_workspace
+                elif self.storage_mode == "workspace":
+                    owners = self.workspace_registry.ids()
+                    if len(owners) == 1:
+                        session.workspace_id = owners[0]
                 if persisted:
                     session.sleep_seconds = persisted["sleep_seconds"]
                     session.jitter_percent = persisted["jitter_percent"]
@@ -3633,6 +3641,19 @@ class RMMHandler(BaseHTTPRequestHandler):
         self._json(status, payload)
         return True
 
+    def _relay_local_operator(self, method, path, payload=None, qs=None):
+        """Route marked AI calls to their authenticated workspace's local JSON handlers."""
+        from rmm_bloodhound_broker import local_operator_path
+        headers = getattr(self, 'headers', {})
+        if headers.get('X-RMM-Operator-Relay') != '1' or not local_operator_path(method, path):
+            return False
+        owner = getattr(self, '_workspace_scope', lambda: None)()
+        if not owner:
+            return False
+        status, result = self.server_instance.bloodhound_broker.submit_operator(owner, method, path, payload, qs)
+        self._json(status, result)
+        return True
+
     def _handle_api_get(self, path, qs):
         if not self._api_authorized(qs):
             self._api_unauthorized()
@@ -3640,6 +3661,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if RMMHandler._relay_local_operator(self, 'GET', path, qs=qs):
+            return True
         if parts == ["workspace", "bloodhound", "requests"]:
             owner = self._workspace_scope()
             if not owner:
@@ -3699,7 +3722,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self._json(400, {"error": "invalid_workspace_cursor"})
                 return True
-            self._json(200, srv.workspace_events.read(workspace_id, since=since, limit=limit))
+            self._json(200, srv.workspace_events.read(workspace_id, since=since, limit=limit,
+                                                     epoch=qs.get("epoch", [""])[0]))
             return True
 
         if len(parts) == 5 and parts[:2] == ["workspace", "sessions"] and parts[4] == "responses":
@@ -3759,6 +3783,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "sessions": count,
                     "storage_mode": srv.storage_mode,
+                    "service_role": "control_plane",
+                    "operator_access": "workspace",
                     "admin_port": getattr(srv, "admin_port", ADMIN_PORT),
                     "beacon_port": getattr(srv, "beacon_port", BEACON_PORT),
                     "beacon_public_url": getattr(srv, "beacon_public_url", "") or None,
@@ -4006,6 +4032,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if RMMHandler._relay_local_operator(self, 'POST', path, payload=body):
+            return True
         if len(parts) == 4 and parts[:3] == ["workspace", "bloodhound", "requests"]:
             owner = self._workspace_scope()
             if not owner:
@@ -4311,7 +4339,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             if status == "timeout":
                 self._json(408, {"error": "timeout", "command": command})
                 return True
-            self._json(200, {"ok": True, "session_id": session.id, "event": result})
+            self._json(200, {"ok": True, "session_id": session.id, "event": result,
+                             "event_id_scope": "central"})
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "upload":
@@ -4599,6 +4628,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 rmm_headers = {
                     "X-RMM-Workspace": workspace_id,
                     "X-RMM-Workspace-Token": workspace_token,
+                    "X-RMM-Operator-Relay": "1",
                 }
             rmm_token = "" if workspace_id else (self._api_token_from_request() or API_TOKEN or "").strip()
             if not rmm_token and not rmm_headers:
@@ -4719,6 +4749,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if RMMHandler._relay_local_operator(self, 'PATCH', path, payload=body):
+            return True
         srv = self.server_instance
 
         if parts in (["settings"], ["ui", "config"]) and self._workspace_scope():
@@ -4794,6 +4826,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         parts = self._api_path_parts(path)
         if parts is None:
             return False
+        if RMMHandler._relay_local_operator(self, 'DELETE', path):
+            return True
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("DELETE", parts)
         if len(parts) == 2 and parts[0] == "plugin-sources":
@@ -5567,6 +5601,12 @@ def main():
         help="Max exfil size in bytes (file or folder); 0 = unlimited (or set RMM_RCLONE_MAX_BYTES)",
     )
     args = parser.parse_args()
+    if args.cli:
+        parser.error("The central embedded CLI is retired. Connect rmm_cli.py to your workspace service.")
+    try:
+        configured_storage_mode()
+    except ValueError as exc:
+        parser.error(str(exc))
     record_flags({
         "--admin-port": ("RMM_ADMIN_PORT", args.admin_port),
         "--beacon-port": ("RMM_BEACON_PORT", args.beacon_port),
@@ -5725,7 +5765,6 @@ def run_server(server, args):
     http_servers = []
     http_threads = []
     previous_term = None
-    exegol_runtime = None
 
     def terminate(_signum, _frame):
         """Enter the same finally path as normal exit without reentrant cleanup."""
@@ -5759,11 +5798,8 @@ def run_server(server, args):
 
         print(f"{Colors.GREEN}[*] Administration listener: {LISTEN_HOST}:{admin_port} (threaded HTTP){Colors.END}")
         print(f"{Colors.GREEN}[*] Beacon listener: {BEACON_BIND}:{beacon_port} (threaded HTTP){Colors.END}")
-        print(f"{Colors.CYAN}[*] Operator API: http://127.0.0.1:{admin_port}{API_PREFIX}/{Colors.END}")
-        print(f"{Colors.CYAN}[*] Web UI: http://127.0.0.1:{admin_port}/ui/{Colors.END}")
-        print(f"{Colors.CYAN}[*] CLI: python rmm_cli.py --url http://127.0.0.1:{admin_port}{Colors.END}")
-        print(f"{Colors.CYAN}[*] MCP: python mcp_rmm_server.py (see README){Colors.END}")
-        print(f"{Colors.CYAN}[*] Web AI: /ui/ → AI Assistant panel (OpenAI key + RMM tools){Colors.END}")
+        print(f"{Colors.CYAN}[*] Central administration API: http://127.0.0.1:{admin_port}{API_PREFIX}/{Colors.END}")
+        print(f"{Colors.CYAN}[*] Connect WebUI, CLI, and MCP to your workspace service (normally port 8787).{Colors.END}")
         print(f"{Colors.CYAN}[*] RMM-Profile directory: {profile_directory()}{Colors.END}")
         print(f"{Colors.YELLOW}[*] Logs: {LOG_DIR}{Colors.END}")
         if API_TOKEN:
@@ -5778,10 +5814,6 @@ def run_server(server, args):
         ]
         for http_thread in http_threads:
             http_thread.start()
-        if server.storage_mode == "server":
-            from rmm_exegol_runtime import get_runtime
-            exegol_runtime = get_runtime(os.path.join(LOG_DIR, "bloodhound"))
-            exegol_runtime.ensure()
 
         profile_auto_start = settings_getenv("RMM_PROFILE_AUTOSTART", "1").strip().lower() in {"1", "true", "yes"}
         if profile_auto_start and args.profile and any(row["name"] == args.profile.strip().lower() for row in server.profile_manager.list()):
@@ -5830,8 +5862,6 @@ def run_server(server, args):
             previous_int = signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
         server.running = False
-        if exegol_runtime is not None:
-            exegol_runtime.stop()
         try:
             # shutdown() may only be used while serve_forever runs on another
             # thread; calling it on a never-started listener deadlocks.

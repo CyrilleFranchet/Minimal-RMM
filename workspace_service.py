@@ -238,6 +238,11 @@ class WorkspaceStore:
                     size INTEGER NOT NULL,
                     received_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS event_receipts (
+                    epoch TEXT NOT NULL,
+                    cursor INTEGER NOT NULL,
+                    PRIMARY KEY (epoch, cursor)
+                );
                 CREATE TABLE IF NOT EXISTS ai_chats (
                     session_id TEXT PRIMARY KEY,
                     payload TEXT NOT NULL
@@ -270,6 +275,43 @@ class WorkspaceStore:
                 (str(max(0, int(cursor))),),
             )
             self._db.commit()
+
+    def get_event_epoch(self) -> str:
+        """Read the central process identity associated with the durable cursor."""
+        with self._lock:
+            row = self._db.execute("SELECT value FROM metadata WHERE key='event_epoch'").fetchone()
+            return row[0] if row else ''
+
+    def set_event_checkpoint(self, epoch: str, cursor: int) -> None:
+        """Persist a stream identity and its cursor together after applying events."""
+        with self._lock:
+            self._db.executemany("INSERT INTO metadata(key,value) VALUES(?,?) "
+                                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                 [('event_epoch', epoch), ('event_cursor', str(cursor))])
+            self._db.commit()
+
+    def apply_stream_event(self, session_id, event, epoch, cursor):
+        """Deduplicate stream envelopes while preserving locally monotonic history IDs."""
+        if type(event.get('id')) is not int or event['id'] <= 0 or cursor <= 0:
+            raise ValueError('Invalid workspace event envelope')
+        with self._lock:
+            if self._db.execute('SELECT 1 FROM event_receipts WHERE epoch=? AND cursor=?', (epoch, cursor)).fetchone():
+                return
+            last_id = self._db.execute('SELECT COALESCE(MAX(event_id),0) FROM events WHERE session_id=?',
+                                       (session_id,)).fetchone()[0]
+            local = dict(event, id=last_id + 1, source_event_id=event.get('id'), source_epoch=epoch)
+            try:
+                self.apply_event(session_id, local, commit=False)
+                self._db.execute('INSERT INTO event_receipts VALUES(?,?)', (epoch, cursor))
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+            payload = event.get('workspace_payload')
+            data = payload.get('data') if isinstance(payload, dict) and payload.get('kind') == 'file_upload' else None
+            if isinstance(data, dict) and 'offset' in data and data.get('eof'):
+                # Keep complete staging bytes until the replay receipt is durable.
+                self._upload_staging_path(session_id, data).unlink(missing_ok=True)
 
     def sync_sessions(self, records: list[dict[str, Any]]) -> None:
         """Upsert active central sessions and archive rows absent from a fresh sync."""
@@ -352,7 +394,7 @@ class WorkspaceStore:
             return None
         return self._decode_session(rows[0])
 
-    def apply_event(self, session_id: str, event: dict[str, Any]) -> dict[str, Any] | None:
+    def apply_event(self, session_id: str, event: dict[str, Any], *, commit=True) -> dict[str, Any] | None:
         """Persist one central event and materialize any workspace artifact payload."""
         if not isinstance(event, dict):
             return None
@@ -365,7 +407,7 @@ class WorkspaceStore:
         if isinstance(payload, dict):
             kind = payload.get("kind")
             if kind == "file_upload":
-                materialized = self._apply_file_upload(session_id, payload)
+                materialized = self._apply_file_upload(session_id, payload, retain_staging=not commit)
                 if materialized is None:
                     return None
                 local_event["artifact"] = materialized
@@ -392,10 +434,16 @@ class WorkspaceStore:
                 "INSERT OR IGNORE INTO events(session_id,event_id,payload) VALUES(?,?,?)",
                 (session_id, event_id, json.dumps(local_event, ensure_ascii=False)),
             )
-            self._db.commit()
+            if commit:
+                self._db.commit()
         return local_event
 
-    def _apply_file_upload(self, session_id: str, payload: dict[str, Any]) -> str | None:
+    def _upload_staging_path(self, session_id, data):
+        """Resolve the session-scoped staging path for a chunked upload."""
+        upload_id = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("upload_id") or "default"))[:64] or "default"
+        return _safe_path(self.parts_dir, f"{_session_prefix(session_id)}_{upload_id}.part")
+
+    def _apply_file_upload(self, session_id: str, payload: dict[str, Any], *, retain_staging=False) -> str | None:
         """Write one file upload chunk and return its final local basename."""
         data = payload.get("data")
         if not isinstance(data, dict):
@@ -412,16 +460,17 @@ class WorkspaceStore:
             filename = f"{prefix}_{raw_name}"
             final_path = _safe_path(self.download_dir, filename)
             final_path.write_bytes(content)
-            self._index_download(filename, session_id, remote_path, final_path.stat().st_size)
+            self._index_download(filename, session_id, remote_path, final_path.stat().st_size, commit=not retain_staging)
             return filename
 
-        upload_id = re.sub(r"[^A-Za-z0-9_-]", "", str(data.get("upload_id") or "default"))[:64] or "default"
-        staging = _safe_path(self.parts_dir, f"{prefix}_{upload_id}.part")
+        staging = self._upload_staging_path(session_id, data)
         try:
             offset = max(0, int(data.get("offset", 0)))
         except (TypeError, ValueError):
             return None
-        if offset == 0 or not staging.exists():
+        if offset and (not staging.exists() or staging.stat().st_size < offset):
+            raise ValueError('Upload chunk is missing its preceding bytes')
+        if offset == 0:
             mode = "wb"
         else:
             mode = "r+b"
@@ -429,12 +478,20 @@ class WorkspaceStore:
             if mode == "r+b":
                 handle.seek(offset)
             handle.write(content)
+            handle.truncate()
+            handle.flush()
+            os.fsync(handle.fileno())
         if not data.get("eof"):
             return None
         filename = f"{prefix}_{raw_name}"
         final_path = _safe_path(self.download_dir, filename)
-        os.replace(staging, final_path)
-        self._index_download(filename, session_id, remote_path, final_path.stat().st_size)
+        if retain_staging:
+            publishing = staging.with_suffix('.publish')
+            shutil.copyfile(staging, publishing)
+            os.replace(publishing, final_path)
+        else:
+            os.replace(staging, final_path)
+        self._index_download(filename, session_id, remote_path, final_path.stat().st_size, commit=not retain_staging)
         return filename
 
     def _apply_screenshot(self, session_id: str, payload: dict[str, Any]) -> str | None:
@@ -463,7 +520,7 @@ class WorkspaceStore:
         path.write_text(str(payload.get("content") or ""), encoding="utf-8")
         return filename
 
-    def _index_download(self, filename: str, session_id: str, remote_path: str, size: int) -> None:
+    def _index_download(self, filename: str, session_id: str, remote_path: str, size: int, *, commit=True) -> None:
         """Update the local download index after a file reaches EOF."""
         received_at = datetime.now().isoformat()
         with self._lock:
@@ -472,7 +529,8 @@ class WorkspaceStore:
                 "ON CONFLICT(artifact) DO UPDATE SET remote_path=excluded.remote_path,size=excluded.size,received_at=excluded.received_at",
                 (filename, session_id, remote_path, int(size), received_at),
             )
-            self._db.commit()
+            if commit:
+                self._db.commit()
 
     def get_events(self, session_ref: str, since: int = 0, limit: int = 100) -> list[dict[str, Any]] | None:
         """Read local transcript events for a live or archived session."""
@@ -1033,25 +1091,31 @@ class WorkspaceService:
         self.store.sync_sessions(records)
 
         cursor = self.store.get_cursor()
+        epoch = self.store.get_event_epoch()
         status, payload, _ = self.upstream.request(
-            "GET", f"/api/v1/workspace/events?since={cursor}&limit=1000"
+            "GET", f"/api/v1/workspace/events?since={cursor}&limit=1000&epoch={urllib.parse.quote(epoch)}"
         )
         if self._running and status == 200 and isinstance(payload, dict):
+            incoming_epoch = payload.get('epoch', epoch)
+            if not isinstance(incoming_epoch, str):
+                return
+            if incoming_epoch != epoch:
+                cursor = 0
             if payload.get("reset_required"):
-                self.log("Central workspace event queue overflowed; local history is incomplete", "WARNING")
+                self.log("Central event stream restarted or overflowed; inspect continuity of local history", "WARNING")
             for envelope in payload.get("events", []):
                 if not isinstance(envelope, dict):
                     continue
                 event = envelope.get("event")
                 session_id = str(envelope.get("session_id") or "")
-                if session_id and isinstance(event, dict):
-                    self.store.apply_event(session_id, event)
                 try:
-                    cursor = max(cursor, int(envelope.get("cursor", cursor)))
-                except (TypeError, ValueError):
-                    pass
-            if cursor != self.store.get_cursor():
-                self.store.set_cursor(cursor)
+                    event_cursor = int(envelope['cursor'])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if session_id and isinstance(event, dict):
+                    self.store.apply_stream_event(session_id, event, incoming_epoch, event_cursor)
+                cursor = max(cursor, event_cursor)
+            self.store.set_event_checkpoint(incoming_epoch, cursor)
 
         self._sync_pivot_state()
 
@@ -1114,7 +1178,18 @@ class WorkspaceService:
         if not self._running or status != 200 or not isinstance(payload, dict) or not isinstance(payload.get("requests"), list):
             return
         for task in payload.get("requests", [])[:1]:
-            code, result = execute_workspace_request(self.store.data_dir / "bloodhound", task)
+            def operator(method, path, payload, qs):
+                """Dispatch verified relay paths locally, without fallback to the central proxy."""
+                if method == 'GET':
+                    return self.get_json(path, qs)
+                if method == 'POST':
+                    return self.post_json(path, payload)
+                if method == 'PATCH':
+                    return self.patch_json(path, payload)
+                if method == 'DELETE':
+                    return self.delete_json(path)
+                return None
+            code, result = execute_workspace_request(self.store.data_dir / "bloodhound", task, operator=operator)
             self.upstream.request("POST", "/api/v1/workspace/bloodhound/requests/" + task["id"],
                                   {"status": code, "payload": result}, timeout=5)
 

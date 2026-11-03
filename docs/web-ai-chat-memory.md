@@ -2,9 +2,8 @@
 
 The AI assistant panel keeps a **per-session conversation history** in the
 active storage owner so operators do not lose context when reloading the page,
-switching browsers, or reconnecting from another machine. In server mode this
-is the RMM server. In workspace mode it is the operator's local workspace
-service.
+switching browsers, or reconnecting from another machine. The owner is the
+operator's local workspace service in both deployment presets.
 
 On desktop, opening **AI** divides the space beside the session sidebar
 equally between the agent workspace and the AI assistant. Both panels stay
@@ -13,8 +12,7 @@ or less, the panels stack vertically.
 
 The providers do not own this history for the current integration. Each
 request sends the relevant history from the active storage owner to the
-selected provider: `RMM_logs/history/{session_id}/ai_chat.json` in server mode
-or the workspace `ai_chats` table in workspace mode. An API key identifies
+selected provider from the workspace `ai_chats` table. An API key identifies
 authorization and billing; it is not a portable conversation-history lookup
 key. OpenAI Chat Completions, Anthropic Messages, and Mistral Chat
 Completions are used as stateless request/response APIs here. Provider
@@ -28,11 +26,14 @@ In the AI prompt, **Enter** sends the message. **Command+Enter** or
 **Control+Enter** inserts a new line at the cursor, replacing selected text.
 Enter used to confirm an input-method composition does not send the message.
 
-### Server mode
+### Legacy data for migration
 
 | File | Location | Content |
 |------|----------|---------|
 | `ai_chat.json` | `RMM_logs/history/{session_id}/` | `{ "updated_at", "messages": [ … ] }` |
+
+The old server-owned format is no longer used by production startup. The
+copy-only migration imports it into workspace storage.
 
 Each message has `role` (`user` / `assistant`), `content`, and optional `tool_calls_made` on assistant turns. Error lines shown in the UI are **not** persisted.
 
@@ -47,7 +48,7 @@ authenticate the state request. Keep the selected SQLite database owner-only.
 
 ### Workspace mode
 
-When `RMM_STORAGE_MODE=workspace`, the central server skips `ai_chat.json` and
+The central server skips `ai_chat.json` and
 the workspace service stores normalized messages in the `ai_chats` table in
 `RMM_WORKSPACE_DATA/workspace.db`. The local service exposes the same GET,
 POST, and DELETE API paths to the workspace WebUI. Workspace-scoped tool calls
@@ -66,8 +67,7 @@ Returns `{ "session_id", "messages", "count" }`. Works for **live** and **archiv
 DELETE /api/v1/sessions/{id}/ai/chat
 ```
 
-Removes the session chat from the active storage owner. In server mode this is
-`ai_chat.json`; in workspace mode it is the local `ai_chats` row. Returns
+Removes the session chat from the local workspace `ai_chats` row. Returns
 `{ "ok": true, "session_id" }`.
 
 ```http
@@ -89,12 +89,12 @@ array and persists it.
 | Operator action | Server behavior |
 |-----------------|-----------------|
 | Kill live session | `clear_ai_chat` in `kill_session` |
-| Delete archived session | `ai_chat.json` removed with `shutil.rmtree` on history dir |
+| Delete archived session | Workspace chat row removed with archived session |
 | Clear all archived sessions | Same per session |
 
 The web UI clears the panel when the current session is killed or deleted.
 
-## Server methods (`RMMServer` in `server_rmm.py`)
+## Legacy compatibility methods (`RMMServer` in `server_rmm.py`)
 
 | Method | Purpose |
 |--------|---------|

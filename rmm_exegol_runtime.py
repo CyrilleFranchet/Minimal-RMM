@@ -20,6 +20,8 @@ from rmm_mcp_client import McpHttpSession
 from rmm_settings import getenv
 
 EXEC_TOOL = 'execute_command_in_container'
+LIST_TOOL = 'list_exegol_containers'
+MAX_CONTAINERS = 32
 PROBE_INTERVAL = 5
 READY_TIMEOUT = 90
 MCP_TIMEOUT = 120
@@ -42,8 +44,8 @@ def configuration():
     parsed = urlsplit(url)
     if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
         raise RuntimeErrorCode('exegol_mcp_url_required')
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', container):
-        raise RuntimeErrorCode('exegol_container_required')
+    if container and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', container):
+        raise RuntimeErrorCode('invalid_exegol_container')
     ce = urlsplit(getenv('RMM_BLOODHOUND_URL', 'http://127.0.0.1:1030').rstrip('/'))
     if (ce.scheme not in ('http', 'https') or ce.hostname not in ('127.0.0.1', 'localhost', '::1')
             or ce.username or ce.password or ce.path or ce.query or ce.fragment):
@@ -115,6 +117,59 @@ def output_strings(value):
             yield from output_strings(item)
 
 
+def discovery_candidates(value):
+    """Parse official ContainerInfo JSON, including FastMCP text-block sequences."""
+    if not isinstance(value, str) or len(value.encode()) > 1048576:
+        raise RuntimeErrorCode('exegol_discovery_response_invalid')
+    decoder = json.JSONDecoder()
+    documents = []
+    try:
+        remaining = value.strip()
+        while remaining:
+            document, end = decoder.raw_decode(remaining)
+            documents.append(document)
+            remaining = remaining[end:].lstrip()
+    except ValueError:
+        raise RuntimeErrorCode('exegol_discovery_response_invalid') from None
+    if len(documents) == 1 and isinstance(documents[0], list):
+        rows = documents[0]
+    elif len(documents) == 1 and isinstance(documents[0], dict) and set(documents[0]) == {'result'}:
+        rows = documents[0]['result']
+    else:
+        rows = documents
+    if not isinstance(rows, list) or len(rows) > MAX_CONTAINERS:
+        raise RuntimeErrorCode('exegol_discovery_response_invalid')
+    names, running = set(), []
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get('name'), str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', row['name'])
+                or not isinstance(row.get('status'), str) or row['name'] in names):
+            raise RuntimeErrorCode('exegol_discovery_response_invalid')
+        names.add(row['name'])
+        if row['status'] == 'running':
+            running.append(row['name'])
+    return running
+
+
+async def discover_container(session, command, expected):
+    """Select exactly one running container proving the owner identity; never start candidates."""
+    matches = [row.get('function', {}) for row in session.openai_tools
+               if row.get('function', {}).get('name') == LIST_TOOL]
+    if len(matches) != 1 or matches[0].get('parameters', {}).get('required', []):
+        raise RuntimeErrorCode('exegol_discovery_tool_unsupported')
+    candidates = discovery_candidates(await asyncio.wait_for(session.call_tool(LIST_TOOL, {}), timeout=10))
+    verified = []
+    for name in candidates:
+        arguments = execution_arguments(session.openai_tools, name, command)
+        result = await asyncio.wait_for(session.call_tool(EXEC_TOOL, arguments), timeout=10)
+        lines = [line.strip() for text in output_strings(result) for line in text.splitlines()]
+        if expected in lines:
+            verified.append((name, lines))
+    if len(verified) != 1:
+        raise RuntimeErrorCode('exegol_workspace_identity_ambiguous' if verified else 'exegol_workspace_not_found')
+    return verified[0]
+
+
 class ExegolRuntime:
     """Single-flight startup with durable uncertainty and read-only health refresh."""
 
@@ -180,7 +235,7 @@ class ExegolRuntime:
                 return self._update(state='blocked', ready=False, error='runtime_stopped')
             if self.thread is not None and self.thread.is_alive():
                 return dict(self.snapshot)
-            self._update(state='checking', exegol_status='checking', ready=False, error=None)
+            self._update(state='checking', exegol_status='checking', ready=False, error=None, container=None)
             self.thread = threading.Thread(target=self._run, name='exegol-ce-lifecycle', daemon=True)
             self.thread.start()
             return dict(self.snapshot)
@@ -200,7 +255,7 @@ class ExegolRuntime:
                 if not unchanged:
                     return self._update(state='blocked', ready=False, exegol_status='not_checked',
                                         mcp_status='not_checked', bloodhound_status='not_checked',
-                                        exegol_verified_at=None, error='runtime_configuration_changed')
+                                        exegol_verified_at=None, container=None, error='runtime_configuration_changed')
             if self.thread is not None and self.thread.is_alive():
                 return dict(self.snapshot)
             if self.snapshot['exegol_status'] != 'ready' or time.monotonic() - self.last_probe < PROBE_INTERVAL:
@@ -212,7 +267,7 @@ class ExegolRuntime:
             with self.lock:
                 if self.verified_configuration is not None and configuration() != self.verified_configuration:
                     return self._update(state='blocked', ready=False, exegol_status='not_checked',
-                                        mcp_status='not_checked', exegol_verified_at=None,
+                                        mcp_status='not_checked', exegol_verified_at=None, container=None,
                                         error='runtime_configuration_changed')
                 if self.thread is not None and self.thread.is_alive():
                     return dict(self.snapshot)
@@ -254,7 +309,8 @@ class ExegolRuntime:
 
     async def _check_and_start(self):
         """Verify the selected local Exegol namespace and start only its installed CE."""
-        url, token, container, endpoint = configuration()
+        config = configuration()
+        url, token, container, endpoint = config
         try:
             namespace = os.readlink('/proc/self/ns/net')
         except OSError:
@@ -274,19 +330,22 @@ class ExegolRuntime:
             self._update(mcp_status='connecting')
             async with McpHttpSession(url, token) as session:
                 self._update(mcp_status='connected')
-                arguments = execution_arguments(session.openai_tools, container, command)
-                result = await session.call_tool(EXEC_TOOL, arguments)
-                lines = [line.strip() for text in output_strings(result) for line in text.splitlines()]
+                if container:
+                    arguments = execution_arguments(session.openai_tools, container, command)
+                    result = await session.call_tool(EXEC_TOOL, arguments)
+                    lines = [line.strip() for text in output_strings(result) for line in text.splitlines()]
+                else:
+                    container, lines = await discover_container(session, command, expected)
                 if expected not in lines:
                     raise RuntimeErrorCode('exegol_workspace_identity_mismatch')
-                if configuration() != (url, token, container, endpoint):
+                if configuration() != config:
                     raise RuntimeErrorCode('runtime_configuration_changed')
-                self.verified_configuration = (url, token, container, endpoint)
-                self._update(exegol_status='ready', exegol_verified_at=timestamp())
+                self.verified_configuration = config
+                self._update(exegol_status='ready', exegol_verified_at=timestamp(), container=container)
                 if self.stopped.is_set():
                     return
                 availability = await asyncio.to_thread(probe_ce, endpoint)
-                if configuration() != (url, token, container, endpoint):
+                if configuration() != config:
                     raise RuntimeErrorCode('runtime_configuration_changed')
                 if availability == 'ready':
                     self._save('ready')
@@ -304,7 +363,7 @@ class ExegolRuntime:
                 arguments = execution_arguments(session.openai_tools, container, 'bloodhound-ce')
                 if self.stopped.is_set():
                     return
-                if configuration() != (url, token, container, endpoint):
+                if configuration() != config:
                     raise RuntimeErrorCode('runtime_configuration_changed')
                 self._save('dispatched')
                 self._update(state='starting', bloodhound_status='starting')
@@ -316,7 +375,7 @@ class ExegolRuntime:
                 deadline = time.monotonic() + READY_TIMEOUT
                 while not self.stopped.is_set() and time.monotonic() < deadline:
                     if await asyncio.to_thread(probe_ce, endpoint) == 'ready':
-                        if configuration() != (url, token, container, endpoint):
+                        if configuration() != config:
                             raise RuntimeErrorCode('runtime_configuration_changed')
                         self._save('ready')
                         self._update(state='ready', ready=True, bloodhound_status='ready', error=None)

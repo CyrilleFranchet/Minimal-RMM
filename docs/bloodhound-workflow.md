@@ -36,7 +36,7 @@ arguments. See [service settings](service-settings.md).
 | `RMM_BLOODHOUND_COLLECTOR` | Installed `bloodhound-ce-python` command or absolute path with that basename. |
 | `RMM_EXEGOL_MCP_URL` | Required authenticated Exegol MCP endpoint, reachable from the workspace runtime and central AI process. |
 | `RMM_EXEGOL_MCP_TOKEN` | MCP bearer credential when required by that endpoint; stored as a secret. |
-| `RMM_EXEGOL_CONTAINER` | Required exact container name owning this service, data, and network namespace. |
+| `RMM_EXEGOL_CONTAINER` | Optional exact container-name override; leave unset for MCP discovery and workspace identity verification. |
 | `KRB5CCNAME` | Service environment variable: raw existing cache file path, not a `FILE:` URI. Never returned by the API. |
 
 The collector must be installed and configured by the operator. The workflow
@@ -49,10 +49,8 @@ and credentials remain there under `<workspace data>/bloodhound`. The central
 server relays workspace-scoped requests to their authenticated workspace instead
 of reading its own files. Only structured requests and bounded replies pass
 through the central relay; CE credentials and raw collection files stay local.
-In server mode, storage is `RMM_logs/bloodhound`, and the standalone server
-must run inside the owning Exegol environment with its collector, cache, and
-network route. The central server in workspace storage mode remains independent
-of Exegol. Exegol identity is mandatory for AI and mutating BloodHound operations;
+A single-workspace installation uses this same workspace-owned storage and
+execution path. The central server remains independent of Exegol. Exegol identity is mandatory for AI and mutating BloodHound operations;
 configuration, diagnostics, and ordinary agent management remain available when
 that prerequisite is blocked. A MCP connection alone does not prove ownership.
 
@@ -68,7 +66,7 @@ never deletes graph data automatically.
 ### Open the CE interface through its owner
 
 The WebUI header's **Open BloodHound** button opens CE in another tab through
-a dedicated proxy listener in the workspace or standalone process. The browser
+a dedicated proxy listener in the workspace process. The browser
 never connects directly to CE's backend port. Opening it also asks the runtime
 to ensure CE is available, as described below, and waits for bounded readiness.
 
@@ -99,8 +97,8 @@ that session. Treat launch URLs as temporary credentials.
 The proxy starts lazily in the owning service process. Workspace-mode central
 requests use the existing owner-scoped relay to obtain the launch link; actual
 browser traffic goes to the workspace proxy. That proxy must be reachable from
-the browser: the polling relay does not tunnel web traffic. Standalone mode
-uses the same component in the standalone server process.
+the browser: the polling relay does not tunnel web traffic. The single preset
+uses this same workspace proxy.
 
 The proxy serves CE at the origin root to preserve `/ui/` routes and `/api/`
 requests. It accepts a fixed configured upstream, checks browser admission and
@@ -126,12 +124,36 @@ results and `pause` bounds waits with cancellation. These checks do not start CE
 
 ### BloodHound CE service startup
 
-The workspace service, or standalone server in server storage mode, starts a
+The workspace service in both deployment presets starts a
 background runtime at service startup. It verifies the required Exegol MCP
 configuration, exact container, and ownership before starting or reusing CE.
 It validates the live execution-tool schema and uses only the installed
 `bloodhound-ce` launcher through Exegol MCP. No model or loaded skill is needed.
 The CE endpoint must be local to the owner's network namespace.
+
+Without `RMM_EXEGOL_CONTAINER`, the runtime calls MCP
+`list_exegol_containers` and tests running candidates with a temporary identity
+file, hostname, and network namespace. Exactly one candidate must match; its
+name appears in runtime `container`. Discovery does not start stopped containers.
+An explicit container override skips listing but must pass the same identity
+check. Neither a shared Docker host nor a reachable MCP endpoint alone proves
+workspace ownership.
+
+Discovery accepts at most 32 container entries and 1 MiB of response content.
+Each identity probe has a ten-second limit within the existing 120-second
+lifecycle deadline. Missing/unsupported listing tools produce
+`exegol_discovery_tool_unsupported`; malformed results produce
+`exegol_discovery_response_invalid`. No matching workspace produces
+`exegol_workspace_not_found`; multiple matching candidates produce
+`exegol_workspace_identity_ambiguous`. Resolve the deployment mismatch or use
+an explicit verified override for ambiguity; the runtime does not pick the
+first container arbitrarily.
+
+The discovery response contract was checked against
+[Exegol MCP e9fe4e4](https://github.com/ThePorgs/Exegol-MCP/blob/e9fe4e445b66495f4c9d89fa82b7addffd3a46ed/exegol_mcp/assets/tools_orchestractor.py).
+This does not remove the requirement that the owning service run in the Exegol
+workspace's filesystem and network namespace. Remote server/Exegol deployment
+over Tailscale or WireGuard remains in the technical backlog.
 
 Readiness is tied to the verified owner configuration. Changing the MCP URL,
 token, container, or CE endpoint invalidates it with
@@ -304,6 +326,8 @@ without a shell. Raw collector logs stay local and may contain directory data.
   times, and validation of fixed owner settings.
 - `probe_ce`, `execution_arguments`, `output_strings`: bounded local readiness,
   execution-schema matching, and structured MCP output interpretation.
+- `discovery_candidates`, `discover_container`: validate bounded container
+  listing output, probe running candidates, and select one verified workspace.
 - `ExegolRuntime.__init__`, `_update`, `status`: synchronized state and read-only
   health refresh; `ensure`/`start`, `_run`, `_check_and_start`, and `stop`: bounded
   single-flight lifecycle, namespace verification, and shutdown cancellation.

@@ -305,9 +305,9 @@ test('deployment badge distinguishes standalone, central, workspace, and unknown
   } };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'web/config.js'), 'utf8'), { window, document });
   window.renderRmmDeploymentMode({ storage_mode: 'server' });
-  assert.equal(badge.textContent, 'Standalone');
+  assert.equal(badge.textContent, 'Legacy server');
   window.renderRmmDeploymentMode({ storage_mode: 'workspace' });
-  assert.equal(badge.textContent, 'Central · workspace mode');
+  assert.equal(badge.textContent, 'Central administration');
   assert.match(hint.textContent, /Open your operator workspace UI/);
   window.renderRmmDeploymentMode({ workspace_id: 'alice' });
   assert.equal(badge.textContent, 'Workspace: alice');

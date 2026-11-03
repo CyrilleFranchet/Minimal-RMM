@@ -5,11 +5,26 @@ from pathlib import Path
 import threading
 import time
 import uuid
+import re
 
 from rmm_bloodhound import bloodhound_api, validate, WorkflowError
 from rmm_settings import getenv
 
 ACTIONS = {'preflight', 'create', 'collect', 'import', 'status', 'verify', 'query', 'queries', 'report', 'ui', 'health', 'ensure', 'library_search', 'library_get'}
+
+
+def local_operator_path(method, path):
+    """Allow only workspace-owned JSON routes, never arbitrary URLs or binary artifacts."""
+    if not isinstance(path, str) or not path.startswith('/api/v1/') or '?' in path or '#' in path:
+        return False
+    suffix = path[len('/api/v1/'):]
+    patterns = {
+        'GET': r'(?:settings|ui/config|assets(?:/[^/]+)?|embeddings(?:/[^/]+){0,3}|plugin-releases|plugin-sources|history(?:/[^/]+)?(?:/events)?|artifacts|rclone/config|ai/skills|socks|tun|sessions/[^/]+/(?:events|downloads))',
+        'POST': r'(?:assets/[^/]+|embeddings(?:/[^/]+){0,3}|plugin-releases/install|plugin-sources/[^/]+|sessions/[^/]+/(?:exfil|socks|tun))',
+        'PATCH': r'(?:settings|ui/config|assets/[^/]+/[^/]+)',
+        'DELETE': r'(?:assets/[^/]+/[^/]+|embeddings(?:/[^/]+){0,3}|plugin-sources/[^/]+|history(?:/[^/]+)?)',
+    }
+    return bool(re.fullmatch(patterns.get(method, r'(?!)'), suffix))
 
 
 class BloodHoundBroker:
@@ -62,6 +77,31 @@ class BloodHoundBroker:
             with self.lock:
                 self.requests.pop(request_id, None)
 
+    def submit_operator(self, owner, method, path, payload=None, qs=None, timeout=20):
+        """Wait for one owner-local call; timeout reports uncertainty without replaying it."""
+        if (not local_operator_path(method, path) or (payload is not None and not isinstance(payload, dict))
+                or (qs is not None and not isinstance(qs, dict))):
+            return 400, {'error': 'invalid_operator_relay'}
+        body = {'action': '_operator', 'method': method, 'path': path, 'payload': payload or {}, 'qs': qs or {}}
+        if len(json.dumps(body).encode()) > 1048576:
+            return 413, {'error': 'operator_relay_too_large'}
+        request_id, wake = uuid.uuid4().hex, threading.Event()
+        with self.lock:
+            self._expire()
+            if len(self.requests) >= 128 or sum(r['owner'] == owner and r['result'] is None for r in self.requests.values()) >= 8:
+                return 503, {'error': 'workspace_request_capacity'}
+            self.requests[request_id] = {'owner': owner, 'body': body, 'result': None,
+                                         'created': time.monotonic(), 'wake': wake}
+        wake.wait(max(0, min(timeout, 60)))
+        with self.lock:
+            row = self.requests.get(request_id)
+            if row and row['result'] is not None:
+                self.requests.pop(request_id, None)
+                return row['result']
+        return 504, {'error': 'workspace_operator_response_pending_or_uncertain',
+                     'workspace_request_id': request_id,
+                     'next_action': 'Inspect bloodhound action=result with this request ID; do not resubmit the operation.'}
+
     def _expire(self):
         """Drop old results and stop redispatching requests after five minutes."""
         current = time.monotonic()
@@ -103,12 +143,21 @@ class BloodHoundBroker:
             if row['result'] is None or (row['result'][0] == 409 and row['result'][1].get('error') == 'workspace_request_uncertain'):
                 row['result'] = (body['status'], body['payload'])
                 row['completed_at'] = time.monotonic()
-                if row.get('private'):
+                if row.get('wake'):
                     row['wake'].set()
         return 200, {'ok': True}
 
 
-def execute_workspace_request(root, task):
+def sync_directory(directory):
+    """Persist journal directory entries before effects and after completion rename."""
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def execute_workspace_request(root, task, operator=None):
     """Persist intent and cache replies locally so redispatch never repeats work."""
     if not isinstance(task, dict) or set(task) != {'id', 'body'}:
         raise WorkflowError('invalid_workspace_request')
@@ -129,6 +178,8 @@ def execute_workspace_request(root, task):
         return bloodhound_api(root, task['body'])
     directory = Path(root) / 'relay-results'
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # The journal directory itself must survive a crash before dispatch.
+    sync_directory(directory.parent)
     path = directory / (request_id + '.json')
     try:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -144,7 +195,22 @@ def execute_workspace_request(root, task):
         json.dump({'state': 'started'}, handle)
         handle.flush()
         os.fsync(handle.fileno())
-    status, payload = bloodhound_api(root, task['body'])
+    sync_directory(directory)
+    if isinstance(task['body'], dict) and task['body'].get('action') == '_operator':
+        body = task['body']
+        if (operator is None or not local_operator_path(body.get('method'), body.get('path'))
+                or not isinstance(body.get('payload'), dict) or not isinstance(body.get('qs'), dict)):
+            status, payload = 400, {'error': 'invalid_operator_relay'}
+        else:
+            response = operator(body['method'], body['path'], body['payload'], body['qs'])
+            if response is None or response[2] != 'application/json' or not isinstance(response[1], dict):
+                status, payload = 502, {'error': 'operator_relay_invalid_response'}
+            else:
+                status, payload = response[:2]
+    else:
+        status, payload = bloodhound_api(root, task['body'])
+    if len(json.dumps({'status': status, 'payload': payload}).encode()) > 1048576:
+        status, payload = 502, {'error': 'workspace_result_too_large_inspect_locally'}
     result = json.dumps({'state': 'complete', 'status': status, 'payload': payload})
     temporary = directory / (request_id + '.tmp')
     with open(temporary, 'x', encoding='utf-8') as handle:
@@ -153,4 +219,5 @@ def execute_workspace_request(root, task):
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+    sync_directory(directory)
     return status, payload

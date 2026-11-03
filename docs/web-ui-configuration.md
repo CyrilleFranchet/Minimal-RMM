@@ -12,7 +12,8 @@ dialog opens; `initConfiguration` resets all nested `details` before showing it.
 supported settings to a versioned JSON document and restores them without a
 page reload. After authentication, the same operator settings are synchronized
 automatically to SQLite so they survive a browser restart and follow the
-current server or workspace environment.
+current workspace environment. Central administration is not an operator
+storage owner.
 
 The API token remains a login credential in the browser. It is not loaded from
 the state database because the UI needs that token to authenticate the first
@@ -22,13 +23,15 @@ state request.
 
 | Deployment | Database | Namespace |
 | --- | --- | --- |
-| Server mode | `RMM_UI_STATE_DB`, default `RMM_logs/ui-state.db` | `server` |
 | Workspace mode | `RMM_WORKSPACE_DATA/workspace.db` | `workspace` |
 
-The server database and workspace database are owner-readable (`0600`), and
+Legacy server UI-state databases are preserved as migration archives, not
+automatically imported into workspace state.
+
+The workspace database is owner-readable (`0600`), and
 the containing directories are owner-only where the operating system permits
 it. Provider API keys, Exegol MCP tokens, and agent generator secrets are part
-of this operator state because the workspace or server is already the selected
+of this operator state because the workspace is already the selected
 storage owner. Do not place the database on a shared, untrusted volume.
 
 The REST endpoint is authenticated like the other operator routes:
@@ -127,7 +130,7 @@ state controls remain wired into the page. When adding a new setting:
 
 | Symbol | Role |
 | --- | --- |
-| `UiStateStore` | SQLite persistence for server-mode UI state namespaces |
+| `UiStateStore` | Legacy server UI-state helper; operator state now belongs to the workspace |
 | `normalize_ui_state` | Apply the server-side UI state allowlist and size limit |
 | `WorkspaceStore.get_ui_state` / `set_ui_state` | Persist workspace UI state in `workspace.db` |
 | `loadRmmUiConfig` | Load state after authentication and refresh the WebUI |

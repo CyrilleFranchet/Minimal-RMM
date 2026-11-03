@@ -9,6 +9,78 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-03 — Repeat failure-path and deployment verification
+
+- Isolate central and workspace child environments while preserving valid scoped overrides.
+- Persist relay journal directory entries before dispatch and after result publication.
+- Keep upload staging until the stream receipt commits; reject missing prefixes and
+  roll back failed event transactions. Regression tests cover interrupted finalization.
+- Move CLI connection diagnostics to stderr so JSON stdout remains parseable.
+- Add a real-process single-preset smoke test for authenticated workspace access,
+  rejection of the central administrator token, CLI output, and shutdown.
+- All 438 Python tests passed with isolated MCP dependencies and no skips.
+  `make check` passed, including parity for 55 MCP tools and six WebUI shell
+  commands, browser contracts, and Markdown/YAML lint. AI job recovery and all
+  20 plugin UI tests passed; whitespace checks were clean.
+  Documentation link audit checked 279 relative links with none broken.
+  Live Exegol/CE and production migration remain untested.
+
+### 2026-11-03 — Audit unified workspace routing and event continuity
+
+- Fix CLI/external MCP default URL to workspace port 8787 and route central
+  WebAI workspace-owned JSON tools through authenticated owner-local dispatch.
+  Add a real localhost HTTP relay test, scope checks, bounded results, timeout
+  recovery, and durable mutation replay protection.
+- Add central event epochs and durable envelope receipts. Workspace transcript
+  IDs remain monotonic across migrated history and central restarts; central
+  exec response IDs no longer advance the CLI's workspace cursor.
+- Derive generated workspace central URLs from imported listener settings;
+  reject malformed deployment metadata and mismatched workspace identity.
+- Correct current startup/storage/operator documentation; 274 relative file
+  links across 78 Markdown files checked without broken links.
+- Validation: all 432 Python tests passed with no skips using isolated MCP
+  dependencies. `make check`, AI job UI recovery, 20 plugin UI tests, and
+  whitespace checks passed. Live Exegol/CE and production migration remain untested.
+
+### 2026-11-03 — Unify single and multiple workspace deployments
+
+- Central runtime now requires workspace ownership; legacy server storage and
+  embedded CLI startup fail with migration guidance. Central starts no CE runtime.
+- Add `rmm_deployment.py` preparation and process supervision for single/multi
+  presets, generated scoped credentials, and optional saved central settings import.
+- Assign new sessions immediately when exactly one workspace is registered;
+  preserve prior ownership and multi-workspace claiming behavior.
+- Add copy-only legacy migration with source archive, readable history/artifact
+  imports, compatible settings merge, and explicit archive-only state limitations.
+- Central UI presents administration and skips AI/BloodHound polling; operators
+  use the workspace UI, CLI, and MCP endpoint. See the deployment and migration guides.
+- Validation: all 417 Python tests passed with isolated MCP dependencies;
+  `make check` passed including operator parity, UI contracts, and Markdown/YAML lint.
+  No live Exegol deployment or operator data migration was performed.
+
+Container discovery validation: all 402 Python tests passed with isolated MCP
+dependencies; `make check` and whitespace checks passed. No live Exegol/CE
+execution was performed for this change.
+
+### 2026-11-03 — Discover the owning Exegol container automatically
+
+- Make `RMM_EXEGOL_CONTAINER` optional: use the installed MCP container-list
+  tool and require exactly one running candidate to pass workspace identity
+  verification before starting or reusing CE. Explicit overrides remain verified.
+- Bound discovery output and identity probes; expose the selected container
+  and distinct discovery failures without starting stopped containers.
+- Update deployment guidance and mark discovery complete in the backlog.
+  Separate-host execution over Tailscale/WireGuard remains planned; shared
+  filesystem/network-namespace requirements are unchanged.
+
+### 2026-11-03 — Plan separate Exegol deployment
+
+- Add same-host container separation and remote Exegol over Tailscale/WireGuard
+  to the technical backlog, including workspace identity, optional container
+  discovery, reachable endpoints, browser proxy access, and reconnect tests.
+- No runtime or deployment behavior changed; current namespace restrictions
+  still apply.
+
 ### 2026-11-03 — AI concurrency technical and surface audit
 
 - Rechecked scheduler ordering, failure handling, caller-scoped resolution,

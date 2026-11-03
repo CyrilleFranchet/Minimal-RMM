@@ -97,6 +97,7 @@ class SettingsSecurityTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["exegol_mcp_token"], "trusted-token")
         self.assertTrue(run.call_args.kwargs["exegol_mcp_enabled"])
         self.assertEqual(run.call_args.kwargs["rmm_headers"], {
+            "X-RMM-Operator-Relay": "1",
             "X-RMM-Workspace": "alice", "X-RMM-Workspace-Token": "workspace-secret"})
 
     def test_shared_client_does_not_restore_admin_token_for_workspace(self):

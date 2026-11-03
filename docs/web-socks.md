@@ -7,9 +7,8 @@ privilege boundaries.
 The WebUI exposes **Shell**, **Files & Screenshots**, and **Pivots** as tabs in
 the main workspace. Files and pivots operate on the selected live session.
 **Downloads** and **Screenshots** remain global controls in the application
-header and list artifacts across all agents. Listener and device ownership follows the storage mode: the central
-server owns them in server mode, while the local workspace service owns them in
-workspace mode. See
+header and list artifacts across all agents. The local workspace service owns
+listeners and devices in every deployment. See
 [`docs/tun-pivot.md`](tun-pivot.md) for TUN configuration and lifecycle.
 
 SOCKS5 and TUN are independent relays. Starting or stopping one does not stop

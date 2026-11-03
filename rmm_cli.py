@@ -86,12 +86,12 @@ RMM_CLI_COMMANDS = [
 ]
 
 def _default_server_url() -> str:
-    """Operator CLI URL: RMM_SERVER_URL, else same as beacon client (RMM_BASE_URL)."""
+    """Use an explicit operator URL, falling back to the local workspace service."""
     for key in ("RMM_SERVER_URL", "RMM_BASE_URL"):
         val = settings_getenv(key, "").strip().rstrip("/")
         if val:
             return val
-    return "http://127.0.0.1:8080"
+    return "http://127.0.0.1:8787"
 
 
 DEFAULT_URL = _default_server_url()
@@ -599,9 +599,9 @@ def ensure_client(url: str, token: str | None = None) -> tuple:
             token = DEFAULT_TOKEN
     client = RmmApiClient(url, token, extra_headers=headers)
 
-    say(f"Connecting to {url} ...")
+    say(f"Connecting to {url} ...", err=True)
     if headers:
-        say("  Using workspace-scoped authentication")
+        say("  Using workspace-scoped authentication", err=True)
     elif not token:
         say("  (no RMM_API_TOKEN — required unless server was started with --insecure)", err=True)
     code, data = client.health(timeout=5)
@@ -611,9 +611,9 @@ def ensure_client(url: str, token: str | None = None) -> tuple:
         die(
             f"Cannot connect to {url}\n"
             f"  {detail}\n"
-            f"  Start the server: python server_rmm.py\n"
-            f"  Exegol/Docker: use host IP or host.docker.internal, not 127.0.0.1\n"
-            f"  Example: export RMM_SERVER_URL=http://host.docker.internal:8080"
+            f"  Start the workspace service or single-workspace deployment.\n"
+            f"  Use the workspace address reachable from this process.\n"
+            f"  Example: export RMM_SERVER_URL=http://127.0.0.1:8787"
         )
 
     if code == 401:
@@ -623,13 +623,13 @@ def ensure_client(url: str, token: str | None = None) -> tuple:
             die(
                 f"API authentication required by {url}\n"
                 f"  The PowerShell client uses RMM_BEACON_SECRET — that is NOT enough for this CLI.\n"
-                f"  export RMM_API_TOKEN='same-as-server'  # server --token / RMM_API_TOKEN\n"
-                f"  export RMM_SERVER_URL='{url}'  # or RMM_BASE_URL (same URL as the .ps1 client)\n"
+                f"  export RMM_API_TOKEN='workspace-local-token'  # workspace RMM_WORKSPACE_LOCAL_TOKEN\n"
+                f"  export RMM_SERVER_URL='{url}'  # operator workspace URL, not the beacon URL\n"
                 f"  python rmm_cli.py --url \"$RMM_SERVER_URL\" --token \"$RMM_API_TOKEN\""
             )
         die(
             f"API authentication failed (401) against {url}\n"
-            f"  RMM_API_TOKEN must match server_rmm.py --token (not RMM_BEACON_SECRET)"
+            f"  Use the workspace-local operator token (central administrator token only for explicit central access)."
         )
 
     if code != 200:
@@ -707,6 +707,14 @@ def print_event(
 
 def _event_cursor(state: dict) -> dict[str, int]:
     return state.setdefault("last_event_by_session", {})
+
+
+def record_exec_cursor(state, session_id, response):
+    """Never advance workspace transcript pagination from a central event identifier."""
+    if response.get('event_id_scope') == 'central':
+        return
+    event = response.get('event') or {}
+    _event_cursor(state)[session_id] = max(_event_cursor(state).get(session_id, 0), event.get('id', 0))
 
 
 def _sync_event_cursor(client: RmmApiClient, state: dict, session_id: str) -> None:
@@ -1858,9 +1866,7 @@ def run_interactive(
                         state=state,
                     )
                     _drain_cli_output()
-                    _event_cursor(state)[sid] = max(
-                        _event_cursor(state).get(sid, 0), edata["event"].get("id", 0)
-                    )
+                    record_exec_cursor(state, sid, edata)
                 continue
             if cmd == "persist":
                 if not rest:

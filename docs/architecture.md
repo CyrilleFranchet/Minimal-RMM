@@ -1,17 +1,17 @@
 # Minimal-RMM architecture
 
 This is the canonical description of the current runtime architecture. It
-covers both the single-server deployment and the multi-operator deployment
+covers both the single-workspace deployment and the multi-operator deployment
 with one workspace service per Exegol container. Procedures and detailed
 protocol notes remain in the linked feature pages.
 
 ## System map
 
 The [BloodHound CE workflow](bloodhound-workflow.md) executes at the storage
-owner: workspace-local in Exegol mode and server-local in standalone mode.
+owner: the workspace service inside Exegol.
 Exegol is mandatory at that operator storage owner for AI and mutating
-BloodHound operations. Standalone server mode therefore runs inside Exegol;
-the separate central server in workspace storage mode remains independent.
+BloodHound operations. The central server remains independent of Exegol in
+both single-workspace and multi-workspace deployments.
 An owner-local runtime checks MCP/container identity and starts or reuses CE
 at service startup. Reconnecting browsers read health; CE failures leave the
 workspace and agent-management paths available.
@@ -25,7 +25,7 @@ Minimal-RMM has four boundaries:
    through the operator API.
 2. **Control plane** — `server_rmm.py` authenticates agents and operators,
    owns session state and command queues, and relays agent traffic.
-3. **Workspace data plane** — in workspace mode, one
+3. **Workspace data plane** — one
    `workspace_service.py` instance per operator owns durable operator data and
    local network pivots.
 4. **Agent runtime** — the PowerShell or Go agent runs on the managed host.
@@ -45,12 +45,12 @@ flowchart LR
         server --- artifacts
     end
 
-    api --> server
+    api --> local
     server -->|"/register /cmd /result"| agent["PowerShell agent\nor Go agent"]
     server -->|"/tools/plugins/<name>"| agent
     agent --> target["Managed host\nand target network"]
 
-    subgraph workspace["Per-operator workspace (workspace mode)"]
+    subgraph workspace["Per-operator workspace"]
         local["workspace_service.py\nlocal API and persistence"]
         db[("SQLite + artifacts\nRMM_WORKSPACE_DATA")]
         pivot["Local SOCKS listener\n+ TUN device/helper"]
@@ -58,16 +58,15 @@ flowchart LR
         local --- pivot
     end
 
-    surfaces -. "local URL in workspace mode" .-> local
+    surfaces --> local
     local -->|"authenticated sync\nclaims, events, tasks"| server
     tools["Exegol tools"] --> pivot
 ```
 
-The workspace service is optional. In `RMM_STORAGE_MODE=server`, the central
-server owns durable `RMM_logs` data, the operator-facing SOCKS listener, and
-the TUN helper. In `RMM_STORAGE_MODE=workspace`, the central server remains
-the agent transport and ownership broker while the workspace service owns the
-operator's durable data and local pivot sockets.
+The workspace service owns durable operator data and local pivots in every
+deployment. A single-workspace installation uses the same central broker and
+workspace services as a multi-workspace installation. Legacy server-owned
+operator storage requires explicit migration.
 
 See [workspace deployment](workspace-deployment.md) for container setup and
 [deployment guide](deployment.md) for native and Docker startup paths.
@@ -80,7 +79,9 @@ URL that generated agents should use:
 
 ```mermaid
 flowchart LR
-    operator["Operator WebUI / CLI / MCP"] -->|"admin :8080"| admin["Administration listener\n/api/v1/* and /ui/"]
+    operator["Operator WebUI / CLI / MCP"] -->|"workspace :8787"| workspace["Workspace service"]
+    workspace -->|"scoped API :8080"| admin["Administration listener\n/api/v1/* and /ui/"]
+    administrator["Central administrator"] --> admin
     admin --> server["server_rmm.py\nshared session registry"]
     profile["RMM-Profile process\nCloudflared, DNS, ngrok, ..."] -->|"local origin :8081"| beacon["Beacon listener\n/register /cmd /result /socks /tun"]
     profile -->|"ready event with public_url"| server
@@ -97,23 +98,21 @@ repository. See [RMM-Profiles](rmm-profiles.md).
 
 ## Deployment topologies
 
-### Single server
+### Single workspace
 
 ```mermaid
-flowchart TB
-    tools["Operator tools\nWebUI / CLI / MCP"] --> server["server_rmm.py\nRMM_STORAGE_MODE=server"]
-    server --> logs[("RMM_logs\nsessions, events, artifacts")]
-    server --> socks["rmm_socks.py\noperator SOCKS listener"]
-    server --> tun["rmm_tun.py + rmm-tun\nTUN device and routes"]
-    server <-->|"authenticated beacon\nand pivot polling"| agent["Agent on managed host"]
-    tun --> exegol["Tools in the owning\nLinux/macOS namespace"]
-    socks --> exegol
-    agent --> network["Target network"]
+flowchart LR
+    tools["Operator WebUI / CLI / MCP"] --> workspace["workspace_service.py inside Exegol"]
+    workspace --> data[("Workspace SQLite and artifacts")]
+    workspace --> pivots["Local SOCKS and TUN"]
+    workspace --> server["server_rmm.py control plane"]
+    server <--> agent["Managed-host agent"]
 ```
 
-This is the simplest development and lab topology. The process that creates
-the TUN device must have access to `/dev/net/tun` and the required network
-administration capability. The target agent remains privilege-free.
+The single preset supervises the two services as separate processes. It provides
+one registered workspace; adding workspaces changes configuration, not the
+execution architecture. Network administration capability belongs to the
+workspace that creates the TUN device.
 
 ### Central control plane plus workspaces
 
@@ -317,7 +316,7 @@ the runtime store. See the [external plugin repository guide](plugin-repository.
 ## Saved embedding configuration and results
 
 Embedding profiles and explicitly selected output collections belong to the
-active storage owner: `RMM_logs/embeddings.db` in server mode or
+workspace storage owner:
 `RMM_WORKSPACE_DATA/workspace.db` in workspace mode. The central broker refuses
 workspace embedding persistence; only the resolved plugin execution request
 uses the existing central command transport. See the

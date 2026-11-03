@@ -10,7 +10,7 @@ private operator content.
 | Kind | Accepted files | Runtime use |
 | --- | --- | --- |
 | `plugins` | `.dll`, `.ps1` | Served to an authenticated agent on demand |
-| `skills` | `.md` | Merged into the AI skill catalog and system prompt |
+| `skills` | `.md` | Added to the on-demand skill catalog; only the two core skills are loaded initially |
 | `rclone` | `.json` | Workspace-local named rclone profiles |
 
 Names are treated as basenames and path traversal is rejected. Downloads are
@@ -20,8 +20,8 @@ digest.
 
 ## Persistence ownership
 
-The storage root is `RMM_WORKSPACE_DATA/assets` in workspace mode and
-`RMM_ASSETS_DIR` (default `RMM_logs/assets`) in server mode:
+The storage root is `RMM_WORKSPACE_DATA/assets`. Legacy `RMM_logs/assets` can
+be imported with the [workspace migration tool](workspace-migration.md):
 
 ```text
 assets/
@@ -80,7 +80,7 @@ python rmm_cli.py assets remove rclone profiles.json
 ```
 
 Use `--disabled` on `assets add` to store a file without making it available.
-The CLI can target a workspace service by setting `RMM_SERVER_URL` to its
+The operator CLI targets a workspace service by setting `RMM_SERVER_URL` to its
 local URL and using its local token.
 
 ## WebUI

@@ -6,9 +6,9 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
-from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce
+from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container
 
 TOOLS = [{'function': {'name': 'execute_command_in_container', 'parameters': {
     'type': 'object', 'properties': {'container_name': {'type': 'string'}, 'command': {'type': 'string'}},
@@ -26,10 +26,12 @@ class RuntimeTests(unittest.TestCase):
         self.wrong_identity = False
         self.missing_launcher = False
         self.launch_raises = False
+        self.inventory = [{'name': 'lab', 'status': 'running'}]
+        self.matching = {'lab'}
         owner = self
 
         class Session:
-            openai_tools = TOOLS
+            openai_tools = TOOLS + [{'function': {'name': 'list_exegol_containers', 'parameters': {'type': 'object', 'properties': {}}}}]
 
             def __init__(self, url, token):
                 pass
@@ -42,13 +44,15 @@ class RuntimeTests(unittest.TestCase):
 
             async def call_tool(self, name, arguments):
                 owner.calls.append(arguments)
+                if name == 'list_exegol_containers':
+                    return json.dumps(owner.inventory)
                 if arguments['command'] == 'bloodhound-ce':
                     owner.assertEqual(owner.runtime._intent(), 'dispatched')
                     if owner.launch_raises:
                         raise TimeoutError('secret MCP diagnostic must not escape')
                     return 'started'
                 nonce = next(owner.root.glob('ce-identity-*')).read_text()
-                host = 'wrong' if owner.wrong_identity else 'exegol-lab'
+                host = 'wrong' if owner.wrong_identity or arguments['container_name'] not in owner.matching else 'exegol-lab'
                 output = f'RMM_EXEGOL_ID={nonce}:{host}:net:[123]\n'
                 if not owner.missing_launcher:
                     output += 'RMM_CE_LAUNCHER_READY\n'
@@ -56,6 +60,7 @@ class RuntimeTests(unittest.TestCase):
 
         values = {'RMM_EXEGOL_MCP_URL': 'http://127.0.0.1:8000/mcp',
                   'RMM_EXEGOL_CONTAINER': 'lab', 'RMM_EXEGOL_MCP_TOKEN': 'secret'}
+        self.values = values
         real_readlink = os.readlink
         for context in (patch('rmm_exegol_runtime.getenv', side_effect=lambda key, default='': values.get(key, default)),
                         patch('rmm_exegol_runtime.McpHttpSession', Session),
@@ -80,6 +85,51 @@ class RuntimeTests(unittest.TestCase):
             self.runtime.status()
         self.assertEqual(self.runtime.snapshot['exegol_verified_at'], verified_at)
         self.assertEqual(list(self.root.glob('ce-identity-*')), [])
+
+    def test_automatic_discovery_selects_matching_running_owner(self):
+        self.values.pop('RMM_EXEGOL_CONTAINER')
+        self.inventory = [{'name': 'other', 'status': 'running'}, {'name': 'stopped', 'status': 'exited'}, {'name': 'lab', 'status': 'running'}]
+        with patch('rmm_exegol_runtime.probe_ce', side_effect=['stopped', 'ready']), patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
+            self.runtime._run()
+        self.assertEqual(self.runtime.snapshot['state'], 'ready')
+        self.assertEqual(self.runtime.snapshot['container'], 'lab')
+        self.assertEqual(self.runtime.verified_configuration[2], '')
+        self.assertEqual(self.calls[-1], {'container_name': 'lab', 'command': 'bloodhound-ce'})
+        self.assertFalse(any(row.get('container_name') == 'stopped' for row in self.calls))
+
+    def test_automatic_discovery_no_match_or_ambiguity_never_launches(self):
+        self.values.pop('RMM_EXEGOL_CONTAINER')
+        self.inventory = [{'name': 'other', 'status': 'running'}, {'name': 'lab', 'status': 'running'}]
+        for matches, error in ((set(), 'exegol_workspace_not_found'), ({'other', 'lab'}, 'exegol_workspace_identity_ambiguous')):
+            self.matching = matches
+            with patch('rmm_exegol_runtime.probe_ce') as probe:
+                self.runtime._run()
+                self.assertEqual(self.runtime.snapshot['error'], error)
+                probe.assert_not_called()
+            self.assertIsNone(self.runtime._intent())
+        self.assertFalse(any(row.get('command') == 'bloodhound-ce' for row in self.calls))
+
+    def test_discovery_json_shapes_and_fail_closed_inputs(self):
+        rows = [{'name': 'lab', 'status': 'running'}, {'name': 'stopped', 'status': 'exited'}]
+        for value in (json.dumps(rows), json.dumps({'result': rows}), '\n'.join(json.dumps(row) for row in rows)):
+            self.assertEqual(discovery_candidates(value), ['lab'])
+        for value in ('not JSON', '{"name":"lab"}', json.dumps(rows + rows),
+                      json.dumps([{'name': 'bad;name', 'status': 'running'}]),
+                      json.dumps([{'name': str(n), 'status': 'running'} for n in range(33)])):
+            with self.assertRaisesRegex(RuntimeErrorCode, 'discovery_response_invalid'):
+                discovery_candidates(value)
+
+    def test_discovery_incomplete_probe_and_missing_schema_do_not_select(self):
+        session = Mock()
+        session.openai_tools = TOOLS
+        session.call_tool = AsyncMock()
+        with self.assertRaisesRegex(RuntimeErrorCode, 'discovery_tool_unsupported'):
+            asyncio.run(discover_container(session, 'identity', 'expected'))
+        session.call_tool.assert_not_called()
+        session.openai_tools = TOOLS + [{'function': {'name': 'list_exegol_containers', 'parameters': {}}}]
+        session.call_tool.side_effect = [json.dumps([{'name': 'a', 'status': 'running'}, {'name': 'b', 'status': 'running'}]), 'expected', TimeoutError()]
+        with self.assertRaises(TimeoutError):
+            asyncio.run(discover_container(session, 'identity', 'expected'))
 
     def test_launch_dispatch_durable_before_mcp_and_reconciled(self):
         with patch('rmm_exegol_runtime.probe_ce', side_effect=['stopped', 'ready']), \

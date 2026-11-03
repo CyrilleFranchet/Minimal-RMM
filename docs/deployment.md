@@ -18,7 +18,7 @@ override saved settings until removed.
 | --- | --- | --- |
 | **Ubuntu central server + one Exegol workspace per operator** | Your multi-operator setup | `server_rmm.py` on Ubuntu; `workspace_service.py` inside each Exegol environment |
 | Compose central server + optional workspace sidecar | Container deployment on a Linux Docker host | Same processes, packaged in the shared image |
-| Standalone server mode | A small shared lab without per-operator workspaces | `server_rmm.py` with `RMM_STORAGE_MODE=server` |
+| Single-workspace preset | One operator or a shared lab | The same central server plus one workspace service |
 
 For the recommended first setup, follow steps 1–5 below. Do not also start the
 Compose workspace sidecar for the same operator. Each operator needs a unique
@@ -91,9 +91,9 @@ port to operators/workspaces; use HTTPS termination for untrusted networks.
 Python serves HTTP directly. Do not put the administration API behind the
 agent-only transport profile.
 
-`RMM_STORAGE_MODE=workspace` is required here. Direct Python defaults to
-`server` mode; the Docker image and shipped Compose configuration default to
-`workspace`. There is no `--storage-mode` argument.
+Workspace storage is the default for native and Docker deployments. Explicit
+`RMM_STORAGE_MODE=server` is rejected to prevent silently stranding legacy data.
+There is no `--storage-mode` argument.
 
 Neither Python entry point loads `.env` automatically. The two `deploy/*.env.example`
 files are shell-compatible templates. The root `.env.example` is for Compose;
@@ -156,8 +156,10 @@ WebUI AI loop; see [MCP parity](mcp-parity.md).
 
 Exegol is required for the operator workspace's AI and BloodHound workflow.
 Configure `RMM_EXEGOL_MCP_URL`, its credential `RMM_EXEGOL_MCP_TOKEN` when
-required, and the exact `RMM_EXEGOL_CONTAINER` in owner-local settings. The
-workspace service must run in that container's filesystem and network namespace.
+required, in owner-local settings. Container selection is automatic through MCP
+discovery and workspace identity verification; `RMM_EXEGOL_CONTAINER` is an
+optional override. The workspace service must run in the selected container's
+filesystem and network namespace.
 It verifies ownership through MCP and ensures CE is running at startup, without
 an AI request. The WebUI shows readiness; reconnects only check health.
 
@@ -269,19 +271,72 @@ See [workspace reference](workspace-deployment.md) for the protocol and volume
 layout. Rclone configuration is optional; create the local profile file only
 when using that feature.
 
-## Standalone server alternative
+## Single-workspace and multi-workspace presets
 
-For a shared single-server lab, set `RMM_STORAGE_MODE=server`, provide the
-central API/beacon secrets, and start `server_rmm.py` inside Exegol. Configure
-the same required Exegol MCP endpoint and exact container identity there.
-Operators point
-CLI/MCP/WebUI at the central admin URL and use its administrator token. There
-is no separate workspace service or per-operator plugin isolation in this mode.
-History, settings, plugins, SOCKS, and TUN belong to the server. Prepare the
-TUN helper there only if using TUN. Missing Exegol prerequisites block AI and
-mutating BloodHound operations; settings, diagnostics, and ordinary agent
-management remain available. The separate central server in workspace storage
-mode does not require Exegol or start CE.
+Standalone now means one workspace, not server-owned operator storage. Prepare
+protected configuration files without printing credentials:
+
+```bash
+python3 rmm_deployment.py prepare --preset single --output /path/to/deployment
+python3 rmm_deployment.py run --root /path/to/deployment --component single
+```
+
+The single launcher supervises separate control and workspace processes on the
+same host. Run it inside Exegol when using AI, collection, or local pivots.
+When `--central-url` is omitted, preparation derives the workspace connection
+URL from the saved central administration bind and port; wildcard binds become
+loopback addresses. Supply an explicit externally reachable URL for remote
+workspaces or a TLS reverse proxy.
+Connect operators to the workspace WebUI, normally port 8787; the central
+administration listener remains on port 8080. Configure the workspace MCP URL
+before using AI/BloodHound. Container selection is automatic.
+
+For multiple workspaces, prepare named identities and a central URL reachable
+from each Exegol environment:
+
+```bash
+python3 rmm_deployment.py prepare --preset multi --output /path/to/deployment --workspace-id alice --workspace-id bob --central-url https://rmm.example
+python3 rmm_deployment.py run --root /path/to/deployment --component control
+python3 rmm_deployment.py run --root /path/to/deployment --component workspace --workspace-id alice
+```
+
+Distribute each workspace's configuration only to its owner; do not give operators
+the central registry or another workspace's credentials. The preset creates
+`central/settings.json`, `workspaces/ID/settings.json`, and deployment metadata.
+It does not create Exegol containers, configure a VPN, or install external tools.
+Separate-host Tailscale/WireGuard deployment remains planned work.
+
+`rmm_deployment.write_private` writes protected configuration files;
+`prepare` generates preset credentials and settings; `commands` resolves the
+selected component commands and checks the workspace identity against deployment
+metadata; `child_environment` filters known settings to each service's scope;
+`run_services` supervises child processes and
+their shutdown; `main` validates the CLI. The central and workspace settings
+stores remain separate even when the single launcher starts both locally.
+Nonempty environment overrides valid for that service still take precedence
+over saved settings; remove old overrides before relying on generated configuration.
+The launcher does not forward central-only credentials to the workspace. It
+also removes legacy singleton workspace credentials from the central environment,
+which uses the prepared registry (or an explicit `RMM_WORKSPACES` override).
+
+The WebUI `configureWorkspaceAccess` helper uses the authenticated health
+response to expose AI/BloodHound controls only on a workspace connection.
+Central administration shows an operator-routing notice and does not poll
+local BloodHound readiness. `renderDeploymentMode` labels workspace identity,
+central administration, and legacy deployments distinctly.
+
+A sole registered workspace receives new sessions automatically. With multiple
+registered workspaces, use explicit claims and preserve existing ownership.
+
+Legacy data must be migrated before switching an existing installation. See
+[workspace migration](workspace-migration.md); the migration copies data to a
+fresh destination and never deletes the source.
+When preparing an upgrade, pass `--legacy-settings /old/RMM_logs/settings.json`
+to `prepare` so saved beacon/API secrets, public URL, and profile configuration
+are retained. Existing workspace registrations require explicit reconciliation;
+the importer will not silently replace them. Preserve environment-only beacon
+secrets through the environment or import them into protected settings before
+switching, otherwise existing agents will no longer authenticate.
 
 ## Verify, update, and preserve data
 

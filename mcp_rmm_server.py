@@ -18,7 +18,7 @@ Cursor MCP config (~/.cursor/mcp.json):
         "command": "python",
         "args": ["/path/to/Minimal-RMM/mcp_rmm_server.py"],
         "env": {
-          "RMM_SERVER_URL": "http://127.0.0.1:8080",
+          "RMM_SERVER_URL": "http://127.0.0.1:8787",
           "RMM_API_TOKEN": "your-token"
         }
       }

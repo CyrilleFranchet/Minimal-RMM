@@ -4,6 +4,43 @@ Audit date: November 3, 2026. This review covers the BloodHound workflow,
 reference library, Exegol lifecycle, and their operator surfaces. It does not
 certify that every unrelated project feature has a dedicated manual WebUI control.
 
+## Unified workspace follow-up
+
+The repeat failure-path audit also corrected four defects:
+
+- Workspace child processes inherited central-only credentials. The deployment
+  launcher now filters known settings by service scope and clears internal relay flags.
+- Relay intent files were flushed without persisting their directory entries.
+  `rmm_bloodhound_broker.sync_directory` now flushes those entries before dispatch
+  and after publishing completed results.
+- Replaying a final upload chunk after an interrupted receipt commit could replace
+  the complete artifact with its tail. Staging now survives until the receipt,
+  transcript, and download index commit; missing preceding bytes cause an error.
+  `WorkspaceStore._upload_staging_path` resolves the session-scoped staging file.
+- CLI connection diagnostics contaminated JSON stdout. They now go to stderr.
+  A real-process smoke test checks single-preset startup, workspace authentication,
+  administrator-token rejection, CLI JSON output, and supervisor shutdown.
+
+The subsequent workspace architecture audit found additional issues beyond
+the original BloodHound-only scope:
+
+- CLI and external MCP defaults still selected the central port instead of
+  workspace port 8787; they now default to the workspace, respecting explicit URLs.
+- Central Web AI could target central storage routes for workspace-owned tools.
+  An authenticated, allowlisted JSON relay now executes those operations at
+  the workspace owner. See [routing and parity scope](mcp-parity.md).
+- A saved nondefault central listener was not reflected in generated workspace
+  connection settings. Preparation now derives its default URL from that listener.
+- Restarted central event streams and migrated transcript IDs could collide.
+  Epoch-aware synchronization and workspace-local ID mapping preserve history;
+  see [stream continuity](workspace-deployment.md).
+- Current startup, assets, UI-state, embeddings, and architecture documentation
+  still described retired server-owned operation; these references were corrected.
+
+The test counts below describe the earlier BloodHound verification checkpoint.
+Current unified-workspace verification results are recorded in
+[the progress log](progress.md); they do not imply live Exegol validation.
+
 ## Findings corrected
 
 - Interactive CLI and WebUI shell BloodHound commands could fall through to
@@ -40,6 +77,13 @@ HTTP tests exercise real localhost requests through the API client and route.
 No mutation is retried automatically by the new manual controls.
 
 ## Evidence and remaining validation
+
+The unified-workspace audit subsequently passed all 432 Python tests with no
+skips, including a localhost owner-relay round trip and event restart/migration
+continuity tests. `make check`, AI job UI recovery, and 20 plugin UI tests passed.
+Current documentation link validation found no broken links among 274 relative
+file links across 78 Markdown files. These checks do not replace live deployment
+validation.
 
 The repeat verification ran 384 Python tests: all passed, with no skips.
 MCP 1.30.0 and its dependencies were installed from the local package cache

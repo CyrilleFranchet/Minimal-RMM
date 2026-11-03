@@ -17,6 +17,7 @@ import json
 import os
 import re
 import threading
+import uuid
 from typing import Any
 
 
@@ -104,8 +105,8 @@ class WorkspaceRegistry:
 class WorkspaceEventBroker:
     """Bounded, thread-safe event queues keyed by workspace ID.
 
-    Cursors are process-local and monotonically increasing. A workspace must
-    persist its cursor locally and poll often enough to stay within the queue
+    Cursors are process-local and monotonically increasing within a random epoch.
+    A workspace must persist its epoch/cursor and poll often enough to stay within the queue
     limit. If an old cursor has fallen out of the queue, ``read`` reports
     ``reset_required`` so the workspace can alert the operator instead of
     silently presenting an incomplete transcript.
@@ -115,6 +116,7 @@ class WorkspaceEventBroker:
         self.max_events = max_events or _workspace_event_limit()
         self._lock = threading.Lock()
         self._cursor = 0
+        self.epoch = uuid.uuid4().hex
         self._queues: dict[str, deque[dict[str, Any]]] = {}
 
     def publish(self, workspace_id: str, session_id: str, event: dict[str, Any]) -> int | None:
@@ -133,7 +135,7 @@ class WorkspaceEventBroker:
             queue.append(envelope)
             return self._cursor
 
-    def read(self, workspace_id: str, since: int = 0, limit: int = 100) -> dict[str, Any]:
+    def read(self, workspace_id: str, since: int = 0, limit: int = 100, epoch: str | None = None) -> dict[str, Any]:
         """Read events after a cursor and report cursor loss explicitly."""
         workspace_id = str(workspace_id or "").strip()
         try:
@@ -145,14 +147,19 @@ class WorkspaceEventBroker:
         except (TypeError, ValueError):
             limit = 100
         with self._lock:
+            epoch_changed = epoch is not None and epoch != self.epoch
+            restarted = epoch_changed and bool(epoch or since)
+            if epoch_changed:
+                since = 0
             queue = self._queues.get(workspace_id, deque())
             rows = list(queue)
             oldest = rows[0]["cursor"] if rows else since + 1
-            reset_required = bool(rows and since and since < oldest - 1)
+            reset_required = restarted or bool(rows and since and since < oldest - 1)
             selected = [copy.deepcopy(row) for row in rows if row["cursor"] > since][:limit]
             next_cursor = selected[-1]["cursor"] if selected else since
             return {
                 "workspace_id": workspace_id,
+                "epoch": self.epoch,
                 "events": selected,
                 "next_cursor": next_cursor,
                 "oldest_cursor": oldest,

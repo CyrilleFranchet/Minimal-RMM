@@ -772,8 +772,8 @@ Today deployment is manual:
 - Typical lab start (e.g. inside Exegol):  
   `python server_rmm.py --rclone-profiles tools/rclone/profiles.json --rclone-max-bytes 0 --token … --beacon-secret … 8081`
 - Default HTTP bind is `127.0.0.1` — fine on host, **insufficient inside a container** (agents and port publishing need `--bind 0.0.0.0`)
-- Exegol MCP is required for AI/BloodHound (`RMM_EXEGOL_MCP_URL` and exact
-  `RMM_EXEGOL_CONTAINER`); it can run in the
+- Exegol MCP is required for AI/BloodHound (`RMM_EXEGOL_MCP_URL`, with optional
+  `RMM_EXEGOL_CONTAINER` override); it can run in the
   workspace network or be reached through the workspace container
 
 The **Windows agent** (`client_rmm.ps1`) is deployed separately on managed hosts and is **not** containerized — Docker targets the operator/server side only.
@@ -968,22 +968,38 @@ The central container does not expose an operator SOCKS port.
   and MCP clients
 - Documented clearly that agents stay outside Docker; Win / Mac / Linux notes included
 
-### Non-Docker server mode
+### Native single-workspace deployment
 
-No repo change required — operators continue with:
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-export RMM_API_TOKEN=… RMM_BEACON_SECRET=…
-python server_rmm.py --rclone-profiles tools/rclone/profiles.json --rclone-max-bytes 0 8081
-```
-
-Or the same command inside an Exegol container (current workflow).
+The single preset runs the same control and workspace services used by larger
+installations. Use `rmm_deployment.py prepare --preset single --output DIR`
+and `rmm_deployment.py run --root DIR --component single`. Operator clients
+connect to the workspace port 8787. Legacy server storage must be migrated;
+see [deployment](deployment.md) and [migration](workspace-migration.md).
 
 ---
 
 ## Backlog (referenced elsewhere)
+
+### Separate Exegol execution from the RMM server
+
+- [ ] Support an RMM control plane and Exegol execution environment in separate
+  containers on the same host, and on separate machines over Tailscale or WireGuard.
+- [ ] Keep a workspace service beside the tools inside Exegol as the execution
+  and artifact owner; distinguish this from running the central server in Exegol.
+- [x] Discover candidate containers through MCP and verify workspace identity;
+  make the container name an optional override, with explicit selection when
+  discovery cannot identify exactly one matching workspace.
+- [ ] Define reachable MCP, workspace, and BloodHound proxy addresses for each
+  topology. Do not assume container loopback or hostnames are shared across hosts.
+- [ ] Document VPN routing, authentication, access controls, and browser access;
+  keep control-plane connectivity separate from target-network SOCKS/TUN routing.
+- [ ] Validate reconnects, artifact ownership, CE lifecycle, and operator parity
+  in same-host and remote-host deployments. A VPN alone does not provide the
+  shared filesystem or execution namespace required by the current local checks.
+
+Remote deployment remains planned work. The current lifecycle verifies that the owning RMM service
+and selected Exegol container share an identity file and network namespace;
+merely placing two containers on the same physical machine does not satisfy it.
 
 ### AD collection: ldeep as a second method
 
@@ -1010,8 +1026,7 @@ Items tracked in `docs/progress.md` **Up Next** but not spec’d here yet:
 - `docs/prd.md`
 
 The current workspace deployment is documented in
-[`docs/workspace-deployment.md`](workspace-deployment.md). The default
-non-Docker server mode remains available for single-user operation.
+[`docs/workspace-deployment.md`](workspace-deployment.md). The single-workspace preset is available for single-user native operation.
 
 Operator surface alignment (REST / MCP / web shell) is enforced by **`make check-parity`** — see `docs/mcp-parity.md`.
 

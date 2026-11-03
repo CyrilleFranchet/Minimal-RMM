@@ -1,6 +1,8 @@
 """Unit coverage for central workspace ownership and result forwarding."""
 
 from collections import deque
+import contextlib
+import io
 import json
 from pathlib import Path
 import threading
@@ -16,6 +18,47 @@ from server_rmm import RMMHandler, RMMServer, Session, _resolve_api_session
 
 class ServerWorkspaceTests(unittest.TestCase):
     """Verify workspace scoping and non-persistent central result handling."""
+
+    def test_storage_mode_defaults_to_workspace_and_rejects_legacy(self):
+        with patch('server_rmm.settings_getenv', side_effect=lambda key, default='': default):
+            self.assertEqual(server_rmm.configured_storage_mode(), 'workspace')
+        for value in ('server', 'typo'):
+            with patch('server_rmm.settings_getenv', return_value=value), self.assertRaisesRegex(ValueError, 'rmm_deployment.py'):
+                server_rmm.configured_storage_mode()
+
+    def test_embedded_central_cli_rejected_before_runtime_creation(self):
+        with patch('sys.argv', ['server_rmm.py', '--cli']), \
+                patch('server_rmm.RMMServer') as runtime, \
+                contextlib.redirect_stderr(io.StringIO()) as output, \
+                self.assertRaises(SystemExit) as stopped:
+            server_rmm.main()
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertIn('workspace service', output.getvalue())
+        runtime.assert_not_called()
+
+    def test_registration_assigns_only_sole_workspace_and_preserves_existing_owner(self):
+        for registry, persisted, expected in (
+                ({'alice': 'secret'}, {}, 'alice'),
+                ({'alice': 'secret', 'bob': 'other'}, {}, None),
+                ({'alice': 'secret'}, {'workspace_id': 'bob'}, 'bob'),
+                ({}, {}, None)):
+            with self.subTest(registry=list(registry), persisted=persisted):
+                server = self.make_server()
+                server.killed_sessions = set()
+                server.workspace_registry = WorkspaceRegistry(registry)
+                server._persisted_session_records = {'new-session': persisted}
+                server._persisted_config_from_history_meta = MagicMock(return_value=None)
+                server.backfill_download_artifacts = MagicMock()
+                server._apply_history_meta_to_session = MagicMock()
+                server._rehydrate_session_events_from_history = MagicMock(return_value=0)
+                server._history_write_meta = MagicMock()
+                server.save_session = MagicMock()
+                self.assertTrue(server.register_session('new-session', 'host', 'user'))
+                self.assertEqual(server.sessions['new-session'].workspace_id, expected)
+                self.assertEqual(server.save_session.call_args.args[0].workspace_id, expected)
+                server.workspace_registry = WorkspaceRegistry({'different': 'secret'})
+                self.assertFalse(server.register_session('new-session', 'host', 'user'))
+                self.assertEqual(server.sessions['new-session'].workspace_id, expected)
 
     def make_server(self):
         server = RMMServer.__new__(RMMServer)

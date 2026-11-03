@@ -1,9 +1,8 @@
 # Session history (web UI + REST)
 
 Operators can browse **archived transcripts** from ended sessions in the web
-console without SSH access to the RMM host. The storage owner depends on the
-deployment mode: server mode keeps the archive under `RMM_logs`; workspace mode
-keeps it in the operator's local workspace database and artifact directory.
+console without SSH access to the RMM host. The operator's local workspace
+database and artifact directory own history in every deployment.
 
 ## Surfaces
 
@@ -15,9 +14,10 @@ keeps it in the operator's local workspace database and artifact directory.
 
 ## Storage
 
-### Server mode
+### Legacy server data for migration
 
-Under `RMM_logs/history/{session_id}/`:
+Legacy installations stored the following under `RMM_logs/history/{session_id}/`.
+Use [copy-only migration](workspace-migration.md) to import this data before upgrading:
 
 | File | Content |
 |------|---------|
@@ -75,9 +75,7 @@ DELETE /api/v1/history/{id}
 ```
 
 Removes the archived session and its artifacts from the active storage owner.
-In server mode this removes `RMM_logs/history/{id}/`, the `sessions.json` row,
-and matching files under `RMM_logs/downloads/`, `screenshots/`, and
-`keylogs/`. In workspace mode it removes the local SQLite row and
+This removes the local SQLite row and
 session-prefixed files. Returns `409 session_still_active` if the session is
 still live.
 
@@ -113,9 +111,9 @@ Removes **all** ended archived sessions (same filter as `GET /history`). Also pu
 
 ## Troubleshooting lost history
 
-**History is not in git.** In server mode, transcripts live under
-`RMM_logs/history/{session_id}/` on the machine where the server runs. In
-workspace mode, they live under the operator's `RMM_WORKSPACE_DATA` directory.
+**History is not in git.** Current transcripts live under the operator's
+`RMM_WORKSPACE_DATA` directory. Old installations may still have their preserved
+source archive under `RMM_logs/history/{session_id}/`.
 `git pull` does not move or delete either location unless you run something
 like `git clean`.
 

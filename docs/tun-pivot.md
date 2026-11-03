@@ -4,8 +4,7 @@ See the [documentation wiki](README.md) for navigation and the
 [architecture overview](architecture.md) for the control-plane, workspace,
 and agent boundaries.
 
-In the default server storage mode, the TUN device belongs to the RMM server.
-In workspace mode, the central server keeps the authenticated agent transport
+The central server keeps the authenticated agent transport
 while the per-operator workspace service creates and owns the TUN device. The
 agent remains an ordinary user-mode Go process and opens target-side TCP and
 UDP sockets through a dedicated authenticated TUN channel.
@@ -14,7 +13,7 @@ UDP sockets through a dedicated authenticated TUN channel.
 Exegol tool
     │ native connect()/UDP socket
     ▼
-Server or workspace TUN device
+Workspace TUN device
     │
     ▼
 rmm-tun (user-space IP/TCP/UDP stack)
@@ -50,10 +49,7 @@ TCP SYN-ACK. No external proxy or console is required.
 - A Windows amd64 Go agent must advertise `tun-plugin` and the server must
   have a built `tun.dll`. The current TUN lifecycle intentionally rejects
   other agent types until their transport capabilities are implemented.
-- In server mode, the Exegol container must share the network namespace that
-  owns the server TUN device, or the route must be added in the namespace where
-  the tools run.
-- In workspace mode, the workspace service and the Exegol tools must share the
+- The workspace service and the Exegol tools must share the
   workspace network namespace.
 
 The target agent does not need administrator rights for this feature. It does
@@ -75,12 +71,11 @@ runtime plugin store. `make tun-build` writes `tools/rmm-tun`; set
 
 The WebUI exposes TUN routing in the **Pivots** tab of the main workspace after
 selecting a live session. Before opening it, install `tun.dll` from the
-external plugin repository and build the helper with `make tun-build`. In server mode, the helper and
-interface run in the RMM server namespace. In workspace mode, they run in the
-local workspace namespace. In the TUN section, configure:
+external plugin repository and build the helper with `make tun-build`. The
+helper and interface run in the local workspace namespace. In the TUN section, configure:
 
 - the TUN device, such as `tun://rmm0` on Linux or `utun4` on macOS, in the
-  namespace where the workspace or server service runs;
+  namespace where the workspace service runs;
 - the narrow target routes, one IPv4 CIDR per line, such as
   `10.10.0.0/16` and `10.20.0.0/16`;
 - the TUN address, egress interface, MTU, and UDP idle timeout.

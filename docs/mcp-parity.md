@@ -6,6 +6,53 @@ boundaries.
 
 Every **operator REST capability** exposed by `server_rmm.py` under `/api/v1/*` must be reachable through **`mcp_rmm_server.py`** (and shared `rmm_tools.py` / `OPENAI_TOOLS` for the web AI panel).
 
+## Workspace routing and scope
+
+Operator CLI and external MCP clients default to the workspace URL on port
+8787; an explicit URL remains authoritative. Central administration requires
+explicit central connection settings. The operator WebUI connects directly to
+the workspace and uses its local token.
+
+Web AI runs centrally, but workspace-owned JSON operations must reach that
+same workspace. The internal MCP client marks these requests with
+`X-RMM-Operator-Relay`; the server requires authenticated workspace scope and
+relays only allowlisted method/path combinations. Direct workspace calls do
+not need this marker. The marker is not an authentication credential.
+
+The relay covers local settings/UI state, assets, embeddings, plugin sources
+and releases, history, artifact listings, rclone configuration, skills,
+session events/download indexes/exfil, and local SOCKS/TUN operations. Binary
+artifact bodies and arbitrary destination URLs are outside this bounded JSON
+relay. Request and response payloads are limited to 1 MiB.
+
+`local_operator_path` defines the allowlist; `BloodHoundBroker.submit_operator`
+queues and waits for the owning workspace; `RMMHandler._relay_local_operator`
+enforces scope; `execute_workspace_request` journals execution intent and
+completion; the callback in `WorkspaceService.bloodhound_sync_once` invokes
+the existing local route handlers. A 20-second response timeout returns HTTP
+504 with a workspace request ID, not proof of failure. Retrieve that request
+with `bloodhound action=result`; do not resubmit a mutation whose outcome is
+unknown. Queue expiration and central restarts retain the uncertainty rules
+described in the [workspace workflow](bloodhound-workflow.md).
+Successful synchronous replies are removed from central memory after delivery;
+workspace journals retain execution results. Oversized replies produce a bounded
+error before journaling. Timed-out requests retain their recovery IDs.
+
+Execution replies label central event IDs with `event_id_scope="central"`.
+Workspace transcript pagination uses local IDs instead; CLI `record_exec_cursor`
+does not advance its local cursor using a central execution ID. This avoids
+skipping history after migration or a central restart.
+
+The parity registry checks 55 shared MCP/AI tool names and their API-client
+mapping. It does not prove that all 55 have dedicated manual browser controls.
+The fifteen BloodHound actions have explicit manual CLI and WebUI controls;
+other workflows use their documented UI controls or shared AI tools.
+
+`rmm_deployment.py prepare/run` and `rmm_workspace_migration.py` are offline
+deployment/administration utilities. They are intentionally not operator API,
+WebUI, or MCP actions: they create process configuration and migrate stopped
+service storage before those APIs are running.
+
 ## BloodHound CE workflow
 
 `POST /api/v1/bloodhound` maps to `RmmApiClient.bloodhound`, standalone CLI

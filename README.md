@@ -41,17 +41,17 @@ current data-flow details.
 | `Dockerfile` + `docker-compose.yml` | Containerized control plane and optional workspace sidecar |
 | `agent-powershell/client_rmm.ps1` | Windows PowerShell beacon — unchanged protocol |
 
-1. **Server** listens on HTTP. By default it runs **headless** (API only). Use `--cli` for the legacy embedded console.
+1. **Server** listens on HTTP. By default it runs **headless** (API only). Use `rmm_cli.py` against your workspace for the operator console.
 2. **Beacon client** registers, polls `/cmd`, posts results to `/result`.
 3. **Operator** uses `rmm_cli.py` (or any HTTP client) to list sessions, queue commands, wait for output, etc.
 
 There is no interactive TCP shell: latency is at least one beacon interval (plus jitter).
 
-The default `RMM_STORAGE_MODE=server` keeps the single-server deployment. Set
-`RMM_STORAGE_MODE=workspace` to use one local workspace service per operator or
-Exegol container. In workspace mode, the central server routes sessions and
-agent data but the workspace owns durable transcripts, artifacts, AI chat, the
-SOCKS listener, and the TUN device. See
+All deployments use workspace storage. A standalone deployment is one central
+server plus one workspace; multiple operators use additional workspaces. The
+central server routes sessions and agent data, while each workspace owns durable
+transcripts, artifacts, AI chat, SOCKS, and TUN. Legacy
+`RMM_STORAGE_MODE=server` is rejected; migrate its data before upgrading. See
 [`docs/workspace-deployment.md`](docs/workspace-deployment.md).
 
 ---
@@ -82,13 +82,13 @@ Choose one setup in the [deployment guide](docs/deployment.md):
 | --- | --- |
 | Ubuntu central server + one Exegol workspace per operator (recommended) | Native steps 1–5; separate [central](deploy/central.env.example) and [workspace](deploy/workspace.env.example) configuration templates |
 | Compose central server + optional workspace sidecar | Compose alternative; use the root [.env.example](.env.example) |
-| Shared standalone server without workspaces | Standalone alternative; explicitly select `RMM_STORAGE_MODE=server` |
+| Single-workspace installation | Single preset in the deployment guide; one control process plus one workspace |
 
 In workspace mode, operators use the workspace URL on port **8787**; the
 workspace connects to the central admin API on **8080**; agents use the beacon
 URL on **8081** or the selected transport profile's URL. The central server
-uses `RMM_STORAGE_MODE=workspace`, while the default for direct Python startup
-remains `server`. Neither Python entry point reads `.env` automatically.
+uses workspace storage for every deployment. Neither Python entry point reads
+`.env` automatically.
 
 Install compiled plugins through the **workspace's** [release controls](docs/plugin-releases-operator.md).
 Prepare TUN only when needed, on the host owning the pivot. Docker image builds
@@ -97,9 +97,8 @@ Go agent generation, and rclone configuration are separate optional setup steps.
 
 ### Operator CLI
 
-In workspace mode, use the local token from the loaded workspace environment.
-For standalone server mode, use the central admin URL (usually port 8080) and
-its administrator token instead.
+Use the workspace URL and its local token for operator CLI access in both
+single-workspace and multi-workspace deployments.
 
 ```bash
 export RMM_SERVER_URL="http://127.0.0.1:8787"
@@ -118,9 +117,9 @@ Selected session is stored in `~/.rmm_cli_state.json`.
 
 ### Web UI
 
-With the server running, open **<http://127.0.0.1:8080/ui/>** (or your tunnel URL + `/ui/`). Paste your `RMM_API_TOKEN` to connect. In workspace mode, open the local workspace URL instead; the local service can use an optional `RMM_WORKSPACE_LOCAL_TOKEN` and does not need the global API token in the browser. Use **Config** in the header to export or import a versioned UI configuration JSON file; authenticated settings also persist in the server or workspace SQLite database, while the API token remains a browser login credential (see `docs/web-ui-configuration.md`). **Dark mode** is the default; use the **☀ / ☽** toggle in the header to switch. The UI uses **WebSocket** (`/api/v1/ws`) for live session and output updates in server mode. Workspace mode uses the same polling API while the local service owns the durable event stream. The shell queues commands with **Enter**, runs `/exec` wait via **Ctrl+Enter**, and supports **↑/↓ command history** plus **Tab completion** (session history + `cmd:` / `PS:` / `powershell:` / `pwsh:` prefixes). Type **`help`** or **`?`** in the shell for its local commands; all other commands are sent to the selected agent. The main agent workspace uses tabs for **Shell**, **Files & Screenshots**, and **Pivots**. Global **Downloads** and **Screenshots** controls in the application header list artifacts from every agent and show the originating agent. SOCKS5 and TUN can run independently at the same time (see `docs/web-socks.md`, `docs/downloads-browser.md`, `docs/tun-pivot.md`, and `docs/workspace-deployment.md`). **Session history** lists archived transcripts from killed sessions. The sidebar has separate **Deploy agent (PowerShell)** and **Deploy agent (Go)** sections — see `docs/web-agent-generator.md` and `docs/go-agent.md`.
+With the workspace running, open **<http://127.0.0.1:8787/ui/>**; the local service can use an optional `RMM_WORKSPACE_LOCAL_TOKEN` and does not need the global API token in the browser. Use **Config** in the header to export or import a versioned UI configuration JSON file; authenticated settings also persist in the server or workspace SQLite database, while the API token remains a browser login credential (see `docs/web-ui-configuration.md`). **Dark mode** is the default; use the **☀ / ☽** toggle in the header to switch. The workspace UI polls its local API, which owns the durable event stream. The shell queues commands with **Enter**, runs `/exec` wait via **Ctrl+Enter**, and supports **↑/↓ command history** plus **Tab completion** (session history + `cmd:` / `PS:` / `powershell:` / `pwsh:` prefixes). Type **`help`** or **`?`** in the shell for its local commands; all other commands are sent to the selected agent. The main agent workspace uses tabs for **Shell**, **Files & Screenshots**, and **Pivots**. Global **Downloads** and **Screenshots** controls in the application header list artifacts from every agent and show the originating agent. SOCKS5 and TUN can run independently at the same time (see `docs/web-socks.md`, `docs/downloads-browser.md`, `docs/tun-pivot.md`, and `docs/workspace-deployment.md`). **Session history** lists archived transcripts from killed sessions. The sidebar has separate **Deploy agent (PowerShell)** and **Deploy agent (Go)** sections — see `docs/web-agent-generator.md` and `docs/go-agent.md`.
 
-**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Configure and validate an **OpenAI**, **Anthropic**, or **Mistral** API key; only providers with a successfully validated key can be selected. Keys, validation state, model choice, and skill selection persist in the authenticated server or workspace SQLite UI state. The model list comes from the selected provider's API, and a custom model ID remains available. Conversation history is saved per session on the server in default mode (`RMM_logs/history/{id}/ai_chat.json`) and in the workspace SQLite database in workspace mode; use **Reset chat** to start over (see `docs/web-ai-chat-memory.md`). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools through server-owned background jobs (`POST /api/v1/ai/jobs`). Workspace-scoped AI tool calls forward the workspace headers to keep the same session ownership. See `docs/ai-providers.md` for the provider protocol and API details. **Skills** — built-in Markdown files and URL-installed workspace files can be enabled or disabled in the AI panel or Config panel and are available on demand; only the two core skill bodies are injected initially (see `docs/web-ai-skills.md` and `docs/operator-assets.md`). **Exegol MCP is required** for AI and mutating BloodHound operations; read-only query-library discovery remains available without starting Exegol. Configure `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN` when needed, and `RMM_EXEGOL_CONTAINER` in owner-local service settings. The workspace/standalone service verifies ownership and starts or reuses CE at startup; see [BloodHound lifecycle and proxy](docs/bloodhound-workflow.md). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Disabling `RMM_AI_USE_MCP` blocks AI; it does not enable a direct-tool fallback. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_AI_SKILLS_DIR`. The selected session in the sidebar is passed as context.
+**AI Assistant** (button **AI** in the header): opens a chat panel on the right. Configure and validate an **OpenAI**, **Anthropic**, or **Mistral** API key; only providers with a successfully validated key can be selected. Keys, validation state, model choice, and skill selection persist in the authenticated server or workspace SQLite UI state. The model list comes from the selected provider's API, and a custom model ID remains available. Conversation history is saved per session in the workspace SQLite database; use **Reset chat** to start over (see `docs/web-ai-chat-memory.md`). The server runs an agent loop that spawns **`mcp_rmm_server.py`** over stdio and calls its tools through server-owned background jobs (`POST /api/v1/ai/jobs`). Workspace-scoped AI tool calls forward the workspace headers to keep the same session ownership. See `docs/ai-providers.md` for the provider protocol and API details. **Skills** — built-in Markdown files and URL-installed workspace files can be enabled or disabled in the AI panel or Config panel and are available on demand; only the two core skill bodies are injected initially (see `docs/web-ai-skills.md` and `docs/operator-assets.md`). **Exegol MCP is required** for AI and mutating BloodHound operations; read-only query-library discovery remains available without starting Exegol. Configure `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN` when needed, and optionally `RMM_EXEGOL_CONTAINER` in workspace-local service settings. The workspace service verifies ownership and starts or reuses CE at startup; see [BloodHound lifecycle and proxy](docs/bloodhound-workflow.md). Install `pip install -r requirements.txt` (includes `mcp`; Python 3.10+). Disabling `RMM_AI_USE_MCP` blocks AI; it does not enable a direct-tool fallback. Server env: `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_AI_SKILLS_DIR`. The selected session in the sidebar is passed as context.
 
 Exegol MCP connections originate from both the owner-local runtime and the central AI process. Its configured URL must be reachable from both; `127.0.0.1:8000` does not refer to a separate operator's Exegol container. See the [deployment guide](docs/deployment.md) for network and credential boundaries.
 
@@ -139,7 +138,7 @@ export RMM_API_TOKEN="$RMM_WORKSPACE_LOCAL_TOKEN"
 python mcp_rmm_server.py
 ```
 
-Load the workspace environment first. For standalone server mode, use the central server URL and administrator API token instead. Copy `mcp.example.json` into your Cursor MCP config (`~/.cursor/mcp.json`) and adjust the script path, URL, and token for the selected topology.
+Load the workspace environment first; use its local URL and local token for every operator deployment. Copy `mcp.example.json` into your Cursor MCP config (`~/.cursor/mcp.json`) and adjust the script path, URL, and token for the selected topology.
 
 After changing operator tools, run `make check-parity` (see `docs/mcp-parity.md`).
 
@@ -266,7 +265,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `GET` | `/socks` | — | List active SOCKS relays (`relays[]`: url, session, agent, channel) |
 | `POST` | `/sessions/{id}/socks` | `{"port":1080,"bind_host":"127.0.0.1"}` or `{"stop":true}` | Start/stop SOCKS5 via the agent pivot plugin |
 | `GET` | `/tun` | — | List active TUN relays; listener/device ownership depends on storage mode |
-| `POST` | `/sessions/{id}/tun` | `{"device":"tun://rmm0","routes":["10.10.0.0/16","10.20.0.0/16"]}` or `{"stop":true}` | Start/stop a TUN relay; server mode creates it centrally, workspace mode creates it in the local workspace |
+| `POST` | `/sessions/{id}/tun` | `{"device":"tun://rmm0","routes":["10.10.0.0/16","10.20.0.0/16"]}` or `{"stop":true}` | Start/stop a TUN relay; creates it in the local workspace |
 | `GET` | `/ai/skills` | — | List server AI skills (metadata only) |
 | `GET` | `/sessions/{id}/ai/chat` | — | Load persisted AI chat for session (live or archived) |
 | `DELETE` | `/sessions/{id}/ai/chat` | — | Clear persisted AI chat |
@@ -352,7 +351,7 @@ Queue the same tokens via `rmm_cli.py run` / `exec` or `POST …/commands`.
 | `type` | Body |
 |--------|------|
 | `output` (default) | JSON `{"rmm_cmd":"…","rmm_output":"…"}` or plain text |
-| `file_upload` | JSON with base64 `content` → server `RMM_logs/downloads/` in server mode or the workspace artifact store in workspace mode (varied **2 / 5 / 10 / 20 MB** raw chunks on `POST /result` with `offset` / `eof`; no fixed size cap) |
+| `file_upload` | JSON with base64 `content` → the workspace artifact store (varied **2 / 5 / 10 / 20 MB** raw chunks on `POST /result` with `offset` / `eof`; no fixed size cap) |
 | `cloud_upload` | JSON with `link`, `dest`, `profile`, `remote_path`, `success`, … |
 | `screenshot` | Base64 PNG → server `RMM_logs/screenshots/` or the workspace artifact store |
 | `keylog` | Text → server `RMM_logs/keylogs/` or the workspace artifact store |
@@ -362,10 +361,9 @@ Events are also exposed via `GET /api/v1/sessions/{id}/events`.
 
 ### SOCKS relay (`/socks`)
 
-When an operator runs **`socks [port]`** (default **1080**), server mode binds a
-**SOCKS5** listener on `127.0.0.1`; workspace mode starts that listener in the
-local workspace service and leaves only the agent transport on the central
-server. Both modes set **`socks_active": true`** on **`GET /cmd`** (control
+When an operator runs **`socks [port]`** (default **1080**), the workspace binds a
+**SOCKS5** listener on `127.0.0.1` and leaves only the agent transport on the
+central server. This sets **`socks_active": true`** on **`GET /cmd`** (control
 only). The agent then starts the **SOCKS5 pivot plugin** outside the main
 beacon loop. PowerShell agents fetch the deployed `socks.ps1` artifact through
 the authenticated plugin endpoint and run its HTTP poll worker in a dedicated
@@ -399,10 +397,9 @@ Operator API: `POST /api/v1/sessions/{id}/socks` with `{"port":1080}` or `{"stop
 
 ### RMM-owned TUN relay (`/tun`)
 
-In the default server storage mode, the RMM server creates and owns the TUN
-device. In workspace mode, the central server keeps only the agent transport;
+The central server keeps only the agent transport;
 `workspace_service.py` creates the TUN device and routes inside the operator's
-Exegol namespace. In both modes, `rmm-tun` provides the user-space IP/TCP/UDP
+Exegol namespace. `rmm-tun` provides the user-space IP/TCP/UDP
 stack and the Go agent only opens ordinary target-side TCP and UDP sockets, so
 it does not create a TUN device or require administrator privileges. This
 currently requires a Windows amd64 Go agent with the built `tun.dll` transport.
@@ -474,7 +471,7 @@ Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Pref
 
 ## Client (`client_rmm.ps1`)
 
-All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`. rclone exfil uses server-side profiles in server mode and workspace-local profiles in workspace mode; credentials never go into the agent script.
+All settings live in a **configuration block at the top of the script** (`$u`, `$beaconSecret`, `$httpProxy`, …). Optional environment variables override those variables when set: `RMM_BASE_URL`, `RMM_BEACON_SECRET`, `RMM_HTTP_PROXY`, `RMM_HTTP_PROXY_USE_DEFAULT_CREDENTIALS`, `RMM_PERSISTENT_HTTP`, `RMM_VERBOSE`. rclone exfil uses workspace-local profiles; credentials never go into the agent script.
 
 - **URL:** edit `$u` or set `RMM_BASE_URL`.
 - **Beacon secret:** edit `$beaconSecret` or set `RMM_BEACON_SECRET` (must match the server).
@@ -510,12 +507,9 @@ All settings live in a **configuration block at the top of the script** (`$u`, `
 
 **Shared transcript:** commands and agent output for a session are stored as
 **events** (`operator`, `output`, `config_ack`, …) by the active storage
-owner. Server mode keeps them on the server; workspace mode persists them in
-the operator's local workspace. Web UI and `rmm_cli.py` both poll
-`/api/v1/sessions/{id}/events` and receive WebSocket broadcasts in server mode
-— reopening a session shows the same history from any client in that mode.
-Workspace mode uses the local polling service, which owns the durable event
-stream. Large live WebSocket event bodies stay bounded, and the web UI
+owner: the operator's local workspace. Web UI and `rmm_cli.py` both poll
+`/api/v1/sessions/{id}/events`; reopening a session retrieves the same durable
+transcript. Large live WebSocket event bodies stay bounded, and the web UI
 hydrates truncated live results from the full REST transcript (see
 `docs/web-live-full-results.md`).
 

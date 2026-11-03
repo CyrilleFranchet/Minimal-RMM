@@ -58,7 +58,7 @@ class ServerShutdownTests(unittest.TestCase):
             runtime.socks.close.assert_called_once()
             embedding_store.close.assert_called_once()
             ui_state_store.close.assert_called_once()
-            with self.assertRaisesRegex(ValueError, "stopping"):
+            with self.assertRaisesRegex(ValueError, "workspace-local"):
                 runtime.embedding_store()
             with self.assertRaisesRegex(server_rmm.ProfileError, "stopping"):
                 runtime.start_profile()

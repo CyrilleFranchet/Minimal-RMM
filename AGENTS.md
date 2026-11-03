@@ -8,11 +8,14 @@
 Operator (CLI / Web / MCP / curl)
         │
         ▼
-server_rmm.py  ── REST /api/v1/*  +  beacon /register /cmd /result /socks
+workspace_service.py ── operator API/UI, local evidence, Exegol/BloodHound
+        │ authenticated workspace connection
+        ▼
+server_rmm.py  ── central administration + beacon /register /cmd /result /socks
         │
         ├── rmm_socks.py   SOCKS5 listeners (per session) on 127.0.0.1:N
         ├── rmm_ws.py      stdlib WebSocket (operator events + agent SOCKS channel)
-        └── RMM_logs/      downloads, screenshots, keylogs
+        └── workspace event transport → workspace-owned evidence storage
 
 agent-powershell/client_rmm.ps1 (Windows agent)
         ├── Main loop: register → poll /cmd → execute → POST /result
@@ -31,7 +34,9 @@ agent-powershell/client_rmm.ps1 (Windows agent)
 
 ## Security defaults
 
-- `RMM_API_TOKEN` — operator API (`/api/v1/*`)
+- `RMM_WORKSPACE_LOCAL_TOKEN` — local workspace operator API (`/api/v1/*`)
+- `RMM_API_TOKEN` — central administrator API; CLI uses this environment key for its selected endpoint token
+- `RMM_WORKSPACE_ID` / `RMM_WORKSPACE_TOKEN` — workspace-to-central authentication
 - `RMM_BEACON_SECRET` — beacon endpoints (`/register`, `/cmd`, `/result`, `/socks`)
 - Server binds `127.0.0.1` by default; `--insecure` is lab-only
 

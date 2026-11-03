@@ -167,6 +167,9 @@ class McpRmmSession(_BaseMcpSession):
         if workspace_id and workspace_token:
             env["RMM_WORKSPACE_ID"] = workspace_id
             env["RMM_WORKSPACE_TOKEN"] = workspace_token
+        env.pop('RMM_WORKSPACE_OPERATOR_RELAY', None)
+        if workspace_id and workspace_token and self.extra_headers.get('X-RMM-Operator-Relay') == '1':
+            env['RMM_WORKSPACE_OPERATOR_RELAY'] = '1'
         env.pop("RMM_BASE_URL", None)
 
         params = StdioServerParameters(

@@ -29,6 +29,8 @@ def make_client(
         if workspace_id and workspace_token:
             headers["X-RMM-Workspace"] = workspace_id
             headers["X-RMM-Workspace-Token"] = workspace_token
+            if settings_getenv('RMM_WORKSPACE_OPERATOR_RELAY', '') == '1':
+                headers['X-RMM-Operator-Relay'] = '1'
     return RmmApiClient(
         (base_url or DEFAULT_RMM_URL).rstrip("/"),
         resolved_token,

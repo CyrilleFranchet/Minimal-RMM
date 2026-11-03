@@ -42,7 +42,7 @@ These commands are handled in the browser instead of being sent to the agent she
 | `screenshot` | `POST …/screenshot` | No arguments |
 | `embeddings run <profile> --document <path>` | `POST /api/v1/embeddings/run` | Uses the selected session and a saved profile; repeat `--document` for up to 32 paths; quoted Windows and UNC backslashes are preserved |
 | `pe <plugin> [export] [input]` | `POST …/pe` | Loads a Go PE plugin through the selected agent; export defaults to `Run` |
-| `bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace or standalone owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
+| `bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
 
 BloodHound shell output includes the HTTP status and response data. The
 **BloodHound operations** form exposes the same actions without selecting an

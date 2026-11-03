@@ -2355,6 +2355,17 @@ function showApp() {
   show($("#app"));
 }
 
+function configureWorkspaceAccess(health) {
+  const operatorWorkspace = typeof health.workspace_id === "string" && !!health.workspace_id;
+  for (const id of ["bloodhound-open", "bloodhound-operations", "ai-toggle-btn"]) {
+    document.getElementById(id)?.classList.toggle("hidden", !operatorWorkspace);
+  }
+  const workspaceNotice = document.getElementById("workspace-access-notice");
+  workspaceNotice?.classList.toggle("hidden", operatorWorkspace);
+  if (operatorWorkspace) window.startBloodHoundHealth?.();
+  else window.stopBloodHoundHealth?.();
+}
+
 async function connect() {
   const token = $("#token-input").value.trim();
   state.token = token;
@@ -2373,7 +2384,7 @@ async function connect() {
     await window.loadRmmUiConfig().catch(() => false);
   }
   showApp();
-  window.startBloodHoundHealth?.();
+  configureWorkspaceAccess(data);
   if (typeof window.refreshAgentScriptTemplate === "function") {
     window.refreshAgentScriptTemplate();
   }

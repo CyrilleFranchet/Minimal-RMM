@@ -532,6 +532,8 @@ class PivotInventoryTests(unittest.TestCase):
         server.tun_plugin_error = Mock(return_value=None)
         relay = SimpleNamespace(status=Mock(return_value={"session_id": session.id}))
         server.tun = SimpleNamespace(start=Mock(return_value=relay))
+        server.tun_transport = SimpleNamespace(start_external=Mock())
+        server.workspace_tun_configs = {}
         server.record_operator_action = Mock()
         server._record_event = Mock()
 
@@ -540,12 +542,15 @@ class PivotInventoryTests(unittest.TestCase):
             {"device": "tun://rmm0", "route": "10.20.0.0/16"},
         )
 
-        self.assertEqual(result, {"session_id": session.id})
-        server.tun.start.assert_called_once()
+        self.assertEqual(result["session_id"], session.id)
+        self.assertTrue(result["workspace_local"])
+        server.tun_transport.start_external.assert_called_once()
+        server.tun.start.assert_not_called()
 
     def test_socks_inventory_remains_visible_when_tun_is_active(self):
         server = object.__new__(server_rmm.RMMServer)
         public_session = "public-session"
+        server.workspace_socks_configs = {public_session: {"session_id": public_session, "port": 1080}}
         server.socks = SimpleNamespace(
             list_relays=lambda: [
                 {"session_id": public_session, "port": 1080},

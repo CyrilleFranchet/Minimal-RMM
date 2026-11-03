@@ -10,8 +10,9 @@ results so it can route the beacon and enforce workspace ownership. The local
 workspace service owns the durable operator view: transcripts, AI chat, files,
 screenshots, keylogs, the local SOCKS listener, and the local TUN device.
 
-This mode is enabled with `RMM_STORAGE_MODE=workspace`. The default
-`RMM_STORAGE_MODE=server` keeps the existing single-server behavior.
+Workspace storage is the only supported runtime architecture. A single-workspace
+deployment uses the same services and ownership boundaries as a multi-workspace
+deployment. Legacy `RMM_STORAGE_MODE=server` is rejected.
 
 ## Architecture
 
@@ -111,7 +112,7 @@ Central server variables:
 
 | Variable | Description |
 | --- | --- |
-| `RMM_STORAGE_MODE` | `server` (default) or `workspace` |
+| `RMM_STORAGE_MODE` | `workspace` only; omitted values default to workspace |
 | `RMM_WORKSPACES` | JSON object such as `{"alice":"token-a","bob":"token-b"}` |
 | `RMM_WORKSPACE_EVENT_LIMIT` | Central transient queue size per workspace; default `10000` |
 | `RMM_MAX_WORKSPACE_PAYLOAD_BYTES` | Maximum one transient event payload; defaults to `RMM_MAX_BODY_BYTES` |
@@ -142,7 +143,7 @@ Workspace service variables:
 | `RMM_WORKSPACE_POLL_INTERVAL` | Session/event sync interval in seconds; default `1` |
 | `RMM_EXEGOL_MCP_URL` | Required MCP endpoint reachable by both this runtime and the central AI process |
 | `RMM_EXEGOL_MCP_TOKEN` | MCP credential when the endpoint requires authentication |
-| `RMM_EXEGOL_CONTAINER` | Required exact Exegol container hosting this workspace and its network namespace |
+| `RMM_EXEGOL_CONTAINER` | Optional exact container override; otherwise discover the container through MCP and verify workspace identity |
 | `RMM_WORKSPACE_MAX_BODY` | Local upload size cap; set 128 MiB for all current plugins |
 | `RMM_ASSET_MAX_BYTES` | Local download/install size cap; set 128 MiB for all current plugins |
 | `RMM_PLUGIN_GITHUB_TOKEN`, `RMM_PLUGIN_TOKEN_<NAME>` | Private GitHub credentials referenced by saved plugin sources; never returned by the source API |
@@ -156,7 +157,31 @@ The central API token remains available for administrative access.
 
 ## Session ownership
 
-Agents register normally and start unassigned. A workspace can claim a live
+Event synchronization includes a central process epoch. After a central restart,
+the workspace resets its stream cursor and reads the new queue instead of waiting
+for the old cursor to be reached. Workspace-local transcript IDs continue above
+existing and migrated history; original IDs are retained as `source_event_id`
+with `source_epoch`. Durable envelope receipts prevent replay from duplicating
+events. Events that existed only in the old central in-memory queue can still
+be lost on restart; the workspace reports the stream change rather than claiming
+complete history.
+
+`WorkspaceStore.get_event_epoch`, `set_event_checkpoint`, and `apply_stream_event`
+manage stream identity, atomic cursor checkpoints, and local transcript IDs.
+`WorkspaceEventBroker.read` accepts the previous epoch and returns the current
+epoch with its queue response. Restart and migrated-ID collision tests cover
+these contracts.
+
+Chunked uploads retain their complete staging file until the event and its replay
+receipt commit together. An interrupted final chunk can therefore be replayed
+without replacing the artifact with only its last bytes. `_upload_staging_path`
+resolves session-scoped staging files; `_index_download` joins the receipt
+transaction during synchronization. A chunk with a missing prefix is rejected
+without acknowledgment rather than publishing an incomplete artifact.
+
+With exactly one registered workspace, new agents are assigned immediately.
+With multiple workspaces, agents start unassigned. Existing persisted ownership
+is retained. A workspace can claim an unassigned live
 session with:
 
 ```bash
@@ -568,7 +593,7 @@ including private helpers that enforce the local storage boundary.
 
 | Symbol | Role |
 | --- | --- |
-| configured_storage_mode | Select server or workspace mode with a safe default |
+| configured_storage_mode | Require workspace mode and reject legacy server storage |
 | Session.workspace_id | Store the exclusive workspace claim beside session metadata |
 | RMMServer.resolve_workspace_session | Resolve only a session owned by the requested workspace |
 | RMMServer.workspace_sessions | List active sessions owned by one workspace |
@@ -594,8 +619,8 @@ including private helpers that enforce the local storage boundary.
 The existing result, history, AI, SOCKS, and TUN methods branch on
 RMMServer.storage_mode. In workspace mode they publish transient events, keep
 only central session/control metadata, and create transport-only pivot
-bridges. In server mode their legacy filesystem and listener behavior remains
-unchanged. The existing AI client functions also accept the scoped headers so
+bridges. Legacy server-mode helpers remain internal compatibility code, but
+production startup rejects that mode. The existing AI client functions also accept the scoped headers so
 direct and child MCP tool calls stay inside the claimed workspace.
 
 ## Validation
