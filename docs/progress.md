@@ -9,6 +9,33 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-03 — AI concurrency technical and surface audit
+
+- Rechecked scheduler ordering, failure handling, caller-scoped resolution,
+  direct execution, and registered MCP handlers. No new implementation defect
+  was found; endpoint communication files remain unchanged.
+- Clarified numeric limit clamping, conversation-local host ordering, and
+  WebUI/CLI/MCP submission, inspection, cancellation, and configuration boundaries.
+- All 398 Python tests passed without skips using cached MCP dependencies;
+  all 65 JavaScript checks passed. `make check` passed, including operator parity
+  (55 MCP tools), WebUI contracts, and Markdown/YAML lint.
+- Live endpoint latency and Vectra detection remain untested.
+
+### 2026-11-03 — Bounded AI orchestration concurrency
+
+- Run approved independent tools concurrently within a model round, with a
+  default bound of four and environment-only serial rollback.
+- Resolve session references through the caller's API scope; preserve order for
+  commands sharing a session or hostname. Unknown tools and mutations remain
+  barriers. Preserve provider call IDs and transcript order.
+- Offload blocking direct calls and approved MCP handlers; preserve endpoint
+  polling, jitter, command delivery, and result submission behavior.
+- Document scheduling and cooperative cancellation in `ai-background-jobs.md`.
+- All 398 Python tests pass with no skips, including fourteen concurrency tests
+  and registered MCP dispatch with cached MCP dependencies. `make check` and
+  `git diff --check` pass; code and manual security reviews found no remaining
+  blockers. Live endpoint/provider performance and Vectra detection remain untested.
+
 ### 2026-11-03 — Repeat technical verification
 
 - Correct read-only relay result retention to start thirty seconds at completion,

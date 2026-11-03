@@ -28,6 +28,9 @@ Cursor MCP config (~/.cursor/mcp.json):
 
 from __future__ import annotations
 
+import asyncio
+from functools import wraps
+
 from rmm_settings import bootstrap, getenv as settings_getenv
 
 if __name__ == "__main__":
@@ -115,6 +118,15 @@ def _client():
     return _cached_client
 
 
+def _offload_tool(function):
+    """Keep approved blocking tools off the MCP event loop, preserving schemas."""
+    @wraps(function)
+    async def execute(*args, **kwargs):
+        """Dispatch a synchronous operator call to the thread executor."""
+        return await asyncio.to_thread(function, *args, **kwargs)
+    return execute
+
+
 @mcp.tool()
 def bloodhound(action: str = "preflight", run_id: str = "", options: dict | None = None) -> str:
     """Operate BloodHound CE: preflight/create/collect/import/status/verify/query/queries/report. library_search accepts options {text, platform, category, offset, limit} (limit 1-25); library_get accepts {id: GUID} and returns one full reference query. Originals are not executable; use mapped local template IDs with query. health reads readiness; ensure performs guarded MCP startup; ui waits for readiness then returns a proxy link. For workspace_request_id poll result with that ID as run_id. Poll status for collection/import and health for startup. Keep credentials in service settings."""
@@ -146,24 +158,28 @@ def embedding_results(action: str = "list", name: str = "", session_ref: str = "
 
 
 @mcp.tool()
+@_offload_tool
 def health() -> str:
     """Check RMM server API health."""
     return tool_health(_client())
 
 
 @mcp.tool()
+@_offload_tool
 def list_sessions() -> str:
     """List all active RMM agent sessions."""
     return tool_list_sessions(_client())
 
 
 @mcp.tool()
+@_offload_tool
 def get_session(session_ref: str) -> str:
     """Get session details by hostname, id prefix, or full UUID."""
     return tool_get_session(_client(), session_ref)
 
 
 @mcp.tool()
+@_offload_tool
 def exec_command(session_ref: str, command: str, timeout: float = 120) -> str:
     """Run a command on the agent and wait for output."""
     return tool_exec_command(_client(), session_ref, command, timeout=timeout)
@@ -186,6 +202,7 @@ def patch_config(
 
 
 @mcp.tool()
+@_offload_tool
 def get_events(session_ref: str, since: int = 0, limit: int = 50, forward: bool = False) -> str:
     """Fetch session event transcript (outputs, operator actions)."""
     return tool_get_events(_client(), session_ref, since=since, limit=limit, forward=forward)
@@ -228,6 +245,7 @@ def queue_screenshot(session_ref: str) -> str:
 
 
 @mcp.tool()
+@_offload_tool
 def list_plugins() -> str:
     """List PE plugins available on the RMM server for the Go agent."""
     return tool_list_plugins(_client())
@@ -440,12 +458,14 @@ def list_artifacts(kind: str = "downloads") -> str:
 
 
 @mcp.tool()
+@_offload_tool
 def list_ai_jobs(session_id: str = "") -> str:
     """List persisted AI jobs, optionally filtered by full session ID; never starts or retries work."""
     return tool_list_ai_jobs(_client(), session_id)
 
 
 @mcp.tool()
+@_offload_tool
 def get_ai_job(job_id: str) -> str:
     """Read an AI job's status, progress, and result. Interrupted jobs may have executed actions; do not blindly resubmit."""
     return tool_get_ai_job(_client(), job_id)

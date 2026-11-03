@@ -15,7 +15,8 @@ from datetime import datetime, timezone
 
 from rmm_ai_skills import compose_system_prompt, resolve_ai_skills
 from rmm_ai_skill_context import CORE_SKILLS, prepare_skill_context
-from rmm_tools import OPENAI_TOOLS, SYSTEM_PROMPT, execute_tool, make_client
+from rmm_tools import OPENAI_TOOLS, SYSTEM_PROMPT, execute_tool, make_client, _resolve_session_id
+from rmm_ai_concurrency import CONCURRENCY_GUIDANCE, run_tool_batch
 
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
@@ -284,9 +285,11 @@ async def _run_provider_loop(
     call_tool: Callable[[str, dict], Awaitable[str]],
     max_rounds: int,
     via: str,
+    resolve_session=None,
     progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run one provider's native chat and tool-calling protocol until a final reply."""
+    system += CONCURRENCY_GUIDANCE
     tool_log: list[dict] = []
     total_rounds = max_rounds * (MAX_TOOL_CONTINUATIONS + 1)
     malformed_retries = 0
@@ -359,18 +362,20 @@ async def _run_provider_loop(
                     "tool_calls": tool_calls,
                 }
             )
+            normalized = []
             for tool_call in tool_calls:
                 function = tool_call.get("function") or {}
                 try:
                     arguments = json.loads(function.get("arguments") or "{}")
                 except json.JSONDecodeError:
                     arguments = {}
-                name = str(function.get("name") or "")
-                if progress:
-                    progress({"phase": "tool", "round": round_index + 1, "tool": name, "status": "running"})
-                result = await call_tool(name, arguments)
-                if progress:
-                    progress({"phase": "tool", "round": round_index + 1, "tool": name, "status": "completed"})
+                normalized.append({"name": str(function.get("name") or ""), "arguments": arguments})
+            batch_results = await run_tool_batch(
+                normalized, call_tool, resolve_session=resolve_session,
+                progress=progress, round_number=round_index + 1,
+            )
+            for tool_call, call, result in zip(tool_calls, normalized, batch_results):
+                name, arguments = call["name"], call["arguments"]
                 tool_log.append(
                     {"name": name, "arguments": arguments, "result_preview": result[:500]}
                 )
@@ -438,14 +443,15 @@ async def _run_provider_loop(
                 }
             convo.append({"role": "assistant", "content": blocks})
             results = []
-            for call in calls:
-                name = str(call.get("name") or "")
-                arguments = call.get("input") if isinstance(call.get("input"), dict) else {}
-                if progress:
-                    progress({"phase": "tool", "round": round_index + 1, "tool": name, "status": "running"})
-                result = await call_tool(name, arguments)
-                if progress:
-                    progress({"phase": "tool", "round": round_index + 1, "tool": name, "status": "completed"})
+            normalized = [{"name": str(call.get("name") or ""),
+                           "arguments": call.get("input") if isinstance(call.get("input"), dict) else {}}
+                          for call in calls]
+            batch_results = await run_tool_batch(
+                normalized, call_tool, resolve_session=resolve_session,
+                progress=progress, round_number=round_index + 1,
+            )
+            for call, normalized_call, result in zip(calls, normalized, batch_results):
+                name, arguments = normalized_call["name"], normalized_call["arguments"]
                 tool_log.append(
                     {"name": name, "arguments": arguments, "result_preview": result[:500]}
                 )
@@ -493,6 +499,11 @@ def _run_ai_chat_mcp(
     """Run a provider chat loop using the local RMM MCP server and optional Exegol MCP."""
     from rmm_mcp_client import run_with_mcp_session
     connected = False
+    client = make_client(rmm_base_url, rmm_token, extra_headers=rmm_headers)
+
+    async def resolve_session(ref):
+        """Resolve visible session aliases outside the model event loop."""
+        return await asyncio.to_thread(_resolve_session_id, client, ref)
 
     async def chat(mcp) -> dict:
         nonlocal connected
@@ -518,6 +529,7 @@ def _run_ai_chat_mcp(
             call_tool=call_tool,
             max_rounds=max_rounds,
             via="mcp",
+            resolve_session=resolve_session,
             progress=progress,
         )
 
@@ -558,7 +570,11 @@ def _run_ai_chat_direct(
     """Run a provider chat loop with direct in-process RMM tool execution."""
     client = make_client(rmm_base_url, rmm_token, extra_headers=rmm_headers)
     async def execute(name: str, arguments: dict) -> str:
-        return execute_tool(client, name, arguments)
+        return await asyncio.to_thread(execute_tool, client, name, arguments)
+
+    async def resolve_session(ref):
+        """Resolve visible session aliases without blocking concurrent tools."""
+        return await asyncio.to_thread(_resolve_session_id, client, ref)
 
     core, catalog, tools, call_tool = prepare_skill_context(
         skill_documents, OPENAI_TOOLS, execute, progress,
@@ -581,6 +597,7 @@ def _run_ai_chat_direct(
             call_tool=call_tool,
             max_rounds=max_rounds,
             via="direct",
+            resolve_session=resolve_session,
             progress=progress,
         )
     )

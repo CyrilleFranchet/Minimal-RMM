@@ -160,8 +160,20 @@ def _load_module(name: str, path: Path):
 
 
 def mcp_tools_from_server() -> set[str]:
+    """Discover registered functions even when execution decorators are stacked."""
     text = (ROOT / "mcp_rmm_server.py").read_text(encoding="utf-8")
-    return set(re.findall(r"@mcp\.tool\(\)\s*\ndef\s+(\w+)\s*\(", text))
+    return {
+        node.name for node in ast.parse(text).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Attribute)
+            and isinstance(decorator.func.value, ast.Name)
+            and decorator.func.value.id == "mcp"
+            and decorator.func.attr == "tool"
+            for decorator in node.decorator_list
+        )
+    }
 
 
 def openai_tool_names(tools_mod) -> set[str]:

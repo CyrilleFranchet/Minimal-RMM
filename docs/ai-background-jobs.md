@@ -171,3 +171,77 @@ endpoint URLs, tokens, or tool arguments. Skills are resolved once per run so
 reported IDs match the prompt snapshot; loading does not prove the model used
 or followed each instruction. A connection error reports MCP error; a later
 model failure does not reclassify an established MCP connection as failed.
+
+## Concurrent tools within a conversation
+
+The AI scheduler runs up to four approved independent tool calls together within
+one model round. Set the environment-only `RMM_AI_TOOL_CONCURRENCY` on the AI
+server process to change the bound (integers are clamped to 1–16;
+unparsable values use 4). Set it to `1`
+for serial scheduling, without additional session-resolution calls. This does
+not change the number of background job workers.
+
+The initial read allowlist is `health`, `list_sessions`, `get_session`,
+`get_events` without forwarding, `list_plugins`, `list_ai_jobs`, and `get_ai_job`.
+`exec_command` may overlap across different resolved hosts. References are
+resolved through the caller's authenticated API client and replaced with full
+session IDs. Commands sharing a session ID or case-insensitive hostname remain
+ordered within that conversation, including different sessions on the same
+named host. This is not a global host lock across separate AI jobs or manual
+CLI/MCP calls. Missing hostname,
+failed resolution, and ambiguous references fall back to serial execution.
+Hostnames are the available identity boundary; distinct names for the same
+physical machine cannot be recognized as one host automatically.
+
+Every other tool is a barrier within the model round: preceding parallel work finishes first, the tool
+runs alone, and subsequent work starts afterward. This includes unknown/external
+MCP tools, skill loading, queued commands, configuration changes, transfers,
+BloodHound actions, and lifecycle operations. A tool name alone is not evidence
+that an arbitrary action is safe to overlap. Dependent calls must be requested
+in later model rounds; the model receives explicit guidance about this boundary.
+
+Results and tool traces retain the model's original call order and provider call
+IDs even when completion order differs. Tool-returned error payloads remain
+model-visible results. Raised exceptions stop admission of pending work; already
+started calls drain before the exception escapes. Cancellation is cooperative:
+remote operations and blocking worker threads cannot reliably be stopped, and
+no operation is automatically replayed. Progress remains the latest completed
+or running call, not a complete list of all concurrently active calls.
+
+Direct tool dispatch runs outside the asyncio event loop. The approved MCP
+handlers also run off-thread because the MCP SDK executes ordinary synchronous
+handlers inline. API schemas, authentication scope, and command behavior are
+unchanged. Endpoint polling, interval, jitter, result submission, server command
+delivery, and the query catalog are unchanged. Concurrency can change aggregate
+traffic across hosts; live Vectra detection behavior still requires a demo test.
+Dependent commands on one host retain their existing callback delays.
+
+### WebUI, CLI, and MCP boundaries
+
+The WebUI submits AI jobs to the server-owned orchestration loop. CLI
+`ai jobs` / `ai job` and MCP `list_ai_jobs` / `get_ai_job` inspect those same
+jobs through the shared API; they do not submit recursive AI conversations.
+The WebUI Stop action uses the existing cancellation route; this change does
+not add a CLI or MCP cancellation command.
+
+The concurrency limit is an environment-only server setting, not a WebUI,
+CLI, or MCP per-request option. Ordinary manual CLI/MCP command calls do not
+pass through the AI scheduler. Approved MCP handlers support overlapping calls,
+but existing server execution restrictions still apply. All surfaces retain
+their existing command parameters and result formats.
+
+### Implementation and validation
+
+`rmm_ai_concurrency.tool_concurrency` reads and bounds the setting.
+`run_tool_batch` classifies calls and preserves transcript order; its `invoke`
+helper reports execution progress, and `drain` admits bounded work while excluding
+occupied host/session resources. Per-run `resolve_session` closures in both AI
+transports use the existing visible-session resolver off-thread. The MCP
+`_offload_tool` decorator and its `execute` wrapper preserve registered names,
+annotations, descriptions, and schemas while offloading blocking calls.
+
+`tests/test_ai_concurrency.py` covers bounded overlap, alias and host ordering,
+barriers, rollback, failure draining, cancellation, all three provider result
+formats, direct blocking calls, and registered MCP dispatch/schema preservation.
+The MCP test requires the MCP SDK. These are deterministic mocked workflow tests;
+no live endpoint, provider, or Vectra detection claim is made.
