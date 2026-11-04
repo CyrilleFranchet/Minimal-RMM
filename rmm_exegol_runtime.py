@@ -25,6 +25,12 @@ MAX_CONTAINERS = 32
 PROBE_INTERVAL = 5
 READY_TIMEOUT = 90
 MCP_TIMEOUT = 120
+# bloodhound-ce runs in the foreground and never exits on its own. The exec
+# tool call must return as soon as the process is detached, or it blocks for
+# the lifetime of the server and the dispatch is mistaken for a lost reply;
+# run it fully detached from the exec session so it survives that session
+# ending instead of being killed with it.
+LAUNCH_COMMAND = 'setsid nohup bloodhound-ce >/dev/null 2>&1 </dev/null & disown'
 
 
 class RuntimeErrorCode(ValueError):
@@ -397,7 +403,7 @@ class ExegolRuntime:
                 if self._intent() == 'dispatched':
                     self._update(state='uncertain', ready=False, bloodhound_status='unavailable', error='bloodhound_startup_uncertain')
                     return
-                arguments = execution_arguments(session.openai_tools, container, 'bloodhound-ce')
+                arguments = execution_arguments(session.openai_tools, container, LAUNCH_COMMAND)
                 if self.stopped.is_set():
                     return
                 if configuration() != config:

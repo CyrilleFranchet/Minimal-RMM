@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container, runtime_failure_code
+from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container, runtime_failure_code, LAUNCH_COMMAND
 
 TOOLS = [{'function': {'name': 'execute_command_in_container', 'parameters': {
     'type': 'object', 'properties': {'container_name': {'type': 'string'}, 'command': {'type': 'string'}},
@@ -46,7 +46,7 @@ class RuntimeTests(unittest.TestCase):
                 owner.calls.append(arguments)
                 if name == 'list_exegol_containers':
                     return json.dumps(owner.inventory)
-                if arguments['command'] == 'bloodhound-ce':
+                if arguments['command'] == LAUNCH_COMMAND:
                     owner.assertEqual(owner.runtime._intent(), 'dispatched')
                     if owner.launch_raises:
                         raise TimeoutError('secret MCP diagnostic must not escape')
@@ -125,7 +125,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.snapshot['state'], 'ready')
         self.assertEqual(self.runtime.snapshot['container'], 'lab')
         self.assertEqual(self.runtime.verified_configuration[2], '')
-        self.assertEqual(self.calls[-1], {'container_name': 'lab', 'command': 'bloodhound-ce'})
+        self.assertEqual(self.calls[-1], {'container_name': 'lab', 'command': LAUNCH_COMMAND})
         self.assertFalse(any(row.get('container_name') == 'stopped' for row in self.calls))
 
     def test_automatic_discovery_no_match_or_ambiguity_never_launches(self):
@@ -138,7 +138,7 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(self.runtime.snapshot['error'], error)
                 probe.assert_not_called()
             self.assertIsNone(self.runtime._intent())
-        self.assertFalse(any(row.get('command') == 'bloodhound-ce' for row in self.calls))
+        self.assertFalse(any(row.get('command') == LAUNCH_COMMAND for row in self.calls))
 
     def test_discovery_json_shapes_and_fail_closed_inputs(self):
         rows = [{'name': 'lab', 'status': 'running'}, {'name': 'stopped', 'status': 'exited'}]
@@ -166,7 +166,7 @@ class RuntimeTests(unittest.TestCase):
         with patch('rmm_exegol_runtime.probe_ce', side_effect=['stopped', 'ready']), \
                 patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
             self.runtime._run()
-        self.assertEqual(self.calls[-1]['command'], 'bloodhound-ce')
+        self.assertEqual(self.calls[-1]['command'], LAUNCH_COMMAND)
         self.assertEqual(self.runtime.snapshot['state'], 'ready')
         self.assertEqual(self.runtime._intent(), 'ready')
 
@@ -203,7 +203,7 @@ class RuntimeTests(unittest.TestCase):
             recovered = ExegolRuntime(self.root)
             recovered._run()
             self.assertEqual(recovered.snapshot['state'], 'uncertain')
-        self.assertEqual(sum(row['command'] == 'bloodhound-ce' for row in self.calls), 1)
+        self.assertEqual(sum(row['command'] == LAUNCH_COMMAND for row in self.calls), 1)
 
     def test_read_only_health_reconciles_uncertainty(self):
         self.runtime._save('dispatched')
@@ -229,7 +229,7 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(self.runtime.snapshot['exegol_status'], 'ready')
                 self.assertEqual(self.runtime.snapshot['error'], 'bloodhound_' + result)
                 self.assertIsNone(self.runtime._intent())
-        self.assertFalse(any(row['command'] == 'bloodhound-ce' for row in self.calls))
+        self.assertFalse(any(row['command'] == LAUNCH_COMMAND for row in self.calls))
 
     def test_probe_only_connection_refusal_counts_as_stopped(self):
         endpoint = configuration()[3]
