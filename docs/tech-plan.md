@@ -1022,6 +1022,26 @@ merely placing two containers on the same physical machine does not satisfy it.
 ldeep is planned, not implemented. Analysis skills must report the collection
 method and evidence coverage rather than assuming all methods are equivalent.
 
+### Evaluate `mwnickerson/bloodhound_mcp` as a workspace-scoped pathfinding tool
+
+- [ ] Not a SpecterOps-maintained project: SpecterOps' "Open-source Tools" page
+  links to it but does not claim authorship or commit to tracking BloodHound CE
+  API changes. Treat it as any third-party dependency, not an upstream contract.
+- [ ] Deferred for now because it is not integrated with Exegol: it would need
+  its own per-workspace process lifecycle (spawn/stop tied to the workspace,
+  analogous to `rmm_exegol_runtime.py` starting `bloodhound-ce`), not just an
+  HTTP endpoint merge like the optional Exegol MCP.
+- [ ] Its `graph_analysis` tool (`shortest_path`, `edge_composition`, `search`)
+  is the interesting capability: parameterized pathfinding that the fixed
+  `bloodhound-queries/catalog.json` cannot generalize to arbitrary source/target
+  pairs. Consider adding an equivalent validated action to `rmm_bloodhound.py`
+  instead of running the upstream server, to keep per-workspace credential
+  scoping (`RMM_BLOODHOUND_TOKEN_ID`/`TOKEN_KEY` per workspace root) and avoid
+  its `cypher_query.run` free-Cypher tool, which bypasses our validated catalog.
+- [ ] If the upstream server is run as-is instead, each workspace needs its own
+  process instance pointed at that workspace's own CE token; a single shared
+  instance would defeat workspace isolation.
+
 Items tracked in `docs/progress.md` **Up Next** but not spec’d here yet:
 
 - Web shell meta commands — `socks`, `persist`/`stop`, `upload` (browser limitation); see `docs/web-shell-completion.md`

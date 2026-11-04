@@ -9,6 +9,30 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Adapt bloodhound_mcp's reference resources into an ai-skill; defer direct integration
+
+- Evaluated `mwnickerson/bloodhound_mcp` (linked, not published, by SpecterOps'
+  "Open-source Tools" page) as a way to expose BloodHound pathfinding and
+  collection to the AI assistant. Deferred direct integration: it is not
+  Exegol-integrated (would need its own per-workspace process lifecycle), its
+  `cypher_query.run` tool bypasses the validated query catalog, and its
+  global-per-process credential model would need per-workspace process
+  spawning to match `rmm_bloodhound_broker.py`'s workspace isolation. See the
+  new backlog item in `docs/tech-plan.md`.
+- Adapted its ten MCP resources (schema/Cypher reference, AD/Azure/ADCS/
+  OpenGraph guides) into a new `ai-skills/bloodhound-attack-methodology.md`
+  skill, reworded and reorganized under this project's existing
+  interpretation-table conventions; cross-referenced from
+  `bloodhound-analysis.md`. The upstream `cypher/offensive-queries` resource
+  (ready-to-run Cypher) was deliberately not adapted — see
+  [docs/bloodhound-mcp-adaptation.md](bloodhound-mcp-adaptation.md) for the
+  full adaptation map and what was excluded. Upstream GPLv3 license preserved
+  at `third_party/bloodhound-mcp/LICENSE`, pinned to revision
+  `cdb17097e761c8a8622cb93bc3ba49a9e150bb6e`.
+- Documentation-only change: no new executable action, catalog entry, or MCP
+  tool. `make check` run before committing; live BloodHound CE validation of
+  the adapted prose was not performed.
+
 ### 2026-11-04 — Operator `reset_ce` action for taking over a CE RMM did not initialize
 
 - Request: an explicit, guarded operator way to reset BloodHound CE instead
