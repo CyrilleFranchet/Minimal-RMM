@@ -60,7 +60,9 @@ class RuntimeTests(unittest.TestCase):
                         return json.dumps({'output': f'RMM_CE_LAUNCH_EXITED:{owner.launch_exits}\n'})
                     return json.dumps({'output': 'RMM_CE_LAUNCH_RUNNING\n'})
                 if arguments['command'].startswith(RESET_COMMAND):
-                    output = f'RMM_CE_RESET_EXITED:{owner.reset_exit}\n'
+                    output = 'DROP DATABASE\nCREATE DATABASE\nALTER DATABASE\n'
+                    if owner.reset_exit == 0:
+                        output += 'RMM_CE_RESET_DONE\n'
                     if GRAPH_WIPE_COMMAND in arguments['command'] and owner.reset_graph_wiped:
                         output += 'RMM_CE_GRAPH_WIPED\n'
                     return json.dumps({'output': output})

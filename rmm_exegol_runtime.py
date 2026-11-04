@@ -47,14 +47,20 @@ LAUNCH_COMMAND = ("umask 077; setsid nohup bloodhound-ce >>/var/log/rmm-bloodhou
                   "else wait $_rmm_ce_pid; printf 'RMM_CE_LAUNCH_EXITED:%d\\n' $?; fi; disown")
 LAUNCH_RUNNING_MARKER = 'RMM_CE_LAUNCH_RUNNING'
 LAUNCH_EXITED_MARKER = re.compile(r'^RMM_CE_LAUNCH_EXITED:(\d{1,3})$')
-# The Exegol reset wrapper drops and recreates CE's postgres database but does
-# not stop a running CE first (a live connection would block the drop), so the
-# operator reset stops CE itself before invoking the wrapper. The graph wipe is
-# a separate, explicit operator choice: CE's neo4j data survives the wrapper.
+# The Exegol reset wrapper's final `bloodhound-ce-stop` returns a nonzero exit
+# code after a successful reset (it probes psql after stopping postgres), so
+# the operator reset replicates the wrapper's proven psql sequence and judges
+# success on its own bounded marker: the marker is only reached when every
+# drop/create/alter step succeeded. Stopping the services afterward is best
+# effort; the next launch starts them again.
 RESET_COMMAND = ("pkill -f '[B]loodHound-CE/bloodhound' ; sleep 2; "
-                 "bash -c 'bloodhound-ce-reset' >>/var/log/rmm-ce-reset.log 2>&1; "
-                 "printf 'RMM_CE_RESET_EXITED:%d\\n' \"$?\"")
-RESET_EXITED_MARKER = re.compile(r'^RMM_CE_RESET_EXITED:(\d{1,3})$')
+                 "sudo -u postgres psql -c 'DROP database bloodhound' 2>>/var/log/rmm-ce-reset.log && "
+                 "sudo -u postgres psql -c 'CREATE DATABASE bloodhound;' 2>>/var/log/rmm-ce-reset.log && "
+                 "sudo -u postgres psql -c 'ALTER DATABASE bloodhound OWNER TO bloodhound;' 2>>/var/log/rmm-ce-reset.log && "
+                 "printf 'RMM_CE_RESET_DONE\\n'; "
+                 "neo4j stop >>/var/log/rmm-ce-reset.log 2>&1; "
+                 "service postgresql stop >>/var/log/rmm-ce-reset.log 2>&1")
+RESET_DONE_MARKER = 'RMM_CE_RESET_DONE'
 GRAPH_WIPE_COMMAND = ("neo4j stop >>/var/log/rmm-ce-reset.log 2>&1; "
                       "if [ -d /var/lib/neo4j/data/databases ]; then "
                       "rm -rf /var/lib/neo4j/data/databases/* /var/lib/neo4j/data/transactions/* 2>>/var/log/rmm-ce-reset.log; "
@@ -457,9 +463,7 @@ class ExegolRuntime:
                 arguments = execution_arguments(session.openai_tools, container, commands)
                 reply = await asyncio.wait_for(session.call_tool(EXEC_TOOL, arguments), timeout=RESET_TIMEOUT)
                 lines = [line.strip() for text in output_strings(reply) for line in text.splitlines()]
-                exited = [int(match.group(1)) for match in
-                          (RESET_EXITED_MARKER.match(line) for line in lines) if match]
-                if not exited or exited[0] != 0:
+                if RESET_DONE_MARKER not in lines:
                     raise RuntimeErrorCode('ce_reset_command_failed')
                 if clear_graph and 'RMM_CE_GRAPH_WIPED' not in lines:
                     raise RuntimeErrorCode('ce_reset_command_failed')

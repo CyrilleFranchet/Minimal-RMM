@@ -30,6 +30,15 @@ implementation log.
   Exposed across REST/CLI/MCP/WebUI (a "Reset BloodHound CE…" button with
   confirmation prompts in the workspace connection panel), all four action
   lists updated for `make check-parity`.
+- Live follow-up: the first real `reset_ce` against the operator's Exegol
+  showed the reset succeeded functionally (DROP/CREATE/ALTER psql tags, then
+  postgres and neo4j stopped) but the Exegol wrapper's trailing
+  `bloodhound-ce-stop` returns a nonzero exit after probing psql on the
+  already-stopped postgres, so the exit-code marker mislabeled a successful
+  reset. `RESET_COMMAND` now replicates the wrapper's proven psql sequence
+  and judges success on a `RMM_CE_RESET_DONE` marker reachable only through
+  the full `&&` chain, with best-effort service stops afterward; the psql
+  success tags themselves return in the bounded exec reply.
 - Tests: six runtime cases in `tests/test_exegol_runtime.py` (state/intent
   clearing, explicit graph-wipe choice, definite failure with kept intent,
   missing wipe marker, in-progress guard, identity verification) and two
