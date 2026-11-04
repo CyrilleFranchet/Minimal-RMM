@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container, runtime_failure_code, LAUNCH_COMMAND
+from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container, runtime_failure_code, LAUNCH_COMMAND, MCP_TIMEOUT, READY_TIMEOUT
 
 TOOLS = [{'function': {'name': 'execute_command_in_container', 'parameters': {
     'type': 'object', 'properties': {'container_name': {'type': 'string'}, 'command': {'type': 'string'}},
@@ -26,6 +26,8 @@ class RuntimeTests(unittest.TestCase):
         self.wrong_identity = False
         self.missing_launcher = False
         self.launch_raises = False
+        self.launch_exits = None
+        self.launch_reply = None
         self.inventory = [{'name': 'lab', 'status': 'running'}]
         self.matching = {'lab'}
         owner = self
@@ -50,7 +52,11 @@ class RuntimeTests(unittest.TestCase):
                     owner.assertEqual(owner.runtime._intent(), 'dispatched')
                     if owner.launch_raises:
                         raise TimeoutError('secret MCP diagnostic must not escape')
-                    return 'started'
+                    if owner.launch_reply is not None:
+                        return owner.launch_reply
+                    if owner.launch_exits is not None:
+                        return json.dumps({'output': f'RMM_CE_LAUNCH_EXITED:{owner.launch_exits}\n'})
+                    return json.dumps({'output': 'RMM_CE_LAUNCH_RUNNING\n'})
                 nonce = next(owner.root.glob('ce-identity-*')).read_text()
                 host = 'wrong' if owner.wrong_identity or arguments['container_name'] not in owner.matching else 'exegol-lab'
                 output = f'RMM_EXEGOL_ID={nonce}:{host}:net:[123]\n'
@@ -169,6 +175,74 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.calls[-1]['command'], LAUNCH_COMMAND)
         self.assertEqual(self.runtime.snapshot['state'], 'ready')
         self.assertEqual(self.runtime._intent(), 'ready')
+
+    def test_startup_pass_never_outlives_its_lifecycle_bound(self):
+        # The whole lifecycle (identity checks, launch reply, readiness poll)
+        # runs inside one MCP_TIMEOUT bound; it must cover the poll window.
+        self.assertGreaterEqual(MCP_TIMEOUT, READY_TIMEOUT + 45)
+
+    def test_confirmed_dead_launch_fails_definitely_and_retries_without_reset(self):
+        self.launch_exits = 7
+        with patch('rmm_exegol_runtime.probe_ce', return_value='stopped'), \
+                patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
+            self.runtime._run()
+        self.assertEqual(self.runtime.snapshot['state'], 'failed')
+        self.assertEqual(self.runtime.snapshot['error'], 'bloodhound_launch_failed')
+        self.assertEqual(self.runtime.snapshot['launch_exit_code'], 7)
+        self.assertEqual(self.runtime.snapshot['bloodhound_status'], 'unavailable')
+        # The reply proves the dispatch happened and the process died, so the
+        # durable intent is cleared and a plain ensure() can retry.
+        self.assertIsNone(self.runtime._intent())
+        self.launch_exits = None
+        with patch('rmm_exegol_runtime.probe_ce', side_effect=['stopped', 'ready']), \
+                patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
+            self.runtime._run()
+        self.assertEqual(self.runtime.snapshot['state'], 'ready')
+        self.assertIsNone(self.runtime.snapshot.get('launch_exit_code'))
+        self.assertEqual(sum(row['command'] == LAUNCH_COMMAND for row in self.calls), 2)
+
+    def test_zero_or_markerless_launch_reply_keeps_uncertainty(self):
+        # EXITED:0 cannot distinguish a live boot from a forked detacher, and
+        # an unrecognized reply shape proves nothing: both stay uncertain and
+        # keep the durable intent so the launch is never replayed.
+        for reply in ('RMM_CE_LAUNCH_EXITED:0', json.dumps({'output': 'unexpected shape'})):
+            with self.subTest(reply=reply):
+                (self.runtime.root / 'ce-startup.json').unlink(missing_ok=True)
+                self.runtime.verified_configuration = None
+                self.runtime._update(state='blocked', ready=False, exegol_status='not_checked')
+                self.launch_reply = reply
+                with patch('rmm_exegol_runtime.probe_ce', return_value='stopped'), \
+                        patch('rmm_exegol_runtime.READY_TIMEOUT', 0):
+                    self.runtime._run()
+                self.assertEqual(self.runtime.snapshot['state'], 'uncertain')
+                self.assertEqual(self.runtime.snapshot['error'], 'bloodhound_startup_uncertain')
+                self.assertEqual(self.runtime._intent(), 'dispatched')
+                self.assertEqual(sum(row['command'] == LAUNCH_COMMAND for row in self.calls), 1)
+                self.calls.clear()
+
+    def test_definite_launch_failure_survives_read_only_health_refresh(self):
+        # The proven launch-failure diagnosis must not be relabeled as a
+        # plain 'stopped' service by the periodic health probe; the operator
+        # would lose the pointer to the wrapper log and exit code.
+        self.launch_exits = 1
+        with patch('rmm_exegol_runtime.probe_ce', return_value='stopped'), \
+                patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
+            self.runtime._run()
+        self.assertEqual(self.runtime.snapshot['error'], 'bloodhound_launch_failed')
+        self.runtime.last_probe = 0
+        with patch('rmm_exegol_runtime.probe_ce', return_value='stopped') as probe:
+            state = self.runtime.status()
+        probe.assert_called_once()
+        self.assertEqual(state['state'], 'failed')
+        self.assertEqual(state['error'], 'bloodhound_launch_failed')
+        self.assertEqual(state['launch_exit_code'], 1)
+        self.assertEqual(state['bloodhound_status'], 'stopped')
+        # A CE that actually comes up still reports ready with the code cleared.
+        self.runtime.last_probe = 0
+        with patch('rmm_exegol_runtime.probe_ce', return_value='ready'):
+            state = self.runtime.status()
+        self.assertTrue(state['ready'])
+        self.assertIsNone(state.get('launch_exit_code'))
 
     def test_owner_configuration_change_invalidates_verified_readiness(self):
         with patch('rmm_exegol_runtime.probe_ce', return_value='ready'):

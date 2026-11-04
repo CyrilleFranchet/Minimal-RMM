@@ -23,14 +23,30 @@ EXEC_TOOL = 'execute_command_in_container'
 LIST_TOOL = 'list_exegol_containers'
 MAX_CONTAINERS = 32
 PROBE_INTERVAL = 5
-READY_TIMEOUT = 90
-MCP_TIMEOUT = 120
+# The Exegol bloodhound-ce wrapper itself budgets up to 60 seconds just
+# waiting for neo4j, on top of starting postgresql and booting the CE API
+# (longer on a first run with fresh database migrations). A cold start can
+# therefore legitimately exceed the readiness window below; the durable
+# intent plus read-only health reconciliation cover that case.
+READY_TIMEOUT = 240
+MCP_TIMEOUT = 300
 # bloodhound-ce runs in the foreground and never exits on its own. The exec
 # tool call must return as soon as the process is detached, or it blocks for
 # the lifetime of the server and the dispatch is mistaken for a lost reply;
 # run it fully detached from the exec session so it survives that session
-# ending instead of being killed with it.
-LAUNCH_COMMAND = 'setsid nohup bloodhound-ce >/dev/null 2>&1 </dev/null & disown'
+# ending instead of being killed with it. The command also keeps the
+# wrapper's own output in a root-only log inside the container (dev/null
+# hid startup failures such as a neo4j or postgresql error) and reports a
+# bounded marker back through the exec reply: RUNNING once the detached
+# process survived its first seconds, or EXITED:<code> with the wrapper's
+# exit status when it died immediately, so the runtime can distinguish a
+# confirmed dead launch from a genuinely lost reply.
+LAUNCH_COMMAND = ("umask 077; setsid nohup bloodhound-ce >>/var/log/rmm-bloodhound-ce.log"
+                  " 2>&1 </dev/null & _rmm_ce_pid=$!; sleep 2; "
+                  "if kill -0 $_rmm_ce_pid 2>/dev/null; then printf 'RMM_CE_LAUNCH_RUNNING\\n'; "
+                  "else wait $_rmm_ce_pid; printf 'RMM_CE_LAUNCH_EXITED:%d\\n' $?; fi; disown")
+LAUNCH_RUNNING_MARKER = 'RMM_CE_LAUNCH_RUNNING'
+LAUNCH_EXITED_MARKER = re.compile(r'^RMM_CE_LAUNCH_EXITED:(\d{1,3})$')
 
 
 class RuntimeErrorCode(ValueError):
@@ -278,7 +294,7 @@ class ExegolRuntime:
                 return self._update(state='blocked', ready=False, error='runtime_stopped')
             if self.thread is not None and self.thread.is_alive():
                 return dict(self.snapshot)
-            self._update(state='checking', exegol_status='checking', ready=False, error=None, container=None)
+            self._update(state='checking', exegol_status='checking', ready=False, error=None, container=None, launch_exit_code=None)
             self.thread = threading.Thread(target=self._run, name='exegol-ce-lifecycle', daemon=True)
             self.thread.start()
             return dict(self.snapshot)
@@ -345,10 +361,21 @@ class ExegolRuntime:
                     return self._update(state='blocked', ready=False, error='runtime_stopped')
                 if availability == 'ready':
                     self._save('ready')
-                    return self._update(state='ready', ready=True, bloodhound_status='ready', error=None)
+                    return self._update(state='ready', ready=True, bloodhound_status='ready', error=None, launch_exit_code=None)
                 uncertain = self._intent() == 'dispatched'
+                if uncertain:
+                    error = 'bloodhound_startup_uncertain'
+                elif availability == 'stopped' and self.snapshot.get('error') == 'bloodhound_launch_failed':
+                    # A previous pass proved the launch died with this exit
+                    # code; keep that diagnosis instead of relabeling the
+                    # service as merely stopped. The next ensure() pass
+                    # replaces it, and a CE that actually comes up reports
+                    # ready.
+                    error = 'bloodhound_launch_failed'
+                else:
+                    error = 'bloodhound_' + availability
                 return self._update(state='uncertain' if uncertain else 'failed', ready=False,
-                                    bloodhound_status=availability, error='bloodhound_startup_uncertain' if uncertain else 'bloodhound_' + availability)
+                                    bloodhound_status=availability, error=error)
         except (RuntimeErrorCode, OSError):
             return self._update(state='failed', ready=False, error='runtime_health_failed')
 
@@ -419,7 +446,7 @@ class ExegolRuntime:
                     raise RuntimeErrorCode('runtime_configuration_changed')
                 if availability == 'ready':
                     self._save('ready')
-                    self._update(state='ready', ready=True, bloodhound_status='ready', error=None)
+                    self._update(state='ready', ready=True, bloodhound_status='ready', error=None, launch_exit_code=None)
                     return
                 if availability != 'stopped':
                     self._update(state='failed', ready=False, bloodhound_status=availability, error='bloodhound_' + availability)
@@ -436,19 +463,38 @@ class ExegolRuntime:
                 if configuration() != config:
                     raise RuntimeErrorCode('runtime_configuration_changed')
                 self._save('dispatched')
-                self._update(state='starting', bloodhound_status='starting')
+                self._update(state='starting', bloodhound_status='starting', launch_exit_code=None)
+                reply = None
                 try:
-                    await asyncio.wait_for(session.call_tool(EXEC_TOOL, arguments), timeout=30)
+                    reply = await asyncio.wait_for(session.call_tool(EXEC_TOOL, arguments), timeout=30)
                 except Exception:
                     # A lost reply does not mean the service failed to start.
-                    pass
+                    reply = None
+                if reply is not None:
+                    lines = [line.strip() for text in output_strings(reply) for line in text.splitlines()]
+                    exited = [int(match.group(1)) for match in
+                              (LAUNCH_EXITED_MARKER.match(line) for line in lines) if match]
+                    if exited and exited[0] != 0:
+                        # The reply proves the launch ran and the detached
+                        # process already died on its own, so a retry cannot
+                        # double-launch. Clear the durable intent so the next
+                        # ensure() makes a clean attempt without a manual
+                        # reset, and report the definite failure instead of
+                        # a permanent fake 'uncertain'.
+                        (self.root / 'ce-startup.json').unlink(missing_ok=True)
+                        self._update(state='failed', ready=False, bloodhound_status='unavailable',
+                                     error='bloodhound_launch_failed', launch_exit_code=exited[0])
+                        return
+                    # A running marker, a zero exit, an unrecognized reply
+                    # shape, or a lost reply all fall through: the service
+                    # may still be starting, so poll without replaying it.
                 deadline = time.monotonic() + READY_TIMEOUT
                 while not self.stopped.is_set() and time.monotonic() < deadline:
                     if await asyncio.to_thread(probe_ce, endpoint) == 'ready':
                         if configuration() != config:
                             raise RuntimeErrorCode('runtime_configuration_changed')
                         self._save('ready')
-                        self._update(state='ready', ready=True, bloodhound_status='ready', error=None)
+                        self._update(state='ready', ready=True, bloodhound_status='ready', error=None, launch_exit_code=None)
                         return
                     await asyncio.sleep(2)
                 self._update(state='uncertain', ready=False, bloodhound_status='unavailable', error='bloodhound_startup_uncertain')

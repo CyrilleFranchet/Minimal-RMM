@@ -22,7 +22,8 @@
   function showRuntime(runtime) {
     if (resetButton) resetButton.classList.toggle("hidden", resetting || !runtime || runtime.state !== "uncertain");
     if (!readiness || !runtime) return;
-    readiness.textContent = `Exegol: ${runtime.exegol_status || "unknown"} · BloodHound: ${runtime.bloodhound_status || runtime.state || "unknown"}${runtime.error ? ` (${runtime.error})` : ""}`;
+    readiness.textContent = `Exegol: ${runtime.exegol_status || "unknown"} · BloodHound: ${runtime.bloodhound_status || runtime.state || "unknown"}`
+      + `${runtime.error ? ` (${runtime.error}${runtime.launch_exit_code != null ? ` ${runtime.launch_exit_code}` : ""})` : ""}`;
     const verified = ["connected", "verified"].includes(runtime.mcp_status);
     const failed = !!runtime.error || runtime.mcp_status === "error";
     if (mcpLabel) {
@@ -126,8 +127,8 @@
     const controller = new AbortController();
     const generation = healthGeneration;
     launchController = controller;
-    const timeout = setTimeout(() => controller.abort(), 120000);
-    const budget = { remaining: 120 };
+    const timeout = setTimeout(() => controller.abort(), 270000);
+    const budget = { remaining: 270 };
     try {
       let result = await operation({ action: "ui" }, controller, budget);
       while (result.status === 202 && result.data?.runtime) {
@@ -139,6 +140,11 @@
             + "Confirm no stray bloodhound-ce is still starting in the workspace, then use \"Retry BloodHound startup\".");
         }
         if (["blocked", "failed"].includes(runtime.state)) {
+          if (runtime.error === "bloodhound_launch_failed") {
+            throw new Error("BloodHound failed to start in the workspace container (launch exit code "
+              + (runtime.launch_exit_code ?? "unknown")
+              + "). Inspect /var/log/rmm-bloodhound-ce.log inside the workspace container, then retry.");
+          }
           throw new Error(runtime.error || `BloodHound startup is ${runtime.state}; inspect workspace status.`);
         }
         await pause(controller.signal);
@@ -163,7 +169,7 @@
       if (!tab.closed) tab.close();
       if (generation === healthGeneration) {
         message(controller.signal.aborted
-          ? "BloodHound opening was canceled or exceeded 120 seconds. Check workspace status before retrying."
+          ? "BloodHound opening was canceled or exceeded 270 seconds. Check workspace status before retrying."
           : `Cannot open BloodHound: ${error.message || "connection failed"}`);
       }
     } finally {

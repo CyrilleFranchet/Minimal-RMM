@@ -133,11 +133,45 @@ The CE endpoint must be local to the owner's network namespace.
 
 `bloodhound-ce` runs in the foreground and never exits on its own, so the
 runtime dispatches it detached (`LAUNCH_COMMAND` in `rmm_exegol_runtime.py`:
-`setsid nohup`, output redirected, backgrounded, and `disown`ed) instead of
-the bare command. Dispatching the bare command blocks the exec tool call for
-the life of the server and gets the process killed with that call/session,
-which otherwise surfaces as a 90-second `bloodhound_startup_uncertain` with
-no BloodHound process ever actually running in the container.
+`setsid nohup`, backgrounded, and `disown`ed) instead of the bare command.
+Dispatching the bare command blocks the exec tool call for the life of the
+server and gets the process killed with that call/session. The detached
+dispatch was verified against the real Exegol MCP execution wrapper
+(`zsh -c 'autoload -Uz compinit; compinit; source ~/.zshrc; eval "$CMD"'`
+with an attached `docker exec`): the exec returns within seconds and the
+detached process survives the exec session ending.
+
+The launch command keeps the wrapper's own output in a root-only log inside
+the container (`/var/log/rmm-bloodhound-ce.log`, append mode) instead of
+`/dev/null`, which hid startup failures such as a neo4j or postgresql error,
+and reports a bounded marker back through the exec reply:
+
+- `RMM_CE_LAUNCH_RUNNING` — the detached wrapper was still alive two
+  seconds after the dispatch; the runtime then polls readiness.
+- `RMM_CE_LAUNCH_EXITED:<code>` — the wrapper died immediately with that
+  exit status (for example 127 when the launcher or `setsid` is missing).
+  Because this reply proves the launch ran and the process is dead, the
+  runtime clears the durable dispatch intent, reports a definite
+  `bloodhound_launch_failed` error with the bounded `launch_exit_code`
+  field, and the next `ensure`/`ui` call retries directly — no `reset`
+  needed. While CE stays stopped, read-only health keeps reporting this
+  diagnosis instead of relabeling it as merely stopped. The operator can
+  inspect the log file inside the container for
+  the underlying error; the runtime never ingests its content, which may
+  contain CE first-run credentials.
+- A lost reply, an unrecognized reply shape, or a zero exit within the
+  grace window keeps the pre-dispatch durable intent and the existing
+  `uncertain` semantics, so a launch that may still be in flight is never
+  replayed on its own.
+
+The readiness poll window is 240 seconds (`READY_TIMEOUT`) and the whole
+single-flight pass is bounded by a 300-second lifecycle deadline
+(`MCP_TIMEOUT`). The Exegol `bloodhound-ce` wrapper itself budgets up to 60
+seconds just waiting for neo4j, on top of starting postgresql and booting
+the CE API (longer on a first run with fresh database migrations), so a
+cold start can legitimately exceed the window. In that case the pass ends
+`uncertain` exactly as for a lost reply — never replayed — and read-only
+health polling reconciles it to `ready` once CE finally binds its endpoint.
 
 Without `RMM_EXEGOL_CONTAINER`, the runtime calls MCP
 `list_exegol_containers` and tests running candidates with a temporary identity
@@ -148,8 +182,8 @@ check. Neither a shared Docker host nor a reachable MCP endpoint alone proves
 workspace ownership.
 
 Discovery accepts at most 32 container entries and 1 MiB of response content.
-Each identity probe has a ten-second limit within the existing 120-second
-lifecycle deadline. Missing/unsupported listing tools produce
+Each identity probe has a ten-second limit within the 300-second lifecycle
+deadline. Missing/unsupported listing tools produce
 `exegol_discovery_tool_unsupported`; malformed results produce
 `exegol_discovery_response_invalid`. No matching workspace produces
 `exegol_workspace_not_found`; multiple matching candidates produce
@@ -179,17 +213,22 @@ can never cause two `bloodhound-ce` processes to be dispatched. Read-only
 readiness can still reconcile the state to `ready` if the earlier launch
 actually succeeded despite the lost reply.
 
-If CE genuinely never started (the earlier launch really did fail), `uncertain`
-would otherwise persist forever, since neither restarting the server nor
+If the launch reply confirms the wrapper died immediately, the runtime
+reports a definite `bloodhound_launch_failed` with the bounded
+`launch_exit_code` and clears the dispatch intent itself, so retrying needs
+no escape hatch. If instead a launch's reply was lost — or the process was
+alive at dispatch time but CE never became ready — `uncertain` would
+otherwise persist forever, since neither restarting the server nor
 clicking **Open BloodHound** again clears it. The `reset` action
 (`ExegolRuntime.reset()` in `rmm_exegol_runtime.py`) is the explicit operator
-escape hatch: it refuses unless the runtime is currently `uncertain` (not mid
-startup, not already `ready`), clears the persisted dispatch intent and the
-in-memory snapshot, and returns the runtime to its initial, unstarted state so
-the next `ensure`/`ui` call makes a clean attempt. It never touches
-`bloodhound-ce` itself or its data — only the server's own bookkeeping — so an
-operator should confirm no stray `bloodhound-ce` is actually still starting
-in the workspace container before using it. The WebUI surfaces this as a
+escape hatch for that case: it refuses unless the runtime is currently
+`uncertain` (not mid-startup, not already `ready`), clears the persisted
+dispatch intent and the in-memory snapshot, and returns the runtime to its
+initial, unstarted state so the next `ensure`/`ui` call makes a clean
+attempt. It never touches `bloodhound-ce` itself or its data — only the
+server's own bookkeeping — so an operator should confirm no stray
+`bloodhound-ce` is actually still starting in the workspace container
+before using it. The WebUI surfaces this as a
 **Retry BloodHound startup** button that appears next to **Open BloodHound**
 only while the runtime is `uncertain`; clicking it calls `reset` and then
 immediately re-attempts the open flow.

@@ -9,6 +9,61 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Diagnose permanent `bloodhound_startup_uncertain`; report confirmed dead launches
+
+- Reported symptom: the detached-launch and reset fixes above still left
+  every attempt ending in `bloodhound_startup_uncertain`.
+- Investigation went down to the real execution path: cloned Exegol-MCP
+  (pinned `e9fe4e4`) and the Exegol/Exegol-Images sources. `execute_command_in_container`
+  runs commands through `ExegolContainer.exec_raw`: an attached `docker exec`
+  of `zsh -c 'autoload -Uz compinit; compinit; source ~/.zshrc; eval "$CMD"'`,
+  returning synchronously with exit code and output. Reproduced the exact
+  dispatch in a real Ubuntu container: the detached `LAUNCH_COMMAND` mechanics
+  are sound — the exec returns within seconds and the `setsid`-detached
+  process survives the exec session with output redirected. The Exegol
+  `bloodhound-ce` wrapper is a bash script that starts postgresql, starts
+  neo4j (its own wait loop allows 60s), then runs the CE API binary in the
+  foreground.
+- Root cause of the persistent symptom: `rmm_exegol_runtime.py` discarded the
+  launch reply entirely (`except Exception: pass`, result never read) and the
+  old command redirected all wrapper output to `/dev/null`. Any instant,
+  deterministic launch failure inside the container (missing binary, wrapper
+  exit on service errors) was therefore invisible: the runtime waited out
+  the poll window, reported `uncertain`, persisted the `dispatched` intent,
+  and locked every later check into the same `uncertain` state — exactly
+  "uncertain every time". A second contributing defect: the 90-second
+  readiness window is shorter than a legitimate cold start (the wrapper
+  alone budgets 60s for neo4j).
+- `LAUNCH_COMMAND` now keeps the wrapper's output in a root-only log inside
+  the container (`/var/log/rmm-bloodhound-ce.log`, created 0600) and reports
+  bounded markers through the exec reply: `RMM_CE_LAUNCH_RUNNING` after a
+  two-second liveness check, or `RMM_CE_LAUNCH_EXITED:<code>` with the
+  wrapper's exit status when it died immediately.
+- `_check_and_start` reads the reply and classifies: a non-zero EXITED marker
+  is a proven dead launch, so the durable intent is cleared and a definite
+  `bloodhound_launch_failed` error (with the bounded `launch_exit_code`
+  field) is reported; the next `ensure`/`ui` retries directly without a
+  manual `reset`. A lost reply, an unrecognized reply shape, or a zero exit
+  keeps the existing never-replay `uncertain` semantics. The runtime never
+  ingests the log file's content (it may contain CE first-run credentials);
+  the operator inspects it inside the container.
+- Raised `READY_TIMEOUT` 90→240 and `MCP_TIMEOUT` 120→300 for real cold
+  starts; the WebUI open-flow wait budget 120→270 seconds with a friendly
+  message for `bloodhound_launch_failed` pointing at the container log.
+  Updated the MCP/AI tool description; no new actions, so
+  `make check-parity` is unchanged (55 tools).
+- Validation: reproduced the healthy (`RMM_CE_LAUNCH_RUNNING`, surviving
+  detached listener, 0600 log) and instant-failure (`RMM_CE_LAUNCH_EXITED:7`,
+  `:127` for a missing command) marker paths in a real container through the
+  exact Exegol zsh wrapper before coding. `tests/test_exegol_runtime.py`
+  (24 tests) covers the definite-failure/retry-without-reset path, the
+  zero/markerless replies staying `uncertain`, and the new timeout bound
+  relationship; `tests/test_bloodhound_ui.cjs` covers the new budget and the
+  launch-failure message. Related suites (71 tests), `make check-parity`,
+  and the browser contract checks pass. Live Exegol re-verification by the
+  operator is still required: retry a BloodHound start after deploying this
+  change — an instant failure will now name itself.
+
 ### 2026-11-04 — Improve Config and Embeddings dialog usability
 
 - Found and fixed a real visual bug: unlike every other dialog in the app

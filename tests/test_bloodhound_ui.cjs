@@ -99,9 +99,21 @@ function setup(api, blocked = false) {
 
   const pending = setup(async () => ({ status: 202, data: { workspace_request_id: 'b'.repeat(32) } }));
   await pending.button.click();
-  assert.equal(pending.events.filter(e => e[0] === 'request').length, 120);
+  assert.equal(pending.events.filter(e => e[0] === 'request').length, 270);
   assert.equal(pending.tab.closed, true);
   assert.match(pending.status.textContent, /still preparing/);
+
+  const launchFailed = setup(async (route, options) => {
+    const action = JSON.parse(options.body).action;
+    return action === 'ui'
+      ? { status: 202, data: { runtime: { state: 'starting' } } }
+      : { status: 200, data: { runtime: { state: 'failed', error: 'bloodhound_launch_failed', launch_exit_code: 127 } } };
+  });
+  await launchFailed.button.click();
+  assert.match(launchFailed.status.textContent, /launch exit code 127/);
+  assert.match(launchFailed.status.textContent, /rmm-bloodhound-ce\.log/);
+  assert.match(launchFailed.readiness.textContent, /bloodhound_launch_failed 127/);
+  assert.equal(launchFailed.tab.closed, true);
 
   const actions = [];
   const starting = setup(async (route, options) => {
