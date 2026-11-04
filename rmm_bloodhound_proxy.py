@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.parse
 
-from rmm_exegol_runtime import append_log
+from rmm_exegol_runtime import append_log, ce_started, probe_ce
 from rmm_settings import getenv
 
 MAX_BODY = 64 * 1024 * 1024
@@ -274,21 +274,15 @@ def open_ui(root=None):
                     append_log(root, 'ui: bloodhound_ui_restart_required (settings changed since the proxy started)')
                 return 409, {'ok': False, 'error': 'bloodhound_ui_restart_required'}
             instance = _instance
-        connection = instance.connection()
-        connection.timeout = 3
-        try:
-            connection.request('GET', '/api/version')
-            response = connection.getresponse()
-            if response.status != 200:
-                if root:
-                    append_log(root, f"ui: bloodhound_ui_upstream_unavailable (CE responded {response.status})")
-                return 503, {'ok': False, 'available': False, 'error': 'bloodhound_ui_upstream_unavailable'}
-        except (OSError, http.client.HTTPException) as exc:
+        # The upstream check shares the runtime's probe classification: a
+        # 401/403 answer proves CE is up (the operator's browser authenticates
+        # through the proxy with normal CE credentials), while an unreachable
+        # or unhealthy upstream must not mint a launch ticket.
+        availability = probe_ce(upstream_parts)
+        if not ce_started(availability):
             if root:
-                append_log(root, f"ui: bloodhound_ui_upstream_unavailable ({exc})")
+                append_log(root, f"ui: bloodhound_ui_upstream_unavailable (CE probe: {availability})")
             return 503, {'ok': False, 'available': False, 'error': 'bloodhound_ui_upstream_unavailable'}
-        finally:
-            connection.close()
         url = instance.grant()
         return 200, {'ok': True, 'available': True, 'url': url, 'expires_in': 60}
     except (ValueError, OSError) as exc:

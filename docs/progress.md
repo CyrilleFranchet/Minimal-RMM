@@ -41,6 +41,14 @@ implementation log.
   stashing the change). Updated [bloodhound-workflow.md](bloodhound-workflow.md)
   (401/403 semantics) — "configuration blocker for the signed workflow API,
   not a lifecycle blocker".
+- Live follow-up: with the lifecycle fixed, the next live `ui` call reached
+  `rmm_bloodhound_proxy.open_ui()` but failed with
+  `bloodhound_ui_upstream_unavailable` — the proxy's own upstream check
+  required a literal 200 on the same credential-free `/api/version` request.
+  `open_ui()` now reuses `probe_ce` + `ce_started`, so a 401/403 answer proves
+  the upstream is up and a launch ticket is minted; only an unreachable or
+  unhealthy upstream refuses. `test_readiness_and_reuse_without_api_credentials`
+  covers the 401-proxied case and the reuse of the started proxy instance.
 
 ### 2026-11-04 — Exegol container moves to the Workspace badge
 

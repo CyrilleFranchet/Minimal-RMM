@@ -117,21 +117,22 @@ class ProxyTests(unittest.TestCase):
 class LaunchTests(unittest.TestCase):
     def test_readiness_and_reuse_without_api_credentials(self):
         proxy = Mock()
-        proxy.connection.return_value.getresponse.return_value.status = 200
         proxy.grant.return_value = 'http://localhost:1031/_rmm_launch?ticket=opaque'
         with patch('rmm_bloodhound_proxy._instance', None), \
                 patch('rmm_bloodhound_proxy._configuration', None), \
                 patch('rmm_bloodhound_proxy.BrowserProxy', return_value=proxy) as constructor, \
                 patch('rmm_bloodhound_proxy.threading.Thread'), \
-                patch('rmm_bloodhound_proxy.getenv', side_effect=lambda key, default: 'localhost' if key.endswith('_BIND') else default):
+                patch('rmm_bloodhound_proxy.getenv', side_effect=lambda key, default: 'localhost' if key.endswith('_BIND') else default), \
+                patch('rmm_bloodhound_proxy.probe_ce', side_effect=['ready', 'authentication_failed', 'ready', 'unavailable']):
+            self.assertEqual(open_ui()[0], 200)
+            # A CE answering 401 to the credential-free probe is up and proxied.
             self.assertEqual(open_ui()[0], 200)
             self.assertEqual(open_ui()[0], 200)
             constructor.assert_called_once()
-            proxy.connection.return_value.getresponse.return_value.status = 503
             code, result = open_ui()
             self.assertEqual(code, 503)
             self.assertFalse(result['available'])
-            self.assertEqual(proxy.grant.call_count, 2)
+            self.assertEqual(proxy.grant.call_count, 3)
 
 
 if __name__ == '__main__':
