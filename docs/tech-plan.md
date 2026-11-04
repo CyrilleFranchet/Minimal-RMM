@@ -1009,7 +1009,7 @@ merely placing two containers on the same physical machine does not satisfy it.
 ### AD collection: ldeep as a second method
 
 - [ ] Add a separate `ldeep-collection` skill and explicit collector selection;
-  retain `python-bloodhound-collection` with CE `DCOnly` as the first method.
+  retain `bloodhound-ce-python-collection` with CE `DCOnly` as the first method.
 - [ ] Validate the installed ldeep version, authentication modes, supported
   output schemas, and directory coverage in the Exegol workspace.
 - [ ] Define an evidence manifest independent of the collector: method/version,

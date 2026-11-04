@@ -18,13 +18,13 @@ class AiSkillsTests(unittest.TestCase):
         selected = rmm_ai_skills.resolve_ai_skills(['ad-collection-analysis'], [directory])
         self.assertEqual({row['id'] for row in selected}, {
             'operator-boundaries', 'task-completion-report',
-            'python-bloodhound-collection', 'bloodhound-analysis'})
+            'bloodhound-ce-python-collection', 'bloodhound-analysis'})
         flags = {'ad-collection-analysis': False, 'bloodhound-analysis': True}
         selected = rmm_ai_skills.resolve_ai_skills(['ad-collection-analysis'], [directory], flags)
-        self.assertNotIn('python-bloodhound-collection', {row['id'] for row in selected})
+        self.assertNotIn('bloodhound-ce-python-collection', {row['id'] for row in selected})
         self.assertIn('bloodhound-analysis', {row['id'] for row in selected})
         rows = {row['id']: row for row in rmm_ai_skills.list_ai_skills([directory], flags)}
-        self.assertFalse(rows['python-bloodhound-collection']['enabled'])
+        self.assertFalse(rows['bloodhound-ce-python-collection']['enabled'])
         self.assertTrue(rows['bloodhound-analysis']['enabled'])
 
     def test_adapted_skills_remain_discoverable_without_eager_bodies(self):

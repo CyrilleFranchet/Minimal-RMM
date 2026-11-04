@@ -385,7 +385,7 @@ it to the selected Windows agent. Use `result` for pending relay requests and
 `status` for workflow progress. The main page offers **Open BloodHound** and
 connection status; advanced actions remain in CLI, MCP, and the WebUI shell.
 The MCP and Web AI tool is `bloodhound(action, run_id, options)`.
-Load `python-bloodhound-collection` for Python
+Load `bloodhound-ce-python-collection` for Python
 BloodHound CE/DCOnly collection, import, and verification; load
 `bloodhound-analysis` separately to analyze a verified run. ldeep is planned
 as a second collection method and is not an automatic fallback.

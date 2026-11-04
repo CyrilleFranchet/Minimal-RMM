@@ -120,7 +120,7 @@ remaining runtime limitations, and acceptance scenarios.
 | `ai-skills/exegol-rmm-pivot.md` | **On demand.** Route work between Minimal-RMM and Exegol MCP; choose RMM control tools, Exegol execution tools, and SOCKS5/TUN based on where the operation must run. |
 | `ai-skills/task-completion-report.md` | **Always enabled.** End every task with a concise work report; the server appends authoritative UTC start and completion timestamps. |
 | `ai-skills/document-embeddings.md` | **On demand.** Explain document classification, use saved profiles through RMM tools, distinguish operator commands from target commands, and diagnose execution/results. |
-| `ai-skills/python-bloodhound-collection.md` | **On demand.** Python BloodHound CE with enforced DCOnly; persisted collection, import, verification, and evidence handoff. ldeep is planned separately. |
+| `ai-skills/bloodhound-ce-python-collection.md` | **On demand.** Python BloodHound CE with enforced DCOnly; persisted collection, import, verification, and evidence handoff. ldeep is planned separately. |
 | `ai-skills/bloodhound-analysis.md` | **On demand.** Consume verified runs, choose graph queries, assess candidate-path prerequisites and coverage, and distinguish expected telemetry from detection. |
 | `ai-skills/offensive-netexec.md` | **On demand.** Evidence-led protocol selection and targeted authentication/access validation in Exegol. |
 | `ai-skills/offensive-windows-privesc.md`, `ai-skills/offensive-linux-privesc.md` | **On demand.** Target-local privilege assessment, effective permission checks, and bounded validation. |

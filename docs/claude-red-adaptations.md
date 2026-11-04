@@ -41,7 +41,7 @@ upstream additions are not automatically installed. New versions require review.
 
 ## Collection and analysis separation
 
-`python-bloodhound-collection.md` uses Python BloodHound **CE**, whose installed
+`bloodhound-ce-python-collection.md` uses Python BloodHound **CE**, whose installed
 command is `bloodhound-ce-python`, with `DCOnly` enforced by the adapter. Its
 handoff is a verified run with coverage and artifacts. `bloodhound-analysis.md`
 consumes that run and chooses existing catalog queries from the question and
@@ -63,7 +63,7 @@ distinct from loading. Existing saved selections continue to exclude skills
 not selected: enable the new entries in the AI panel when using such a preset.
 
 The retired `ad-collection-analysis` selection expands to
-`python-bloodhound-collection` and `bloodhound-analysis`. The server and
+`bloodhound-ce-python-collection` and `bloodhound-analysis`. The server and
 workspace share `resolve_ai_skills`; `expand_skill_ids` maps the old selection,
 and `expand_skill_overrides` preserves legacy disablement unless a replacement
 has an explicit setting. The browser expands the old ID before filtering its

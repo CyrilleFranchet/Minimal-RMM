@@ -271,7 +271,8 @@
         if (Array.isArray(parsed)) {
           return [...new Set(parsed.map((id) => String(id).trim()).filter(Boolean)
             .flatMap((id) => {
-              if (id === "ad-collection-analysis") return ["python-bloodhound-collection", "bloodhound-analysis"];
+              if (id === "ad-collection-analysis") return ["bloodhound-ce-python-collection", "bloodhound-analysis"];
+              if (id === "python-bloodhound-collection") return ["bloodhound-ce-python-collection"];
               const webTopics = ["sqli", "xss", "ssrf", "ssti", "xxe", "idor", "file-upload", "rce",
                 "deserialization", "race-condition", "request-smuggling", "open-redirect",
                 "parameter-pollution", "graphql", "waf-bypass", "business-logic"];

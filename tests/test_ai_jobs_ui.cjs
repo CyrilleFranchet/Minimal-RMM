@@ -30,7 +30,7 @@ function setup(api) {
 (async () => {
   const diagnosticUi = setup(async () => ({ status: 200, data: { messages: [] } }));
   diagnosticUi.storage.set('rmm_ai_skills_enabled', JSON.stringify(['ad-collection-analysis', 'bloodhound-analysis']));
-  assert.deepEqual(Array.from(diagnosticUi.test.loadEnabledSkillIds()), ['python-bloodhound-collection', 'bloodhound-analysis']);
+  assert.deepEqual(Array.from(diagnosticUi.test.loadEnabledSkillIds()), ['bloodhound-ce-python-collection', 'bloodhound-analysis']);
   const webTopics = ['sqli', 'xss', 'ssrf', 'ssti', 'xxe', 'idor', 'file-upload', 'rce',
     'deserialization', 'race-condition', 'request-smuggling', 'open-redirect',
     'parameter-pollution', 'graphql', 'waf-bypass', 'business-logic'];

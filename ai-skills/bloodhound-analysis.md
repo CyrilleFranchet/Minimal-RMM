@@ -10,7 +10,7 @@ default: false
 Analyze existing data through the `bloodhound` adapter. `operator-boundaries`
 applies. This skill does not silently collect, refresh, acquire credentials,
 or execute a discovered path. If acquisition is actually needed, explain the
-coverage gap and load `python-bloodhound-collection` for that separate task.
+coverage gap and load `bloodhound-ce-python-collection` for that separate task.
 
 Methodology adapted from Claude-Red's
 [AD skill at revision a8de813](https://github.com/SnailSploit/Claude-Red/blob/a8de813edc9f66f60d44cfe42d47750e89d9930b/Skills/active-directory/offensive-active-directory/SKILL.md):

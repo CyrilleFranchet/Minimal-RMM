@@ -10,7 +10,10 @@ import os
 import re
 
 _SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-SKILL_REPLACEMENTS = {'ad-collection-analysis': ('python-bloodhound-collection', 'bloodhound-analysis')}
+SKILL_REPLACEMENTS = {
+    'ad-collection-analysis': ('bloodhound-ce-python-collection', 'bloodhound-analysis'),
+    'python-bloodhound-collection': ('bloodhound-ce-python-collection',),
+}
 WEB_SKILL_TOPICS = (
     'sqli', 'xss', 'ssrf', 'ssti', 'xxe', 'idor', 'file-upload', 'rce',
     'deserialization', 'race-condition', 'request-smuggling', 'open-redirect',

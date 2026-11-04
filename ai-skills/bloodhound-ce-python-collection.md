@@ -1,14 +1,15 @@
 ---
-id: python-bloodhound-collection
-title: Python BloodHound CE collection and ingestion
-description: Collect AD data with Python BloodHound CE in Exegol using DCOnly, import it into local BloodHound CE, and verify the dataset. Use for acquisition or refresh; use bloodhound-analysis for questions about existing graph data.
+id: bloodhound-ce-python-collection
+title: BloodHound CE Python collector (bloodhound-ce-python) collection
+description: Collect AD data with the official BloodHound CE Python collector (bloodhound-ce-python) in Exegol using DCOnly, import it into local BloodHound CE, and verify the dataset. Use for acquisition or refresh; use bloodhound-analysis for questions about existing graph data. Not the legacy bloodhound-python tool.
 default: false
 ---
 
-# Python BloodHound CE collection and ingestion
+# BloodHound CE Python collector collection
 
-This is the **Python BloodHound** collection method. The installed executable
-must be `bloodhound-ce-python`, producing supported CE version-6 artifacts.
+This is the **BloodHound CE Python collector** method: the installed executable
+must be `bloodhound-ce-python` (the official CE collector, not the legacy
+`bloodhound-python` tool), producing supported CE version-6 artifacts.
 Use the `bloodhound` adapter at the owning Exegol workspace; never send the
 collector command to a Windows agent. `operator-boundaries` applies.
 

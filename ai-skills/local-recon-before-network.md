@@ -81,7 +81,7 @@ gap.
 Live DC discovery requires a separate, scoped DNS/directory step when needed.
 `nltest /dsgetdc`, `Get-ADDomain`, and BloodHound are not purely local evidence.
 Use the selected directory workflow: normally `windows-ad-recon-stealth`, with
-explicitly selected `python-bloodhound-collection` governing graph collection.
+explicitly selected `bloodhound-ce-python-collection` governing graph collection.
 
 Caches and existing connections may suggest peers when relevant, but do not
 prove current reachability; probe candidates autonomously when needed to
