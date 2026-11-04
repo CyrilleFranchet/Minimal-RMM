@@ -53,12 +53,33 @@ see in `runtime.log` and `health`/`ensure` responses.
 make check-exegol-mcp
 # or
 python3 scripts/check_exegol_mcp.py [--container NAME] [--no-probe] [--json]
+                                     [--config PATH] [--data-dir PATH]
 ```
 
 Exit code `0` means the MCP endpoint answered, the required tools are
 present, and (unless `--no-probe` or more than one container was running)
 the identity round trip through the exact tool and command path the runtime
 uses was confirmed. Any other result is `1`.
+
+### Reads the same configuration the workspace uses
+
+`RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, and `RMM_EXEGOL_CONTAINER` are
+workspace settings (`rmm_settings.FIELDS`) — an operator normally saves them
+from the workspace Config dialog, not from a shell environment variable.
+Earlier versions of this script only read `os.environ`, so a value saved
+through Config was invisible to it unless the operator also exported it by
+hand before running `make check-exegol-mcp`.
+
+The script now calls `rmm_settings.bootstrap("workspace", ...)` before
+resolving any of those keys — the same call `workspace_service.py` makes at
+startup — so it loads the persisted `settings.json` the running workspace
+actually uses. `--config`/`--data-dir` select that file exactly as they do
+for `workspace_service.py`; with neither flag, it resolves the same default
+location (`RMM_WORKSPACE_DATA` or `~/.minimal-rmm`). A real environment
+variable still takes precedence over the saved value, matching
+`rmm_settings.getenv`'s normal override order, so exporting
+`RMM_EXEGOL_MCP_URL` for a one-off check against a different endpoint still
+works.
 
 Not part of `make check`: it needs a real `RMM_EXEGOL_MCP_URL` to mean
 anything, so it stays a manual, opt-in step — run it once per new

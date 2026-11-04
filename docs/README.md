@@ -103,6 +103,7 @@ historical notes in `progress.md`.
 | Workspace and URL-installed AI skills | [Operator-managed assets](operator-assets.md) |
 | Per-session chat persistence | [AI chat memory](web-ai-chat-memory.md) |
 | Light and dark theme | [WebUI theme](web-ui-theme.md) |
+| Server-side logging of operator WebUI connections | [WebUI connection logging](webui-connection-logging.md) |
 
 ## Product and planning
 

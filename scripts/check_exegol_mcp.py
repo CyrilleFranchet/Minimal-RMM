@@ -10,6 +10,17 @@ docs/exegol-mcp-verification.md.
 
 Run: make check-exegol-mcp
      python3 scripts/check_exegol_mcp.py [--container NAME] [--no-probe] [--json]
+                                          [--config PATH] [--data-dir PATH]
+
+RMM_EXEGOL_MCP_URL/RMM_EXEGOL_MCP_TOKEN/RMM_EXEGOL_CONTAINER are workspace
+settings (see rmm_settings.FIELDS): an operator can save them from the
+workspace Config dialog instead of exporting environment variables. This
+script loads the same persisted workspace settings.json workspace_service.py
+reads at startup (bootstrap("workspace")) before resolving those keys, so it
+reflects what the running workspace actually uses. A real environment
+variable still overrides the saved value, matching rmm_settings.getenv's own
+precedence. --config/--data-dir select the settings file exactly as they do
+for workspace_service.py.
 
 It never starts, stops, or modifies anything in the target container —
 only `list_exegol_containers` (read-only) and a one-line `printf` identity
@@ -35,7 +46,7 @@ from rmm_exegol_runtime import (  # noqa: E402
     output_strings, runtime_failure_code,
 )
 from rmm_mcp_client import McpHttpSession  # noqa: E402
-from rmm_settings import getenv  # noqa: E402
+from rmm_settings import bootstrap, getenv  # noqa: E402
 
 
 def validated_url():
@@ -117,7 +128,20 @@ def main():
     parser.add_argument('--container', help='Override RMM_EXEGOL_CONTAINER for the identity probe')
     parser.add_argument('--no-probe', action='store_true', help='List tools/containers only; skip the exec round trip')
     parser.add_argument('--json', action='store_true', help='Print the machine-readable report instead of a summary')
+    parser.add_argument('--config', help='Workspace settings file (same meaning as workspace_service.py --config)')
+    parser.add_argument('--data-dir', help='Workspace data directory (same meaning as workspace_service.py --data-dir)')
     args = parser.parse_args()
+
+    # Load the same persisted workspace settings.json workspace_service.py reads at
+    # startup, so RMM_EXEGOL_MCP_URL/_TOKEN/RMM_EXEGOL_CONTAINER saved from the Config
+    # dialog are picked up here too, not just real environment variables.
+    bootstrap_argv = []
+    if args.config:
+        bootstrap_argv += ['--config', args.config]
+    if args.data_dir:
+        bootstrap_argv += ['--data-dir', args.data_dir]
+    bootstrap('workspace', bootstrap_argv)
+
     report = asyncio.run(run(args))
 
     if args.json:

@@ -3355,6 +3355,8 @@ class RMMHandler(BaseHTTPRequestHandler):
         hub = self.server_instance.event_hub
         hub.add(ws, session_filter)
         self.close_connection = False
+        client_ip = self.client_address[0]
+        self.server_instance.log(f"WebUI event channel connected: {client_ip}", "INFO")
 
         try:
             sessions = self.server_instance.sessions_to_json()
@@ -3372,6 +3374,7 @@ class RMMHandler(BaseHTTPRequestHandler):
         finally:
             hub.remove(ws)
             ws.close()
+            self.server_instance.log(f"WebUI event channel disconnected: {client_ip}", "INFO")
         return True
 
     def _handle_socks_agent_websocket(self, session_id: str) -> bool:
@@ -3570,6 +3573,11 @@ class RMMHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self._safe_write(data)
+        if rel == "index.html":
+            # Log one line per WebUI page load, not per static asset (css/js/img).
+            server = getattr(self, "server_instance", None)
+            if server is not None:
+                server.log(f"WebUI connection: {self.client_address[0]}", "INFO")
         return True
 
     def _api_path_parts(self, path):

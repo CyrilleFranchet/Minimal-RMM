@@ -9,6 +9,29 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — WebUI connection logging, and `check_exegol_mcp.py` reads workspace settings
+
+- Reported: nothing in the server log showed WebUI connections. Found that
+  `RMMHandler.log_message()` is a no-op by design (suppresses the stdlib
+  per-request access log for every route, beacon included), and neither
+  `_serve_web()` nor `_handle_websocket_upgrade()` called `server.log(...)`
+  the way `/register`, plugin downloads, or SOCKS events already do. Added
+  one `server.log()` call per WebUI page load (on `index.html`, not every
+  static asset) in `_serve_web()`, and connect/disconnect logging for the
+  operator event WebSocket in `_handle_websocket_upgrade()`, both using
+  `self.client_address[0]`. No new operator surface, so no `check-parity`
+  entry. New doc: [WebUI connection logging](webui-connection-logging.md).
+- Reported: `make check-exegol-mcp` ignored config saved from the workspace
+  Config dialog. Cause: `scripts/check_exegol_mcp.py` never called
+  `rmm_settings.bootstrap(...)`, so `rmm_settings.getenv()` fell through to
+  raw `os.environ` only, missing `RMM_EXEGOL_MCP_URL`/`_TOKEN`/
+  `RMM_EXEGOL_CONTAINER` saved to the workspace's `settings.json`. Fixed by
+  calling `bootstrap("workspace", ...)` — the same call `workspace_service.py`
+  makes at startup — before resolving those keys, and added `--config`/
+  `--data-dir` flags matching `workspace_service.py`'s. A real environment
+  variable still overrides the saved value. Updated
+  [Exegol MCP verification](exegol-mcp-verification.md).
+
 ### 2026-11-04 — Standalone Exegol MCP verification script (not an operator command)
 
 - Request: CLI slash commands `/mcp_list_containers` and
