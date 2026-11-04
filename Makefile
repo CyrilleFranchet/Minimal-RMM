@@ -23,6 +23,7 @@ help:
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
 	@printf "  make check-exegol-mcp  Validate a live Exegol MCP endpoint (needs RMM_EXEGOL_MCP_URL); not part of 'check'\n"
+	@printf "                         pass ARGS=\"--config PATH\" or ARGS=\"--data-dir PATH\" to point at a saved workspace config\n"
 	@printf "  make go-test       Cross-build the Go agent and test the pivot components\n"
 	@printf "  make tun-build     Build the server-side TUN helper\n"
 	@printf "  make workspace-service  Start the local Exegol workspace service\n"
@@ -91,4 +92,4 @@ check-web-contracts:
 check: test check-cli check-parity check-web-contracts lint
 
 check-exegol-mcp:
-	@$(PYTHON) scripts/check_exegol_mcp.py
+	@$(PYTHON) scripts/check_exegol_mcp.py $(ARGS)

@@ -51,10 +51,17 @@ see in `runtime.log` and `health`/`ensure` responses.
 
 ```shell
 make check-exegol-mcp
+# or, to point at a saved workspace config that isn't at the default location:
+make check-exegol-mcp ARGS="--config PATH"
+make check-exegol-mcp ARGS="--data-dir PATH"
 # or
 python3 scripts/check_exegol_mcp.py [--container NAME] [--no-probe] [--json]
                                      [--config PATH] [--data-dir PATH]
 ```
+
+`make check-exegol-mcp` forwards `ARGS` verbatim to the script, so any of its
+flags — `--config`, `--data-dir`, `--container`, `--no-probe`, `--json` — work
+through `make` the same as calling the script directly.
 
 Exit code `0` means the MCP endpoint answered, the required tools are
 present, and (unless `--no-probe` or more than one container was running)
@@ -80,6 +87,13 @@ variable still takes precedence over the saved value, matching
 `rmm_settings.getenv`'s normal override order, so exporting
 `RMM_EXEGOL_MCP_URL` for a one-off check against a different endpoint still
 works.
+
+If `workspace_service.py` was started with an explicit `--config` or
+`--data-dir` (for example a per-deployment directory, not the default
+`~/.minimal-rmm`), the Config dialog's saved values live in that file, not
+the default one. Running `make check-exegol-mcp` with no flags will not see
+them — pass the same flag through `ARGS` (see Usage above) so the script
+reads the exact file the running workspace reads.
 
 Not part of `make check`: it needs a real `RMM_EXEGOL_MCP_URL` to mean
 anything, so it stays a manual, opt-in step — run it once per new

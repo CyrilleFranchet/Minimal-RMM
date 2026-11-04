@@ -32,6 +32,19 @@ implementation log.
   variable still overrides the saved value. Updated
   [Exegol MCP verification](exegol-mcp-verification.md).
 
+### 2026-11-04 — `make check-exegol-mcp` now forwards `--config`/`--data-dir`
+
+- Reported (follow-up to the entry above): `make check-exegol-mcp` still
+  ignored the saved config. Cause: the script already resolves
+  `--config`/`--data-dir`, but the Makefile target took no arguments, so
+  `make check-exegol-mcp` always ran the script with neither flag and fell
+  back to the default settings location (`RMM_WORKSPACE_DATA` or
+  `~/.minimal-rmm`) — not the file an explicitly-started
+  `workspace_service.py --config PATH`/`--data-dir PATH` actually reads from.
+  Fixed by forwarding a new `ARGS` make variable to the script, e.g.
+  `make check-exegol-mcp ARGS="--config PATH"`. Updated `make help` and
+  [Exegol MCP verification](exegol-mcp-verification.md).
+
 ### 2026-11-04 — Standalone Exegol MCP verification script (not an operator command)
 
 - Request: CLI slash commands `/mcp_list_containers` and
