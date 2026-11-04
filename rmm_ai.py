@@ -544,7 +544,14 @@ def _run_ai_chat_mcp(
             exegol_mcp_token=exegol_mcp_token,
         )
     except Exception as e:
-        if progress and not connected:
+        if connected:
+            # The MCP session was established; `chat()` (the provider call or
+            # a tool execution) is what failed. Re-raise as-is so the actual
+            # provider error (e.g. an AI provider quota/rate-limit message)
+            # reaches the operator instead of being relabeled as an MCP
+            # connection problem.
+            raise
+        if progress:
             progress({"phase": "failed", "mcp_status": "error"})
         raise RuntimeError(
             f"MCP server failed: {e}. Install MCP support: "

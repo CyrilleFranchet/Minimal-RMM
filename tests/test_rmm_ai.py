@@ -438,5 +438,44 @@ class AiProviderTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[1].args[2]["messages"][-1]["name"], "list_sessions")
 
 
+class McpChatErrorLabelingTests(unittest.TestCase):
+    """A provider failure after the MCP session connects must not be relabeled
+    as an MCP installation/connection problem (e.g. a provider quota error
+    must not read as "MCP server failed... install MCP support")."""
+
+    class DummyMcp:
+        openai_tools = []
+        server_instructions = None
+
+        async def call_tool(self, name, arguments):
+            raise AssertionError("No tools should run")  # pragma: no cover
+
+    def test_provider_error_after_connection_is_not_relabeled(self):
+        async def fake_run(rmm_base_url, rmm_token, fn, **kwargs):
+            return await fn(self.DummyMcp())
+
+        with patch("rmm_mcp_client.run_with_mcp_session",
+                   side_effect=lambda *a, **k: asyncio.run(fake_run(*a, **k))), \
+             patch("rmm_ai._run_provider_loop", side_effect=RuntimeError("mistral quota exceeded")):
+            with self.assertRaises(RuntimeError) as ctx:
+                rmm_ai._run_ai_chat_mcp(
+                    rmm_base_url="http://local", rmm_token="tok", provider="mistral",
+                    api_key="key", messages=[], model="mistral-test",
+                    selected_session_id=None, max_rounds=2,
+                )
+        self.assertEqual(str(ctx.exception), "mistral quota exceeded")
+
+    def test_connection_failure_before_chat_keeps_mcp_install_hint(self):
+        with patch("rmm_mcp_client.run_with_mcp_session", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError) as ctx:
+                rmm_ai._run_ai_chat_mcp(
+                    rmm_base_url="http://local", rmm_token="tok", provider="mistral",
+                    api_key="key", messages=[], model="mistral-test",
+                    selected_session_id=None, max_rounds=2,
+                )
+        self.assertIn("MCP server failed", str(ctx.exception))
+        self.assertIn("Install MCP support", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

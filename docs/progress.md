@@ -9,6 +9,36 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — AI provider errors after MCP connects were relabeled as an MCP install problem
+
+- Reported: hitting an AI provider quota limit (Mistral) in the WebUI chat
+  surfaced as `MCP server failed: <provider error>. Install MCP support: pip
+  install -r requirements-mcp.txt (Python 3.10+).` — confusing, since MCP was
+  installed and connected fine; the real failure was downstream, in the
+  provider chat call.
+- Root cause: `_run_ai_chat_mcp` in `rmm_ai.py` wrapped **every** exception
+  from `run_with_mcp_session(...)` with the same "MCP server failed... install
+  MCP support" `RuntimeError`, regardless of whether the MCP session had
+  already connected. A provider error raised from inside `chat()` (e.g. a 429
+  quota/rate-limit message from `_json_request`, which already carries the
+  provider's real error text) was indistinguishable from an actual failure to
+  start/reach the MCP server.
+- Fix: the `except Exception` handler now re-raises as-is when the local
+  `connected` flag is already `True` (set at the top of `chat()`, before any
+  provider call) — only a failure before that point still gets the MCP
+  install/connection hint. Added
+  `test_provider_error_after_connection_is_not_relabeled` and
+  `test_connection_failure_before_chat_keeps_mcp_install_hint` in
+  `tests/test_rmm_ai.py`.
+- The unrelated `BloodHound: authentication_failed` WebUI label raised in the
+  same conversation turned out to be expected, by-design behavior from the
+  earlier `1b13953` commit (a 401 on the credential-free `/api/version` probe
+  is kept as the literal displayed value even though it counts as CE having
+  started); no change was needed there.
+- `make check` and the full `test_rmm_ai*`/`test_rmm_ai_skills` suite pass.
+  Not verified against a live Mistral 429 response; only unit-tested with a
+  mocked `RuntimeError`.
+
 ### 2026-11-04 — Adapt bloodhound_mcp's reference resources into an ai-skill; defer direct integration
 
 - Evaluated `mwnickerson/bloodhound_mcp` (linked, not published, by SpecterOps'
