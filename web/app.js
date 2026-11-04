@@ -988,6 +988,7 @@ function setConsoleReadOnly(readonly) {
     input.disabled = readonly;
   }
   if (readonly) {
+    closeShellCommandMenu();
     resetShellHistoryNav();
     const hint = $("#shell-completion-hint");
     if (hint) hint.classList.add("hidden");
@@ -1925,10 +1926,10 @@ function appendShellLine(kind, html) {
   return line;
 }
 
-function appendShellEcho(cmd, { block = false, meta = null, kind = null, remotePath = null, matchKeys = null } = {}) {
+function appendShellEcho(cmd, { block = false, meta = null, kind = null, remotePath = null, matchKeys = null, remember = true } = {}) {
   state.echoedCommands.add(cmd);
   setTimeout(() => state.echoedCommands.delete(cmd), 120000);
-  rememberShellCommand(cmd);
+  if (remember) rememberShellCommand(cmd);
   if (block) {
     return createCommandBlock(cmd, { meta, kind, remotePath, matchKeys });
   }
@@ -1990,7 +1991,11 @@ function extractShellCommandFromEvent(ev) {
   if (!ev) return null;
   const t = ev.type || "";
   if (t === "operator") {
-    const cmd = operatorCommandFromBody(String(ev.body || ""));
+    const body = String(ev.body || "").trim();
+    // Only raw shell submissions are replayable; tool audit labels omit arguments.
+    if (!/^(queued|exec):/.test(body)) return null;
+    const cmd = typeof ev.command === "string"
+      ? ev.command.trim() : operatorCommandFromBody(body);
     if (!cmd || cmd.startsWith("__")) return null;
     return cmd;
   }
@@ -2091,7 +2096,10 @@ function longestCommonPrefix(strings) {
 }
 
 function getShellCompletionCandidates(line) {
-  const q = String(line ?? "");
+  const q = String(line ?? "").trimStart();
+  if (/^\/\S*$/.test(q)) {
+    return SHELL_META_COMMANDS.map(cmd => `/${cmd}`).filter(cmd => cmd.startsWith(q.toLowerCase()));
+  }
   const lower = q.toLowerCase();
   const seen = new Set();
   const cands = [];
@@ -2112,7 +2120,7 @@ function getShellCompletionCandidates(line) {
     add(p);
   }
   for (const cmd of SHELL_META_COMMANDS) {
-    add(cmd);
+    add(`/${cmd}`);
   }
 
   return cands;
@@ -2157,15 +2165,69 @@ function applyShellTabCompletion(shift) {
   updateShellCompletionHint();
 }
 
+const shellCommandMenu = { candidates: [], index: 0, dismissed: false };
+
+function closeShellCommandMenu() {
+  shellCommandMenu.candidates = [];
+  const menu = $("#shell-command-menu");
+  menu?.classList.add("hidden");
+  const input = $("#shell-input");
+  input?.setAttribute("aria-expanded", "false");
+  input?.removeAttribute("aria-activedescendant");
+}
+
+function renderShellCommandMenu() {
+  const menu = $("#shell-command-menu");
+  const input = $("#shell-input");
+  if (!menu || !input) return;
+  menu.replaceChildren();
+  shellCommandMenu.candidates.forEach((command, index) => {
+    const option = document.createElement("div");
+    option.id = "shell-command-option-" + index;
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", String(index === shellCommandMenu.index));
+    option.textContent = command;
+    option.addEventListener("mousedown", event => {
+      event.preventDefault();
+      shellCommandMenu.index = index;
+      acceptShellCommandCompletion();
+    });
+    menu.appendChild(option);
+  });
+  menu.classList.remove("hidden");
+  input.setAttribute("aria-expanded", "true");
+  input.setAttribute("aria-activedescendant", "shell-command-option-" + shellCommandMenu.index);
+  menu.children[shellCommandMenu.index]?.scrollIntoView?.({ block: "nearest" });
+}
+
+function acceptShellCommandCompletion() {
+  const input = $("#shell-input");
+  const command = shellCommandMenu.candidates[shellCommandMenu.index];
+  if (!input || !command) return;
+  input.value = command + " ";
+  input.setSelectionRange(input.value.length, input.value.length);
+  closeShellCommandMenu();
+  updateShellCompletionHint();
+}
+
 function updateShellCompletionHint() {
   const hint = $("#shell-completion-hint");
   const input = $("#shell-input");
   if (!hint || !input || input.disabled) {
     if (hint) hint.classList.add("hidden");
+    closeShellCommandMenu();
     return;
   }
   const line = input.value;
   const cands = getShellCompletionCandidates(line);
+  if (!shellCommandMenu.dismissed && /^\s*\/\S*$/.test(line) && cands.length && state.viewMode !== "history") {
+    shellCommandMenu.candidates = cands;
+    shellCommandMenu.index = Math.min(shellCommandMenu.index, cands.length - 1);
+    hint.classList.add("hidden");
+    renderShellCommandMenu();
+    return;
+  }
+  closeShellCommandMenu();
   if (!line || !cands.length) {
     hint.textContent = "";
     hint.classList.add("hidden");
@@ -2187,6 +2249,34 @@ function updateShellCompletionHint() {
 }
 
 function handleShellInputKeydown(e) {
+  if (e.isComposing) return;
+  if (e.key === "Escape") {
+    shellCommandMenu.dismissed = true;
+    closeShellCommandMenu();
+    $("#shell-completion-hint")?.classList.add("hidden");
+    e.preventDefault();
+    return;
+  }
+  if (shellCommandMenu.candidates.length) {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      const count = shellCommandMenu.candidates.length;
+      shellCommandMenu.index = (shellCommandMenu.index + (e.key === "ArrowUp" ? -1 : 1) + count) % count;
+      renderShellCommandMenu();
+      return;
+    }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      if (e.shiftKey) {
+        const count = shellCommandMenu.candidates.length;
+        shellCommandMenu.index = (shellCommandMenu.index - 1 + count) % count;
+        renderShellCommandMenu();
+      } else {
+        acceptShellCommandCompletion();
+      }
+      return;
+    }
+  }
   if (e.key === "Enter" && e.ctrlKey) {
     e.preventDefault();
     runCommand(true);
@@ -2213,10 +2303,14 @@ function bindShellInputCompletion() {
   if (!input || input.dataset.completionBound) return;
   input.dataset.completionBound = "1";
   input.addEventListener("keydown", handleShellInputKeydown);
+  input.addEventListener("blur", closeShellCommandMenu);
+  input.addEventListener("focus", updateShellCompletionHint);
   input.addEventListener("input", () => {
     if (shellInputProgrammatic) return;
     resetShellHistoryNav();
     resetShellTabCycle();
+    shellCommandMenu.dismissed = false;
+    shellCommandMenu.index = 0;
     updateShellCompletionHint();
   });
 }
@@ -2606,6 +2700,7 @@ function showEmptyConsole() {
   const input = $("#shell-input");
   input.value = "";
   input.disabled = true;
+  updateShellCompletionHint();
   updateSocksUi();
   updateTunUi();
   renderSessionList();
@@ -2759,21 +2854,21 @@ function defaultExfilProfile() {
 
 function parseExfilShellArgs(rest) {
   if (!rest.length) {
-    return { error: "Usage: exfil <remote_path> [profile]" };
+    return { error: "Usage: /exfil <remote_path> [profile]" };
   }
   let remote = rest[0];
   let profile = "";
   const profileFlag = rest.indexOf("--profile");
   if (profileFlag >= 0) {
     if (profileFlag === 0 || profileFlag >= rest.length - 1) {
-      return { error: "Usage: exfil <remote_path> [profile]" };
+      return { error: "Usage: /exfil <remote_path> [profile]" };
     }
     remote = rest.slice(0, profileFlag).join(" ");
     profile = rest[profileFlag + 1];
   } else if (rest.length === 2) {
     profile = rest[1];
   } else if (rest.length > 2) {
-    return { error: "Usage: exfil <remote_path> [profile]" };
+    return { error: "Usage: /exfil <remote_path> [profile]" };
   }
   if (!profile) {
     profile = defaultExfilProfile();
@@ -2864,7 +2959,12 @@ async function postPeQueue(plugin, exportName, pluginInput, target = captureShel
 /** @returns {boolean} true if cmd was a meta command (handled locally). */
 async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   // Recognize the verb before parsing so malformed quoting cannot escape to the agent.
-  const verb = cmd.trim().split(/\s+/, 1)[0].toLowerCase();
+  if (!cmd.trimStart().startsWith("/")) return false;
+  const verb = cmd.trim().split(/\s+/, 1)[0].slice(1).toLowerCase();
+  if (!SHELL_META_COMMANDS.includes(verb)) {
+    appendShellError("Unknown internal command. Type / for commands or /help for usage.");
+    return true;
+  }
   if (verb === "bloodhound") {
     try {
       const args = parseShellWords(cmd, true).slice(1);
@@ -2887,12 +2987,15 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
         appendShellLine("output", `<pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>`);
       }
     } catch (error) {
-      if (target.isCurrent()) appendShellError(`${error.message} Usage: bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']`);
+      if (target.isCurrent()) appendShellError(`${error.message} Usage: /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']`);
     }
     return true;
   }
-  const words = parseShellWords(cmd);
-  if (!words.length) return false;
+  const words = parseShellWords(cmd, true);
+  if (!words.length) {
+    appendShellError("Usage: /help — check command quoting.");
+    return true;
+  }
   const rest = words.slice(1);
 
   if (verb === "embeddings") {
@@ -2904,7 +3007,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
       else documents.push(args[i + 1]);
     }
     if (!valid || !documents.length || documents.length > 32) {
-      appendShellError('Usage: embeddings run <profile> --document "C:\\Lab\\documents" [--document <path> ...] (1–32 paths; uses the selected session)');
+      appendShellError('Usage: /embeddings run <profile> --document "C:\\Lab\\documents" [--document <path> ...] (1–32 paths; uses the selected session)');
       return true;
     }
     if (!target.sessionId) {
@@ -2934,24 +3037,24 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
 
   if (verb === "help" || verb === "?") {
     if (rest.length) {
-      appendShellError("Usage: help");
+      appendShellError("Usage: /help");
       return true;
     }
     appendShellEcho(cmd);
     appendShellLine(
       "output",
       `<pre>Local commands:
-  help | ?                         Show this help
-  download &lt;remote_path&gt;           Queue a download from the agent
-  exfil &lt;remote_path&gt; [profile]    Queue rclone exfiltration
-  screenshot                       Queue a screenshot
-  embeddings run &lt;profile&gt; --document &lt;path&gt; [--document &lt;path&gt; ...]
+  /help | /?                         Show this help
+  /download &lt;remote_path&gt;           Queue a download from the agent
+  /exfil &lt;remote_path&gt; [profile]    Queue rclone exfiltration
+  /screenshot                       Queue a screenshot
+  /embeddings run &lt;profile&gt; --document &lt;path&gt; [--document &lt;path&gt; ...]
                                    Run a saved embedding profile on this session
-  pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
-  bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
+  /pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
+  /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
                                    Operate workspace BloodHound; never sent to the agent
 
-Any other command is sent to the selected agent. Prefix commands with
+Commands without / are sent to the selected agent. Prefix commands with
 cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side interpreter.</pre>`
     );
     return true;
@@ -2959,11 +3062,11 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
 
   if (verb === "download") {
     if (!rest.length) {
-      appendShellError("Usage: download <remote_path>");
+      appendShellError("Usage: /download <remote_path>");
       return true;
     }
     const remote = rest.join(" ");
-    appendShellEcho(`download ${remote}`, {
+    appendShellEcho(cmd, {
       block: true,
       kind: "download",
       remotePath: remote,
@@ -2981,7 +3084,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       return true;
     }
     const { remote, profile } = parsed;
-    appendShellEcho(`exfil ${remote} ${profile}`, {
+    appendShellEcho(cmd, {
       block: true,
       kind: "exfil",
       remotePath: remote,
@@ -3004,10 +3107,10 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
 
   if (verb === "screenshot") {
     if (rest.length) {
-      appendShellError("Usage: screenshot");
+      appendShellError("Usage: /screenshot");
       return true;
     }
-    appendShellEcho("screenshot", {
+    appendShellEcho(cmd, {
       block: true,
       kind: "screenshot",
       meta: "(screenshot queued)",
@@ -3019,7 +3122,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
 
   if (verb === "pe") {
     if (!rest.length) {
-      appendShellError("Usage: pe <plugin> [export] [input]");
+      appendShellError("Usage: /pe <plugin> [export] [input]");
       return true;
     }
     const plugin = rest[0];
@@ -3111,7 +3214,7 @@ async function runCommand(wait) {
 async function queueDownload() {
   const remote = $("#download-remote").value.trim();
   if (!remote || !state.selectedId) return;
-  appendShellEcho(`download ${remote}`, {
+  appendShellEcho(`/download ${remote}`, {
     block: true,
     kind: "download",
     remotePath: remote,
@@ -3222,6 +3325,7 @@ async function queueExfil() {
   const mode = $("#exfil-mode")?.value || "auto";
   if (!remote || !state.selectedId || !profile) return;
   appendShellEcho(`exfil ${remote} ${profile} [${mode}]`, {
+    remember: false,
     block: true,
     kind: "exfil",
     remotePath: remote,
@@ -3240,7 +3344,7 @@ async function queueExfil() {
 
 async function queueScreenshot() {
   if (!state.selectedId) return;
-  appendShellEcho("screenshot", {
+  appendShellEcho("/screenshot", {
     block: true,
     kind: "screenshot",
     meta: "(screenshot queued)",
@@ -3257,6 +3361,7 @@ async function queueUpload() {
 
   const file = fileInput.files[0];
   appendShellEcho(`upload ${file.name} → ${remote}`, {
+    remember: false,
     block: true,
     kind: "upload",
     remotePath: remote,

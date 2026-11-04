@@ -106,17 +106,17 @@ Edit the JSON and save the same name to update it. Profile names allow letters,
 digits, dots, underscores, and hyphens, up to 64 characters. Exported records
 and plain configuration objects are both accepted by `profiles save --file`.
 The command group is available in the standalone CLI; the existing interactive
-shell retains generic `pe` execution. The WebUI session shell also supports
+shell retains generic `/pe` execution. The WebUI session shell also supports
 direct execution using a saved profile:
 
 ```text
-embeddings run strategy --document "C:\Lab Docs" --document "\\fileserver\share\Docs"
+/embeddings run strategy --document "C:\Lab Docs" --document "\\fileserver\share\Docs"
 ```
 
 This uses the selected session and queues the plugin through the same
 authenticated embeddings API as the panel. It does not open a dialog.
 Repeat `--document` for one to 32 paths; quotes preserve Windows and UNC
-backslashes. Bare `embeddings` prints usage locally. Invalid arguments never
+backslashes. `/embeddings` without arguments prints usage locally. Invalid slash-command arguments never
 reach the target interpreter. Help and completion include the command.
 The shell echoes a successful queued command and matches its plugin output;
 the server records the existing plugin queue, dispatch, download, and

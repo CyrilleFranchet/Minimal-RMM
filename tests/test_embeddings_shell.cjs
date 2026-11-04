@@ -11,13 +11,13 @@ function fixture(response = { status: 200, data: { queued: '__PE_LOAD__ fixture 
     pollSessionEvents: async () => {},
   };
   vm.createContext(context);
-  vm.runInContext(source.slice(source.indexOf('function captureShellTarget('), source.indexOf('async function postDownloadQueue(')) + source.slice(source.indexOf('function parseShellWords('), source.indexOf('function defaultExfilProfile(')) +
+  vm.runInContext(source.match(/const SHELL_META_COMMANDS = \[.*?\];/s)[0] + source.slice(source.indexOf('function captureShellTarget('), source.indexOf('async function postDownloadQueue(')) + source.slice(source.indexOf('function parseShellWords('), source.indexOf('function defaultExfilProfile(')) +
     source.slice(source.indexOf('async function dispatchShellMetaCommand('), source.indexOf('async function runCommand(')), context);
   return { context, calls, echoes, errors, run: (cmd) => context.dispatchShellMetaCommand(cmd) };
 }
-test('embeddings queues a saved profile for the selected session and matches plugin output', async () => {
+test('/embeddings queues a saved profile for the selected session and matches plugin output', async () => {
   const f = fixture();
-  const cmd = String.raw`embeddings run strategy --document "C:\Lab Docs\notes.txt" --document "\\server\share\Docs"`;
+  const cmd = String.raw`/embeddings run strategy --document "C:\Lab Docs\notes.txt" --document "\\server\share\Docs"`;
   assert.equal(await f.run(cmd), true);
   assert.deepEqual(f.calls, [{ url: '/embeddings/run', body: { session_ref: 'go-session', profile: 'strategy', documents: [String.raw`C:\Lab Docs\notes.txt`, String.raw`\\server\share\Docs`] } }]);
   assert.equal(f.echoes[0][0], cmd);
@@ -25,7 +25,7 @@ test('embeddings queues a saved profile for the selected session and matches plu
   assert.equal(f.errors.length, 0);
 });
 test('invalid syntax stays local without queuing or claiming success', async () => {
-  for (const cmd of ['embeddings', 'embeddings run', 'embeddings run strategy', 'embeddings run strategy --document', 'embeddings run strategy --wat x', 'embeddings run strategy --document "unfinished', 'embeddings run strategy ' + '--document x '.repeat(33)]) {
+  for (const cmd of ['/embeddings', '/embeddings run', '/embeddings run strategy', '/embeddings run strategy --document', '/embeddings run strategy --wat x', '/embeddings run strategy --document "unfinished', '/embeddings run strategy ' + '--document x '.repeat(33)]) {
     const f = fixture();
     assert.equal(await f.run(cmd), true);
     assert.equal(f.calls.length, 0, cmd);
@@ -34,7 +34,7 @@ test('invalid syntax stays local without queuing or claiming success', async () 
   }
 });
 test('missing session and API failures do not echo a queued command', async () => {
-  const cmd = 'embeddings run strategy --document C:\\Lab';
+  const cmd = '/embeddings run strategy --document C:\\Lab';
   const missing = fixture(); missing.context.state.selectedId = '';
   await missing.run(cmd); assert.equal(missing.calls.length, 0); assert.match(missing.errors[0], /Select a session/);
   for (const response of [{ status: 404, data: { error: 'profile_not_found' } }, new Error('offline')]) {
@@ -46,7 +46,7 @@ test('delayed embedding acknowledgement stays out of the newly selected shell', 
   let resolve;
   const response = new Promise(done => { resolve = done; });
   const f = fixture(response);
-  const operation = f.run('embeddings run strategy --document C:\\Lab');
+  const operation = f.run('/embeddings run strategy --document C:\\Lab');
   f.context.state.selectedId = 'other-session';
   f.context.state.selectionGeneration++;
   resolve({ status: 200, data: { queued: '__PE_LOAD__ fixture Run {}' } });

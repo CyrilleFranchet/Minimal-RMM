@@ -9,6 +9,27 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Slash commands and live completion
+
+- Follow-up review fixed event-reloaded history: only raw `queued`/`exec`
+  operator events are replayable, using structured command fields when present.
+  Incomplete exfiltration, pivot, and configuration audit labels are excluded.
+  Added two regression tests; corrected the remaining `/download` parity example.
+- Require `/` for internal standalone CLI and WebUI shell commands. Show the
+  command menu on `/`, filter while typing, select with arrows, insert with Tab,
+  and dismiss with Escape. Unknown slash commands stay local.
+- Preserve raw shell dispatch and one-shot CLI, REST, and MCP syntax. Retain
+  slash prefixes in new history entries; exclude non-replayable panel labels.
+- Update help, command guides, parity checks, and `make check` coverage.
+- Validation: 15 CLI tests, including real prompt-toolkit keyboard input;
+  16 focused Node tests; full `make check` including parity and Markdown/YAML
+  lint passed. Code, security, test, and frontend reviews found no remaining
+  blockers. No live browser layout or connected-agent acceptance test was run.
+- The configured venv lacked the existing `prompt_toolkit` requirement. Tests
+  used an isolated `/tmp/rmm-slash-test-deps` installation through `PYTHONPATH`;
+  the project venv was unchanged. Localhost redirect tests required execution
+  outside the restricted sandbox. No deployment or commit was performed.
+
 ### 2026-11-03 — Second review across RMM, Profiles, and Plugins
 
 - Reject credential-forwarding redirects across operator/workspace clients,

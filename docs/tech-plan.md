@@ -251,6 +251,11 @@ Artifact URLs continue to require token.
 
 ## 4. Web UI — command completion
 
+The original v1 design below is historical. The current CLI and WebUI require `/`
+for internal commands and display live filtered suggestions immediately on `/`.
+See [the current completion guide](web-shell-completion.md) for keyboard behavior
+and the distinction between interactive syntax and API/MCP commands.
+
 **Status:** done  
 **Surfaces:** Web UI (primary)  
 **Goal:** Make the web shell input feel closer to `rmm_cli.py` / a local terminal: tab completion and command history without leaving the browser.

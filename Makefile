@@ -9,7 +9,7 @@ PY_MODULES := rmm_settings.py rmm_plugin_sources.py rmm_plugin_releases.py rmm_e
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-parity check-web-contracts check go-test tun-build workspace-service docker-build docker-up
+.PHONY: help install-lint lint-md lint-yaml lint test check-cli check-parity check-web-contracts check go-test tun-build workspace-service docker-build docker-up
 
 help:
 	@printf "Available targets:\n"
@@ -19,6 +19,7 @@ help:
 	@printf "  make lint          Run lint-md and lint-yaml\n"
 	@printf "  make test          Python syntax check (py_compile)\n"
 	@printf "  make check-parity  MCP / API client / web shell alignment\n"
+	@printf "  make check-cli     CLI dispatch and interactive completion tests\n"
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
 	@printf "  make go-test       Cross-build the Go agent and test the pivot components\n"
@@ -72,8 +73,13 @@ test:
 check-parity:
 	@$(PYTHON) scripts/check_operator_parity.py
 
+check-cli:
+	@$(PYTHON) -m unittest discover -s tests -p 'test_cli*.py'
+
 check-web-contracts:
 	@$(PYTHON) scripts/check_web_contracts.py
+	@node tests/test_shell_completion.cjs
+	@node tests/test_embeddings_shell.cjs
 	@node tests/test_bloodhound_ui.cjs
 	@node tests/test_bloodhound_shell.cjs
 	@node tests/test_workspace_access_ui.cjs
@@ -81,4 +87,4 @@ check-web-contracts:
 	@node tests/test_assets_ui.cjs
 	@node tests/test_agent_redirects.cjs
 
-check: test check-parity check-web-contracts lint
+check: test check-cli check-parity check-web-contracts lint

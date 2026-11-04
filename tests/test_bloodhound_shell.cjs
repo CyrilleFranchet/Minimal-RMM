@@ -11,7 +11,7 @@ function fixture(response = { status: 202, data: { workspace_request_id: 'a'.rep
     appendShellLine: (...args) => outputs.push(args), escapeHtml: value => value.replaceAll('<', '&lt;'),
   };
   vm.createContext(context);
-  vm.runInContext(source.match(/const BLOODHOUND_ACTIONS = \[.*?\];/s)[0] +
+  vm.runInContext(source.match(/const SHELL_META_COMMANDS = \[.*?\];/s)[0] + source.match(/const BLOODHOUND_ACTIONS = \[.*?\];/s)[0] +
     source.slice(source.indexOf('function captureShellTarget('), source.indexOf('async function postDownloadQueue(')) +
     source.slice(source.indexOf('function parseShellWords('), source.indexOf('function defaultExfilProfile(')) +
     source.slice(source.indexOf('async function dispatchShellMetaCommand('), source.indexOf('async function runCommand(')), context);
@@ -21,14 +21,14 @@ test('all BloodHound actions dispatch locally with preserved options and accepta
   const actions = JSON.parse(source.match(/const BLOODHOUND_ACTIONS = (\[.*?\]);/s)[1]);
   for (const action of actions) {
     const f = fixture();
-    assert.equal(await f.run(`bloodhound ${action} --run-id abc --options-json '{"text":"Tier Zero","path":"C:\\\\Lab"}'`), true);
+    assert.equal(await f.run(`/bloodhound ${action} --run-id abc --options-json '{"text":"Tier Zero","path":"C:\\\\Lab"}'`), true);
     assert.deepEqual(f.calls, [{ url: '/bloodhound', body: { action, run_id: 'abc', options: { text: 'Tier Zero', path: 'C:\\Lab' } } }]);
     assert.match(f.outputs[0][1], /workspace_request_id/);
     assert.equal(f.errors.length, 0);
   }
 });
 test('invalid commands never fall through to remote dispatch', async () => {
-  for (const command of ['bloodhound', 'bloodhound unknown', 'bloodhound query --options-json []', 'bloodhound query --options-json null', 'bloodhound query --options-json "unfinished', 'bloodhound query --wat x', 'bloodhound query --run-id']) {
+  for (const command of ['/bloodhound', '/bloodhound unknown', '/bloodhound query --options-json []', '/bloodhound query --options-json null', '/bloodhound query --options-json "unfinished', '/bloodhound query --wat x', '/bloodhound query --run-id']) {
     const f = fixture();
     assert.equal(await f.run(command), true);
     assert.equal(f.calls.length, 0);
@@ -37,11 +37,11 @@ test('invalid commands never fall through to remote dispatch', async () => {
 });
 test('responses are escaped and delayed replies never cross session views', async () => {
   const f = fixture({ status: 400, data: { error: '<img>' } });
-  await f.run('bloodhound health');
+  await f.run('/bloodhound health');
   assert.match(f.outputs[0][1], /&lt;img>/);
   let resolve;
   const pending = fixture(new Promise(done => { resolve = done; }));
-  const operation = pending.run('bloodhound health');
+  const operation = pending.run('/bloodhound health');
   pending.context.state.selectedId = 'other';
   pending.context.state.selectionGeneration++;
   resolve({ status: 200, data: {} });

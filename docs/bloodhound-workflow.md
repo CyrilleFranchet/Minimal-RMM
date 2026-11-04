@@ -192,8 +192,9 @@ optional `options`. It uses existing operator authentication. Options never
 contain endpoint overrides, API secrets, arbitrary Cypher, filesystem paths,
 collection command strings, or ownership selectors.
 
-The standalone CLI, its interactive shell, and the WebUI shell expose
-`bloodhound ACTION --run-id ID --options-json JSON` (omit optional flags when
+The interactive CLI and WebUI shell expose
+`/bloodhound ACTION --run-id ID --options-json JSON`; one-shot CLI invocations
+use `python rmm_cli.py bloodhound ACTION --run-id ID --options-json JSON` (omit optional flags when
 not needed). The WebUI intercepts this as an operator command; it never sends
 it to the selected Windows agent. Use `result` for pending relay requests and
 `status` for workflow progress. The main page offers **Open BloodHound** and

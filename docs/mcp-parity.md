@@ -67,7 +67,7 @@ and MCP/Web AI `bloodhound(action, run_id, options)`. Collection/import return
 asynchronous acceptance; `status` inspects the persisted run. Requests remain
 at the storage owner; workspace-scoped central calls return a relay request ID
 retrieved with `result`, without executing at the central server. Both the
-standalone interactive CLI and WebUI shell intercept `bloodhound` locally,
+standalone interactive CLI and WebUI shell intercept `/bloodhound` locally,
 including invalid syntax; it never falls through to the agent. See the
 [workflow contract](bloodhound-workflow.md).
 
@@ -135,7 +135,7 @@ repeat until fewer than `limit` events remain. Omitting `forward` retains the
 central API's latest-events behavior. Workspace storage already returns
 ascending pages. The CLI background poller uses forward pages to avoid dropping
 bursts larger than its page size. Selecting a CLI session intentionally skips
-old activity; use `events` in the interactive shell or the explicit command
+old activity; use `/events` in the interactive shell or the explicit command
 above to inspect retained history. Interactive `events [since]` reads the next
 50 events in forward order.
 
@@ -161,15 +161,19 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 
 ### Web shell meta commands
 
+The leading `/` is interactive syntax only. REST and MCP contracts are unchanged.
+Both interactive surfaces show suggestions on `/` and filter them while typing.
+Unknown slash commands never reach the remote shell.
+
 | Shell verb | MCP tool | REST |
 |------------|----------|------|
-| `help` / `?` | — | Browser-local command reference |
-| `download` | `queue_download` | `POST …/download` |
-| `exfil` | `queue_exfil` | `POST …/exfil` |
-| `screenshot` | `queue_screenshot` | `POST …/screenshot` |
-| `pe` | `queue_pe_load` | `POST …/pe` |
-| `embeddings` | `run_embeddings` | `POST /embeddings/run` |
-| `bloodhound` | `bloodhound` | `POST /bloodhound` |
+| `/help` / `/?` | — | Browser-local command reference |
+| `/download` | `queue_download` | `POST …/download` |
+| `/exfil` | `queue_exfil` | `POST …/exfil` |
+| `/screenshot` | `queue_screenshot` | `POST …/screenshot` |
+| `/pe` | `queue_pe_load` | `POST …/pe` |
+| `/embeddings` | `run_embeddings` | `POST /embeddings/run` |
+| `/bloodhound` | `bloodhound` | `POST /bloodhound` |
 
 `upload` is intentionally **not** a shell meta command (browser file picker only). See intentional exceptions.
 
@@ -185,10 +189,10 @@ The script `scripts/check_operator_parity.py` is the **machine-readable registry
 | `POST …/exec` | `exec_command` | |
 | `PATCH …/config` | `patch_config` | |
 | `GET …/events` | `get_events` | Live session transcript |
-| `POST …/download` | `queue_download` | Same as shell `download` / CLI |
+| `POST …/download` | `queue_download` | Same as shell `/download` / CLI |
 | `POST …/exfil` | `queue_exfil` | Same as shell `exfil` / CLI |
 | `GET /rclone/config` | `get_rclone_config` | |
-| `POST …/screenshot` | `queue_screenshot` | Same as shell `screenshot` |
+| `POST …/screenshot` | `queue_screenshot` | Same as shell `/screenshot` |
 | `GET/POST/DELETE /embeddings/profiles/*`, `/embeddings/results/*`, `POST /embeddings/run` | `embedding_profiles`, `embedding_results`, `run_embeddings` | [Saved profiles/results](document-embeddings.md); workspace operations use the local service |
 | `GET /plugins`, `POST …/pe` | `list_plugins`, `queue_pe_load` | Isolated child-process PE plugin execution on the Go agent (`__PE_LOAD__` or plugin-owned `__PLUGIN_COMMAND__`) |
 | `GET /plugin-releases`, `POST /plugin-releases/install` | `list_plugin_release`, `install_plugin_release` | [Browse and install compiled GitHub releases](plugin-releases-operator.md) in the active server/workspace |

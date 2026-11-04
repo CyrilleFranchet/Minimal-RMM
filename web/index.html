@@ -248,12 +248,18 @@
                     type="text"
                     id="shell-input"
                     class="shell-input"
-                    placeholder="Enter queue · Ctrl+Enter exec · ↑↓ · Tab"
+                    placeholder="/ commands · Enter queue · Ctrl+Enter exec"
+                    role="combobox"
+                    aria-label="Agent shell or RMM slash command"
+                    aria-autocomplete="list"
+                    aria-controls="shell-command-menu"
+                    aria-expanded="false"
                     autocomplete="off"
                     autocorrect="off"
                     autocapitalize="off"
                     spellcheck="false"
                   >
+                  <div id="shell-command-menu" class="shell-command-menu hidden" role="listbox" aria-label="RMM commands"></div>
                   <div id="shell-completion-hint" class="shell-completion-hint hidden" aria-live="polite"></div>
                 </div>
               </form>

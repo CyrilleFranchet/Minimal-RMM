@@ -229,6 +229,10 @@ def main() -> int:
     if "bloodhound" not in cli.RMM_CLI_COMMANDS:
         errors.append("Interactive CLI missing BloodHound completion")
     shell_meta = web_shell_meta_commands()
+    # Embeddings uses a dedicated WebUI command; the CLI REPL exposes /pe.
+    missing_interactive = shell_meta - {"embeddings"} - set(cli.RMM_CLI_COMMANDS)
+    if missing_interactive:
+        errors.append(f"Web shell commands missing from interactive CLI: {sorted(missing_interactive)}")
     mcp_ast = ast.parse((ROOT / "mcp_rmm_server.py").read_text())
     mcp_parameters = {node.name: {arg.arg for arg in node.args.args}
                       for node in mcp_ast.body if isinstance(node, ast.FunctionDef)}
