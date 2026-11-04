@@ -273,6 +273,14 @@ dedicated API token through `POST /api/v2/tokens`, and stores the token id,
 token key, and admin password as owner-local secret settings — the same keys
 the workflow client already reads, so no manual token configuration remains.
 
+CE creates the default admin with an already expired secret, which restricts
+its first session to password self-service only (every other API call is
+refused), so the bootstrap first replaces the initial admin password with a
+generated one that satisfies CE's policy (12+ chars, mixed case, digit,
+special) through `PUT /api/v2/bloodhound-users/{id}/secret`, logs in again
+with it, and only then mints the token; the stored `RMM_BLOODHOUND_ADMIN_PASSWORD`
+is the final generated password.
+
 The bootstrap runs once per process in the background when a `health`, `ui`,
 or `ensure` action observes a ready CE, and can be retried on demand with the
 `auth` action (REST/CLI/MCP), which reports `already_configured` or a bounded

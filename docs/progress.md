@@ -73,12 +73,25 @@ implementation log.
   saving process immediately (startup environment overrides still win), so a
   bootstrapped credential works in the same session; the new secret field
   `RMM_BLOODHOUND_ADMIN_PASSWORD` joins the BloodHound group.
+- Live follow-up #2: with CE finally running (the host OOM-killed it twice on
+  a 3.8 GiB/swap-less box until the operator added swap and the inherited
+  graph was wiped), the first real bootstrap reached the login but failed at
+  token creation. Root cause in CE v7.6.2 source: the default admin is
+  created with an already expired secret (`ExpireNow`), and `ValidateSession`
+  restricts such sessions to `AuthManageSelf` only — `AuthCreateToken` is
+  stripped, so `POST /api/v2/tokens` is refused. The bootstrap now changes
+  the admin password first (`PUT /api/v2/bloodhound-users/{id}/secret`,
+  generated policy-compliant password, `needs_password_reset: false`),
+  re-logs in with it, and only then mints the token; the stored admin
+  password is the final generated one.
 - Tests: `tests/test_bloodhound_ce_auth.py` (6 tests: banner tail parsing,
   login/token contract shapes and failure codes, end-to-end bootstrap,
   origin fail-closed) and a live-refresh regression in
   `tests/test_settings_security.py`. `make test`, `make check-parity`,
   and `make lint-md` pass. Updated
-  [bloodhound-workflow.md](bloodhound-workflow.md) with the bootstrap section.
+  [bloodhound-workflow.md](bloodhound-workflow.md) with the bootstrap section
+  (now nine tests including the expired-secret password change and the
+  policy-compliant generator).
 
 ### 2026-11-04 — Live BloodHound launch diagnosis: a 401 on the readiness probe proves CE started
 

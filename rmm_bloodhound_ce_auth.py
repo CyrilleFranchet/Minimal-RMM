@@ -22,8 +22,16 @@ from urllib.parse import urlsplit
 CE_LAUNCH_LOG = '/var/log/rmm-bloodhound-ce.log'
 CE_LOGIN_PATH = '/api/v2/login'
 CE_TOKEN_PATH = '/api/v2/tokens'
+CE_SECRET_PATH = '/api/v2/bloodhound-users/{user_id}/secret'
 CE_TOKEN_NAME = 'minimal-rmm'
 CE_ADMIN_USER = 'admin'
+# BloodHound CE creates the default admin with an already expired secret
+# (ExpireNow), which restricts its session to the AuthManageSelf permission
+# only — every other API call, including token creation, is refused until the
+# password is changed. CE validates new secrets with go-playground rules:
+# at least 12 characters with one lowercase, one uppercase, one special, and
+# one numeric character.
+PASSWORD_SPECIALS = '!@#$%^&*_-+='
 # BloodHound CE generates the initial password from [A-Za-z0-9_] (32 chars)
 # and prints it framed by the '# ... #' banner in the launch log.
 INITIAL_PASSWORD = re.compile(r'#\s*Initial Password Set To:\s+([A-Za-z0-9_]{16,128})\s+#')
@@ -97,18 +105,50 @@ def _request(origin: str, method: str, path: str, payload: dict | None = None,
         connection.close()
 
 
-def ce_login(origin: str, username: str, password: str) -> str:
-    """Exchange CE credentials for a bearer session token."""
+def ce_login(origin: str, username: str, password: str) -> dict:
+    """Exchange CE credentials for a bearer session and its login flags."""
     status, document = _request(
         origin, 'POST', CE_LOGIN_PATH,
         {'login_method': 'secret', 'username': username, 'secret': password},
     )
     if status != 200 or not isinstance(document.get('data'), dict):
         raise CeAuthError('ce_login_rejected')
-    token = document['data'].get('session_token')
-    if not isinstance(token, str) or not token:
+    row = document['data']
+    session, user_id = row.get('session_token'), row.get('user_id')
+    if not isinstance(session, str) or not session or not isinstance(user_id, str) or not user_id:
         raise CeAuthError('ce_login_rejected')
-    return token
+    return {'session': session, 'user_id': user_id,
+            'auth_expired': bool(row.get('auth_expired'))}
+
+
+def generate_password() -> str:
+    """Return a random password satisfying CE's new-secret policy."""
+    import secrets as _secrets
+    import string as _string
+    required = [
+        _secrets.choice(_string.ascii_lowercase),
+        _secrets.choice(_string.ascii_uppercase),
+        _secrets.choice(_string.digits),
+        _secrets.choice(PASSWORD_SPECIALS),
+    ]
+    alphabet = _string.ascii_letters + _string.digits + PASSWORD_SPECIALS
+    body = [_secrets.choice(alphabet) for _ in range(20)]
+    password = required + body
+    _secrets.SystemRandom().shuffle(password)
+    return ''.join(password)
+
+
+def change_password(origin: str, session: str, user_id: str,
+                    current_secret: str, new_secret: str) -> None:
+    """Change the account's own password through CE's self-service endpoint."""
+    status, _document = _request(
+        origin, 'PUT', CE_SECRET_PATH.format(user_id=user_id),
+        {'current_secret': current_secret, 'secret': new_secret,
+         'needs_password_reset': False},
+        {'Authorization': f'bearer {session}'},
+    )
+    if status != 200:
+        raise CeAuthError('ce_password_change_failed')
 
 
 def create_api_token(origin: str, session: str, name: str = CE_TOKEN_NAME) -> tuple[str, str]:
@@ -135,10 +175,23 @@ def endpoint_for(origin: str) -> str:
 
 def bootstrap_credentials(origin: str, *, log_path: str = CE_LAUNCH_LOG,
                           username: str = CE_ADMIN_USER) -> dict[str, str]:
-    """Derive CE credentials end to end and return them; never log any value."""
+    """Derive CE credentials end to end and return them; never log any value.
+
+    CE creates the default admin with an already expired secret, so the first
+    login is restricted to password self-service: the bootstrap replaces the
+    initial password with a generated one, logs in again with it, and only
+    then mints the API token.
+    """
     origin = endpoint_for(origin)
     password = read_initial_password(log_path)
-    session = ce_login(origin, username, password)
-    token_id, token_key = create_api_token(origin, session)
+    login = ce_login(origin, username, password)
+    if login['auth_expired']:
+        new_password = generate_password()
+        change_password(origin, login['session'], login['user_id'], password, new_password)
+        password = new_password
+        login = ce_login(origin, username, password)
+        if login['auth_expired']:
+            raise CeAuthError('ce_password_change_failed')
+    token_id, token_key = create_api_token(origin, login['session'])
     return {'username': username, 'password': password,
             'token_id': token_id, 'token_key': token_key}
