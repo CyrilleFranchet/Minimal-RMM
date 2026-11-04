@@ -285,6 +285,33 @@ class ExegolRuntime:
 
     start = ensure
 
+    def reset(self):
+        """Clear a durably stuck 'uncertain' dispatch so an operator can retry.
+
+        'uncertain' means a previous launch command's reply was lost, so the
+        service might still be starting elsewhere; ensure() refuses to dispatch
+        again on its own to avoid a double launch (see docstring above). This
+        only clears that bookkeeping after an explicit operator decision — it
+        never touches bloodhound-ce itself or its data, and it refuses while a
+        startup pass is still running or once the service is already ready.
+        """
+        with self.lock:
+            if self.stopped.is_set():
+                return self._update(state='blocked', ready=False, error='runtime_stopped')
+            if self.thread is not None and self.thread.is_alive():
+                raise RuntimeErrorCode('bloodhound_startup_in_progress')
+            if self.snapshot.get('ready'):
+                raise RuntimeErrorCode('bloodhound_already_ready')
+            if self.snapshot.get('state') != 'uncertain':
+                raise RuntimeErrorCode('bloodhound_reset_requires_uncertain_state')
+            (self.root / 'ce-startup.json').unlink(missing_ok=True)
+            self.verified_configuration = None
+            self.last_probe = 0.0
+            self.snapshot = dict(required=True, state='blocked', exegol_status='not_checked',
+                                 mcp_status='not_checked', bloodhound_status='not_checked',
+                                 ready=False, exegol_verified_at=None, updated_at=timestamp())
+            return dict(self.snapshot)
+
     def status(self):
         """Refresh CE availability without invoking MCP commands or starting services."""
         with self.lock:

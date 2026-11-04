@@ -109,6 +109,35 @@ class BloodHoundSurfaceTests(unittest.TestCase):
             self.assertEqual(bloodhound_api('/tmp/unused-ui', {'action': 'ui', 'options': {'url': 'http://evil'}})[0], 400)
             self.assertEqual(launch.call_count, 1)
 
+    def test_reset_action_is_available_across_operator_surfaces(self):
+        args = build_parser().parse_args(['bloodhound', 'reset'])
+        self.assertEqual(args.action, 'reset')
+        schema = next(t['function'] for t in OPENAI_TOOLS if t['function']['name'] == 'bloodhound')
+        self.assertIn('reset', schema['parameters']['properties']['action']['enum'])
+        from rmm_bloodhound import bloodhound_api
+        with patch('rmm_exegol_runtime.get_runtime') as getter:
+            runtime = getter.return_value
+            runtime.reset.return_value = {'state': 'blocked', 'ready': False}
+            code, payload = bloodhound_api('/tmp/unused-reset', {'action': 'reset'})
+            self.assertEqual(code, 200)
+            self.assertTrue(payload['ok'])
+            self.assertEqual(payload['runtime']['state'], 'blocked')
+            runtime.reset.assert_called_once_with()
+            self.assertEqual(bloodhound_api('/tmp/unused-reset', {'action': 'reset', 'options': {'force': True}})[0], 400)
+            self.assertEqual(bloodhound_api('/tmp/unused-reset', {'action': 'reset', 'run_id': 'abc'})[0], 400)
+
+    def test_reset_refuses_outside_uncertain_state(self):
+        from rmm_exegol_runtime import RuntimeErrorCode
+        from rmm_bloodhound import bloodhound_api
+        with patch('rmm_exegol_runtime.get_runtime') as getter:
+            runtime = getter.return_value
+            runtime.reset.side_effect = RuntimeErrorCode('bloodhound_already_ready')
+            runtime.status.return_value = {'state': 'ready', 'ready': True}
+            code, payload = bloodhound_api('/tmp/unused-reset', {'action': 'reset'})
+            self.assertEqual(code, 409)
+            self.assertEqual(payload['error'], 'bloodhound_already_ready')
+            self.assertEqual(payload['runtime']['state'], 'ready')
+
     def test_client_sends_structured_options_to_fixed_endpoint(self):
         client = RmmApiClient('http://localhost', 'test-token')
         client.request = Mock(return_value=(202, {'run_id': 'abc'}))

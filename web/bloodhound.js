@@ -1,12 +1,14 @@
 /* Open and monitor the owning workspace's BloodHound service. */
 (function () {
   const button = document.getElementById("bloodhound-open");
+  const resetButton = document.getElementById("bloodhound-reset");
   const status = document.getElementById("bloodhound-status");
   const readiness = document.getElementById("bloodhound-readiness");
   const mcpLabel = document.getElementById("mcp-status-label");
   const mcpStatus = document.getElementById("exegol-mcp-status");
   const mcpHelp = document.getElementById("mcp-status-help");
   if (!button || !status) return;
+  let resetting = false;
   let healthTimer;
   let healthController;
   let launchController;
@@ -18,6 +20,7 @@
   }
 
   function showRuntime(runtime) {
+    if (resetButton) resetButton.classList.toggle("hidden", resetting || !runtime || runtime.state !== "uncertain");
     if (!readiness || !runtime) return;
     readiness.textContent = `Exegol: ${runtime.exegol_status || "unknown"} · BloodHound: ${runtime.bloodhound_status || runtime.state || "unknown"}${runtime.error ? ` (${runtime.error})` : ""}`;
     const verified = ["connected", "verified"].includes(runtime.mcp_status);
@@ -72,6 +75,11 @@
     launchController?.abort();
     launchController = null;
     button.disabled = false;
+    resetting = false;
+    if (resetButton) {
+      resetButton.disabled = false;
+      resetButton.classList.add("hidden");
+    }
     message("");
     if (readiness) readiness.textContent = "";
     resetMcpStatus("Not checked");
@@ -126,7 +134,11 @@
         showRuntime(result.data.runtime);
         if (tab.closed) throw new Error("BloodHound tab was closed.");
         const runtime = result.data.runtime;
-        if (["blocked", "failed", "uncertain"].includes(runtime.state)) {
+        if (runtime.state === "uncertain") {
+          throw new Error("A previous BloodHound launch's reply was lost, so startup was not retried automatically. "
+            + "Confirm no stray bloodhound-ce is still starting in the workspace, then use \"Retry BloodHound startup\".");
+        }
+        if (["blocked", "failed"].includes(runtime.state)) {
           throw new Error(runtime.error || `BloodHound startup is ${runtime.state}; inspect workspace status.`);
         }
         await pause(controller.signal);
@@ -161,7 +173,45 @@
     }
   }
 
+  async function resetBloodHound() {
+    if (!resetButton || resetButton.disabled || resetting) return;
+    resetting = true;
+    resetButton.disabled = true;
+    button.disabled = true;
+    message("Clearing the stuck BloodHound startup state…");
+    const generation = healthGeneration;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const result = await window.rmmApi("/bloodhound", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset" }), signal: controller.signal,
+      });
+      if (generation !== healthGeneration) return;
+      if (result.status !== 200) {
+        throw new Error(result.data?.error || "Cannot clear the stuck BloodHound startup state.");
+      }
+      message("");
+      resetting = false;
+      resetButton.classList.add("hidden");
+      button.disabled = false;
+      await openBloodHound();
+    } catch (error) {
+      if (generation === healthGeneration) {
+        message(`Cannot clear stuck BloodHound startup: ${error.message || "request failed"}. Confirm no stray bloodhound-ce is still starting elsewhere before retrying.`);
+      }
+    } finally {
+      clearTimeout(timeout);
+      resetting = false;
+      if (generation === healthGeneration) {
+        resetButton.disabled = false;
+        button.disabled = false;
+      }
+    }
+  }
+
   window.startBloodHoundHealth = startHealth;
   window.stopBloodHoundHealth = stopHealth;
   button.addEventListener("click", openBloodHound);
+  resetButton?.addEventListener("click", resetBloodHound);
 })();

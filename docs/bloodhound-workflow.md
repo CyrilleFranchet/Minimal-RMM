@@ -174,7 +174,25 @@ and reconnect; **Open BloodHound** can recover a stopped, previously confirmed
 instance through `ensure`. Repeated tabs and concurrent calls do not create
 parallel launches. A startup intent is persisted before dispatch. Lost replies
 or interrupted launches become `uncertain`; another request or process restart
-does not replay that launch. Read-only readiness can reconcile a running CE.
+does not replay that launch on its own — this is deliberate, so a lost reply
+can never cause two `bloodhound-ce` processes to be dispatched. Read-only
+readiness can still reconcile the state to `ready` if the earlier launch
+actually succeeded despite the lost reply.
+
+If CE genuinely never started (the earlier launch really did fail), `uncertain`
+would otherwise persist forever, since neither restarting the server nor
+clicking **Open BloodHound** again clears it. The `reset` action
+(`ExegolRuntime.reset()` in `rmm_exegol_runtime.py`) is the explicit operator
+escape hatch: it refuses unless the runtime is currently `uncertain` (not mid
+startup, not already `ready`), clears the persisted dispatch intent and the
+in-memory snapshot, and returns the runtime to its initial, unstarted state so
+the next `ensure`/`ui` call makes a clean attempt. It never touches
+`bloodhound-ce` itself or its data — only the server's own bookkeeping — so an
+operator should confirm no stray `bloodhound-ce` is actually still starting
+in the workspace container before using it. The WebUI surfaces this as a
+**Retry BloodHound startup** button that appears next to **Open BloodHound**
+only while the runtime is `uncertain`; clicking it calls `reset` and then
+immediately re-attempts the open flow.
 
 States distinguish checking/starting, ready, blocked prerequisites, failed
 checks, and uncertain startup. CE failure leaves the workspace available.

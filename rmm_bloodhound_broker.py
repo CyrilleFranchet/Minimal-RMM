@@ -10,7 +10,7 @@ import re
 from rmm_bloodhound import bloodhound_api, validate, WorkflowError
 from rmm_settings import getenv
 
-ACTIONS = {'preflight', 'create', 'collect', 'import', 'status', 'verify', 'query', 'queries', 'report', 'ui', 'health', 'ensure', 'library_search', 'library_get'}
+ACTIONS = {'preflight', 'create', 'collect', 'import', 'status', 'verify', 'query', 'queries', 'report', 'ui', 'health', 'ensure', 'reset', 'library_search', 'library_get'}
 
 
 def local_operator_path(method, path):

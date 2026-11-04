@@ -205,6 +205,40 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(recovered.snapshot['state'], 'uncertain')
         self.assertEqual(sum(row['command'] == LAUNCH_COMMAND for row in self.calls), 1)
 
+    def test_reset_unblocks_a_retry_after_lost_reply(self):
+        self.launch_raises = True
+        with patch('rmm_exegol_runtime.probe_ce', return_value='stopped'):
+            self.runtime._run()
+            self.assertEqual(self.runtime.snapshot['state'], 'uncertain')
+            recovered = ExegolRuntime(self.root)
+            recovered._run()
+            self.assertEqual(recovered.snapshot['state'], 'uncertain')
+        snapshot = recovered.reset()
+        self.assertEqual(snapshot['state'], 'blocked')
+        self.assertFalse(snapshot['ready'])
+        self.assertIsNone(recovered._intent())
+        self.launch_raises = False
+        with patch('rmm_exegol_runtime.probe_ce', side_effect=['stopped', 'ready']), \
+                patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
+            recovered._run()
+        self.assertEqual(recovered.snapshot['state'], 'ready')
+        self.assertEqual(sum(row['command'] == LAUNCH_COMMAND for row in self.calls), 2)
+
+    def test_reset_refuses_while_ready_or_in_progress(self):
+        with patch('rmm_exegol_runtime.probe_ce', return_value='ready'):
+            self.runtime._run()
+        with self.assertRaisesRegex(RuntimeErrorCode, 'bloodhound_already_ready'):
+            self.runtime.reset()
+        self.runtime._update(state='checking', ready=False)
+        self.runtime.thread = Mock()
+        self.runtime.thread.is_alive.return_value = True
+        with self.assertRaisesRegex(RuntimeErrorCode, 'bloodhound_startup_in_progress'):
+            self.runtime.reset()
+        self.runtime.thread = None
+        self.runtime._update(state='failed', ready=False)
+        with self.assertRaisesRegex(RuntimeErrorCode, 'bloodhound_reset_requires_uncertain_state'):
+            self.runtime.reset()
+
     def test_read_only_health_reconciles_uncertainty(self):
         self.runtime._save('dispatched')
         self.runtime._update(exegol_status='ready', state='uncertain')

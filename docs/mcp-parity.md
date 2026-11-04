@@ -51,7 +51,7 @@ skipping history after migration or a central restart.
 
 The parity registry checks 55 shared MCP/AI tool names and their API-client
 mapping. It does not prove that all 55 have dedicated manual browser controls.
-The fifteen BloodHound actions have explicit manual CLI and WebUI controls;
+The sixteen BloodHound actions have explicit manual CLI and WebUI controls;
 other workflows use their documented UI controls or shared AI tools.
 
 `rmm_deployment.py prepare/run` and `rmm_workspace_migration.py` are offline
@@ -71,10 +71,14 @@ standalone interactive CLI and WebUI shell intercept `/bloodhound` locally,
 including invalid syntax; it never falls through to the agent. See the
 [workflow contract](bloodhound-workflow.md).
 
-The WebUI shell exposes the same fifteen actions; the main page does not expose
+The WebUI shell exposes the same sixteen actions; the main page does not expose
 a raw JSON operations form. Use CLI or MCP for advanced actions without selecting
 an agent session. **Open BloodHound** waits for readiness and opens the proxy link;
-the connection status panel shows runtime readiness and diagnostics.
+the connection status panel shows runtime readiness and diagnostics. A
+**Retry BloodHound startup** button appears next to **Open BloodHound** only
+while the runtime is `uncertain` (a previous launch's reply was lost); it
+calls `reset` and then re-attempts the open flow. See
+[BloodHound CE service startup](bloodhound-workflow.md#bloodhound-ce-service-startup).
 
 `dispatch_interactive_bloodhound` reuses the CLI parser and dispatch function
 while keeping parse failures inside the interactive shell. The WebUI

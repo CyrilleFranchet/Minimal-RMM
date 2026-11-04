@@ -5,24 +5,43 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../web/bloodhound.js'), 'utf8');
 
+function classList() {
+  const classes = new Set();
+  return {
+    classes,
+    add(name) { classes.add(name); },
+    remove(name) { classes.delete(name); },
+    contains(name) { return classes.has(name); },
+    toggle(name, force) {
+      const wanted = force === undefined ? !classes.has(name) : force;
+      if (wanted) classes.add(name); else classes.delete(name);
+    },
+  };
+}
+
 function setup(api, blocked = false) {
   const button = { disabled: false, addEventListener(name, callback) { this[name] = callback; } };
-  const status = { textContent: '', classList: { toggle() {} } };
+  const resetButton = { disabled: false, classList: classList(), addEventListener(name, callback) { this[name] = callback; } };
+  const status = { textContent: '', classList: classList() };
   const readiness = { textContent: '' };
   const mcpLabel = { textContent: '', dataset: {} }, mcpStatus = {}, mcpHelp = {};
-  const nodes = { 'bloodhound-open': button, 'bloodhound-status': status, 'bloodhound-readiness': readiness,
+  const nodes = { 'bloodhound-open': button, 'bloodhound-reset': resetButton, 'bloodhound-status': status, 'bloodhound-readiness': readiness,
     'mcp-status-label': mcpLabel, 'exegol-mcp-status': mcpStatus, 'mcp-status-help': mcpHelp };
   const events = [];
-  const tab = { opener: {}, closed: false, document: { title: '', body: {} },
-    location: { replace(url) { events.push(['navigate', url]); } },
-    close() { this.closed = true; } };
-  const window = { open(url) { events.push(['open', url]); return blocked ? null : tab; },
+  let tab;
+  function makeTab() {
+    return { opener: {}, closed: false, document: { title: '', body: {} },
+      location: { replace(url) { events.push(['navigate', url]); } },
+      close() { this.closed = true; } };
+  }
+  const window = { open(url) { events.push(['open', url]); tab = blocked ? null : makeTab(); return tab; },
     rmmBloodHoundActions: ['health', 'query', 'result', 'library_search'],
     rmmApi: async (...args) => { events.push(['request', ...args]); return api(...args); } };
   vm.runInNewContext(source, { window, URL, AbortController,
     document: { getElementById: id => nodes[id] || null, createElement: () => ({}) },
     setTimeout(callback, delay) { if (delay === 1000) queueMicrotask(callback); return 1; }, clearTimeout() {} });
-  return { button, status, readiness, mcpLabel, mcpStatus, mcpHelp, events, tab, window };
+  return { button, resetButton, status, readiness, mcpLabel, mcpStatus, mcpHelp, events, window,
+    get tab() { return tab; } };
 }
 
 (async () => {
@@ -107,8 +126,61 @@ function setup(api, blocked = false) {
   });
   await uncertain.button.click();
   assert.deepEqual(uncertainActions, ['ui', 'health']);
-  assert.match(uncertain.status.textContent, /inspect_previous_launch/);
+  assert.match(uncertain.status.textContent, /Retry BloodHound startup/);
   assert.equal(uncertain.tab.closed, true);
+  assert.equal(uncertain.resetButton.classList.contains('hidden'), false);
+
+  // Resolved states (not uncertain) keep the retry control hidden.
+  const resolved = setup(async () => ({ status: 200, data: { runtime: { state: 'failed', error: 'bloodhound_unavailable' } } }));
+  await resolved.window.startBloodHoundHealth();
+  assert.equal(resolved.resetButton.classList.contains('hidden'), true);
+
+  // Clicking retry clears the stuck dispatch and immediately re-attempts the open flow.
+  const retryActions = [];
+  const retry = setup(async (route, options) => {
+    const body = JSON.parse(options.body);
+    retryActions.push(body.action);
+    if (body.action === 'ui' && retryActions.filter(a => a === 'ui').length === 1) {
+      return { status: 202, data: { runtime: { state: 'starting' } } };
+    }
+    if (body.action === 'health') {
+      return { status: 200, data: { runtime: { state: 'uncertain', error: 'inspect_previous_launch' } } };
+    }
+    if (body.action === 'reset') return { status: 200, data: { runtime: { state: 'blocked' } } };
+    return { status: 200, data: { url: 'http://localhost:1031/launch?ticket=retried' } };
+  });
+  await retry.button.click();
+  assert.equal(retry.resetButton.classList.contains('hidden'), false);
+  await retry.resetButton.click();
+  assert.deepEqual(retryActions, ['ui', 'health', 'reset', 'ui']);
+  assert.equal(retry.events.at(-1)[0], 'navigate');
+  assert.equal(retry.events.at(-1)[1], 'http://localhost:1031/launch?ticket=retried');
+  assert.equal(retry.resetButton.classList.contains('hidden'), true);
+  assert.equal(retry.button.disabled, false);
+  assert.equal(retry.resetButton.disabled, false);
+
+  // A reset response that arrives after the workspace connection changed must
+  // not resurrect the retry control, clobber the status left by the switch,
+  // or re-attempt the open flow.
+  let finishStaleReset;
+  const staleReset = setup(async (route, options) => {
+    const action = JSON.parse(options.body).action;
+    if (action === 'ui') return { status: 202, data: { runtime: { state: 'starting' } } };
+    if (action === 'health') return { status: 200, data: { runtime: { state: 'uncertain', error: 'inspect_previous_launch' } } };
+    return new Promise(resolve => { finishStaleReset = resolve; }); // action === 'reset'
+  });
+  await staleReset.button.click();
+  assert.equal(staleReset.resetButton.classList.contains('hidden'), false);
+  const staleResetCall = staleReset.resetButton.click();
+  staleReset.window.stopBloodHoundHealth();
+  assert.equal(staleReset.resetButton.disabled, false);
+  assert.equal(staleReset.button.disabled, false);
+  staleReset.status.textContent = 'New connection status';
+  finishStaleReset({ status: 200, data: { runtime: { state: 'blocked' } } });
+  await staleResetCall;
+  assert.equal(staleReset.status.textContent, 'New connection status');
+  assert.equal(staleReset.resetButton.classList.contains('hidden'), true);
+  assert.ok(!staleReset.events.some(event => event[0] === 'navigate'));
 
   const healthActions = [];
   const monitor = setup(async (route, options) => {

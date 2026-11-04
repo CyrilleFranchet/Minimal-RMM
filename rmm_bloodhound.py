@@ -635,6 +635,16 @@ def bloodhound_api(root, body):
                 return code, payload
             from rmm_bloodhound_proxy import open_ui
             return open_ui()
+        if action == 'reset':
+            if options or body.get('run_id'):
+                raise WorkflowError('unexpected_reset_options')
+            from rmm_exegol_runtime import get_runtime, RuntimeErrorCode as RuntimeResetError
+            runtime = get_runtime(root)
+            try:
+                snapshot = runtime.reset()
+            except RuntimeResetError as exc:
+                return 409, {'ok': False, 'error': str(exc), 'runtime': runtime.status()}
+            return 200, {'ok': True, 'runtime': snapshot}
         if action in ('create', 'collect', 'import', 'verify', 'query'):
             if options and action in ('collect', 'import', 'verify'):
                 raise WorkflowError('unexpected_options')

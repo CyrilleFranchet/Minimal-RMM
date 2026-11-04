@@ -9,6 +9,47 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Add an operator-authorized reset for stuck BloodHound `uncertain` startups
+
+- Reported symptom: after the detached-launch fix below, **Open BloodHound**
+  still immediately failed with "Cannot open BloodHound: bloodhound_startup_uncertain"
+  on every click, with the tab opening and then closing right away.
+- Root cause: this is the deliberate, tested "never replayed" guarantee
+  (`test_lost_reply_uncertain_never_replayed_after_restart` in
+  `tests/test_exegol_runtime.py`) working exactly as designed — a dispatch
+  attempt before today's detached-launch fix left a durable
+  `uncertain`/`dispatched` intent (`ce-startup.json`) on disk, and `ensure()`
+  and `_check_and_start()` both refuse to redispatch while that intent stands,
+  to guarantee a lost MCP reply can never cause two `bloodhound-ce` processes
+  to be launched. There was previously no operator-facing way to clear that
+  state short of editing files on the server, so the button stayed permanently
+  stuck even after the launch bug itself was fixed.
+- Added an explicit `reset` BloodHound action
+  (`ExegolRuntime.reset()` in `rmm_exegol_runtime.py`): refuses unless the
+  runtime is currently `uncertain` (not mid-startup, not already `ready`),
+  then clears the persisted dispatch intent and in-memory snapshot so the next
+  `ensure`/`ui` call makes a clean attempt. It never touches `bloodhound-ce`
+  itself or its data — only the server's own bookkeeping.
+- Exposed consistently per operator-surface parity: REST `/bloodhound`
+  action `reset`, CLI `bloodhound reset`, shared `tool_bloodhound`/MCP
+  `bloodhound(action="reset")`, workspace broker `ACTIONS`, and WebUI
+  `BLOODHOUND_ACTIONS`. Added a **Retry BloodHound startup** button beside
+  **Open BloodHound** that appears only while the runtime is `uncertain`;
+  clicking it calls `reset` and immediately re-attempts the open flow, and the
+  **Open BloodHound** error message for `uncertain` now explains the stuck
+  state and points at that button instead of surfacing the raw error code.
+- Documented in [BloodHound CE service startup](bloodhound-workflow.md#bloodhound-ce-service-startup)
+  and [MCP parity](mcp-parity.md).
+- Validation: `tests/test_exegol_runtime.py` and `tests/test_bloodhound_surfaces.py`
+  cover `reset()`'s success path, its three refusal cases, and the action's
+  presence across CLI/AI/MCP schemas. `tests/test_bloodhound_ui.cjs` covers the
+  WebUI retry button's visibility and the reset-then-reopen flow.
+  `make check-parity` and `PYTHON=.venv/bin/python3 make check` pass (493+ tests;
+  `make check` alone picks up the system Python 3.9, which lacks `prompt_toolkit`
+  for `test_cli_slash_commands` and is unrelated to this change — use the
+  `.venv` interpreter). No live Exegol/CE verification was performed in this
+  session.
+
 ### 2026-11-04 — Dispatch bloodhound-ce detached so startup can actually finish
 
 - Reported symptom: BloodHound CE start from the WebUI/Exegol MCP always
