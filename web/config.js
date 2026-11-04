@@ -46,11 +46,17 @@
   let persistTimer = null;
   let persistInFlight = null;
 
+  // The workspace badge also carries the Exegol container identified by the
+  // workspace BloodHound health check, so the MCP control stays summary-only.
+  let lastHealth = {};
+  let exegolContainer = "";
+
   function renderDeploymentMode(health = {}) {
+    lastHealth = health;
     let label = "Mode unknown";
     let description = "The connected service has not reported its deployment mode.";
     if (typeof health.workspace_id === "string" && health.workspace_id) {
-      label = `Workspace: ${health.workspace_id}`;
+      label = `Workspace: ${health.workspace_id}${exegolContainer ? ` · ${exegolContainer}` : ""}`;
       description = "Operator workspace. Plugin sources, credentials, and history are stored in this workspace.";
     } else if (health.storage_mode === "server") {
       label = "Legacy server";
@@ -68,7 +74,15 @@
     if (hint) hint.textContent = `${label}. ${description}`;
   }
 
+  function setExegolContainer(container) {
+    const name = typeof container === "string" ? container : "";
+    if (name === exegolContainer) return;
+    exegolContainer = name;
+    renderDeploymentMode(lastHealth);
+  }
+
   window.renderRmmDeploymentMode = renderDeploymentMode;
+  window.setRmmExegolContainer = setExegolContainer;
 
   function setStatus(message, error = false) {
     const status = $("#ui-config-status");

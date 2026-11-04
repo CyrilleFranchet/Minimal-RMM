@@ -218,5 +218,16 @@ function setup(api, blocked = false) {
   const unavailableMonitor = setup(async () => { throw new Error('offline'); });
   await unavailableMonitor.window.startBloodHoundHealth();
   assert.equal(unavailableMonitor.mcpLabel.textContent, 'MCP · Unavailable');
+
+  // The Exegol container name belongs on the workspace badge, not the MCP control.
+  const containerCalls = [];
+  const containerMonitor = setup(async () => ({ status: 200, data: { runtime: {
+    state: 'ready', mcp_status: 'verified', container: 'exegol-lab' } } }));
+  containerMonitor.window.setRmmExegolContainer = name => containerCalls.push(name);
+  await containerMonitor.window.startBloodHoundHealth();
+  assert.equal(containerMonitor.mcpLabel.textContent, 'MCP · Verified');
+  assert.deepEqual(containerCalls, [null, 'exegol-lab']);
+  containerMonitor.window.stopBloodHoundHealth();
+  assert.deepEqual(containerCalls, [null, 'exegol-lab', null]);
   console.log('BloodHound UI tests passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

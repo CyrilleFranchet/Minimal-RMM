@@ -21,6 +21,8 @@
 
   function showRuntime(runtime) {
     if (resetButton) resetButton.classList.toggle("hidden", resetting || !runtime || runtime.state !== "uncertain");
+    // The Exegol container name belongs on the workspace badge, not this control.
+    window.setRmmExegolContainer?.(runtime && typeof runtime.container === "string" ? runtime.container : null);
     if (!readiness || !runtime) return;
     readiness.textContent = `Exegol: ${runtime.exegol_status || "unknown"} · BloodHound: ${runtime.bloodhound_status || runtime.state || "unknown"}`
       + `${runtime.error ? ` (${runtime.error}${runtime.launch_exit_code != null ? ` ${runtime.launch_exit_code}` : ""})` : ""}`;
@@ -28,7 +30,7 @@
     const failed = !!runtime.error || runtime.mcp_status === "error";
     if (mcpLabel) {
       const base = failed ? "MCP · Check needed" : verified ? "MCP · Verified" : "MCP · Checking";
-      mcpLabel.textContent = runtime.container ? `${base} · ${runtime.container}` : base;
+      mcpLabel.textContent = base;
       mcpLabel.dataset.state = failed ? "error" : verified ? "ready" : "checking";
     }
     if (mcpStatus) mcpStatus.textContent = `Exegol MCP: ${runtime.mcp_status || "not_checked"}${runtime.container ? ` · ${runtime.container}` : ""}`;
@@ -41,6 +43,7 @@
     if (mcpLabel) { mcpLabel.textContent = `MCP · ${label}`; mcpLabel.dataset.state = "unknown"; }
     if (mcpStatus) mcpStatus.textContent = "Exegol MCP: Not checked";
     if (mcpHelp) mcpHelp.textContent = "No current workspace connection verification is available.";
+    window.setRmmExegolContainer?.(null);
   }
 
   function pause(signal) {

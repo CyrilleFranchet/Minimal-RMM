@@ -315,6 +315,28 @@ test('deployment badge distinguishes standalone, central, workspace, and unknown
   assert.equal(badge.textContent, 'Mode unknown');
 });
 
+test('exegol container name joins the workspace badge only', () => {
+  const badge = {};
+  const hint = {};
+  const window = { addEventListener() {} };
+  const document = { querySelector(selector) {
+    return selector === '#deployment-mode' ? badge : selector === '#deployment-mode-description' ? hint : null;
+  } };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'web/config.js'), 'utf8'), { window, document });
+  window.renderRmmDeploymentMode({ workspace_id: 'alice' });
+  window.setRmmExegolContainer('exegol-pentest');
+  assert.equal(badge.textContent, 'Workspace: alice · exegol-pentest');
+  window.setRmmExegolContainer('exegol-pentest');
+  assert.equal(badge.textContent, 'Workspace: alice · exegol-pentest');
+  window.setRmmExegolContainer(null);
+  assert.equal(badge.textContent, 'Workspace: alice');
+  window.renderRmmDeploymentMode({ storage_mode: 'workspace' });
+  window.setRmmExegolContainer('exegol-pentest');
+  assert.equal(badge.textContent, 'Central administration');
+  window.renderRmmDeploymentMode();
+  assert.equal(badge.textContent, 'Mode unknown');
+});
+
 
 test('matching runtime hashes are disabled while updates remain selectable', async () => {
   const plugins = [{ name: 'same.dll', size: 5, sha256: digest },

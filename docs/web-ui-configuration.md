@@ -171,11 +171,20 @@ their workspace UI for those settings.
 unknown**. `connect` and `probeServerHealth` update it from live responses, and
 `disconnect` resets it. The display does not infer mode from the port, browser
 storage, or environment files. Controller tests cover all four display states.
+
+In workspace mode the badge also carries the Exegol container identified by
+the workspace BloodHound health check (**Workspace: ID · container**) through
+`window.setRmmExegolContainer` in `web/config.js`. `showRuntime` and
+`resetMcpStatus` in `web/bloodhound.js` publish or clear it; the container
+never appears in the other display modes.
 ## Workspace connection status
 
 The MCP control beside the workspace badge opens a connection status panel.
-It shows the last Exegol MCP check, selected container, BloodHound readiness,
-and diagnostic codes without a persistent header error banner. The panel covers
+It shows the last Exegol MCP check, BloodHound readiness, and diagnostic
+codes without a persistent header error banner. The control label stays
+summary-only (**MCP · Verified/Checking/Check needed**); the identified
+Exegol container is displayed on the workspace badge above and inside the
+expanded panel, not on the control itself. The panel covers
 Exegol MCP and BloodHound only. Disconnects and failed
 health requests clear the previous verified indicator.
 

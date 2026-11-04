@@ -9,6 +9,20 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Exegol container moves to the Workspace badge
+
+- Reported: the Exegol container name appeared in the MCP control label
+  (`MCP · Verified · <container>`). Moved it to the adjacent Workspace badge:
+  `showRuntime`/`resetMcpStatus` in `web/bloodhound.js` now publish the
+  container through the new `window.setRmmExegolContainer` in `web/config.js`,
+  and `renderDeploymentMode` appends it to the `Workspace: <id>` badge only
+  (other display modes are unchanged). The MCP control keeps its
+  Verified/Checking/Check-needed summary, and the expanded panel still shows
+  the container detail. Covered in `tests/test_bloodhound_ui.cjs` and
+  `tests/test_plugin_releases_ui.cjs`; updated
+  [Web UI configuration](web-ui-configuration.md). No operator-surface
+  change, so no `check-parity` entry.
+
 ### 2026-11-04 — Workspace WebUI connection logging
 
 - Reported (follow-up to the central-server WebUI connection logging): an
