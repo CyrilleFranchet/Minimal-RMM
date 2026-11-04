@@ -4,6 +4,7 @@ from http.server import ThreadingHTTPServer
 import json
 import tempfile
 import threading
+import time
 import unittest
 
 from workspace_service import WorkspaceRequestHandler, WorkspaceService
@@ -56,6 +57,23 @@ class WorkspaceLoginTests(unittest.TestCase):
         status, _, body = self.request("GET", "/api/v1/health", "local-secret")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["workspace_id"], "alice")
+
+    def test_webui_page_load_logs_one_connection_line(self):
+        """Each WebUI page load logs the operator IP; static assets do not."""
+        logs = []
+        original_log = self.service.log
+        self.service.log = lambda message, level="INFO": logs.append((level, message))
+        try:
+            self.assertEqual(self.request("GET", "/ui/")[0], 200)
+            self.assertEqual(self.request("GET", "/ui/index.html")[0], 200)
+            self.assertEqual(self.request("GET", "/ui/style.css")[0], 200)
+            expected = [("INFO", "WebUI connection: 127.0.0.1")] * 2
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and logs != expected:
+                time.sleep(0.01)
+            self.assertEqual(logs, expected)
+        finally:
+            self.service.log = original_log
 
     def test_public_static_routing_does_not_allow_traversal_or_other_methods(self):
         for path in ("/ui/../server_rmm.py", "/ui/../../.env"):

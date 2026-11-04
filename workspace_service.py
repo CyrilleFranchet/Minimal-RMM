@@ -1886,6 +1886,10 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
             ".svg": "image/svg+xml",
         }
         self._bytes(200, file_path.read_bytes(), content_types.get(file_path.suffix.lower(), "application/octet-stream"))
+        if rel == "index.html" and self.service is not None:
+            # One line per WebUI page load, not per static asset, matching the
+            # central server's _serve_web() connection logging.
+            self.service.log(f"WebUI connection: {self.client_address[0]}", "INFO")
         return True
 
     def _handle(self, method: str) -> None:

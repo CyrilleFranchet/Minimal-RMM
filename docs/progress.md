@@ -9,6 +9,19 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Workspace WebUI connection logging
+
+- Reported (follow-up to the central-server WebUI connection logging): an
+  operator connecting to their workspace WebUI still produced no server-side
+  log. The workspace service serves its own WebUI through
+  `WorkspaceRequestHandler._static()`, whose `log_message()` is a no-op like
+  the central server's, and nothing called `WorkspaceService.log()` on the
+  static path. `_static()` now logs `WebUI connection: <client-ip>` once per
+  `index.html` page load — not per static asset — mirroring `_serve_web()`.
+  Updated [WebUI connection logging](webui-connection-logging.md) and added a
+  test in `tests/test_workspace_login.py`. No operator-surface change, so no
+  `check-parity` entry.
+
 ### 2026-11-04 — WebUI connection logging, and `check_exegol_mcp.py` reads workspace settings
 
 - Reported: nothing in the server log showed WebUI connections. Found that

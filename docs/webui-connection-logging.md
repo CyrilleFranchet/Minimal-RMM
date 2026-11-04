@@ -13,6 +13,8 @@ through `RMMServer.log()`.
 
 ## What is logged now
 
+### Central server (`server_rmm.py`)
+
 Two call sites in `server_rmm.py` now report through `RMMServer.log()`
 (`server_rmm.py:1280`), the same timestamped, leveled logger used
 elsewhere in the file:
@@ -33,6 +35,22 @@ elsewhere in the file:
 Both log lines use `self.client_address[0]`, the same source the
 `/register` beacon handler already uses for the agent's IP
 (`server_rmm.py:5015`).
+
+### Workspace service (`workspace_service.py`)
+
+The per-operator workspace service serves its own WebUI, and its
+`WorkspaceRequestHandler` suppresses the stdlib access log the same way
+(`log_message()` is a no-op). Before this change, an operator opening
+their workspace WebUI produced no line in the workspace service log at
+all — only the central server logged WebUI visits.
+
+`WorkspaceRequestHandler._static()` now logs
+`WebUI connection: <client-ip>` through `WorkspaceService.log()` once
+per `index.html` page load, mirroring the central server's
+`_serve_web()` behavior: one line per operator visit, nothing for the
+CSS/JS/image assets the browser fetches afterward. The line appears in
+the workspace service's stdout, which is the server-side log for the
+workspace container (`docker logs` or the Exegol terminal).
 
 ## What is intentionally not logged
 
