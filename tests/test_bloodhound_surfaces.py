@@ -41,7 +41,8 @@ class BloodHoundSurfaceTests(unittest.TestCase):
         async def invoke():
             definitions = await mcp_server.mcp.list_tools()
             definition = next(tool for tool in definitions if tool.name == 'bloodhound')
-            self.assertEqual(set(definition.inputSchema['properties']), {'action', 'run_id', 'options'})
+            schema = getattr(definition, 'input_schema', None) or getattr(definition, 'inputSchema', None)
+            self.assertEqual(set(schema['properties']), {'action', 'run_id', 'options'})
             return await mcp_server.mcp.call_tool('bloodhound', {'action': 'library_search', 'options': {'text': 'delegation'}})
         with patch.object(mcp_server, '_client', return_value=client):
             result = asyncio.run(invoke())

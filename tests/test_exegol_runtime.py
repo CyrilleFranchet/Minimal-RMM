@@ -91,6 +91,7 @@ class RuntimeTests(unittest.TestCase):
             (ConnectionRefusedError('secret URL'), 'exegol_mcp_connection_failed'),
             (TimeoutError('secret token'), 'exegol_mcp_timeout'),
             (ModuleNotFoundError('private path'), 'exegol_mcp_dependency_missing'),
+            (RuntimeErrorCode('exegol_execution_schema_unsupported'), 'exegol_execution_schema_unsupported'),
             (ValueError('private diagnostic'), 'exegol_runtime_failed'),
         ):
             wrapper = RuntimeError('private wrapper')

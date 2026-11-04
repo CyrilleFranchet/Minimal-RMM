@@ -9,6 +9,76 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Support mcp>=2.0's FastMCP→MCPServer rename
+
+- `requirements-mcp.txt` pins `mcp>=1.6.0` unbounded, so an operator can end up
+  with mcp 2.x, which renamed `mcp.server.fastmcp.FastMCP` to
+  `mcp.server.mcpserver.MCPServer` and removed the old module. `mcp_rmm_server.py`
+  still imported the old name, so every MCP tool call failed to even import
+  under mcp 2.x (`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`).
+- Fixed with a narrow try/except: import `FastMCP` as before, and only fall
+  back to `MCPServer` (aliased as `FastMCP`) when the failing import is
+  specifically `mcp.server.fastmcp` — a missing `mcp` package entirely still
+  raises its original error. The `.tool()` decorator and `.run()` call used
+  throughout the file are unchanged between the two classes, so no other
+  edits were needed.
+- `mcp.server.mcpserver.Tool` also dropped the `inputSchema` alias for plain
+  attribute access (pydantic 2 strict mode); fixed the two tests that read it
+  directly off a registered tool (`tests/test_ai_concurrency.py`,
+  `tests/test_bloodhound_surfaces.py`) to fall back to `input_schema`.
+- Validation: `mcp_rmm_server.py` now imports cleanly and registers all 55
+  tools under the installed mcp 2.3.0. `make check-parity` still reports 55
+  MCP tools / 6 web shell meta commands (no operator-surface change). Full
+  suite (493 tests) now has only the 5 pre-existing process-timing failures
+  (`test_deployment_smoke`, `test_rmm_settings`, `test_server_shutdown` x2,
+  `test_workspace_shutdown`) that reproduce identically on `v2` with none of
+  this branch's changes — confirmed unrelated.
+
+### 2026-11-04 — Finish Exegol MCP client SDK-version compatibility
+
+- Fixed `tests/test_helper_shutdown.py::test_http_initialization_failure_releases_all_contexts`,
+  left failing by the prior session: it still faked `httpx.AsyncClient` directly,
+  but `McpHttpSession.__aenter__` now builds its client via
+  `mcp.shared._httpx_utils.create_mcp_http_client`. The test now fakes that
+  function instead, restoring the `enter:http`/`exit:http` event assertions.
+- Verified the dual-field schema/result handling in `rmm_mcp_client.py` and
+  `rmm_exegol_runtime.py` against an actually-installed MCP SDK (not just the
+  skipped fallback path): confirmed the real SDK in this environment exposes
+  `Tool.input_schema` (not `inputSchema`) and `CallToolResult.structured_content`
+  (not `structuredContent`), so the added fallbacks are exercised for real, not
+  just unit-tested against hand-built stand-ins.
+- Validation: full suite (`.venv/bin/python3 -m unittest discover -s tests`,
+  493 tests) run before and after this fix. Remaining failures
+  (`test_deployment_smoke`, `test_rmm_settings`, `test_server_shutdown`,
+  `test_workspace_shutdown`, and the `mcp_rmm_server` `FastMCP` import errors
+  in `test_ai_concurrency`/`test_bloodhound_surfaces`) reproduce identically on
+  `v2` with none of this session's changes applied — confirmed pre-existing
+  and out of scope (the latter traces to an incompatible `mcp` SDK build
+  present only in the local dev `.venv`, unrelated to the `mcp>=1.6.0` pin in
+  `requirements-mcp.txt`). `make check-parity` passed (no operator-surface
+  change). Live Exegol container verification still not performed.
+
+### 2026-11-04 — Preserve MCP tool schemas and nested runtime codes
+
+- Read both SDK `input_schema` and legacy `inputSchema` fields when converting
+  tools; preserve execution arguments instead of substituting an empty schema.
+- Preserve explicit `RuntimeErrorCode` diagnostics inside MCP exception groups.
+- Add regression coverage for both schema representations and wrapped errors.
+- Validation: 19 runtime tests and the schema regression passed; two SDK result
+  tests skipped because the local SDK is absent. `git diff --check` passed.
+  Live Exegol verification remains pending.
+
+### 2026-11-04 — Explicit HTTP MCP client dependency
+
+- Declare `httpx` directly in `requirements-mcp.txt`; the Exegol connection
+  imports it and must not rely on another package installing it transitively.
+- `requirements.txt` includes these requirements, so native setup and the
+  Docker image both receive the dependency. Existing environments need to
+  reinstall requirements and restart their workspace process.
+- Validation: `git diff --check` passed. The local SDK import smoke check
+  reproduced missing `httpx`; runtime verification requires installing the
+  updated requirements. The Exegol container was not accessed.
+
 ### 2026-11-04 — Slash commands and live completion
 
 - Follow-up review fixed event-reloaded history: only raw `queued`/`exec`

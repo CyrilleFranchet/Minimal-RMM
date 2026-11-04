@@ -36,7 +36,15 @@ from rmm_settings import bootstrap, getenv as settings_getenv
 if __name__ == "__main__":
     bootstrap("client")
 
-from mcp.server.fastmcp import FastMCP
+try:
+    # mcp<2 exposes the server class under this name.
+    from mcp.server.fastmcp import FastMCP
+except ModuleNotFoundError as exc:
+    # mcp>=2.0 renamed FastMCP to MCPServer; fall back only for that rename,
+    # not when the "mcp" package itself is missing (pip install mcp).
+    if exc.name != "mcp.server.fastmcp":
+        raise
+    from mcp.server.mcpserver import MCPServer as FastMCP
 
 from rmm_tools import (
     tool_bloodhound,

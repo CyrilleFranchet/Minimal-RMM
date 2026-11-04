@@ -44,6 +44,8 @@ def runtime_failure_code(error):
         if id(current) in seen:
             continue
         seen.add(id(current))
+        if isinstance(current, RuntimeErrorCode):
+            return str(current)
         # Python 3.10 uses the exceptiongroup backport via AnyIO; do not depend
         # on the Python 3.11 BaseExceptionGroup builtin for failure reporting.
         nested = getattr(current, 'exceptions', ())

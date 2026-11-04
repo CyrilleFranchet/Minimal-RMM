@@ -158,10 +158,16 @@ class McpShutdownTests(unittest.IsolatedAsyncioTestCase):
         module.ClientSession = lambda *_a: Context(events, "session")
         transport = types.ModuleType("mcp.client.streamable_http")
         transport.streamable_http_client = lambda *_a, **_k: Context(events, "transport", (None, None))
-        httpx = types.ModuleType("httpx")
-        httpx.AsyncClient = lambda **_k: Context(events, "http")
-        httpx.Timeout = lambda *_a, **_k: None
-        with patch.dict("sys.modules", {"mcp": module, "mcp.client": types.ModuleType("mcp.client"), "mcp.client.streamable_http": transport, "httpx": httpx}):
+        shared = types.ModuleType("mcp.shared")
+        httpx_utils = types.ModuleType("mcp.shared._httpx_utils")
+        httpx_utils.create_mcp_http_client = lambda **_k: Context(events, "http")
+        with patch.dict("sys.modules", {
+            "mcp": module,
+            "mcp.client": types.ModuleType("mcp.client"),
+            "mcp.client.streamable_http": transport,
+            "mcp.shared": shared,
+            "mcp.shared._httpx_utils": httpx_utils,
+        }):
             backend = McpHttpSession("http://localhost")
             with self.assertRaises(RuntimeError):
                 await backend.__aenter__()

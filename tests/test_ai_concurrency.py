@@ -14,6 +14,11 @@ def call(name="health", **arguments):
     return {"name": name, "arguments": arguments}
 
 
+def _schema(tool):
+    """Read a registered tool's input schema regardless of the installed SDK's field name."""
+    return getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
+
+
 class SchedulingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         setting = patch("rmm_ai_concurrency.getenv", return_value="4")
@@ -318,8 +323,9 @@ def ordinary_function(): pass
 
         async def run():
             definitions = {t.name: t for t in await mcp_rmm_server.mcp.list_tools()}
-            self.assertEqual(definitions["exec_command"].inputSchema["required"], ["session_ref", "command"])
-            self.assertEqual(definitions["exec_command"].inputSchema["properties"]["timeout"]["default"], 120)
+            schema = _schema(definitions["exec_command"])
+            self.assertEqual(schema["required"], ["session_ref", "command"])
+            self.assertEqual(schema["properties"]["timeout"]["default"], 120)
             results = await asyncio.gather(mcp_rmm_server.mcp.call_tool("health", {}),
                                            mcp_rmm_server.mcp.call_tool("list_sessions", {}))
             self.assertEqual(len(results), 2)

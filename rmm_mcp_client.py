@@ -39,7 +39,11 @@ def mcp_available() -> bool:
 
 
 def mcp_tool_to_openai(tool: Any) -> dict:
-    schema = getattr(tool, "inputSchema", None) or {"type": "object", "properties": {}}
+    schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        schema = getattr(tool, "inputSchema", None)
+    if schema is None:
+        schema = {"type": "object", "properties": {}}
     return {
         "type": "function",
         "function": {
@@ -61,7 +65,9 @@ def _tool_result_text(result: Any) -> str:
             parts.append(str(block.get("text", "")))
     if parts:
         return "\n".join(parts)
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
+    if structured is None:
+        structured = getattr(result, "structuredContent", None)
     if structured is not None:
         return json.dumps(structured, indent=2, default=str)
     return ""
@@ -209,18 +215,15 @@ class McpHttpSession(_BaseMcpSession):
         self._transport_cm: Any = None
 
     async def __aenter__(self) -> McpHttpSession:
-        import httpx
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import create_mcp_http_client
 
         headers: dict[str, str] = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
-        self._http_client = httpx.AsyncClient(
-            headers=headers,
-            timeout=httpx.Timeout(300.0, connect=30.0),
-        )
+        self._http_client = create_mcp_http_client(headers=headers)
         try:
             await self._stack.enter_async_context(self._http_client)
             self._transport_cm = streamable_http_client(self.url, http_client=self._http_client)
