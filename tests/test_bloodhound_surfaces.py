@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -212,7 +213,51 @@ class BloodHoundSurfaceTests(unittest.TestCase):
             service._proxy.assert_not_called()
 
     def test_credentials_are_secret_owner_scoped_settings(self):
-        for key in ('RMM_BLOODHOUND_TOKEN_ID', 'RMM_BLOODHOUND_TOKEN_KEY'):
+        for key in ('RMM_BLOODHOUND_TOKEN_ID', 'RMM_BLOODHOUND_TOKEN_KEY',
+                    'RMM_BLOODHOUND_ADMIN_PASSWORD'):
             definition = rmm_settings.FIELDS[key]
             self.assertTrue(definition['secret'])
             self.assertEqual(set(definition['scopes']), {'server', 'workspace'})
+
+    def test_reset_ce_action_validates_options_and_clears_credentials(self):
+        from rmm_bloodhound import bloodhound_api, _CE_AUTH_LOCK, _CE_AUTH_STATE
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'bloodhound'
+            root.mkdir()
+            store = rmm_settings.SettingsStore(Path(directory) / 'settings.json', 'workspace', environment={})
+            with patch.object(rmm_settings, '_active', store), \
+                    patch('rmm_exegol_runtime.get_runtime') as getter:
+                runtime = getter.return_value
+                runtime.reset_ce.return_value = {'state': 'blocked', 'error': None}
+                store.update({'settings': {'RMM_BLOODHOUND_TOKEN_ID': 'x', 'RMM_BLOODHOUND_TOKEN_KEY': 'y'}})
+                _CE_AUTH_STATE['attempted'] = True
+                code, payload = bloodhound_api(root, {'action': 'reset_ce', 'options': {'clear_graph': True}})
+                self.assertEqual(code, 200)
+                runtime.reset_ce.assert_called_once_with(True)
+                self.assertFalse(rmm_settings.getenv('RMM_BLOODHOUND_TOKEN_ID'))
+                self.assertFalse(_CE_AUTH_STATE['attempted'])
+                for invalid in ({'clear_graph': 'yes'}, {'unexpected': 1}, {'clear_graph': True, 'other': 0}):
+                    with self.subTest(invalid=invalid):
+                        code, payload = bloodhound_api(root, {'action': 'reset_ce', 'options': invalid})
+                        self.assertEqual((code, payload['error']), (400, 'invalid_reset_ce_options'))
+                code, payload = bloodhound_api(root, {'action': 'reset_ce', 'run_id': 'abc'})
+                self.assertEqual(code, 400)
+
+    def test_auth_action_reports_status_without_ever_exposing_values(self):
+        from rmm_bloodhound import bloodhound_api
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'bloodhound'
+            root.mkdir()
+            store = rmm_settings.SettingsStore(Path(directory) / 'settings.json', 'workspace', environment={})
+            with patch.object(rmm_settings, '_active', store):
+                with patch('rmm_bloodhound.bootstrap_ce_credentials', return_value='ce_initial_password_unavailable') as bootstrap:
+                    code, payload = bloodhound_api(root, {'action': 'auth'})
+                    self.assertEqual(code, 503)
+                    self.assertEqual(payload['error'], 'ce_initial_password_unavailable')
+                    # Only bounded status fields; no credential value can appear.
+                    self.assertEqual(set(payload), {'ok', 'auth', 'error'})
+                store.update({'settings': {'RMM_BLOODHOUND_TOKEN_ID': 'id', 'RMM_BLOODHOUND_TOKEN_KEY': 'key'}})
+                before = bootstrap.call_count
+                code, payload = bloodhound_api(root, {'action': 'auth'})
+                self.assertEqual((code, payload['auth']), (200, 'already_configured'))
+                self.assertEqual(bootstrap.call_count, before)

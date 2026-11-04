@@ -13,7 +13,7 @@ const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
 const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "embeddings", "bloodhound"];
 
-const BLOODHOUND_ACTIONS = ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "auth", "library_search", "library_get"];
+const BLOODHOUND_ACTIONS = ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "auth", "reset_ce", "library_search", "library_get"];
 window.rmmBloodHoundActions = BLOODHOUND_ACTIONS;
 
 const state = {

@@ -9,6 +9,37 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Operator `reset_ce` action for taking over a CE RMM did not initialize
+
+- Request: an explicit, guarded operator way to reset BloodHound CE instead
+  of running `bloodhound-ce-reset` by hand in the container — the companion
+  to the automatic credential bootstrap for an existing instance whose
+  initial admin password was never captured.
+- `ExegolRuntime.reset_ce(clear_graph)` in `rmm_exegol_runtime.py`: stops CE
+  first (a live connection would block the Exegol wrapper's drop), then
+  runs `bloodhound-ce-reset` through the same identity-verified MCP exec
+  channel as the launch, bounded by exit markers — a lost or failed reply
+  fails closed with `ce_reset_command_failed` and keeps the durable intent.
+  The neo4j graph survives by default; `clear_graph` wipes it after
+  `neo4j stop`, guarded by an existence check. The workspace local proxy
+  timeout for `/api/v1/bloodhound` rose from 30s to 120s for the reset.
+- `bloodhound_api` action `reset_ce` (options: `clear_graph` boolean only)
+  invalidates the three stored CE secret settings on success and re-arms the
+  automatic bootstrap, so `ensure` relaunches the fresh database and the new
+  initial admin password is captured without any manual configuration.
+  Exposed across REST/CLI/MCP/WebUI (a "Reset BloodHound CE…" button with
+  confirmation prompts in the workspace connection panel), all four action
+  lists updated for `make check-parity`.
+- Tests: six runtime cases in `tests/test_exegol_runtime.py` (state/intent
+  clearing, explicit graph-wipe choice, definite failure with kept intent,
+  missing wipe marker, in-progress guard, identity verification) and two
+  surface cases in `tests/test_bloodhound_surfaces.py` (option validation +
+  credential clearing, bounded `auth` responses). `make test`,
+  `check-parity`, `check-web-contracts`, and `lint-md` pass; the only
+  failing module tests remain the two pre-existing timing-sensitive
+  `test_exegol_runtime` cases. Updated
+  [bloodhound-workflow.md](bloodhound-workflow.md) (operator CE reset section).
+
 ### 2026-11-04 — Automatic BloodHound CE credential bootstrap
 
 - Request: with a dedicated Exegol workspace, manage the CE API

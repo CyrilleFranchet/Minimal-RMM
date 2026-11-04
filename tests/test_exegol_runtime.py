@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container, runtime_failure_code, LAUNCH_COMMAND, MCP_TIMEOUT, READY_TIMEOUT
+from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container, runtime_failure_code, LAUNCH_COMMAND, MCP_TIMEOUT, READY_TIMEOUT, RESET_COMMAND, GRAPH_WIPE_COMMAND, RESET_TIMEOUT
 
 TOOLS = [{'function': {'name': 'execute_command_in_container', 'parameters': {
     'type': 'object', 'properties': {'container_name': {'type': 'string'}, 'command': {'type': 'string'}},
@@ -28,6 +28,8 @@ class RuntimeTests(unittest.TestCase):
         self.launch_raises = False
         self.launch_exits = None
         self.launch_reply = None
+        self.reset_exit = 0
+        self.reset_graph_wiped = True
         self.inventory = [{'name': 'lab', 'status': 'running'}]
         self.matching = {'lab'}
         owner = self
@@ -57,6 +59,11 @@ class RuntimeTests(unittest.TestCase):
                     if owner.launch_exits is not None:
                         return json.dumps({'output': f'RMM_CE_LAUNCH_EXITED:{owner.launch_exits}\n'})
                     return json.dumps({'output': 'RMM_CE_LAUNCH_RUNNING\n'})
+                if arguments['command'].startswith(RESET_COMMAND):
+                    output = f'RMM_CE_RESET_EXITED:{owner.reset_exit}\n'
+                    if GRAPH_WIPE_COMMAND in arguments['command'] and owner.reset_graph_wiped:
+                        output += 'RMM_CE_GRAPH_WIPED\n'
+                    return json.dumps({'output': output})
                 nonce = next(owner.root.glob('ce-identity-*')).read_text()
                 host = 'wrong' if owner.wrong_identity or arguments['container_name'] not in owner.matching else 'exegol-lab'
                 output = f'RMM_EXEGOL_ID={nonce}:{host}:net:[123]\n'
@@ -323,6 +330,48 @@ class RuntimeTests(unittest.TestCase):
             recovered._run()
         self.assertEqual(recovered.snapshot['state'], 'ready')
         self.assertEqual(sum(row['command'] == LAUNCH_COMMAND for row in self.calls), 2)
+
+    def test_reset_ce_clears_state_and_durable_intent(self):
+        self.runtime._save('dispatched')
+        self.runtime._update(exegol_status='ready', state='uncertain', container='lab')
+        snapshot = self.runtime.reset_ce()
+        self.assertEqual(snapshot['state'], 'blocked')
+        self.assertIsNone(snapshot.get('error'))
+        self.assertIsNone(self.runtime._intent())
+        self.assertIsNone(self.runtime.verified_configuration)
+        self.assertTrue(any(row['command'] == RESET_COMMAND for row in self.calls))
+        # The collected graph survives unless the operator asks for a wipe.
+        self.assertFalse(any(GRAPH_WIPE_COMMAND in row['command'] for row in self.calls))
+
+    def test_reset_ce_graph_wipe_is_an_explicit_operator_choice(self):
+        self.runtime.reset_ce(clear_graph=True)
+        combined = RESET_COMMAND + '; ' + GRAPH_WIPE_COMMAND
+        self.assertTrue(any(row['command'] == combined for row in self.calls))
+
+    def test_reset_ce_failure_is_definite_and_keeps_the_durable_intent(self):
+        self.runtime._save('dispatched')
+        self.reset_exit = 1
+        snapshot = self.runtime.reset_ce()
+        self.assertEqual(snapshot['state'], 'failed')
+        self.assertEqual(snapshot['error'], 'ce_reset_command_failed')
+        self.assertEqual(self.runtime._intent(), 'dispatched')
+
+    def test_reset_ce_requires_graph_marker_when_wipe_was_requested(self):
+        self.reset_graph_wiped = False
+        snapshot = self.runtime.reset_ce(clear_graph=True)
+        self.assertEqual(snapshot['error'], 'ce_reset_command_failed')
+
+    def test_reset_ce_refuses_while_a_startup_pass_is_running(self):
+        from unittest.mock import Mock
+        self.runtime.thread = Mock(is_alive=lambda: True)
+        with self.assertRaisesRegex(RuntimeErrorCode, 'startup_in_progress'):
+            self.runtime.reset_ce()
+
+    def test_reset_ce_verifies_owner_identity_before_destroying_data(self):
+        self.wrong_identity = True
+        snapshot = self.runtime.reset_ce()
+        self.assertEqual(snapshot['error'], 'exegol_workspace_identity_mismatch')
+        self.assertFalse(any(row['command'].startswith(RESET_COMMAND) for row in self.calls))
 
     def test_reset_refuses_while_ready_or_in_progress(self):
         with patch('rmm_exegol_runtime.probe_ce', return_value='ready'):

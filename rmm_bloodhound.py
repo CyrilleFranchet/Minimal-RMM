@@ -708,6 +708,25 @@ def bloodhound_api(root, body):
             if status != 'bootstrapped':
                 return 503, {'ok': False, 'auth': 'failed', 'error': status}
             return 200, {'ok': True, 'auth': 'bootstrapped'}
+        if action == 'reset_ce':
+            if body.get('run_id') or set(options) - {'clear_graph'} or not isinstance(options.get('clear_graph', False), bool):
+                raise WorkflowError('invalid_reset_ce_options')
+            from rmm_exegol_runtime import get_runtime, RuntimeErrorCode as RuntimeResetError
+            try:
+                snapshot = get_runtime(root).reset_ce(bool(options.get('clear_graph')))
+            except RuntimeResetError as exc:
+                return 409, {'ok': False, 'error': str(exc)}
+            if not snapshot.get('error'):
+                # A cleared CE database invalidates every stored credential and
+                # re-arms the automatic bootstrap for the next fresh launch.
+                active_store('workspace', str(Path(root).parent / 'settings.json')).update(
+                    {'settings': {key: None for key in
+                                  (*CE_CREDENTIAL_KEYS, 'RMM_BLOODHOUND_ADMIN_PASSWORD')}})
+                with _CE_AUTH_LOCK:
+                    _CE_AUTH_STATE['attempted'] = False
+                from rmm_exegol_runtime import append_log
+                append_log(root, 'ce auth: stored credentials cleared by CE reset')
+            return 200, {'ok': True, 'runtime': snapshot}
         if action == 'reset':
             if options or body.get('run_id'):
                 raise WorkflowError('unexpected_reset_options')

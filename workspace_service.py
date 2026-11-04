@@ -1927,7 +1927,7 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": "workspace_asset_store_failed"})
             return
         if result is None:
-            timeout = 300 if path.endswith("/exec") or path.endswith("/ai/chat") or path == "/api/v1/agent/go/build" else 30
+            timeout = 300 if path.endswith("/exec") or path.endswith("/ai/chat") or path == "/api/v1/agent/go/build" else 120 if path == "/api/v1/bloodhound" else 30
             # Preserve operation parameters without forwarding the local login token.
             query = urllib.parse.urlencode([
                 (key, value) for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)

@@ -283,6 +283,24 @@ only `ce auth: credentials bootstrapped` or the bounded failure code. A saved
 credential is visible to the saving process immediately; startup environment
 overrides still take precedence over saved values.
 
+### Operator CE reset
+
+`reset_ce` (REST/CLI/MCP, WebUI button in the workspace connection panel) is
+the explicit, destructive way to take over a CE that RMM did not initialize:
+it stops CE, drops and recreates CE's postgres database through the Exegol
+`bloodhound-ce-reset` wrapper — the same operation as running the wrapper by
+hand (accounts, API tokens, and upload jobs disappear) — and clears RMM's
+startup intent. The collected neo4j graph survives by default; the
+`clear_graph` option wipes it after neo4j stops. The dispatch runs through
+the same identity-verified MCP channel as the launch, refuses while a startup
+pass is running, and fails closed with `ce_reset_command_failed` unless the
+bounded markers prove the reset ran. After a successful reset, RMM
+invalidates every stored CE credential and re-arms the automatic bootstrap:
+the next `ensure` relaunches CE on the fresh database, whose new initial
+admin password is captured automatically and a new token is minted — the
+whole recovery needs no manual configuration. The wrapper's own output stays
+in `/var/log/rmm-ce-reset.log` inside the container.
+
 ### Server-side lifecycle logging
 
 Before this logging was added, a definite `bloodhound_launch_failed` or a

@@ -47,6 +47,19 @@ LAUNCH_COMMAND = ("umask 077; setsid nohup bloodhound-ce >>/var/log/rmm-bloodhou
                   "else wait $_rmm_ce_pid; printf 'RMM_CE_LAUNCH_EXITED:%d\\n' $?; fi; disown")
 LAUNCH_RUNNING_MARKER = 'RMM_CE_LAUNCH_RUNNING'
 LAUNCH_EXITED_MARKER = re.compile(r'^RMM_CE_LAUNCH_EXITED:(\d{1,3})$')
+# The Exegol reset wrapper drops and recreates CE's postgres database but does
+# not stop a running CE first (a live connection would block the drop), so the
+# operator reset stops CE itself before invoking the wrapper. The graph wipe is
+# a separate, explicit operator choice: CE's neo4j data survives the wrapper.
+RESET_COMMAND = ("pkill -f '[B]loodHound-CE/bloodhound' ; sleep 2; "
+                 "bash -c 'bloodhound-ce-reset' >>/var/log/rmm-ce-reset.log 2>&1; "
+                 "printf 'RMM_CE_RESET_EXITED:%d\\n' \"$?\"")
+RESET_EXITED_MARKER = re.compile(r'^RMM_CE_RESET_EXITED:(\d{1,3})$')
+GRAPH_WIPE_COMMAND = ("neo4j stop >>/var/log/rmm-ce-reset.log 2>&1; "
+                      "if [ -d /var/lib/neo4j/data/databases ]; then "
+                      "rm -rf /var/lib/neo4j/data/databases/* /var/lib/neo4j/data/transactions/* 2>>/var/log/rmm-ce-reset.log; "
+                      "printf 'RMM_CE_GRAPH_WIPED\\n'; else printf 'RMM_CE_GRAPH_MISSING\\n'; fi")
+RESET_TIMEOUT = 180
 
 
 class RuntimeErrorCode(ValueError):
@@ -340,7 +353,7 @@ class ExegolRuntime:
         if self.stopped.is_set():
             return self._update(state='blocked', ready=False, error='runtime_stopped')
         current = self.status()
-        if current['ready'] or current['state'] == 'uncertain':
+        if current['ready'] or current['state'] in ('uncertain', 'resetting'):
             return current
         with self.lock:
             if self.stopped.is_set():
@@ -356,7 +369,6 @@ class ExegolRuntime:
 
     def reset(self):
         """Clear a durably stuck 'uncertain' dispatch so an operator can retry.
-
         'uncertain' means a previous launch command's reply was lost, so the
         service might still be starting elsewhere; ensure() refuses to dispatch
         again on its own to avoid a double launch (see docstring above). This
@@ -382,6 +394,84 @@ class ExegolRuntime:
                                  ready=False, exegol_verified_at=None, updated_at=timestamp())
             append_log(self.root, f"operator reset: cleared uncertain dispatch intent (state={previous_state}->blocked)")
             return dict(self.snapshot)
+
+    def reset_ce(self, clear_graph=False):
+        """Drop CE's own database after an explicit, destructive operator decision.
+
+        This stops CE, then drops and recreates its postgres database through
+        the Exegol reset wrapper — exactly like running ``bloodhound-ce-reset``
+        by hand: accounts, API tokens, and upload jobs disappear, and the next
+        launch re-migrates a fresh database that prints a new initial admin
+        password. The collected neo4j graph survives unless the operator also
+        asks for ``clear_graph``, which wipes it after neo4j stops. RMM's own
+        stores are untouched; the caller invalidates stored CE credentials.
+        Refuses while a startup pass is still running.
+        """
+        with self.lock:
+            if self.stopped.is_set():
+                return self._update(state='blocked', ready=False, error='runtime_stopped')
+            if self.thread is not None and self.thread.is_alive():
+                raise RuntimeErrorCode('bloodhound_startup_in_progress')
+            self._update(state='resetting', ready=False, error=None, launch_exit_code=None)
+        try:
+            asyncio.run(asyncio.wait_for(self._reset_ce(bool(clear_graph)), timeout=RESET_TIMEOUT))
+        except RuntimeErrorCode as exc:
+            self._update(state='failed', ready=False, error=str(exc))
+        except Exception as exc:
+            self._update(state='failed', ready=False, error=runtime_failure_code(exc))
+        return dict(self.snapshot)
+
+    async def _reset_ce(self, clear_graph):
+        """Run one identity-verified reset dispatch through the Exegol MCP."""
+        config = configuration()
+        url, token, container, _endpoint = config
+        try:
+            namespace = os.readlink('/proc/self/ns/net')
+        except OSError:
+            raise RuntimeErrorCode('service_must_run_inside_exegol') from None
+        hostname = socket.gethostname()
+        self.root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        nonce = secrets.token_hex(24)
+        identity_path = self.root / ('ce-identity-' + secrets.token_hex(8))
+        fd = os.open(identity_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(nonce)
+        expected = 'RMM_EXEGOL_ID=' + nonce + ':' + hostname + ':' + namespace
+        command = ("printf 'RMM_EXEGOL_ID=%s:%s:%s\\n' \"$(cat " + shlex.quote(str(identity_path))
+                   + ")\" \"$(hostname)\" \"$(readlink /proc/self/ns/net)\"")
+        try:
+            self._update(mcp_status='connecting')
+            async with McpHttpSession(url, token) as session:
+                self._update(mcp_status='connected')
+                if container:
+                    arguments = execution_arguments(session.openai_tools, container, command)
+                    result = await session.call_tool(EXEC_TOOL, arguments)
+                    lines = [line.strip() for text in output_strings(result) for line in text.splitlines()]
+                else:
+                    container, lines = await discover_container(session, command, expected, self.root)
+                if expected not in lines:
+                    raise RuntimeErrorCode('exegol_workspace_identity_mismatch')
+                if configuration() != config:
+                    raise RuntimeErrorCode('runtime_configuration_changed')
+                commands = RESET_COMMAND + ('; ' + GRAPH_WIPE_COMMAND if clear_graph else '')
+                arguments = execution_arguments(session.openai_tools, container, commands)
+                reply = await asyncio.wait_for(session.call_tool(EXEC_TOOL, arguments), timeout=RESET_TIMEOUT)
+                lines = [line.strip() for text in output_strings(reply) for line in text.splitlines()]
+                exited = [int(match.group(1)) for match in
+                          (RESET_EXITED_MARKER.match(line) for line in lines) if match]
+                if not exited or exited[0] != 0:
+                    raise RuntimeErrorCode('ce_reset_command_failed')
+                if clear_graph and 'RMM_CE_GRAPH_WIPED' not in lines:
+                    raise RuntimeErrorCode('ce_reset_command_failed')
+        finally:
+            identity_path.unlink(missing_ok=True)
+        (self.root / 'ce-startup.json').unlink(missing_ok=True)
+        self.verified_configuration = None
+        self.last_probe = 0.0
+        self.snapshot = dict(required=True, state='blocked', exegol_status='not_checked',
+                             mcp_status='not_checked', bloodhound_status='not_checked',
+                             ready=False, exegol_verified_at=None, updated_at=timestamp())
+        append_log(self.root, f"operator reset: CE database cleared (graph {'wiped' if clear_graph else 'kept'})")
 
     def status(self):
         """Refresh CE availability without invoking MCP commands or starting services."""

@@ -2,6 +2,7 @@
 (function () {
   const button = document.getElementById("bloodhound-open");
   const resetButton = document.getElementById("bloodhound-reset");
+  const resetCeButton = document.getElementById("bloodhound-reset-ce");
   const status = document.getElementById("bloodhound-status");
   const readiness = document.getElementById("bloodhound-readiness");
   const mcpLabel = document.getElementById("mcp-status-label");
@@ -183,6 +184,27 @@
     }
   }
 
+  async function resetCe() {
+    if (!resetCeButton || resetCeButton.disabled) return;
+    if (!window.confirm("Reset BloodHound CE? This clears its database (accounts, API tokens, upload jobs).")) return;
+    const clearGraph = window.confirm("Also wipe the collected graph? Cancel to keep it.");
+    resetCeButton.disabled = true;
+    message("Clearing the BloodHound CE database…");
+    try {
+      const result = await window.rmmApi("/bloodhound", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset_ce", options: { clear_graph: clearGraph } }),
+      });
+      if (result.status !== 200) throw new Error(result.data?.error || "Cannot reset BloodHound CE.");
+      message("");
+      await startHealth();
+    } catch (error) {
+      message(`BloodHound CE reset failed: ${error.message || "request failed"}`);
+    } finally {
+      resetCeButton.disabled = false;
+    }
+  }
+
   async function resetBloodHound() {
     if (!resetButton || resetButton.disabled || resetting) return;
     resetting = true;
@@ -224,4 +246,5 @@
   window.stopBloodHoundHealth = stopHealth;
   button.addEventListener("click", openBloodHound);
   resetButton?.addEventListener("click", resetBloodHound);
+  resetCeButton?.addEventListener("click", resetCe);
 })();
