@@ -252,6 +252,35 @@ class AIJobManagerTests(unittest.TestCase):
         self.assertEqual(json.loads(stored), final["result"])
         self.assertNotIn(b"private-token", self.path.read_bytes())
 
+    def test_provider_http_status_is_classified_without_raw_provider_text(self):
+        for status, expected_fragment in (
+            (401, "rejected the request"),
+            (403, "rejected the request"),
+            (429, "rate-limit or quota"),
+            (503, "server error"),
+        ):
+            def run(progress, status=status):
+                try:
+                    raise urllib.error.HTTPError(
+                        "https://provider/v1/chat", status, "Bearer private-token", {}, None)
+                except urllib.error.HTTPError as error:
+                    raise RuntimeError("private-token") from error
+
+            with self.subTest(status=status):
+                job, _ = self.submit(request_id=f"classify-{status}", run=run)
+                final = self.wait_for(job["id"], {"failed"})
+                self.assertIn(expected_fragment, final["error"])
+                self.assertNotIn("private-token", final["error"])
+
+    def test_unclassified_failure_keeps_generic_message(self):
+        def run(progress):
+            raise RuntimeError("private-token")
+
+        job, _ = self.submit(run=run)
+        final = self.wait_for(job["id"], {"failed"})
+        self.assertEqual(final["error"],
+                          "AI execution failed. Inspect job result diagnostics and session events before retrying.")
+
     def test_dismiss_preserves_history_and_owner_scope(self):
         job, _ = self.submit()
         with self.assertRaises(JobConflictError):

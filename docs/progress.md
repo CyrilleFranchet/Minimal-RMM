@@ -9,6 +9,30 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Classify AI provider HTTP failures (401/403/429/5xx) in the async job path
+
+- Follow-up to the MCP-mislabeling fix above: the WebUI's actual chat path
+  (`asynchronous=True`, `rmm_ai_jobs.AIJobManager._run`) catches every
+  exception from the provider call — Claude, OpenAI, or Mistral, same shared
+  code — and deliberately replaces it with a generic "AI execution failed..."
+  message, since the raw exception may carry credentials or the request body.
+  Only an HTTP status code survived, buried in `diagnostics.exception_chain`.
+- Added `_classify_failure()` in `rmm_ai_jobs.py`: walks the same
+  cause/context chain as `_failure_diagnostics` and maps a known HTTP status
+  to one of three bounded, credential-free labels —
+  `ai_provider_authentication_failed` (401/403),
+  `ai_provider_rate_limited_or_quota_exceeded` (429), or
+  `ai_provider_unavailable` (5xx) — each with a fixed message. Unclassified
+  failures (no HTTP status in the chain) keep the original generic message.
+  `diagnostics.exception_chain` itself is unchanged.
+- Tests: `test_provider_http_status_is_classified_without_raw_provider_text`
+  (401/403/429/503) and `test_unclassified_failure_keeps_generic_message` in
+  `tests/test_ai_jobs.py`; existing `test_failure_does_not_expose_exception_credentials`
+  and `test_wrapped_provider_failure_retains_safe_diagnostics` still pass
+  unchanged.
+- `make check` passes. Not verified against a live provider 429/401 response;
+  only unit-tested with a constructed `HTTPError`.
+
 ### 2026-11-04 — AI provider errors after MCP connects were relabeled as an MCP install problem
 
 - Reported: hitting an AI provider quota limit (Mistral) in the WebUI chat

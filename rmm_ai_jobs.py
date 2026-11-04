@@ -56,6 +56,50 @@ def _failure_diagnostics(error):
     return {"exception_chain": chain}
 
 
+# Safe, provider-agnostic classification of a failed AI call. Codes are
+# mapped to a bounded label and a fixed, credential-free message — never the
+# provider's own response text, which `_run` deliberately discards (it may
+# contain the request, the API key, or account details).
+_CLASSIFIED_ERRORS = {
+    "ai_provider_authentication_failed": (
+        "AI provider rejected the request (HTTP 401/403): the configured API "
+        "key is missing, invalid, or revoked. Check the provider key and retry."
+    ),
+    "ai_provider_rate_limited_or_quota_exceeded": (
+        "AI provider returned a rate-limit or quota error (HTTP 429). Wait "
+        "before retrying, or check the provider account's usage/billing."
+    ),
+    "ai_provider_unavailable": (
+        "AI provider returned a server error (HTTP 5xx). Retry later."
+    ),
+}
+_GENERIC_FAILURE_MESSAGE = (
+    "AI execution failed. Inspect job result diagnostics and session events "
+    "before retrying."
+)
+
+
+def _classify_failure(error):
+    """Map the first HTTP status found in the exception chain to a safe label.
+
+    Returns one of the `_CLASSIFIED_ERRORS` keys, or None when no HTTP status
+    is found (a non-HTTP failure, or one whose cause/context chain was lost).
+    """
+    seen = set()
+    while error is not None and id(error) not in seen and len(seen) < 8:
+        seen.add(id(error))
+        if isinstance(error, urllib.error.HTTPError):
+            code = error.code
+            if code in (401, 403):
+                return "ai_provider_authentication_failed"
+            if code == 429:
+                return "ai_provider_rate_limited_or_quota_exceeded"
+            if type(code) is int and 500 <= code <= 599:
+                return "ai_provider_unavailable"
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+    return None
+
+
 def _safe_progress(event):
     """Keep operational counters and labels without tool arguments or results."""
     if not isinstance(event, dict):
@@ -288,11 +332,14 @@ class AIJobManager:
         except JobInterrupted:
             self._finish(job_id, "interrupted", error="Server stopped; execution was not replayed.")
         except Exception as exc:
-            # Provider/tool exceptions may contain credentials or raw requests.
+            # Provider/tool exceptions may contain credentials or raw requests;
+            # only a bounded, fixed-message classification of the HTTP status
+            # (not the provider's own text) is ever exposed.
+            classification = _classify_failure(exc)
             self._finish(
                 job_id, "failed",
                 result={"ok": False, "diagnostics": _failure_diagnostics(exc)},
-                error="AI execution failed. Inspect job result diagnostics and session events before retrying.",
+                error=_CLASSIFIED_ERRORS.get(classification, _GENERIC_FAILURE_MESSAGE),
             )
         finally:
             if acquired:
