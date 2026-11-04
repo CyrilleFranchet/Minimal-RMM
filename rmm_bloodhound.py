@@ -23,13 +23,14 @@ import urllib.request
 import uuid
 import zipfile
 
-from rmm_settings import getenv
+from rmm_settings import active_store, getenv
 
 CATALOG = Path(__file__).resolve().parent / 'bloodhound-queries' / 'catalog.json'
 MAX_FILE = 64 * 1024 * 1024
 MAX_RESPONSE = 8 * 1024 * 1024
 JOB_STATUS = {0: 'ready', 1: 'running', 2: 'complete', 3: 'canceled', 4: 'timed_out',
               5: 'failed', 6: 'ingesting', 7: 'analyzing', 8: 'partial'}
+CE_CREDENTIAL_KEYS = ('RMM_BLOODHOUND_TOKEN_ID', 'RMM_BLOODHOUND_TOKEN_KEY')
 
 
 class WorkflowError(ValueError):
@@ -596,6 +597,67 @@ class BloodHoundWorkflow:
 _STORES = {}
 _STORES_LOCK = threading.Lock()
 
+# One automatic credential bootstrap attempt per process; the credentials
+# themselves never appear in any log line or API response.
+_CE_AUTH_LOCK = threading.Lock()
+_CE_AUTH_STATE = {'attempted': False, 'last_error': None}
+
+
+def ce_credentials_configured() -> bool:
+    """Report whether the workflow already has a stored CE API token."""
+    return all(getenv(key) for key in CE_CREDENTIAL_KEYS)
+
+
+def store_ce_credentials(root, credentials) -> None:
+    """Persist bootstrapped CE credentials as owner-local secret settings."""
+    store = active_store('workspace', str(Path(root).parent / 'settings.json'))
+    store.update({'settings': {
+        'RMM_BLOODHOUND_TOKEN_ID': credentials['token_id'],
+        'RMM_BLOODHOUND_TOKEN_KEY': credentials['token_key'],
+        'RMM_BLOODHOUND_ADMIN_PASSWORD': credentials['password'],
+    }})
+
+
+def bootstrap_ce_credentials(root):
+    """Derive and store CE credentials; return a secret-free status code."""
+    from rmm_bloodhound_ce_auth import CeAuthError, bootstrap_credentials
+    from rmm_exegol_runtime import append_log, configuration
+    try:
+        origin = configuration()[3].geturl()
+    except ValueError:
+        return 'ce_endpoint_invalid'
+    try:
+        credentials = bootstrap_credentials(origin)
+        store_ce_credentials(root, credentials)
+    except CeAuthError as exc:
+        _CE_AUTH_STATE['last_error'] = str(exc)
+        append_log(root, f'ce auth: bootstrap failed ({exc})')
+        return str(exc)
+    _CE_AUTH_STATE['last_error'] = None
+    append_log(root, 'ce auth: credentials bootstrapped')
+    return 'bootstrapped'
+
+
+def _schedule_ce_auth_bootstrap(root) -> None:
+    """Try the automatic bootstrap once per process without blocking callers.
+
+    One attempt per process keeps the periodic health probe from hammering a
+    permanently unbootstrappable CE (for example an initialized database
+    whose initial password banner was never captured). An explicit ``auth``
+    action retries on demand and reports the bounded failure code.
+    """
+    with _CE_AUTH_LOCK:
+        if _CE_AUTH_STATE['attempted'] or ce_credentials_configured():
+            return
+        _CE_AUTH_STATE['attempted'] = True
+    def run():
+        try:
+            bootstrap_ce_credentials(root)
+        except Exception:
+            from rmm_exegol_runtime import append_log
+            append_log(root, 'ce auth: bootstrap failed (ce_auth_unexpected)')
+    threading.Thread(target=run, name='ce-credential-bootstrap', daemon=True).start()
+
 
 def bloodhound_api(root, body):
     """Dispatch authenticated owner-local API actions with bounded typed options."""
@@ -625,6 +687,8 @@ def bloodhound_api(root, body):
             from rmm_exegol_runtime import get_runtime
             runtime = get_runtime(root)
             snapshot = runtime.status() if action == 'health' else runtime.ensure()
+            if snapshot.get('ready') and not ce_credentials_configured():
+                _schedule_ce_auth_bootstrap(root)
             if action == 'health':
                 return 200, {'ok': True, 'runtime': snapshot}
             if action == 'ensure' or snapshot.get('state') != 'ready':
@@ -635,6 +699,15 @@ def bloodhound_api(root, body):
                 return code, payload
             from rmm_bloodhound_proxy import open_ui
             return open_ui(root)
+        if action == 'auth':
+            if options or body.get('run_id'):
+                raise WorkflowError('unexpected_auth_options')
+            if ce_credentials_configured():
+                return 200, {'ok': True, 'auth': 'already_configured'}
+            status = bootstrap_ce_credentials(root)
+            if status != 'bootstrapped':
+                return 503, {'ok': False, 'auth': 'failed', 'error': status}
+            return 200, {'ok': True, 'auth': 'bootstrapped'}
         if action == 'reset':
             if options or body.get('run_id'):
                 raise WorkflowError('unexpected_reset_options')

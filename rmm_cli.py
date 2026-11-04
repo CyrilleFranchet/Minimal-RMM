@@ -2359,7 +2359,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("file", help='JSON file containing {"settings": {...}}; - reads standard input')
 
     bloodhound = sub.add_parser("bloodhound", parents=[shared], help="BloodHound CE collection, ingestion, and graph evidence")
-    bloodhound.add_argument("action", choices=("preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "library_search", "library_get"))
+    bloodhound.add_argument("action", choices=("preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "auth", "library_search", "library_get"))
     bloodhound.add_argument("--run-id", default="")
     bloodhound.add_argument("--options-json", default="{}", help="Action options as JSON; credentials belong in service settings")
     bloodhound.set_defaults(func=cmd_bloodhound)

@@ -260,6 +260,29 @@ that reason; it remains a configuration blocker for the signed workflow API
 until valid CE tokens are configured, and the browser login through the UI
 proxy uses normal CE credentials. CE stays running when RMM stops.
 
+### Automatic CE credential bootstrap
+
+On a dedicated Exegol workspace, RMM owns the CE credential lifecycle
+(`rmm_bloodhound_ce_auth.py`): when the lifecycle first reports ready and no
+`RMM_BLOODHOUND_TOKEN_ID`/`RMM_BLOODHOUND_TOKEN_KEY` pair is stored, the
+workspace service reads the initial admin password banner that BloodHound CE
+prints to the launch log on a fresh database (`# Initial Password Set To:`,
+captured by the RMM launch command at `/var/log/rmm-bloodhound-ce.log` inside
+the container), logs in through CE's own `POST /api/v2/login`, mints a
+dedicated API token through `POST /api/v2/tokens`, and stores the token id,
+token key, and admin password as owner-local secret settings — the same keys
+the workflow client already reads, so no manual token configuration remains.
+
+The bootstrap runs once per process in the background when a `health`, `ui`,
+or `ensure` action observes a ready CE, and can be retried on demand with the
+`auth` action (REST/CLI/MCP), which reports `already_configured` or a bounded
+failure code such as `ce_initial_password_unavailable` (the database was
+initialized before RMM managed this CE — see the CE reset action). No
+credential value appears in any log line or API response; `runtime.log` records
+only `ce auth: credentials bootstrapped` or the bounded failure code. A saved
+credential is visible to the saving process immediately; startup environment
+overrides still take precedence over saved values.
+
 ### Server-side lifecycle logging
 
 Before this logging was added, a definite `bloodhound_launch_failed` or a

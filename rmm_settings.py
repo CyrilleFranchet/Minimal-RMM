@@ -99,6 +99,7 @@ FIELDS = {
     "RMM_BLOODHOUND_UI_PUBLIC_URL": field("Browser-facing BloodHound proxy origin", "BloodHound", default="http://127.0.0.1:1031", scopes=S + W),
     "RMM_BLOODHOUND_TOKEN_ID": field("BloodHound API token ID", "BloodHound", secret=True, scopes=S + W),
     "RMM_BLOODHOUND_TOKEN_KEY": field("BloodHound API token key", "BloodHound", secret=True, scopes=S + W),
+    "RMM_BLOODHOUND_ADMIN_PASSWORD": field("BloodHound CE admin password", "BloodHound", secret=True, scopes=S + W),
     "RMM_BLOODHOUND_COLLECTOR": field("BloodHound CE collector executable", "BloodHound", default="bloodhound-ce-python", scopes=S + W),
 }
 
@@ -257,7 +258,7 @@ class SettingsStore:
         return defaults.get(key, definition(key, self.scope)["default"])
 
     def update(self, payload):
-        """Validate an entire patch and atomically save it for the next restart."""
+        """Validate an entire patch, atomically save it, and apply it in-process."""
         if self.path is None:
             raise SettingsError("internal client configuration is read-only")
         if not isinstance(payload, dict) or set(payload) != {"settings"} or not isinstance(payload["settings"], dict):
@@ -288,6 +289,14 @@ class SettingsStore:
             finally:
                 if os.path.exists(temp):
                     os.unlink(temp)
+            # Startup environment overrides keep precedence, but the process
+            # that saved a value reads it back immediately: a bootstrapped
+            # credential becomes usable in the same session instead of only
+            # after a restart.
+            try:
+                self.effective = {**self._read(), **self.overrides}
+            except SettingsError:
+                pass
         return self.snapshot()
 
 

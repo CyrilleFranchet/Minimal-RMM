@@ -9,6 +9,37 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Automatic BloodHound CE credential bootstrap
+
+- Request: with a dedicated Exegol workspace, manage the CE API
+  authentication internally instead of manual token configuration.
+- Verified the exact contracts against the operator's CE build
+  (SpecterOps/BloodHound v7.6.2, read from the container's own source): a
+  fresh database prints `# Initial Password Set To:    <password>    #` to the
+  CE log (charset `[A-Za-z0-9_]`, 32 chars), `POST /api/v2/login` takes
+  `{login_method:"secret", username, secret}` and returns a bearer
+  `session_token`, and `POST /api/v2/tokens` (bearer session) mints a signed
+  token as `{id, key}` shown exactly once. No register-admin endpoint exists
+  in this generation.
+- New module `rmm_bloodhound_ce_auth.py`: bounded-tail log parsing, login,
+  token minting, and a `bootstrap_credentials` orchestration — every failure
+  is a secret-free code (`ce_initial_password_unavailable`, `ce_login_rejected`,
+  `ce_token_creation_failed`, …). `rmm_bloodhound.py` stores the token id/key
+  and the admin password as owner-local secret settings and schedules one
+  background bootstrap per process when a ready CE is observed without stored
+  credentials; the explicit `auth` action (REST/CLI/MCP, parity-checked)
+  retries on demand and reports `already_configured` or the bounded code.
+- `rmm_settings.SettingsStore.update()` now applies the saved values to the
+  saving process immediately (startup environment overrides still win), so a
+  bootstrapped credential works in the same session; the new secret field
+  `RMM_BLOODHOUND_ADMIN_PASSWORD` joins the BloodHound group.
+- Tests: `tests/test_bloodhound_ce_auth.py` (6 tests: banner tail parsing,
+  login/token contract shapes and failure codes, end-to-end bootstrap,
+  origin fail-closed) and a live-refresh regression in
+  `tests/test_settings_security.py`. `make test`, `make check-parity`,
+  and `make lint-md` pass. Updated
+  [bloodhound-workflow.md](bloodhound-workflow.md) with the bootstrap section.
+
 ### 2026-11-04 — Live BloodHound launch diagnosis: a 401 on the readiness probe proves CE started
 
 - Reported live: "Open BloodHound" never worked on the operator's real

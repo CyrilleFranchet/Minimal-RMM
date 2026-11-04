@@ -229,5 +229,30 @@ class SettingsSecurityTests(unittest.TestCase):
                 self.assertEqual(row["saved_value"], 100)
 
 
+class SettingsLiveRefreshTests(unittest.TestCase):
+    def test_saved_credentials_are_visible_to_getenv_immediately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = f"{directory}/settings.json"
+            store = rmm_settings.SettingsStore(path, "workspace", environment={})
+            with patch.object(rmm_settings, "_active", store):
+                self.assertFalse(rmm_settings.getenv("RMM_BLOODHOUND_TOKEN_ID"))
+                store.update({"settings": {
+                    "RMM_BLOODHOUND_TOKEN_ID": "0d8ce6ec-e5d1-4f4a-9d67-7f0b13b1c2d3",
+                    "RMM_BLOODHOUND_TOKEN_KEY": "c2VjcmV0LXRva2VuLXZhbHVl",
+                }})
+                self.assertEqual(rmm_settings.getenv("RMM_BLOODHOUND_TOKEN_ID"),
+                                 "0d8ce6ec-e5d1-4f4a-9d67-7f0b13b1c2d3")
+            # A startup environment override still wins over the saved value.
+            overridden = rmm_settings.SettingsStore(
+                path, "workspace", environment={"RMM_BLOODHOUND_TOKEN_ID": "env-wins"})
+            self.assertEqual(overridden.effective["RMM_BLOODHOUND_TOKEN_ID"], "env-wins")
+            snapshot = store.snapshot()
+            row = next(item for item in snapshot["settings"]
+                       if item["key"] == "RMM_BLOODHOUND_TOKEN_ID")
+            self.assertTrue(row["secret"])
+            self.assertIsNone(row["value"])
+            self.assertIsNone(row["saved_value"])
+
+
 if __name__ == "__main__":
     unittest.main()
