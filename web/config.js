@@ -304,11 +304,37 @@
     }
   }
 
+  // Quick-jump pills let an operator open and scroll to a specific section
+  // instead of hunting through five collapsed <details> blocks by hand.
+  function renderConfigNav(dialog) {
+    const nav = $("#ui-config-nav");
+    if (!nav) return;
+    const sections = [...dialog.querySelectorAll(".ui-config-card > details")];
+    nav.replaceChildren(
+      ...sections.map((section) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary ui-config-nav-btn";
+        button.textContent = section.querySelector("summary")?.textContent || "Section";
+        button.setAttribute("aria-pressed", String(section.open));
+        button.addEventListener("click", () => {
+          section.open = true;
+          section.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        // Keep the pill highlighted while its section is open, including when
+        // the operator toggles it directly from its <summary> instead of the nav.
+        section.addEventListener("toggle", () => button.setAttribute("aria-pressed", String(section.open)));
+        return button;
+      })
+    );
+  }
+
   function initConfiguration() {
     const dialog = $("#ui-config-dialog");
     $("#config-toggle-btn")?.addEventListener("click", () => {
       if (!dialog) return;
       for (const section of dialog.querySelectorAll("details")) section.open = false;
+      renderConfigNav(dialog);
       dialog.showModal();
       window.refreshPluginSources?.();
     });

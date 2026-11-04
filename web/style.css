@@ -1744,11 +1744,35 @@ body.sidebar-resizing iframe {
   align-items: center;
   display: flex;
   justify-content: space-between;
+  position: sticky;
+  top: -1rem;
+  margin: -1rem -1rem 0;
+  padding: 1rem 1rem 0.6rem;
+  background: var(--surface);
+  z-index: 1;
+  border-bottom: 1px solid var(--border);
 }
 
 .ui-config-header h2 {
   font-size: 1rem;
   margin: 0;
+}
+
+.ui-config-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+
+.ui-config-nav-btn {
+  font-size: 0.74rem;
+  padding: 0.3rem 0.6rem;
+}
+
+.ui-config-nav-btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .ui-config-actions {
@@ -1986,7 +2010,34 @@ body.sidebar-resizing iframe {
 .service-setting-reset { display: flex; align-items: center; gap: 0.4rem; }
 #service-settings-fields { min-width: 0; border: 0; padding: 0; }
 #service-settings-fields fieldset { min-width: 0; margin: 0.8rem 0; border: 1px solid var(--border); }
-.embedding-dialog { width: min(900px, calc(100vw - 2rem)); max-height: 90vh; overflow: auto; }
+.embedding-dialog {
+  width: min(900px, calc(100vw - 2rem));
+  max-height: 90vh;
+  overflow: auto;
+  padding: 1rem;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-modal);
+}
+.embedding-dialog::backdrop { background: var(--overlay); }
+.embedding-dialog-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  position: sticky;
+  top: -1rem;
+  margin: -1rem -1rem 0;
+  padding: 1rem 1rem 0.6rem;
+  background: var(--surface);
+  z-index: 1;
+  border-bottom: 1px solid var(--border);
+}
+.embedding-dialog-header h2 { margin: 0; font-size: 1rem; }
+.embedding-step-title { margin: 1.4rem 0 0.4rem; font-size: 0.9rem; }
+.embedding-dialog fieldset > legend { font-weight: 600; }
 .embedding-dialog label { display: block; margin-top: 0.8rem; }
 .embedding-dialog input, .embedding-dialog select, .embedding-dialog textarea { width: 100%; box-sizing: border-box; }
 .embedding-dialog input[type="checkbox"] { width: auto; }

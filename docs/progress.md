@@ -9,6 +9,33 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Improve Config and Embeddings dialog usability
+
+- Found and fixed a real visual bug: unlike every other dialog in the app
+  (`.ui-config-dialog`, `.session-tools-dialog`, `.beacon-config-dialog`,
+  `.server-unreachable-dialog`), `.embedding-dialog` had no `background`,
+  `color`, `border`, or `::backdrop` rule. It rendered with the browser's
+  default white dialog chrome regardless of the selected theme, clashing hard
+  with dark mode. Gave it the same `var(--surface)`/`var(--text)`/
+  `var(--border)`/`var(--shadow-modal)` treatment as the other modal dialogs.
+- Both dialogs are also long; a flat wall of fields made them hard to scan and
+  the only close control could require scrolling to reach.
+- Config: the header (`.ui-config-header`) is now sticky, and a new quick-jump
+  nav (`#ui-config-nav`, `renderConfigNav` in `web/config.js`) lists every
+  top-level section so an operator can open and jump to one directly instead
+  of scrolling past four collapsed, unrelated sections. Each pill tracks its
+  section's open state via `aria-pressed`, including when the section is
+  toggled directly from its own `<summary>`.
+- Embeddings: added a sticky header (`.embedding-dialog-header`) with the
+  close button, replacing the close button previously only available at the
+  bottom of a very long form. Numbered the five workflow steps (profile,
+  labels, local copies, run, save results) in their fieldset legends/heading
+  for a scannable sequence instead of one undifferentiated page.
+- No element `id`s changed; `scripts/check_web_contracts.py`,
+  `tests/test_shell_completion.cjs`, and `tests/test_embeddings_shell.cjs`
+  still pass. Documented in `docs/web-ui-configuration.md` and
+  `docs/document-embeddings.md`.
+
 ### 2026-11-04 — Add an operator-authorized reset for stuck BloodHound `uncertain` startups
 
 - Reported symptom: after the detached-launch fix below, **Open BloodHound**

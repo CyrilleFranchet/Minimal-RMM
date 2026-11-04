@@ -15,6 +15,13 @@ automatically to SQLite so they survive a browser restart and follow the
 current workspace environment. Central administration is not an operator
 storage owner.
 
+The dialog header (`.ui-config-header`) stays sticky while the body scrolls, so
+the title and the **×** close control remain reachable from any section. A
+quick-jump row (`#ui-config-nav`, built by `renderConfigNav` in
+`web/config.js`) lists every top-level section by its `<summary>` text; each
+button opens that section and scrolls it into view instead of requiring a
+manual scroll past unrelated collapsed sections.
+
 The API token remains a login credential in the browser. It is not loaded from
 the state database because the UI needs that token to authenticate the first
 state request.

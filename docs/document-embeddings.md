@@ -183,6 +183,15 @@ or resetting the form after deleting a profile. Saved and imported profiles
 retain their own settings, including empty labels or disabled copying. The
 REST/CLI default for an omitted `copy_documents` field remains `false`.
 
+The dialog groups the workflow into five numbered steps (profile, classification
+labels, local copies, run, save results) so the form reads as a sequence
+instead of one long undifferentiated page. Its header (`.embedding-dialog-header`)
+stays sticky while the body scrolls, keeping the title and the **×** close
+control reachable without scrolling back to the top. The dialog itself now
+follows the same `var(--surface)`/`var(--text)`/`var(--border)` theming as the
+other modal dialogs instead of the browser's default (previously unstyled)
+white dialog chrome, so it matches the selected light/dark theme.
+
 1. Connect to the server or your local workspace service and click **Embeddings**.
 2. Select a saved profile, import a JSON profile, or use **Repository default**
    (currently the tested English MiniLM preset). **Advanced settings** starts
