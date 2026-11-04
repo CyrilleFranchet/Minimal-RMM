@@ -295,14 +295,20 @@ overrides still take precedence over saved values.
 
 `reset_ce` (REST/CLI/MCP, WebUI button in the workspace connection panel) is
 the explicit, destructive way to take over a CE that RMM did not initialize:
-it stops CE, drops and recreates CE's postgres database through the Exegol
-`bloodhound-ce-reset` wrapper — the same operation as running the wrapper by
-hand (accounts, API tokens, and upload jobs disappear) — and clears RMM's
-startup intent. The collected neo4j graph survives by default; the
-`clear_graph` option wipes it after neo4j stops. The dispatch runs through
-the same identity-verified MCP channel as the launch, refuses while a startup
-pass is running, and fails closed with `ce_reset_command_failed` unless the
-bounded markers prove the reset ran. After a successful reset, RMM
+it stops CE, then drops and recreates CE's postgres database — the same
+effect as running the Exegol `bloodhound-ce-reset` wrapper by hand (accounts,
+API tokens, and upload jobs disappear) — and clears RMM's startup intent.
+The command replicates the wrapper's own proven `DROP`/`CREATE`/`ALTER` psql
+sequence directly instead of invoking the wrapper: a live reset showed the
+wrapper's trailing `bloodhound-ce-stop` returns a nonzero exit code even
+after a successful reset (it probes psql on the already-stopped postgres), so
+success is judged on a dedicated `RMM_CE_RESET_DONE` marker reachable only
+through the full `&&` chain, not on any process exit code; postgres and neo4j
+are then stopped best-effort. The collected neo4j graph survives by default;
+the `clear_graph` option wipes it after neo4j stops. The dispatch runs
+through the same identity-verified MCP channel as the launch, refuses while a
+startup pass is running, and fails closed with `ce_reset_command_failed`
+unless the bounded markers prove the reset ran. After a successful reset, RMM
 invalidates every stored CE credential and re-arms the automatic bootstrap:
 the next `ensure` relaunches CE on the fresh database, whose new initial
 admin password is captured automatically and a new token is minted — the
