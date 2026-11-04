@@ -84,6 +84,14 @@ implementation log.
   generated policy-compliant password, `needs_password_reset: false`),
   re-logs in with it, and only then mints the token; the stored admin
   password is the final generated one.
+- Verified live end to end on the operator's real deployment (dedicated
+  Exegol on a remote host, BloodHound CE v7.6.2): after the host was resized
+  (the OOM killer had taken CE twice on a swap-less 3.8 GiB box) and the
+  Exegol MCP restarted, one `ensure` brought CE up, the automatic bootstrap
+  changed the expired initial password, minted and stored the token, and the
+  signed workflow API answered `bloodhound_ready: true` with the CE server
+  version. Remaining preflight blockers are collection-setup items
+  (`ce_collector_missing`, `kerberos_cache_not_configured`), not failures.
 - Tests: `tests/test_bloodhound_ce_auth.py` (6 tests: banner tail parsing,
   login/token contract shapes and failure codes, end-to-end bootstrap,
   origin fail-closed) and a live-refresh regression in
