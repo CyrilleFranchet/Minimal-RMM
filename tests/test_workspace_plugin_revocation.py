@@ -18,7 +18,9 @@ class WorkspacePluginRevocationTests(unittest.TestCase):
                 self.assertEqual(payload['error'], 'central_plugin_cache_sync_failed')
                 row = service.store.asset_list('plugins')[0]
                 self.assertFalse(row['enabled'])
-                service.upstream.request = Mock(return_value=(200, {}, 'application/json'))
+                service.upstream.request = Mock(side_effect=lambda method, *args, **kwargs:
+                    (200, {'plugins': [{'name': 'tool.dll', 'sha256': row['sha256']}]}, 'application/json')
+                    if method == 'GET' else (200, {}, 'application/json'))
                 service._sync_workspace_plugins()
                 self.assertFalse(service.upstream.request.call_args.args[2]['enabled'])
                 status, _, _ = service.delete_json('/api/v1/assets/plugins/tool.dll')

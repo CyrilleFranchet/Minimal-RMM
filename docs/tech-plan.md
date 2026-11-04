@@ -761,16 +761,16 @@ Archive:
 The implementation deliberately separates the control plane from the data
 plane. The central server routes beacons, commands, results, and transient
 pivot tasks. A workspace service owns SQLite history, artifacts, AI chat, the
-operator SOCKS listener, and the TUN device. The default server storage mode
-remains available for single-user deployments.
+operator SOCKS listener, and the TUN device. A single-user deployment uses the
+same architecture with one workspace; legacy server-owned storage is retired.
 
 ### Docker deploy — problem
 
 Today deployment is manual:
 
 - Python venv, `pip install -r requirements.txt`, export secrets (`RMM_API_TOKEN`, `RMM_BEACON_SECRET`)
-- Typical lab start (e.g. inside Exegol):  
-  `python server_rmm.py --rclone-profiles tools/rclone/profiles.json --rclone-max-bytes 0 --token … --beacon-secret … 8081`
+- Typical lab start inside Exegol, after preparing the deployment:
+  `python3 rmm_deployment.py run --root /path/to/deployment --component single`
 - Default HTTP bind is `127.0.0.1` — fine on host, **insufficient inside a container** (agents and port publishing need `--bind 0.0.0.0`)
 - Exegol MCP is required for AI/BloodHound (`RMM_EXEGOL_MCP_URL`, with optional
   `RMM_EXEGOL_CONTAINER` override); it can run in the
@@ -787,7 +787,7 @@ The **Windows agent** (`client_rmm.ps1`) is deployed separately on managed hosts
 | Persistence | Control-plane volume for `sessions.json` and build artifacts; one workspace volume per operator for SQLite history, AI chat, and artifacts |
 | Exegol MCP ↔ RMM AI | Shared Docker network; `RMM_EXEGOL_MCP_URL=http://exegol-mcp:8000/mcp` |
 | Exegol operator tools | Run `workspace_service.py` in the Exegol namespace; use its local UI, CLI, SOCKS, and TUN |
-| Operator CLI on host | Point `RMM_SERVER_URL` at the published workspace service or central API, depending on the storage mode |
+| Operator CLI on host | Point `RMM_SERVER_URL` at the published workspace service; central access is for explicit administration |
 
 ### What Docker does not simplify
 

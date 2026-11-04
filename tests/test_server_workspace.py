@@ -19,6 +19,46 @@ from server_rmm import RMMHandler, RMMServer, Session, _resolve_api_session
 class ServerWorkspaceTests(unittest.TestCase):
     """Verify workspace scoping and non-persistent central result handling."""
 
+    def test_workspace_credentials_cannot_join_administrator_websocket_feed(self):
+        handler = SimpleNamespace(
+            headers={"Upgrade": "websocket"},
+            _api_authorized=lambda _qs: True,
+            _workspace_scope=lambda: "alice",
+            _respond=MagicMock(),
+            server_instance=SimpleNamespace(event_hub=MagicMock(), sessions_to_json=MagicMock()),
+        )
+        with patch('server_rmm.WebSocketConnection.from_http_request') as handshake:
+            self.assertTrue(RMMHandler._handle_websocket_upgrade(handler, {}))
+        self.assertEqual(handler._respond.call_args.args[0], 403)
+        handshake.assert_not_called()
+        handler.server_instance.event_hub.add.assert_not_called()
+        handler.server_instance.sessions_to_json.assert_not_called()
+
+    def test_direct_workspace_storage_requests_do_not_touch_central_state(self):
+        for method, path in (
+            ('GET', '/assets'), ('GET', '/assets/rclone'),
+            ('POST', '/assets/skills'), ('POST', '/ai/skills'), ('POST', '/rclone/profiles'),
+            ('PATCH', '/assets/rclone/profile.json'), ('DELETE', '/assets/skills/a.md'),
+            ('DELETE', '/history'), ('DELETE', '/history/bob-session'),
+        ):
+            with self.subTest(method=method, path=path), patch('server_rmm.asset_store') as store:
+                server = SimpleNamespace(clear_session_history=MagicMock(), delete_history_session=MagicMock())
+                handler = SimpleNamespace(
+                    headers={}, _api_authorized=lambda *_args: True,
+                    _api_path_parts=lambda value: value.removeprefix('/api/v1/').split('/'),
+                    _workspace_scope=lambda: 'alice', _json=MagicMock(), server_instance=server,
+                )
+                function = getattr(RMMHandler, '_handle_api_' + method.lower())
+                if method == 'DELETE':
+                    function(handler, '/api/v1' + path)
+                else:
+                    function(handler, '/api/v1' + path, {})
+                self.assertEqual(handler._json.call_args.args[0], 409)
+                self.assertEqual(handler._json.call_args.args[1]['error'], 'storage_is_workspace_local')
+                store.assert_not_called()
+                server.clear_session_history.assert_not_called()
+                server.delete_history_session.assert_not_called()
+
     def test_storage_mode_defaults_to_workspace_and_rejects_legacy(self):
         with patch('server_rmm.settings_getenv', side_effect=lambda key, default='': default):
             self.assertEqual(server_rmm.configured_storage_mode(), 'workspace')
@@ -106,6 +146,43 @@ class ServerWorkspaceTests(unittest.TestCase):
         claimed, error = server.claim_workspace_session("bob", session.id)
         self.assertIsNone(claimed)
         self.assertEqual(error, "session_claimed")
+
+    def test_workspace_session_prefix_ambiguity_considers_only_visible_sessions(self):
+        server = self.make_server()
+        alice = self.add_session(server, 'abcd-alice')
+        alice.workspace_id = 'alice'
+        bob = self.add_session(server, 'abcd-bob')
+        bob.workspace_id = 'bob'
+        self.assertIs(server.resolve_workspace_session('alice', 'abcd'), alice)
+        self.assertIs(server.resolve_workspace_session('bob', 'abcd'), bob)
+        self.assertIsNone(server.resolve_workspace_session('alice', bob.id))
+        self.assertIsNone(server.resolve_workspace_session('alice', 'abc'))
+        other = self.add_session(server, 'abcd-alice-two')
+        other.workspace_id = 'alice'
+        self.assertIsNone(server.resolve_workspace_session('alice', 'abcd'))
+
+    def test_event_and_chat_routes_reuse_the_scoped_canonical_session_id(self):
+        server = self.make_server()
+        alice = self.add_session(server, 'abcd-alice')
+        alice.workspace_id = 'alice'
+        bob = self.add_session(server, 'abcd-bob')
+        bob.workspace_id = 'bob'
+        server.get_events = MagicMock(return_value=[])
+        server.get_ai_chat = MagicMock(return_value=(alice.id, []))
+        server.clear_ai_chat = MagicMock()
+        server.ai_jobs = MagicMock()
+        handler = SimpleNamespace(
+            headers={}, _api_authorized=lambda *_args: True, _workspace_scope=lambda: 'alice',
+            _api_path_parts=lambda path: path.removeprefix('/api/v1/').split('/'),
+            _json=MagicMock(), server_instance=server)
+        handler._api_session = lambda ref: server.resolve_workspace_session('alice', ref)
+        RMMHandler._handle_api_get(handler, '/api/v1/sessions/abcd/events', {})
+        server.get_events.assert_called_once_with(alice.id, since_id=0, limit=50)
+        RMMHandler._handle_api_get(handler, '/api/v1/sessions/abcd/ai/chat', {})
+        server.get_ai_chat.assert_called_with(alice.id)
+        RMMHandler._handle_api_delete(handler, '/api/v1/sessions/abcd/ai/chat')
+        server.get_ai_chat.assert_called_with(alice.id)
+        server.clear_ai_chat.assert_called_once_with(alice.id)
 
     def test_workspace_headers_authenticate_and_limit_session_lookup(self):
         server = self.make_server()

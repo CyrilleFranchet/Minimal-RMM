@@ -44,8 +44,11 @@ def runtime_failure_code(error):
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, BaseExceptionGroup):
-            pending.extend(current.exceptions)
+        # Python 3.10 uses the exceptiongroup backport via AnyIO; do not depend
+        # on the Python 3.11 BaseExceptionGroup builtin for failure reporting.
+        nested = getattr(current, 'exceptions', ())
+        if isinstance(nested, tuple):
+            pending.extend(item for item in nested if isinstance(item, BaseException))
         if current.__cause__ is not None:
             pending.append(current.__cause__)
         elif current.__context__ is not None:

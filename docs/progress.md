@@ -9,6 +9,43 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-03 — Second review across RMM, Profiles, and Plugins
+
+- Reject credential-forwarding redirects across operator/workspace clients,
+  Go/PowerShell agents, and SOCKS/TUN plugins.
+- Fix corrupt asset inventory handling, URL credential redaction, HTTP input
+  validation, workspace event pagination, and literal session resolution.
+- Validate profile input before transport changes and isolate cloudflared's child
+  environment from central/workspace secrets.
+- Preserve zero jitter and guard browser build/upload actions across login changes.
+- Register PowerShell sessions before command dequeue to avoid discarding work
+  when registration fails; command delivery still has no acknowledgment/replay.
+- Fix destructive rclone directory synchronization, release filename validation,
+  and TUN socket cleanup in the Plugins repository.
+- Validation: 485 RMM Python tests, 12 Profiles tests, 23 Plugins Python tests,
+  host Go/race suites, Windows/Linux agent cross-builds, PowerShell redirect and
+  SOCKS shutdown regressions, Node suites, `make check`, Compose/shell/whitespace
+  checks. Checked 303 relative file links across 94 Markdown files.
+- See the [cross-repository review](cross-repository-review.md) for findings and
+  deployment limitations. Source changes are uncommitted; plugin artifacts and
+  remote lab services are unchanged.
+
+### 2026-11-03 — Review architecture, ownership, and operator surfaces
+
+- Fix workspace authorization gaps, deployment identity overrides, event cursor
+  handling, session-prefix isolation, and overlapping canceled AI jobs.
+- Repair CLI dispatch and JSON output, structured MCP results, stale browser
+  responses, and delayed BloodHound launches after logout.
+- Reconcile plugin publications periodically with serialized mutations, canonical
+  aliases, and corrupt-inventory protection; wait for workers before closing SQLite.
+- Preserve hot rollback journals during migration and reject duplicate workspace IDs.
+- Update deployment, storage, plugin, history, and embedding documentation.
+- Validation: 468 Python tests passed, along with `make check`, additional Node
+  suites, Compose validation, shell syntax, whitespace, and 286 relative file links.
+- See the [architecture review](architecture-review.md) for findings and remaining
+  live-lab, shared-secret, durability, and compatibility limitations. No remote
+  deployment was changed and no live Exegol or BloodHound operation was performed.
+
 ### 2026-11-03 — Verify same-name plugin delivery and revocation
 
 - Test actual plugin serving for Alice and Bob with different bytes under the

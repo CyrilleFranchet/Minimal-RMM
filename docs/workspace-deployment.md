@@ -14,6 +14,24 @@ Workspace storage is the only supported runtime architecture. A single-workspace
 deployment uses the same services and ownership boundaries as a multi-workspace
 deployment. Legacy `RMM_STORAGE_MODE=server` is rejected.
 
+The workspace HTTP adapter rejects negative body lengths and non-object JSON
+bodies with HTTP 400. Oversized bodies return 413. Its upstream transport's
+internal zero-status failure becomes HTTP 502, so CLI, WebUI, and MCP clients
+receive a valid response when central is unreachable. Forwarded operation query
+parameters are preserved, including repeated and blank values; the local query
+authentication token is removed. Unhandled asset-store failures return a generic
+HTTP 500 JSON response instead of dropping the connection or using an empty inventory.
+`WorkspaceUpstream.request` installs a `NoRedirect` handler whose `redirect_request`
+returns no follow-up request. A central redirect is returned to the caller without
+resending workspace credentials to its destination. Configure the final central
+API URL directly. `WorkspaceUpstreamRedirectTests` uses a recording loopback
+`RedirectHandler` to verify that only the original path is requested.
+
+`CentralRequestBodyTests` and `WorkspaceProxyBoundaryTests` in
+`tests/test_http_request_boundaries.py` exercise malformed bodies, profile validation,
+query forwarding, inventory errors, and real loopback HTTP transport failures. The
+test fixture's `request` helper reads the actual HTTP status and JSON response.
+
 ## Architecture
 
 ```text
@@ -155,6 +173,13 @@ Use different workspace tokens for different operators. A workspace token is
 accepted only with both `X-RMM-Workspace` and `X-RMM-Workspace-Token` headers.
 The central API token remains available for administrative access.
 
+The central WebSocket feed is administrator-only: workspace credentials are
+rejected before the handshake because this feed is not partitioned by workspace.
+Workspace services use authenticated HTTP event polling instead. Direct scoped
+requests to central history or asset storage return 409; owner-local AI relays
+are routed to the workspace before this guard. `_reject_workspace_storage_access`
+enforces that boundary, including legacy skill/rclone upload aliases.
+
 ## Session ownership
 
 Event synchronization includes a central process epoch. After a central restart,
@@ -169,8 +194,16 @@ complete history.
 `WorkspaceStore.get_event_epoch`, `set_event_checkpoint`, and `apply_stream_event`
 manage stream identity, atomic cursor checkpoints, and local transcript IDs.
 `WorkspaceEventBroker.read` accepts the previous epoch and returns the current
-epoch with its queue response. Restart and migrated-ID collision tests cover
-these contracts.
+epoch with its queue response. It tracks a separate discarded-event watermark
+for each workspace: gaps in the global cursor caused by another workspace do
+not imply lost events. Queue overflow and explicit queue clearing report loss
+only when that workspace has discarded events beyond the caller's cursor.
+Restart, interleaved-workspace, queue-clear, and migrated-ID collision tests
+cover these contracts.
+
+`resolve_workspace_session` filters by authenticated owner before resolving a
+unique prefix. A matching prefix in another workspace cannot make the caller's
+own session ambiguous; multiple matches within the same workspace still fail.
 
 Chunked uploads retain their complete staging file until the event and its replay
 receipt commit together. An interrupted final chunk can therefore be replayed

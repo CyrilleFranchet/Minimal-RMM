@@ -3,6 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -100,6 +102,27 @@ class MigrationTests(unittest.TestCase):
         values = SettingsStore(self.destination / 'settings.json', 'workspace', environment={}).saved_at_start
         self.assertEqual(values['RMM_WORKSPACE_TOKEN'], 'prepared-secret')
         self.assertEqual(values['RMM_EXEGOL_MCP_URL'], 'http://localhost:8000/mcp')
+
+    def test_crashed_sqlite_rollback_journal_is_recovered_without_touching_source(self):
+        database = self.source / 'crashed.sqlite3'
+        subprocess.run([sys.executable, '-c', '''
+import os, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute('PRAGMA journal_mode=DELETE')
+db.execute('PRAGMA cache_size=1')
+db.execute('CREATE TABLE evidence(id INTEGER PRIMARY KEY, value TEXT)')
+db.executemany('INSERT INTO evidence VALUES(?,?)', [(i, 'committed' * 512) for i in range(100)])
+db.commit()
+db.execute("UPDATE evidence SET value=?", ('uncommitted' * 512,))
+os._exit(0)
+''', str(database)], check=True)
+        journal = database.with_name(database.name + '-journal')
+        self.assertTrue(journal.exists())
+        before = (database.read_bytes(), journal.read_bytes())
+        migrate(self.source, self.destination, 'alice')
+        self.assertEqual(before, (database.read_bytes(), journal.read_bytes()))
+        with sqlite3.connect(self.destination / 'legacy-server' / database.name) as imported:
+            self.assertEqual(imported.execute('SELECT value FROM evidence WHERE id=0').fetchone()[0], 'committed' * 512)
 
     def test_failed_import_preserves_prepared_settings_exactly(self):
         self.destination.mkdir()

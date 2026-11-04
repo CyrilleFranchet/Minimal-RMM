@@ -78,7 +78,7 @@ def _display_url(url: str) -> str:
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return ""
-        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], parsed.path, "", ""))
     except ValueError:
         return ""
 
@@ -169,7 +169,7 @@ def download_asset(url: str, *, max_bytes: int | None = None, timeout: float = 3
     except AssetError:
         raise
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise AssetError(f"asset download failed: {exc}") from exc
+        raise AssetError("asset download failed; check the URL and connectivity") from None
 
 
 class AssetStore:
@@ -187,18 +187,23 @@ class AssetStore:
             pass
 
     def _read_metadata(self) -> dict[str, dict[str, Any]]:
-        """Read metadata, returning an empty map for a missing or invalid file."""
+        """Read metadata, refusing corruption instead of resetting enablement."""
         try:
             payload = json.loads(self.metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except FileNotFoundError:
             return {}
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            raise AssetError("asset metadata cannot be read; repair the inventory before retrying") from None
         if not isinstance(payload, dict):
-            return {}
-        return {
-            str(name): dict(value)
-            for name, value in payload.items()
-            if isinstance(name, str) and isinstance(value, dict)
-        }
+            raise AssetError("invalid asset metadata")
+        for key, row in payload.items():
+            if (not isinstance(row, dict) or row.get("kind") not in ASSET_KINDS
+                    or not isinstance(row.get("name"), str)
+                    or _safe_name(row["name"]) != row["name"]
+                    or key != f"{row['kind']}/{row['name']}"
+                    or ("enabled" in row and not isinstance(row["enabled"], bool))):
+                raise AssetError("invalid asset metadata")
+        return payload
 
     def _write_metadata(self, metadata: dict[str, dict[str, Any]]) -> None:
         """Atomically persist asset metadata with owner-only permissions."""
@@ -244,13 +249,13 @@ class AssetStore:
             raise AssetError("asset exceeds the configured download limit")
         path = self._path(kind, name)
         with self._lock:
+            metadata = self._read_metadata()
             fd, temporary = tempfile.mkstemp(prefix=f"{name}.", suffix=".tmp", dir=path.parent)
             try:
                 with os.fdopen(fd, "wb") as handle:
                     handle.write(bytes(content))
                 os.chmod(temporary, 0o600)
                 os.replace(temporary, path)
-                metadata = self._read_metadata()
                 previous = metadata.get(f"{kind}/{name}", {})
                 row = {
                     "kind": kind,
@@ -368,10 +373,10 @@ class AssetStore:
         path = self._path(kind, name)
         key = f"{kind}/{name}"
         with self._lock:
+            metadata = self._read_metadata()
             existed = path.is_file()
             if existed:
                 path.unlink()
-            metadata = self._read_metadata()
             metadata.pop(key, None)
             self._write_metadata(metadata)
         return existed

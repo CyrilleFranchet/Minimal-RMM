@@ -26,6 +26,19 @@ function setup(api, blocked = false) {
 }
 
 (async () => {
+  let finishOldLaunch;
+  const staleLaunch = setup(() => new Promise(resolve => { finishOldLaunch = resolve; }));
+  const oldLaunch = staleLaunch.button.click();
+  staleLaunch.window.stopBloodHoundHealth();
+  assert.equal(staleLaunch.button.disabled, false);
+  assert.equal(staleLaunch.events[1][2].signal.aborted, true);
+  staleLaunch.status.textContent = 'New connection status';
+  finishOldLaunch({ status: 200, data: { url: 'http://localhost:1031/launch?ticket=old-owner' } });
+  await oldLaunch;
+  assert.ok(!staleLaunch.events.some(event => event[0] === 'navigate'));
+  assert.equal(staleLaunch.tab.closed, true);
+  assert.equal(staleLaunch.status.textContent, 'New connection status');
+
   const ui = setup(async () => ({ status: 200, data: { url: 'http://localhost:1031/launch?ticket=one-use' } }));
   await ui.button.click();
   assert.deepEqual(ui.events.map(e => e[0]), ['open', 'request', 'navigate']);

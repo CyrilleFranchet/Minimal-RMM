@@ -27,6 +27,7 @@ function fixture(options = {}) {
   const transport = () => ({ beacon_url: options.current || 'https://current.trycloudflare.com' });
   const api = async (url) => {
     calls.push({ url });
+    if (options.transportGate) await options.transportGate;
     if (options.transportFailure) return { status: 503, data: { error: 'unavailable' } };
     return { status: 200, data: transport() };
   };
@@ -37,10 +38,13 @@ function fixture(options = {}) {
     }
     assert.equal(url, '/api/v1/agent/go/build');
     return { ok: !options.buildFailure, status: options.buildFailure ? 400 : 200,
-      json: async () => options.buildFailure || { download_url: '/api/v1/agent/go/download/test.zip', filename: 'test.zip', size: 100, sha256: 'digest' } };
+      json: async () => {
+        if (options.buildGate) await options.buildGate;
+        return options.buildFailure || { download_url: '/api/v1/agent/go/download/test.zip', filename: 'test.zip', size: 100, sha256: 'digest' };
+      } };
   };
   const window = { location: { origin: 'http://admin.example:8080' }, rmmBeaconUrl: 'https://stale-cache.trycloudflare.com',
-    addEventListener() {}, persistRmmUiConfig() {} };
+    rmmState: { authGeneration: 1 }, addEventListener() {}, persistRmmUiConfig() {} };
   if (!options.fetchFallback) window.rmmApi = api;
   vm.runInNewContext(fs.readFileSync(path.join(root, 'web/go-agent.js'), 'utf8'), {
     document: { readyState: 'complete', querySelector: (selector) => elements.get(selector) },
@@ -99,4 +103,49 @@ test('server beacon-secret mismatch is surfaced without echoing the entered cred
   assert.doesNotMatch(ui.get('status').textContent, /private-beacon-secret/);
   assert.equal(ui.get('beacon-secret').value, 'private-beacon-secret');
   assert.equal(ui.get('build').disabled, false);
+});
+
+test('zero jitter survives preferences and the actual build payload', async () => {
+  const ui = fixture();
+  ui.get('jitter').value = '0';
+  await ui.click('build');
+  assert.equal(JSON.parse(ui.storage.get('rmm_go_agent_prefs')).jitterPercent, 0);
+  assert.equal(ui.calls.find((call) => call.url.endsWith('/build')).body.config.jitter_percent, 0);
+});
+
+test('connection change during transport lookup prevents old configuration submission', async () => {
+  let release;
+  const ui = fixture({ transportGate: new Promise((resolve) => { release = resolve; }) });
+  const pending = ui.click('build');
+  ui.window.rmmState.authGeneration++;
+  ui.storage.set('rmm_api_token', 'new-operator-token');
+  ui.get('status').textContent = 'New connection';
+  release();
+  await pending;
+  assert.equal(ui.calls.filter((call) => call.url.endsWith('/build')).length, 0);
+  assert.equal(ui.get('status').textContent, 'New connection');
+  assert.equal(ui.window.rmmBeaconUrl, 'https://stale-cache.trycloudflare.com');
+});
+
+test('same-token reconnect suppresses an old build response during JSON consumption', async () => {
+  let release;
+  const ui = fixture({ buildGate: new Promise((resolve) => { release = resolve; }) });
+  const pending = ui.click('build');
+  while (!ui.calls.some((call) => call.url.endsWith('/build'))) await Promise.resolve();
+  ui.window.rmmState.authGeneration++;
+  ui.get('status').textContent = 'New connection';
+  release();
+  await pending;
+  assert.equal(ui.get('download').dataset.downloadUrl, undefined);
+  assert.equal(ui.get('status').textContent, 'New connection');
+});
+
+test('a download link from an earlier connection cannot use the new token', async () => {
+  const ui = fixture();
+  await ui.click('build');
+  const before = ui.calls.length;
+  ui.window.rmmState.authGeneration++;
+  ui.storage.set('rmm_api_token', 'new-operator-token');
+  await ui.get('download').handlers.click({ preventDefault() {}, currentTarget: ui.get('download') });
+  assert.equal(ui.calls.length, before);
 });

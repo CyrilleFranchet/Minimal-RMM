@@ -70,6 +70,13 @@ until the page is empty. The WebUI loads retained live and archived transcripts
 this way. See [shell identity and recovery](shell-transcript-recovery.md) for
 AI session changes and storage limitations.
 
+Without `forward=1`, both live and archived workspace endpoints return the most
+recent matching page in ascending order, consistent with the central API and
+CLI/MCP defaults. Prefixes are literal and case sensitive; `%` and `_` are not
+SQL wildcards. `WorkspaceStore.get_events` keeps its internal forward default
+for exact embedding-result lookup; the HTTP adapter explicitly selects the
+requested direction. The workspace store regression tests cover both modes.
+
 ```http
 DELETE /api/v1/history/{id}
 ```
@@ -117,21 +124,31 @@ source archive under `RMM_logs/history/{session_id}/`.
 `git pull` does not move or delete either location unless you run something
 like `git clean`.
 
-**Working directory matters.** `RMM_logs` is relative to the process cwd when you start `server_rmm.py`. If you restart from a different directory, the server creates a fresh empty `RMM_logs` and prior transcripts stay in the old path.
+**Workspace data directory matters.** Restart the workspace with the same
+`--data-dir` or prepared deployment root. Starting against another directory
+creates an empty local database; the central server cannot reconstruct prior
+workspace history from its transient queue.
 
-**After server restart + agent reconnect (same session id):** On startup the server archives the old session (`end_reason: server_restart`). When the agent registers again, the live console used to start with an empty in-memory transcript even though `events.jsonl` was still on disk. Reconnect now **rehydrates** events from `events.jsonl` into the live session. The session moves back to the live sidebar (not the history list) but the full transcript should appear when you open it.
+**After central restart and agent reconnect:** Existing transcripts remain in
+the workspace database. A fresh authoritative session synchronization determines
+which sessions are active; reconnecting the same session ID does not erase its
+local transcript. Event epochs distinguish the restarted central stream from
+previously synchronized events. Events lost before reaching the workspace cannot
+be recovered from central memory after a restart.
 
 **Check whether data still exists:**
 
 ```bash
-ls RMM_logs/history/
-curl -s -H "Authorization: Bearer $RMM_API_TOKEN" http://127.0.0.1:8080/api/v1/history
+ls /path/to/deployment/workspaces/default/workspace.db
+curl -s -H "Authorization: Bearer $RMM_WORKSPACE_LOCAL_TOKEN" http://127.0.0.1:8787/api/v1/history
 ```
 
-If `events.jsonl` exists under a session folder, the transcript can be recovered (web UI after rehydrate fix, or read the file directly).
+For older server-owned `events.jsonl` files, use the copy-only migration procedure
+or read the preserved archive. The current server does not rehydrate these files.
 
-## Limitations (v1)
+## Current limitations
 
-- Transcripts exist only for sessions that produced events **after** this feature landed (or from first event onward); new registrations also write initial `meta.json` so beacon-only sessions can be archived after restart.
-- Sessions that disappear without an operator **kill** are archived on **server restart** (`end_reason: server_restart`) if they were in `sessions.json` or had a history directory.
+- Only synchronized or explicitly migrated events are present in the workspace.
+- Sessions absent from a successful central session synchronization become local
+  history; a failed synchronization must not be treated as an empty session list.
 - History list shows **ended** sessions only; active sessions stay in the live sidebar.

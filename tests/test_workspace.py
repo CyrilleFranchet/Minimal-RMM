@@ -55,6 +55,26 @@ class WorkspaceControlPlaneTests(unittest.TestCase):
         self.assertEqual([row["event"]["id"] for row in result["events"]], [3, 4])
         self.assertEqual(result["next_cursor"], 4)
 
+    def test_other_workspace_cursor_gaps_do_not_report_event_loss(self):
+        broker = WorkspaceEventBroker(max_events=2)
+        first = broker.publish("alice", "a", {"id": 1})
+        for index in range(10):
+            broker.publish("bob", "b", {"id": index})
+        broker.publish("alice", "a", {"id": 2})
+        broker.publish("alice", "a", {"id": 3})
+        result = broker.read("alice", since=first, epoch=broker.epoch)
+        self.assertFalse(result["reset_required"])
+        self.assertEqual([row["event"]["id"] for row in result["events"]], [2, 3])
+        self.assertTrue(broker.read("alice", since=0, epoch=broker.epoch)["reset_required"])
+
+    def test_explicit_queue_clear_reports_unconsumed_event_loss(self):
+        broker = WorkspaceEventBroker()
+        first = broker.publish("alice", "a", {"id": 1})
+        second = broker.publish("alice", "a", {"id": 2})
+        broker.clear("alice")
+        self.assertTrue(broker.read("alice", since=first, epoch=broker.epoch)["reset_required"])
+        self.assertFalse(broker.read("alice", since=second, epoch=broker.epoch)["reset_required"])
+
     def test_client_headers_include_workspace_scope(self):
         client = RmmApiClient(
             "http://central",
@@ -90,6 +110,25 @@ class WorkspaceStoreTests(unittest.TestCase):
     def tearDown(self):
         self.store.close()
         self.temp_dir.cleanup()
+
+    def test_session_prefixes_are_literal_case_sensitive_and_at_least_four_characters(self):
+        for ref in ("s", "sess%", "sess_on", "SESS"):
+            with self.subTest(ref=ref):
+                self.assertIsNone(self.store.resolve_session(ref))
+        self.assertEqual(self.store.resolve_session("sess")["id"], self.session_id)
+
+    def test_event_api_distinguishes_recent_tail_from_forward_pages(self):
+        for event_id in range(1, 7):
+            self.store.apply_event(self.session_id, {"id": event_id, "body": str(event_id)})
+        service = WorkspaceService.__new__(WorkspaceService)
+        service.store = self.store
+        for route in ("sessions", "history"):
+            path = f"/api/v1/{route}/{self.session_id}/events"
+            for forward, expected in (("0", [5, 6]), ("1", [2, 3])):
+                with self.subTest(route=route, forward=forward):
+                    status, payload, _ = service.get_json(path, {"since": ["1"], "limit": ["2"], "forward": [forward]})
+                    self.assertEqual(status, 200)
+                    self.assertEqual([event["id"] for event in payload["events"]], expected)
 
     def test_chunked_download_is_reassembled_only_at_eof(self):
         first = base64.b64encode(b"hello ").decode()

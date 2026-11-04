@@ -97,6 +97,9 @@ def commands(root, component, workspace_id=None):
     selected = workspace_id or (ids[0] if len(ids) == 1 else None)
     if component in ('single', 'workspace') and selected not in ids:
         raise ValueError('Select a registered --workspace-id.')
+    inherited_id = os.environ.get('RMM_WORKSPACE_ID', '').strip()
+    if component in ('single', 'workspace') and inherited_id and inherited_id != selected:
+        raise ValueError('RMM_WORKSPACE_ID override does not match the selected workspace; refusing to reuse another owner\'s data directory.')
     result = []
     if component in ('single', 'control'):
         directory = root / 'central'

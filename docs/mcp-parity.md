@@ -13,6 +13,12 @@ Operator CLI and external MCP clients default to the workspace URL on port
 explicit central connection settings. The operator WebUI connects directly to
 the workspace and uses its local token.
 
+The shared `RmmApiClient` uses `RejectApiRedirects` for API calls and generated
+artifact downloads. Its `redirect_request` hook rejects redirects instead of
+forwarding bearer/workspace credentials or mutation bodies to another endpoint.
+Configure the final operator URL; a redirect response is surfaced as an HTTP
+failure. This policy also applies to MCP tools using the shared client.
+
 Web AI runs centrally, but workspace-owned JSON operations must reach that
 same workspace. The internal MCP client marks these requests with
 `X-RMM-Operator-Relay`; the server requires authenticated workspace scope and

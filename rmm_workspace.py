@@ -118,6 +118,7 @@ class WorkspaceEventBroker:
         self._cursor = 0
         self.epoch = uuid.uuid4().hex
         self._queues: dict[str, deque[dict[str, Any]]] = {}
+        self._discarded: dict[str, int] = {}
 
     def publish(self, workspace_id: str, session_id: str, event: dict[str, Any]) -> int | None:
         """Append one event and return its workspace cursor, or ``None`` if unassigned."""
@@ -132,6 +133,8 @@ class WorkspaceEventBroker:
                 "event": copy.deepcopy(event),
             }
             queue = self._queues.setdefault(workspace_id, deque(maxlen=self.max_events))
+            if len(queue) == queue.maxlen:
+                self._discarded[workspace_id] = queue[0]["cursor"]
             queue.append(envelope)
             return self._cursor
 
@@ -154,7 +157,9 @@ class WorkspaceEventBroker:
             queue = self._queues.get(workspace_id, deque())
             rows = list(queue)
             oldest = rows[0]["cursor"] if rows else since + 1
-            reset_required = restarted or bool(rows and since and since < oldest - 1)
+            # Cursors are global; gaps can belong entirely to other workspaces.
+            # Only an actually discarded event in this workspace proves loss.
+            reset_required = restarted or since < self._discarded.get(workspace_id, 0)
             selected = [copy.deepcopy(row) for row in rows if row["cursor"] > since][:limit]
             next_cursor = selected[-1]["cursor"] if selected else since
             return {
@@ -169,4 +174,7 @@ class WorkspaceEventBroker:
     def clear(self, workspace_id: str) -> None:
         """Drop queued events for a workspace during an explicit workspace reset."""
         with self._lock:
-            self._queues.pop(str(workspace_id or "").strip(), None)
+            workspace_id = str(workspace_id or "").strip()
+            queue = self._queues.pop(workspace_id, None)
+            if queue:
+                self._discarded[workspace_id] = queue[-1]["cursor"]

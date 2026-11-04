@@ -336,7 +336,11 @@ func newHTTPClient(cfg *config) *http.Client {
 			transport.Proxy = http.ProxyURL(proxyURL)
 		}
 	}
-	return &http.Client{Timeout: 90 * time.Second, Transport: transport}
+	return &http.Client{Timeout: 90 * time.Second, Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func execute(command string, cfg *config, client *http.Client) (string, string) {

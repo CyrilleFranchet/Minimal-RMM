@@ -87,9 +87,11 @@ the archived evidence for review. Server-only secrets remain in the private
 archive and are not granted to the workspace configuration. Custom paths outside
 the source tree are not copied. Review path-valued settings before startup.
 
-SQLite input is cloned temporarily with its WAL and backed up through SQLite's
-backup API. The source is never opened for writing; final backups do not depend
-on stale WAL/shared-memory files. Regular copied files and generated settings
+SQLite input is cloned temporarily with its WAL or rollback journal and backed
+up through SQLite's backup API. Hot rollback journals from an interrupted process
+are recovered only in the temporary clone, so uncommitted changes are not imported.
+The source is never opened for writing; final backups do not depend on stale
+WAL/shared-memory or rollback-journal files. Regular copied files and generated settings
 are private to the operator. Ensure sufficient disk space for the archive and
 the working artifact copies.
 
@@ -101,4 +103,5 @@ the working artifact copies.
 `migrate` validates paths and manages copy-only rollback; `main` provides the
 explicit stopped-service CLI. `tests/test_workspace_migration.py` covers source
 preservation, readable imports, existing-target refusal, unsafe paths,
-malformed-history rollback, prepared settings, and committed WAL recovery.
+malformed-history rollback, prepared settings, committed WAL recovery, and
+recovery of a deliberately interrupted rollback-journal transaction.

@@ -158,7 +158,7 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual([p["name"] for p in body["plugins"]], ["tool.dll"])
 
     def test_central_plugin_asset_routes_reject_global_management(self):
-        for kind in ("plugin", "plugins"):
+        for kind in ("plugin", "plugins", "PLUGIN", "Plugins"):
             for method in ("get", "post", "patch", "delete"):
                 with self.subTest(kind=kind, method=method), patch("server_rmm.asset_store") as store:
                     handler = FakeApiHandler()

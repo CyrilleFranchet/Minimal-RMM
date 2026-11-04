@@ -25,6 +25,9 @@ historical notes in `progress.md`.
 
 | Goal | Page |
 | --- | --- |
+| Review architecture defects, regression coverage, and remaining validation gaps | [Architecture review](architecture-review.md) |
+| Review RMM, Profiles, and Plugins together | [Cross-repository review](cross-repository-review.md) |
+| Inspect CLI, MCP, and browser lifecycle findings | [Operator surface review](operator-surface-review.md) |
 | Configure services without maintaining environment-variable lists | [Persistent service settings](service-settings.md) |
 | Choose a setup and deploy without mixing server/workspace settings | [Deployment guide](deployment.md) |
 | Understand the complete system | [Architecture overview](architecture.md) |

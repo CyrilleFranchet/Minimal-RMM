@@ -150,6 +150,8 @@ def validate(key, value, scope):
         rows = value.items() if isinstance(value, dict) else [(x.get("id") or x.get("workspace_id"), x.get("token")) for x in value if isinstance(x, dict)]
         if len(rows) != len(value) or any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", k.strip()) or not isinstance(v, str) or not v.strip() for k, v in rows):
             raise SettingsError("RMM_WORKSPACES requires an ID-to-token JSON object or a list of {id, token} records; IDs must contain 1–64 letters, digits, dots, underscores, or hyphens, and tokens must be nonempty strings")
+        if len({key.strip() for key, _ in rows}) != len(rows):
+            raise SettingsError("RMM_WORKSPACES contains duplicate workspace IDs after normalization")
         # Match the existing registry's whitespace and id/workspace_id fallback
         # behavior without coercing malformed credentials into strings.
         return {key.strip(): token.strip() for key, token in rows}

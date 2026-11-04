@@ -61,7 +61,7 @@ def _tool_result_text(result: Any) -> str:
             parts.append(str(block.get("text", "")))
     if parts:
         return "\n".join(parts)
-    structured = getattr(result, "structured_content", None)
+    structured = getattr(result, "structuredContent", None)
     if structured is not None:
         return json.dumps(structured, indent=2, default=str)
     return ""

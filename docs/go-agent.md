@@ -152,6 +152,10 @@ this target-side log.
 
 ## Shutdown
 
+The beacon HTTP client rejects redirects so `X-RMM-Beacon-Token` and request
+bodies stay on the configured server endpoint. Configure the final beacon URL,
+including HTTPS when required; an HTTP-to-HTTPS redirect is not followed.
+
 The beacon handles SIGINT/SIGTERM through a cancellation context. Shutdown
 cancels in-flight HTTP requests, beacon sleeps, directly managed command
 processes, and plugin children before closing idle HTTP connections and the

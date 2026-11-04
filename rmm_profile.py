@@ -65,7 +65,7 @@ def _load_manifest(path: Path) -> dict[str, Any] | None:
     """Read and validate one profile manifest."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict) or payload.get("schema") != PROFILE_SCHEMA:
         return None
@@ -76,6 +76,13 @@ def _load_manifest(path: Path) -> dict[str, Any] | None:
     except ProfileError:
         return None
     if not version or not entrypoint:
+        return None
+    command = payload.get("command")
+    if command is not None and (not isinstance(command, list) or not command
+                                or not all(isinstance(item, str) and item for item in command)):
+        return None
+    args = payload.get("args")
+    if args is not None and (not isinstance(args, list) or not all(isinstance(item, str) for item in args)):
         return None
     return {**payload, "name": name, "version": version, "entrypoint": entrypoint}
 
@@ -116,8 +123,8 @@ def _ready_event(payload: dict[str, Any]) -> dict[str, str]:
         valid = (
             parsed.scheme in {"https", "http"}
             and parsed.hostname
-            and not parsed.username
-            and not parsed.password
+            and parsed.username is None
+            and parsed.password is None
             and parsed.path in {"", "/"}
             and not parsed.query
             and not parsed.fragment
@@ -161,7 +168,7 @@ class ProfileProcess:
     def _command(self, entrypoint: Path) -> list[str]:
         """Build the platform-neutral runner command from its manifest."""
         command = self.manifest.get("command")
-        if isinstance(command, list) and all(isinstance(item, str) and item for item in command):
+        if isinstance(command, list) and command and all(isinstance(item, str) and item for item in command):
             rendered = [item.replace("{entrypoint}", str(entrypoint)) for item in command]
         elif entrypoint.suffix.lower() == ".py":
             rendered = [sys.executable, str(entrypoint)]

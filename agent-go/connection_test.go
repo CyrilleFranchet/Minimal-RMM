@@ -7,8 +7,31 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+func TestBeaconRedirectDoesNotForwardSecret(t *testing.T) {
+	var contacted atomic.Bool
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contacted.Store(true)
+		_, _ = w.Write([]byte("OK"))
+	}))
+	defer destination.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	defer origin.Close()
+	cfg := &config{BaseURL: origin.URL, BeaconSecret: "secret", SessionID: "test"}
+	client := newHTTPClient(cfg)
+	defer client.CloseIdleConnections()
+	if err := register(client, cfg); err == nil {
+		t.Fatal("redirect was treated as successful registration")
+	}
+	if contacted.Load() {
+		t.Fatal("redirect destination received the authenticated beacon")
+	}
+}
 
 func TestRegistrationPreservesBeaconAuthenticationThroughHTTPSProxy(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

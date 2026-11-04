@@ -41,9 +41,38 @@ class WorkspaceShutdownTests(unittest.TestCase):
         service.stop()
         self.assertEqual(server.socket.fileno(), -1)
         self.assertFalse(service._sync_thread.is_alive())
+        self.assertFalse(service._plugin_thread.is_alive())
         self.assertFalse(service.pivots._thread.is_alive())
         with self.assertRaises(sqlite3.ProgrammingError):
             service.store.get_cursor()
+
+    def test_stop_keeps_database_open_until_relay_worker_finishes(self):
+        service = self.service()
+        entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+        observations = []
+        def worker():
+            entered.set()
+            release.wait(5)
+            try:
+                observations.append(service.store.get_cursor())
+            except Exception as error:
+                observations.append(error)
+        service._bloodhound_thread = threading.Thread(target=worker)
+        service._bloodhound_thread.start()
+        self.assertTrue(entered.wait(1))
+        def stop():
+            service.stop()
+            stopped.set()
+        stopping = threading.Thread(target=stop)
+        stopping.start()
+        try:
+            self.assertFalse(stopped.wait(2.1), 'storage closed before the relay worker finished')
+        finally:
+            release.set()
+            stopping.join(3)
+            service._bloodhound_thread.join(3)
+        self.assertTrue(stopped.is_set())
+        self.assertEqual(observations, [0])
 
     def test_bind_failure_stops_constructor_pivot_thread_and_closes_store(self):
         service = self.service()

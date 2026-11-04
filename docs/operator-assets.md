@@ -15,8 +15,13 @@ private operator content.
 
 Names are treated as basenames and path traversal is rejected. Downloads are
 limited by `RMM_ASSET_MAX_BYTES` (64 MiB by default, with a 512 MiB hard cap).
-Files and metadata are written atomically and each row records a SHA-256
-digest.
+Each file replacement is atomic and each installed row records a SHA-256
+digest. The asset file and metadata file are separate replacements, not a
+cross-file transaction. Corrupt or unreadable metadata is rejected before an
+upload or deletion changes bytes; reads also refuse to bypass saved enablement
+when the inventory is corrupt. Repair or restore that inventory before retrying.
+Display URLs omit user information, query strings, and fragments; download errors
+do not echo upstream URLs or credentials.
 
 ## Persistence ownership
 

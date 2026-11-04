@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container
+from rmm_exegol_runtime import ExegolRuntime, RuntimeErrorCode, configuration, execution_arguments, probe_ce, discovery_candidates, discover_container, runtime_failure_code
 
 TOOLS = [{'function': {'name': 'execute_command_in_container', 'parameters': {
     'type': 'object', 'properties': {'container_name': {'type': 'string'}, 'command': {'type': 'string'}},
@@ -93,12 +93,21 @@ class RuntimeTests(unittest.TestCase):
             (ModuleNotFoundError('private path'), 'exegol_mcp_dependency_missing'),
             (ValueError('private diagnostic'), 'exegol_runtime_failed'),
         ):
+            wrapper = RuntimeError('private wrapper')
+            wrapper.exceptions = (error,)
             with self.subTest(code=code), patch.object(self.runtime, '_check_and_start',
-                    AsyncMock(side_effect=ExceptionGroup('private wrapper', [error]))):
+                    AsyncMock(side_effect=wrapper)):
                 self.runtime._run()
                 self.assertEqual(self.runtime.snapshot['error'], code)
                 self.assertNotIn('secret', json.dumps(self.runtime.snapshot))
                 self.assertNotIn('private', json.dumps(self.runtime.snapshot))
+
+    def test_diagnostics_do_not_require_python_311_exception_group_builtin(self):
+        wrapper = RuntimeError('private wrapper')
+        wrapper.exceptions = (ConnectionRefusedError('private endpoint'),)
+        # An unavailable builtin must not break ordinary failure reporting.
+        with patch('rmm_exegol_runtime.BaseExceptionGroup', None, create=True):
+            self.assertEqual(runtime_failure_code(wrapper), 'exegol_mcp_connection_failed')
 
     def test_http_authentication_diagnostics(self):
         error = RuntimeError('secret URL')

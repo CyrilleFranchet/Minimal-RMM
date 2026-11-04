@@ -77,5 +77,8 @@ check-web-contracts:
 	@node tests/test_bloodhound_ui.cjs
 	@node tests/test_bloodhound_shell.cjs
 	@node tests/test_workspace_access_ui.cjs
+	@node tests/test_go_agent_ui.cjs
+	@node tests/test_assets_ui.cjs
+	@node tests/test_agent_redirects.cjs
 
 check: test check-parity check-web-contracts lint

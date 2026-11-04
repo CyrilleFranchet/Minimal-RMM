@@ -333,6 +333,10 @@ their shutdown; `main` validates the CLI. The central and workspace settings
 stores remain separate even when the single launcher starts both locally.
 Nonempty environment overrides valid for that service still take precedence
 over saved settings; remove old overrides before relying on generated configuration.
+The launcher rejects an inherited `RMM_WORKSPACE_ID` that differs from the
+selected workspace before starting any child. This prevents credentials for
+one operator from opening another operator's prepared data directory. A matching
+ID and same-owner token rotation remain supported.
 The launcher does not forward central-only credentials to the workspace. It
 also removes legacy singleton workspace credentials from the central environment,
 which uses the prepared registry (or an explicit `RMM_WORKSPACES` override).

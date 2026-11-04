@@ -56,6 +56,7 @@
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body), signal: controller.signal,
       });
+      if (controller.signal.aborted) throw new Error("Request canceled");
       if (result.status !== 202 || !result.data?.workspace_request_id) return result;
       const requestId = result.data.workspace_request_id;
       if (!/^[a-f0-9]{32}$/.test(requestId)) throw new Error("Invalid BloodHound workspace response.");
@@ -69,6 +70,9 @@
     clearTimeout(healthTimer);
     healthController?.abort();
     launchController?.abort();
+    launchController = null;
+    button.disabled = false;
+    message("");
     if (readiness) readiness.textContent = "";
     resetMcpStatus("Not checked");
   }
@@ -112,6 +116,7 @@
     button.disabled = true;
     message("");
     const controller = new AbortController();
+    const generation = healthGeneration;
     launchController = controller;
     const timeout = setTimeout(() => controller.abort(), 120000);
     const budget = { remaining: 120 };
@@ -144,13 +149,15 @@
       tab.location.replace(url.href);
     } catch (error) {
       if (!tab.closed) tab.close();
-      message(controller.signal.aborted
-        ? "BloodHound opening was canceled or exceeded 120 seconds. Check workspace status before retrying."
-        : `Cannot open BloodHound: ${error.message || "connection failed"}`);
+      if (generation === healthGeneration) {
+        message(controller.signal.aborted
+          ? "BloodHound opening was canceled or exceeded 120 seconds. Check workspace status before retrying."
+          : `Cannot open BloodHound: ${error.message || "connection failed"}`);
+      }
     } finally {
       clearTimeout(timeout);
       if (launchController === controller) launchController = null;
-      button.disabled = false;
+      if (generation === healthGeneration) button.disabled = false;
     }
   }
 

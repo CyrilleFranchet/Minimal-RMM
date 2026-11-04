@@ -6,8 +6,10 @@ from pathlib import Path
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
+import urllib.error
 
-from rmm_asset_store import AssetError, AssetStore
+from rmm_asset_store import AssetError, AssetStore, download_asset
 from rmm_profile import ProfileManager
 from server_rmm import RMMHandler
 
@@ -33,6 +35,39 @@ class AssetStoreTests(unittest.TestCase):
                 store.add_bytes("skills", "skill.txt", b"body")
             with self.assertRaises(AssetError):
                 store.add_bytes("rclone", "profile.yaml", b"{}")
+
+    def test_corrupt_inventory_preserves_bytes_and_refuses_reads_and_mutations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AssetStore(directory)
+            store.add_bytes("plugins", "socks.dll", b"original", enabled=False)
+            for corrupt in ('{broken', '[]', '{"plugins/socks.dll": null}',
+                            '{"plugins/socks.dll": {"kind":"plugins", "name":"socks.dll", "enabled":"false"}}'):
+                with self.subTest(metadata=corrupt):
+                    store.metadata_path.write_text(corrupt)
+                    for operation in (lambda: store.add_bytes("plugins", "socks.dll", b"replacement"),
+                                      lambda: store.remove("plugins", "socks.dll"),
+                                      lambda: store.read("plugins", "socks.dll"),
+                                      lambda: store.set_flag("skills", "example.md", True)):
+                        with self.assertRaises(AssetError):
+                            operation()
+                        self.assertEqual((Path(directory) / "plugins/socks.dll").read_bytes(), b"original")
+                        self.assertEqual(store.metadata_path.read_text(), corrupt)
+
+    def test_asset_metadata_does_not_expose_url_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AssetStore(directory)
+            row = store.add_bytes("plugins", "socks.dll", b"bytes",
+                                  source_url="https://alice:secret@example.test:8443/socks.dll?token=hidden#fragment")
+            self.assertEqual(row["source_url"], "https://example.test:8443/socks.dll")
+            self.assertNotIn("secret", store.metadata_path.read_text())
+            self.assertNotIn("hidden", store.metadata_path.read_text())
+
+    def test_download_error_does_not_expose_signed_url(self):
+        with mock.patch("rmm_asset_store.urllib.request.urlopen",
+                        side_effect=urllib.error.URLError("https://example.test/plugin?token=secret")):
+            with self.assertRaises(AssetError) as error:
+                download_asset("https://example.test/plugin?token=secret")
+        self.assertNotIn("secret", str(error.exception))
 
 
 class ProfileManagerTests(unittest.TestCase):

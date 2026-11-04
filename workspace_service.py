@@ -17,6 +17,7 @@ if __name__ == "__main__":
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
 import base64
+from functools import wraps
 import hashlib
 import hmac
 import http.client
@@ -385,8 +386,10 @@ class WorkspaceStore:
             row = self._db.execute(query, params).fetchone()
             if row:
                 return self._decode_session(row)
-            query = "SELECT * FROM sessions WHERE session_id LIKE ?"
-            params = (ref + "%",)
+            if len(ref) < 4:
+                return None
+            query = "SELECT * FROM sessions WHERE substr(session_id,1,?)=?"
+            params = (len(ref), ref)
             if active_only:
                 query += " AND active=1"
             rows = self._db.execute(query, params).fetchall()
@@ -532,7 +535,7 @@ class WorkspaceStore:
             if commit:
                 self._db.commit()
 
-    def get_events(self, session_ref: str, since: int = 0, limit: int = 100) -> list[dict[str, Any]] | None:
+    def get_events(self, session_ref: str, since: int = 0, limit: int = 100, *, forward: bool = True) -> list[dict[str, Any]] | None:
         """Read local transcript events for a live or archived session."""
         session = self.resolve_session(session_ref)
         if not session:
@@ -540,9 +543,12 @@ class WorkspaceStore:
         sid = str(session["id"])
         with self._lock:
             rows = self._db.execute(
-                "SELECT payload FROM events WHERE session_id=? AND event_id>? ORDER BY event_id LIMIT ?",
+                "SELECT payload FROM events WHERE session_id=? AND event_id>? ORDER BY event_id "
+                + ("ASC" if forward else "DESC") + " LIMIT ?",
                 (sid, max(0, int(since)), max(1, min(1000, int(limit)))),
             ).fetchall()
+        if not forward:
+            rows.reverse()
         result = []
         for row in rows:
             try:
@@ -856,7 +862,13 @@ class WorkspaceUpstream:
                 return handler_self.do_open(connection_factory(http.client.HTTPSConnection), request,
                                             context=handler_self._context)
 
-        opener = urllib.request.build_opener(HttpHandler(), HttpsHandler())
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            """Keep workspace credentials pinned to the configured central endpoint."""
+
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(HttpHandler(), HttpsHandler(), NoRedirect())
         data = None
         headers = {
             "Accept": "application/json",
@@ -970,6 +982,21 @@ class WorkspaceHTTPServer(ThreadingHTTPServer):
         super().server_close()
 
 
+def serialize_plugin_mutation(method):
+    """Serialize local plugin writes and publication against background reconciliation."""
+    @wraps(method)
+    def serialized(service, path, *args, **kwargs):
+        parts = [part.strip().lower() for part in path.strip('/').split('/')]
+        plugin_route = (parts[:3] == ['api', 'v1', 'plugins']
+                        or parts[:4] in (['api', 'v1', 'assets', 'plugins'], ['api', 'v1', 'assets', 'plugin'])
+                        or parts == ['api', 'v1', 'plugin-releases', 'install'])
+        if plugin_route:
+            with service._plugin_lock:
+                return method(service, path, *args, **kwargs)
+        return method(service, path, *args, **kwargs)
+    return serialized
+
+
 class WorkspaceService:
     """Coordinate local persistence, central synchronization, and local pivots."""
 
@@ -994,6 +1021,7 @@ class WorkspaceService:
         self.poll_interval = max(0.2, float(poll_interval))
         self._stop_event = threading.Event()
         self._stop_lock = threading.Lock()
+        self._plugin_lock = threading.RLock()
         self._closed = False
         self.store = WorkspaceStore(data_dir, workspace_id)
         try:
@@ -1012,6 +1040,7 @@ class WorkspaceService:
         self._running = True
         self._sync_thread = threading.Thread(target=self._sync_loop, name="workspace-sync", daemon=True)
         self._bloodhound_thread = threading.Thread(target=self._bloodhound_loop, name="workspace-bloodhound", daemon=True)
+        self._plugin_thread = threading.Thread(target=self._plugin_sync_loop, name="workspace-plugins", daemon=True)
         self.http_server: ThreadingHTTPServer | None = None
 
     def log(self, message: str, level: str = "INFO") -> None:
@@ -1035,8 +1064,16 @@ class WorkspaceService:
         responses = payload.get("responses")
         return responses if isinstance(responses, list) else []
 
-    def _sync_plugin_asset(self, row: dict[str, Any] | None, *, removed: bool = False) -> bool:
-        """Publish one workspace plugin artifact to the central runtime cache."""
+    def _sync_plugin_asset(self, row: dict[str, Any] | None) -> bool:
+        """Publish the current authoritative version, never a stale caller snapshot."""
+        with self._plugin_lock:
+            if not isinstance(row, dict) or not row.get('name'):
+                return False
+            current = next((item for item in self.store.asset_list('plugins') if item['name'] == row['name']), None)
+            return self._publish_plugin_asset(current or {'name': row['name'], 'enabled': False}, removed=current is None)
+
+    def _publish_plugin_asset(self, row: dict[str, Any] | None, *, removed: bool = False) -> bool:
+        """Send one snapshot while the caller holds the plugin mutation lock."""
         if not isinstance(row, dict) or not row.get("name"):
             return False
         payload: dict[str, Any] = {
@@ -1044,7 +1081,7 @@ class WorkspaceService:
             "enabled": bool(row.get("enabled", True)) and not removed,
             "sha256": row.get("sha256"),
         }
-        if not removed:
+        if payload['enabled']:
             try:
                 payload["content_b64"] = base64.b64encode(
                     self.store.asset_store.read("plugins", row["name"], enabled_only=False)
@@ -1057,11 +1094,46 @@ class WorkspaceService:
         return status == 200
 
     def _sync_workspace_plugins(self) -> None:
-        """Republish persistent workspace plugins after a central restart."""
-        for row in self.store.asset_list("plugins"):
-            if not self._running:
+        """Repair missing or stale owner cache entries without resending unchanged bytes."""
+        with self._plugin_lock:
+            metadata_path = self.store.asset_store.metadata_path
+            if metadata_path.exists():
+                # A corrupt inventory must not look like an intentional empty store.
+                metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+                if not isinstance(metadata, dict) or any(not isinstance(value, dict) for value in metadata.values()):
+                    raise AssetError('Invalid asset inventory; refusing plugin cache reconciliation')
+                for key, value in metadata.items():
+                    if key.startswith('plugins/') and (value.get('kind') != 'plugins'
+                            or key != 'plugins/' + str(value.get('name', ''))
+                            or not isinstance(value.get('enabled', True), bool)
+                            or not re.fullmatch(r'[a-f0-9]{64}', str(value.get('sha256', '')))):
+                        raise AssetError('Invalid plugin inventory; refusing plugin cache reconciliation')
+            status, payload, _ = self.upstream.request('GET', '/api/v1/plugins')
+            if status != 200 or not isinstance(payload, dict) or not isinstance(payload.get('plugins'), list):
                 return
-            self._sync_plugin_asset(row)
+            remote = {row['name']: row for row in payload['plugins'] if isinstance(row, dict) and isinstance(row.get('name'), str)}
+            local = {row['name']: row for row in self.store.asset_list('plugins')}
+            for name in sorted(set(remote) | set(local)):
+                if not self._running:
+                    return
+                row = local.get(name)
+                cached = remote.get(name)
+                if row and row.get('enabled', True):
+                    if cached and cached.get('sha256') == row.get('sha256'):
+                        continue
+                    self._publish_plugin_asset(row)
+                elif cached:
+                    self._publish_plugin_asset({'name': name, 'enabled': False}, removed=True)
+
+    def _plugin_sync_loop(self):
+        """Retry cache reconciliation independently of session/event synchronization."""
+        while self._running:
+            try:
+                self._sync_workspace_plugins()
+            except Exception:
+                if self._running:
+                    self.log('Workspace plugin cache reconciliation failed; retrying in 30 seconds.', 'WARNING')
+            self._stop_event.wait(30)
 
     def _resolve_local_session_id(self, ref: str) -> str | None:
         """Resolve an API session reference using workspace-local state."""
@@ -1157,11 +1229,6 @@ class WorkspaceService:
 
     def _sync_loop(self) -> None:
         """Run periodic central synchronization until service shutdown."""
-        try:
-            self._sync_workspace_plugins()
-        except Exception as exc:
-            if self._running:
-                self.log(f"Workspace plugin sync failed: {exc}", "WARNING")
         while self._running:
             try:
                 self.sync_once()
@@ -1215,6 +1282,7 @@ class WorkspaceService:
             self.port = int(self.http_server.server_address[1])
             self._sync_thread.start()
             self._bloodhound_thread.start()
+            self._plugin_thread.start()
             from rmm_exegol_runtime import get_runtime
             get_runtime(self.store.data_dir / "bloodhound").ensure()
         except BaseException:
@@ -1261,8 +1329,10 @@ class WorkspaceService:
                 finally:
                     if self._sync_thread.is_alive() and self._sync_thread is not threading.current_thread():
                         self._sync_thread.join()
+                    if self._plugin_thread.is_alive() and self._plugin_thread is not threading.current_thread():
+                        self._plugin_thread.join()
                     if self._bloodhound_thread.is_alive() and self._bloodhound_thread is not threading.current_thread():
-                        self._bloodhound_thread.join(timeout=2)
+                        self._bloodhound_thread.join()
                     self.store.close()
                     self._closed = True
 
@@ -1423,7 +1493,7 @@ class WorkspaceService:
                 limit = int(qs.get("limit", ["100"])[0] or 100)
             except ValueError:
                 return 400, {"error": "invalid_cursor"}, "application/json"
-            events = self.store.get_events(parts[1], since=since, limit=limit)
+            events = self.store.get_events(parts[1], since=since, limit=limit, forward=qs.get("forward", ["0"])[0] == "1")
             return (200, {"events": events}, "application/json") if events is not None else (404, {"error": "session_not_found"}, "application/json")
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "downloads":
             downloads = self.store.list_downloads(parts[1])
@@ -1441,7 +1511,7 @@ class WorkspaceService:
                 limit = int(qs.get("limit", ["500"])[0] or 500)
             except ValueError:
                 return 400, {"error": "invalid_cursor"}, "application/json"
-            events = self.store.get_events(parts[1], since=since, limit=limit)
+            events = self.store.get_events(parts[1], since=since, limit=limit, forward=qs.get("forward", ["0"])[0] == "1")
             session = self.store.history_meta(parts[1])
             return (200, {"session_id": session["id"], "events": events or []}, "application/json") if session else (404, {"error": "session_not_found"}, "application/json")
         if parts == ["socks"]:
@@ -1493,6 +1563,7 @@ class WorkspaceService:
             return 200, path_obj.read_bytes(), content_types.get(parts[1], "application/octet-stream")
         return None
 
+    @serialize_plugin_mutation
     def post_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local pivot and AI persistence endpoints or return ``None``."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
@@ -1542,7 +1613,7 @@ class WorkspaceService:
                     )
             except AssetError as exc:
                 return 400, {"error": str(exc)}, "application/json"
-            if asset_kind == "plugins" and not self._sync_plugin_asset(row):
+            if row.get('kind') == "plugins" and not self._sync_plugin_asset(row):
                 return 502, {"error": "central_plugin_cache_sync_failed", "asset": row}, "application/json"
             return 201, {"ok": True, "asset": row, "workspace_local": True}, "application/json"
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "socks":
@@ -1649,6 +1720,7 @@ class WorkspaceService:
             return status, payload, content_type
         return None
 
+    @serialize_plugin_mutation
     def patch_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local asset enablement updates or return ``None`` for proxying."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
@@ -1687,10 +1759,11 @@ class WorkspaceService:
                 row = self.store.asset_store.set_enabled(kind, name, enabled)
         except AssetError as exc:
             return 404, {"error": str(exc)}, "application/json"
-        if kind in {"plugins", "plugin"} and not self._sync_plugin_asset(row):
+        if kind.strip().lower() in {"plugins", "plugin"} and not self._sync_plugin_asset(row):
             return 502, {"error": "central_plugin_cache_sync_failed"}, "application/json"
         return 200, {"ok": True, "asset": row, "workspace_local": True}, "application/json"
 
+    @serialize_plugin_mutation
     def delete_json(self, path: str) -> tuple[int, Any, str] | None:
         """Handle local history and AI deletion endpoints or return ``None``."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
@@ -1721,14 +1794,14 @@ class WorkspaceService:
         else:
             kind = name = None
         if kind and name:
-            if kind in {"plugins", "plugin"}:
+            if kind.strip().lower() in {"plugins", "plugin"}:
                 try:
                     self.store.asset_store.set_enabled(kind, name, False)
                 except AssetError:
                     return 404, {"error": "asset_not_found"}, "application/json"
                 # Retain a disabled record until central acknowledges revocation.
                 # Startup synchronization can retry it after a connection failure.
-                if not self._sync_plugin_asset({"name": name}, removed=True):
+                if not self._sync_plugin_asset({"name": name}):
                     return 502, {"error": "central_plugin_cache_sync_failed",
                                  "detail": "Plugin disabled locally; retry deletion to confirm central revocation."}, "application/json"
             try:
@@ -1769,11 +1842,15 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
     def _request_body(self) -> dict[str, Any]:
         """Read and decode a bounded JSON request body."""
         length = int(self.headers.get("Content-Length", "0") or 0)
+        if length < 0:
+            raise ValueError("invalid_content_length")
         if length > MAX_LOCAL_BODY:
             raise ValueError("payload_too_large")
         raw = self.rfile.read(length) if length else b"{}"
         value = json.loads(raw.decode(errors="replace"))
-        return value if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            raise ValueError("json_object_required")
+        return value
 
     def _authorized(self, qs: dict[str, list[str]]) -> bool:
         """Check the workspace-local operator token."""
@@ -1833,19 +1910,32 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
             return
 
         result = None
-        if method == "GET":
-            result = self.service.get_json(path, qs)
-        elif method == "POST":
-            result = self.service.post_json(path, body or {})
-        elif method == "PATCH":
-            result = self.service.patch_json(path, body or {})
-        elif method == "DELETE":
-            result = self.service.delete_json(path)
+        try:
+            if method == "GET":
+                result = self.service.get_json(path, qs)
+            elif method == "POST":
+                result = self.service.post_json(path, body or {})
+            elif method == "PATCH":
+                result = self.service.patch_json(path, body or {})
+            elif method == "DELETE":
+                result = self.service.delete_json(path)
+        except AssetError:
+            self._json(500, {"error": "workspace_asset_store_failed"})
+            return
         if result is None:
             timeout = 300 if path.endswith("/exec") or path.endswith("/ai/chat") or path == "/api/v1/agent/go/build" else 30
-            status, payload, content_type = self.service._proxy(method, path, body, timeout=timeout)
+            # Preserve operation parameters without forwarding the local login token.
+            query = urllib.parse.urlencode([
+                (key, value) for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+                if key != "token"
+            ])
+            upstream_path = path + ("?" + query if query else "")
+            status, payload, content_type = self.service._proxy(method, upstream_path, body, timeout=timeout)
             result = (status, payload, content_type)
         status, payload, content_type = result
+        if status == 0:
+            # Zero is an internal transport-failure sentinel, not an HTTP status.
+            status = 502
         if isinstance(payload, (bytes, bytearray)):
             self._bytes(status, bytes(payload), content_type)
         else:

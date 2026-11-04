@@ -120,6 +120,14 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'identity'):
             commands(self.root, 'workspace')
 
+    def test_inherited_identity_cannot_rebind_another_workspace_data_directory(self):
+        prepare(self.root, 'multi', ['alice', 'bob'])
+        with patch.dict('os.environ', {'RMM_WORKSPACE_ID': 'bob', 'RMM_WORKSPACE_TOKEN': 'bob-token'}):
+            with self.assertRaisesRegex(ValueError, 'selected workspace'):
+                commands(self.root, 'workspace', 'alice')
+            self.assertEqual(len(commands(self.root, 'workspace', 'bob')), 1)
+            self.assertEqual(len(commands(self.root, 'control')), 1)
+
     def test_supervisor_stops_peer_when_one_process_fails(self):
         first, second = Mock(), Mock()
         first.poll.return_value = 3

@@ -133,6 +133,8 @@ registry. Shell assignments must quote the whole JSON value, for example
 Startup errors distinguish JSON syntax from invalid entries without displaying
 credentials. An environment override still takes precedence over a saved value;
 remove it only after the intended registry has been saved in configuration.
+Duplicate IDs after whitespace normalization are rejected instead of silently
+replacing one workspace credential with another.
 
 `rmm_settings.py` defines the shared typed configuration registry, validation,
 protected persistence, redacted public views, startup resolution, and offline

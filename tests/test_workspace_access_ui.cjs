@@ -88,3 +88,41 @@ test('canceled and stale HTTP requests do not change workspace connectivity', as
   assert.equal(context.state.workspaceReachable, true);
   assert.equal(reachable, 1);
 });
+
+test('responses from a previous login never expose old payloads or disconnect a new login', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+  const start = source.indexOf('async function api(');
+  const end = source.indexOf('\nasync function probeServerHealth()', start);
+  let finish;
+  let reachable = 0;
+  const context = {
+    WORKSPACE_MODE: true, state: { token: 'old-token', authGeneration: 1 },
+    fetch: () => new Promise(resolve => { finish = resolve; }),
+    noteServerReachable: () => reachable++, noteServerUnreachable: () => {}, setWsStatus: () => {},
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  for (const status of [200, 401]) {
+    const pending = context.api('/sessions');
+    context.state.authGeneration++;
+    context.state.token = 'new-token';
+    finish({ ok: status === 200, status, text: async () => '{"sessions":["old-owner"]}' });
+    const result = await pending;
+    assert.equal(result.status, 0);
+    assert.equal(result.data.error, 'stale_connection_response');
+    assert.equal(result.data.sessions, undefined);
+  }
+  assert.equal(reachable, 0);
+  let finishBody;
+  let bodyStarted;
+  const readingBody = new Promise(resolve => { bodyStarted = resolve; });
+  context.fetch = async () => ({ ok: true, status: 200,
+    text: () => new Promise(resolve => { finishBody = resolve; bodyStarted(); }) });
+  const pendingBody = context.api('/history');
+  await readingBody;
+  context.state.authGeneration++;
+  finishBody('{"sessions":["old-owner"]}');
+  const result = await pendingBody;
+  assert.equal(result.status, 0);
+  assert.equal(result.data.sessions, undefined);
+});

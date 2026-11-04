@@ -424,7 +424,7 @@ function Invoke-RmmRestMethod {
     $req = [System.Net.HttpWebRequest]::Create($wireUri)
     $req.Method = $Method
     $req.Host = $resolved.OriginalHost
-    $req.AllowAutoRedirect = $true
+    $req.AllowAutoRedirect = $false
     $req.Timeout = 300000
     $req.ReadWriteTimeout = 120000
     # KeepAlive=true so .NET's connection-pool drain path runs on close: the pool drain
@@ -489,6 +489,9 @@ function Invoke-RmmRestMethod {
         $response = $req.GetResponse()
         $http = [System.Net.HttpWebResponse]$response
         $statusNum = [int]$http.StatusCode
+        if ($statusNum -ge 300 -and $statusNum -lt 400) {
+            throw 'RMM beacon redirects are not accepted; configure the final beacon URL.'
+        }
         if ($statusNum -ge 400) {
             $errBody = Get-RmmHttpErrorBody -Response $http
             Write-RmmHttpErrorDetails -Response $http -Body $errBody -StatusCode $statusNum -AlwaysShow:($statusNum -ge 500)
@@ -913,7 +916,7 @@ function Save-RmmBeaconFile {
     $req = [System.Net.HttpWebRequest]::Create($wireUri)
     $req.Method = 'GET'
     $req.Host = $resolved.OriginalHost
-    $req.AllowAutoRedirect = $true
+    $req.AllowAutoRedirect = $false
     $req.Timeout = 600000
     $req.ReadWriteTimeout = 600000
     $req.KeepAlive = $false
@@ -932,6 +935,9 @@ function Save-RmmBeaconFile {
     try {
         $response = $req.GetResponse()
         $http = [System.Net.HttpWebResponse]$response
+        if ([int]$http.StatusCode -ge 300 -and [int]$http.StatusCode -lt 400) {
+            throw 'RMM beacon redirects are not accepted; configure the final beacon URL.'
+        }
         if ([int]$http.StatusCode -ge 400) {
             throw "HTTP $([int]$http.StatusCode) downloading $RelativeUrl"
         }
@@ -1986,7 +1992,10 @@ while ($true) {
         $headers = Get-RmmRequestHeaders
         $headers["X-Request-ID"] = [System.Guid]::NewGuid().ToString()
         
-        # Poll /cmd before register so a killed session gets __EXIT__ (register returns 403 TERMINATED).
+        # Register before dequeueing work so a registration failure cannot discard
+        # an already-delivered command. A killed session's TERMINATED response is
+        # handled by Register-RmmSession before polling.
+        Register-RmmSession -Quiet | Out-Null
         $cmdUrl = "$u/cmd?id=$sessionId"
         $response = Invoke-RmmRestMethod -Uri $cmdUrl -Method Get -Headers $headers -RestErrorAction Stop
         
@@ -2009,9 +2018,6 @@ while ($true) {
             exit 0
         }
 
-        # Re-register each beacon so a restarted server re-creates the session before handling work.
-        Register-RmmSession -Quiet | Out-Null
-        
         if ($command -and $command -ne "") {
             if ($command -like "__CONFIG__ *") {
                 $beforeSleep = $script:baseSleepSeconds

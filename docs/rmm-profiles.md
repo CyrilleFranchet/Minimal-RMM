@@ -9,6 +9,13 @@ bundle.
 The first profile is Cloudflared. A future DNS, ngrok, or other connector can
 use the same contract without changes to `server_rmm.py`.
 
+Profile control rejects invalid operator configuration before changing the running
+transport. `ProfileConfigError`, a `ProfileError` subtype, maps to HTTP 400;
+connector startup failures remain HTTP 503. Names and Cloudflare config fields
+must be strings, `config` must be an object, and `stop` must be a boolean. The
+HTTP boundary regression tests verify that invalid requests neither start nor
+stop a connector.
+
 ## Separate listeners
 
 The server has two HTTP listeners:
@@ -38,7 +45,10 @@ Install one profile in its own directory below `RMM_PROFILES_DIR`:
     └── cloudflared_profile.py
 ```
 
-The manifest must use `minimal-rmm-profile-v1`:
+The manifest must use `minimal-rmm-profile-v1`. Discovery skips malformed JSON,
+invalid UTF-8, and invalid command/argument lists, allowing other installed
+profiles to remain available. If provided, `command` must be a nonempty list of
+nonempty strings; `args` must be a list of strings:
 
 ```json
 {

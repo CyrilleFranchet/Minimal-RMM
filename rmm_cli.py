@@ -107,11 +107,20 @@ OUTPUT_DRAIN_INTERVAL = 0.15
 EVENT_POLL_INTERVAL = 1.0
 
 
+class RejectApiRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep operator credentials and request bodies on the configured endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Surface redirects as HTTP errors instead of forwarding credentials."""
+        return None
+
+
 class RmmApiClient:
     def __init__(self, base_url: str, token: str = "", extra_headers: dict | None = None):
         self.base_url = base_url.rstrip("/")
         self.token = token.strip()
         self.extra_headers = dict(extra_headers or {})
+        self._opener = urllib.request.build_opener(RejectApiRedirects())
 
     def _headers(self, extra: dict | None = None) -> dict:
         h = {"Accept": "application/json"}
@@ -132,7 +141,7 @@ class RmmApiClient:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with self._opener.open(req, timeout=timeout) as resp:
                 raw = resp.read().decode(errors="replace")
                 if not raw.strip():
                     return resp.status, {}
@@ -196,7 +205,7 @@ class RmmApiClient:
                 f"{self.base_url}/api/v1/artifacts/{reference}", headers=self._headers()
             )
             try:
-                with urllib.request.urlopen(request, timeout=60) as response:
+                with self._opener.open(request, timeout=60) as response:
                     payload = response.read()
             except urllib.error.HTTPError as exc:
                 return exc.code, {"error": "artifact_download_failed"}
@@ -827,7 +836,7 @@ def cmd_exec(client: RmmApiClient, state: dict, args):
         command = Path(args.command_file).read_text(encoding="utf-8").strip()
     if not command:
         die("Missing command")
-    say(f"Waiting for agent (up to {args.wait:.0f}s)...")
+    say(f"Waiting for agent (up to {args.wait:.0f}s)...", err=True)
     code, data = client.exec_command(sid, command, timeout=args.wait)
     if code == 408:
         die(f"timeout after {args.wait}s", 2)
@@ -2086,7 +2095,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--token", default=None, help="Explicit bearer token; overrides workspace credentials. Otherwise use workspace credentials, then RMM_API_TOKEN.")
 
-    sub = p.add_subparsers(dest="command", required=False)
+    sub = p.add_subparsers(dest="subcommand", required=False)
     p.add_argument(
         "-i", "--interactive",
         action="store_true",
@@ -2359,14 +2368,14 @@ def main():
     state = load_state()
     token = args.token
 
-    if args.command is None or getattr(args, "interactive", False):
+    if args.subcommand is None or getattr(args, "interactive", False):
         client, data = ensure_client(args.url, token)
         run_interactive(client, state, json_mode=getattr(args, "json", False), start_data=data)
         return
 
     client, _ = ensure_client(args.url, token)
 
-    if args.command == "health":
+    if args.subcommand == "health":
         cmd_health(client, args)
     else:
         args.func(client, state, args)

@@ -278,11 +278,11 @@ established by the service, never by a `user_id` or namespace in input JSON.
 | `POST /api/v1/embeddings/results` | `{ "session_ref", "event_id": 42 }` | `embedding_results(action="save", session_ref=…, event_id=42)` |
 | `DELETE /api/v1/embeddings/results/{id}` | `{ "ok": true }` | `embedding_results(action="delete", name=…)` |
 
-These tools are registered in MCP and the Web AI tool catalog. **Workspace Web
-AI currently executes centrally**, so it cannot access locally saved embedding
-profiles/results; use the dedicated local WebUI, CLI, or standalone MCP pointed
-at the local service. Central Web AI receives the same workspace-local error.
-Server-mode Web AI can use the shared server-owned profiles.
+These tools are registered in MCP and the Web AI tool catalog. Workspace Web
+AI executes centrally, but its authenticated operator relay dispatches embedding
+operations to the owning workspace. Local WebUI, CLI, and standalone MCP use
+that workspace directly. Direct central requests without the owner relay receive
+a workspace-local error; there is no shared server-owned profile fallback.
 
 ## Code and validation reference
 

@@ -3,13 +3,28 @@
   const PREFS_KEY = "rmm_go_agent_prefs";
   const TOKEN_KEY = "rmm_api_token";
   const $ = (selector) => document.querySelector(selector);
+  let downloadContext = null;
 
   function token() {
     return sessionStorage.getItem(TOKEN_KEY) || "";
   }
 
-  function headers(json) {
-    const value = { Authorization: `Bearer ${token()}` };
+  function connectionContext() {
+    return { token: token(), generation: window.rmmState?.authGeneration || 0 };
+  }
+
+  function isCurrent(context) {
+    return context.token === token() && context.generation === (window.rmmState?.authGeneration || 0);
+  }
+
+  function jitterValue() {
+    const value = $("#agent-go-jitter")?.value;
+    const number = value === "" || value == null ? 30 : Number(value);
+    return Number.isFinite(number) ? Math.min(100, Math.max(0, number)) : 30;
+  }
+
+  function headers(json, context = connectionContext()) {
+    const value = { Authorization: `Bearer ${context.token}` };
     if (json) value["Content-Type"] = "application/json";
     return value;
   }
@@ -28,7 +43,7 @@
       beaconSecret: $("#agent-go-beacon-secret")?.value || "",
       sessionId: $("#agent-go-session-id")?.value.trim() || "",
       sleepSeconds: Math.min(3600, Math.max(1, Number($("#agent-go-sleep")?.value) || 60)),
-      jitterPercent: Math.min(100, Math.max(0, Number($("#agent-go-jitter")?.value) || 30)),
+      jitterPercent: jitterValue(),
       httpProxy: $("#agent-go-proxy")?.value.trim() || "",
       goos: $("#agent-goos")?.value || "windows",
       goarch: $("#agent-goarch")?.value || "amd64",
@@ -69,7 +84,7 @@
     node.classList.toggle("error", error);
   }
 
-  async function currentBeaconUrl() {
+  async function currentBeaconUrl(context = connectionContext()) {
     let data;
     try {
       if (window.rmmApi) {
@@ -77,10 +92,11 @@
         if (response.status !== 200) throw new Error();
         data = response.data;
       } else {
-        const response = await fetch("/api/v1/transport", { headers: headers(false) });
+        const response = await fetch("/api/v1/transport", { headers: headers(false, context) });
         if (!response.ok) throw new Error();
         data = await response.json();
       }
+      if (!isCurrent(context)) throw new Error("Connection changed");
       const value = data?.beacon_url;
       const parsed = new URL(value);
       if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error();
@@ -101,21 +117,24 @@
   }
 
   async function useCurrentBeaconUrl() {
+    const context = connectionContext();
     const button = $("#agent-go-use-origin");
     if (button) button.disabled = true;
     try {
-      const value = await currentBeaconUrl();
+      const value = await currentBeaconUrl(context);
+      if (!isCurrent(context)) return;
       $("#agent-go-server-url").value = value;
       savePrefs();
       status("Current beacon URL selected.");
     } catch (error) {
-      status(error.message, true);
+      if (isCurrent(context)) status(error.message, true);
     } finally {
       if (button) button.disabled = false;
     }
   }
 
   async function build() {
+    const context = connectionContext();
     if (!token()) {
       status("Connect with an API token before compiling.", true);
       return;
@@ -142,7 +161,8 @@
     $("#agent-go-download")?.classList.add("hidden");
     status("Checking beacon transport…");
     try {
-      const currentUrl = await currentBeaconUrl();
+      const currentUrl = await currentBeaconUrl(context);
+      if (!isCurrent(context)) return;
       const selectedQuick = quickTunnelOrigin(serverUrl);
       const currentQuick = quickTunnelOrigin(currentUrl);
       if (selectedQuick && currentQuick && selectedQuick !== currentQuick) {
@@ -151,7 +171,7 @@
       status(`Compiling ${goos}/${goarch} on the RMM server…`);
       const response = await fetch("/api/v1/agent/go/build", {
         method: "POST",
-        headers: headers(true),
+        headers: headers(true, context),
         body: JSON.stringify({
           goos,
           goarch,
@@ -160,21 +180,23 @@
             beacon_secret: beaconSecret,
             session_id: $("#agent-go-session-id")?.value.trim() || "",
             sleep_seconds: Math.min(3600, Math.max(1, Number($("#agent-go-sleep")?.value) || 60)),
-            jitter_percent: Math.min(100, Math.max(0, Number($("#agent-go-jitter")?.value) || 30)),
+            jitter_percent: jitterValue(),
             http_proxy: $("#agent-go-proxy")?.value.trim() || "",
           },
         }),
       });
       const data = await response.json().catch(() => ({}));
+      if (!isCurrent(context)) return;
       if (!response.ok) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
       const link = $("#agent-go-download");
+      downloadContext = context;
       link.href = data.download_url;
       link.textContent = `Download ZIP ${data.filename} (${data.size} bytes, SHA-256 ${data.sha256})`;
       link.dataset.downloadUrl = data.download_url;
       link.classList.remove("hidden");
       status("Build complete. The URL and beacon secret are embedded. Use the ZIP launcher to override stale environment settings; launching the executable directly keeps environment overrides.");
     } catch (error) {
-      status(error.message, true);
+      if (isCurrent(context)) status(error.message, true);
     } finally {
       button.disabled = false;
     }
@@ -207,12 +229,14 @@
     );    $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
       const url = event.currentTarget.dataset.downloadUrl;
-      if (!url) return;
+      if (!url || !downloadContext || !isCurrent(downloadContext)) return;
+      const context = connectionContext();
       try {
         status("Downloading ZIP…");
-        const response = await fetch(url, { headers: headers(false) });
+        const response = await fetch(url, { headers: headers(false, context) });
         if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
         const blob = await response.blob();
+        if (!isCurrent(context)) return;
         const objectUrl = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = objectUrl;
@@ -223,7 +247,7 @@
         URL.revokeObjectURL(objectUrl);
         status("ZIP downloaded.");
       } catch (error) {
-        status(error.message, true);
+        if (isCurrent(context)) status(error.message, true);
       }
     });
     window.addEventListener("rmm-config-imported", applyPrefs);

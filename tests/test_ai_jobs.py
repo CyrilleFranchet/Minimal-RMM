@@ -49,6 +49,22 @@ class AIJobManagerTests(unittest.TestCase):
             worker.join(3)
         self.assertEqual(self.manager.get(job["id"], "operator")["status"], "interrupted")
 
+    def test_cancel_reserves_session_until_dispatched_runner_exits(self):
+        job, _ = self.submit()
+        self.wait_for(job["id"], {"running"})
+        self.manager.cancel(job["id"], "operator")
+        with self.assertRaises(JobConflictError):
+            self.submit(request_id="replacement")
+        replay, created = self.submit()
+        self.assertFalse(created)
+        self.assertEqual(replay["id"], job["id"])
+        self.release.set()
+        for worker in list(self.manager._threads):
+            worker.join(3)
+        replacement, created = self.submit(request_id="replacement", run=lambda progress: {"ok": True})
+        self.assertTrue(created)
+        self.wait_for(replacement["id"], {"succeeded"})
+
     def blocking_runner(self, progress):
         progress({"phase": "provider", "round": 1})
         self.release.wait(3)

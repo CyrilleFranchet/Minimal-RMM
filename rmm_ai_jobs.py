@@ -99,6 +99,7 @@ class AIJobManager:
         self._active = 0
         self._closed = False
         self._threads = set()
+        self._inflight_scopes = {}
         with self._db:
             self._db.execute("""CREATE TABLE IF NOT EXISTS ai_jobs (
                 id TEXT PRIMARY KEY, owner TEXT NOT NULL, session_id TEXT,
@@ -215,6 +216,8 @@ class AIJobManager:
                 return self._public(prior), False
             if self._closed:
                 raise JobClosedError("Server is stopping")
+            if (owner, session_id) in self._inflight_scopes:
+                raise JobConflictError("Session still has an executing or stopping AI job")
             if self._db.execute(
                 "SELECT 1 FROM ai_jobs WHERE owner=? AND session_id IS ? AND state IN ('queued','running')",
                 (owner, session_id),
@@ -230,13 +233,16 @@ class AIJobManager:
                     (job_id, owner, session_id, request_id, "queued", timestamp, timestamp),
                 )
             self._active += 1
-            worker = threading.Thread(target=self._run, args=(job_id, run), daemon=True, name=f"ai-job-{job_id[:8]}")
+            scope = (owner, session_id)
+            self._inflight_scopes[scope] = job_id
+            worker = threading.Thread(target=self._run, args=(job_id, run, scope), daemon=True, name=f"ai-job-{job_id[:8]}")
             self._threads.add(worker)
             try:
                 worker.start()
             except RuntimeError:
                 self._threads.discard(worker)
                 self._active -= 1
+                self._inflight_scopes.pop(scope, None)
                 self._finish(job_id, "failed", error="Could not start job worker.")
                 raise
             return self.get(job_id, owner), True
@@ -260,7 +266,7 @@ class AIJobManager:
                 (state, json.dumps(result) if result is not None else None, error, _now(), _now(), job_id),
             )
 
-    def _run(self, job_id, run):
+    def _run(self, job_id, run, scope):
         """Execute an admitted job while respecting bounded concurrency."""
         acquired = False
         try:
@@ -293,6 +299,7 @@ class AIJobManager:
                 self._slots.release()
             with self._lock:
                 self._active -= 1
+                self._inflight_scopes.pop(scope, None)
                 self._threads.discard(threading.current_thread())
 
     def close(self):

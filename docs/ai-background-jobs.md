@@ -17,6 +17,14 @@ that original job without re-execution. Reusing an ID for a different session
 conflicts. Use a fresh ID for a new task. Admission is bounded; overload returns
 503. An active job in the same session returns 409.
 
+Canceling a job marks its persisted state interrupted immediately, but a new
+request for the same owner/session remains blocked with 409 until the previous
+worker exits. The worker may still be waiting on an already-dispatched command;
+terminal status alone does not prove that execution has stopped. An in-memory
+scope reservation in `AIJobManager.submit`/`_run` prevents overlapping replacement
+work and is released in worker cleanup, including worker-start failures.
+Idempotent requests for the original job continue to return its recorded state.
+
 - `GET /api/v1/ai/jobs?session_id=ID` lists scoped jobs.
 - `GET /api/v1/ai/jobs/JOB_ID` returns status, timestamps, progress, and result.
 - `DELETE /api/v1/ai/jobs` dismisses completed sessionless chat jobs.

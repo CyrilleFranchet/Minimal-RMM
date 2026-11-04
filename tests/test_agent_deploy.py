@@ -213,7 +213,7 @@ class DeploymentRegressionTests(unittest.TestCase):
         client = RmmApiClient("https://rmm.example.com", "operator-token")
         response = Mock()
         response.read.return_value = b"artifact bytes"
-        with patch("rmm_cli.urllib.request.urlopen") as download, patch.object(client, "request", return_value=(200, {})) as upload:
+        with patch.object(client._opener, "open") as download, patch.object(client, "request", return_value=(200, {})) as upload:
             download.return_value.__enter__.return_value = response
             status, _ = client.upload_file("session", "artifact:agent-deploy/test.ps1", "C:/test.ps1")
             self.assertEqual(status, 200)
@@ -225,7 +225,7 @@ class DeploymentRegressionTests(unittest.TestCase):
     def test_invalid_artifact_reference_never_accesses_network(self):
         from rmm_cli import RmmApiClient
         client = RmmApiClient("https://rmm.example.com")
-        with patch("rmm_cli.urllib.request.urlopen") as download:
+        with patch.object(client._opener, "open") as download:
             for reference in ("artifact:../secret", "artifact:agent-deploy/../secret", "artifact:agent-deploy/%2e%2e", "artifact:https://other/file"):
                 self.assertEqual(client.upload_file("session", reference, "target")[0], 400)
             download.assert_not_called()

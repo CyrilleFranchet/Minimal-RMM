@@ -13,6 +13,15 @@
     return window.rmmApi;
   }
 
+  function connectionContext() {
+    return { generation: window.rmmState?.authGeneration || 0, token: window.rmmState?.token };
+  }
+
+  function isCurrent(context) {
+    const current = connectionContext();
+    return current.generation === context.generation && current.token === context.token;
+  }
+
   function assetLabel(row) {
     const state = row.enabled === false ? "disabled" : "enabled";
     return `${row.kind}/${row.name} · ${state} · ${row.size ?? "?"} bytes`;
@@ -20,7 +29,9 @@
 
   async function refreshAssets() {
     if (!api()) return;
+    const context = connectionContext();
     const { status, data } = await api()("/assets");
+    if (!isCurrent(context)) return;
     const list = $("#asset-list");
     if (!list) return;
     if (status !== 200) {
@@ -44,11 +55,13 @@
       toggle.className = "secondary";
       toggle.textContent = row.enabled === false ? "Enable" : "Disable";
       toggle.addEventListener("click", async () => {
+        if (!isCurrent(context)) return;
         const next = row.enabled === false;
         const result = await api()(
           `/assets/${encodeURIComponent(row.kind)}/${encodeURIComponent(row.name)}`,
           { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: next }) },
         );
+        if (!isCurrent(context)) return;
         if (result.status !== 200) setText("#asset-status", result.data?.error || "Asset update failed.", true);
         await refreshAssets();
         if (row.kind === "skills" && typeof window.fetchAiSkills === "function") window.fetchAiSkills();
@@ -59,7 +72,9 @@
       remove.className = "secondary";
       remove.textContent = "Remove";
       remove.addEventListener("click", async () => {
+        if (!isCurrent(context)) return;
         const result = await api()(`/assets/${encodeURIComponent(row.kind)}/${encodeURIComponent(row.name)}`, { method: "DELETE" });
+        if (!isCurrent(context)) return;
         if (result.status !== 200) setText("#asset-status", result.data?.error || "Asset removal failed.", true);
         await refreshAssets();
       });
@@ -70,7 +85,9 @@
 
   async function refreshTransport() {
     if (!api()) return;
+    const context = connectionContext();
     const { status, data } = await api()("/transport");
+    if (!isCurrent(context)) return;
     if (status !== 200) {
       setText("#asset-profile-status", "Unable to read beacon transport status.", true);
       return;
@@ -100,6 +117,7 @@
   }
 
   async function installAsset() {
+    const context = connectionContext();
     const kind = $("#asset-kind")?.value || "plugins";
     const url = $("#asset-url")?.value.trim() || "";
     const name = $("#asset-name")?.value.trim() || "";
@@ -116,6 +134,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, name: name || undefined, enabled: true }),
       });
+      if (!isCurrent(context)) return;
       if (![200, 201].includes(result.status)) throw new Error(result.data?.error || `HTTP ${result.status}`);
       setText("#asset-status", `Installed ${result.data?.asset?.name || kind}.`);
       $("#asset-url").value = "";
@@ -124,7 +143,7 @@
       if (kind === "skills" && typeof window.fetchAiSkills === "function") window.fetchAiSkills();
       if (kind === "rclone") window.refreshRmmExfilStatus?.();
     } catch (error) {
-      setText("#asset-status", error.message, true);
+      if (isCurrent(context)) setText("#asset-status", error.message, true);
     } finally {
       if (button) button.disabled = false;
     }
@@ -161,6 +180,7 @@
   }
 
   async function uploadAsset() {
+    const context = connectionContext();
     const kind = $("#asset-kind")?.value || "plugins";
     const file = $("#asset-file")?.files?.[0];
     const name = $("#asset-name")?.value.trim() || file?.name || "";
@@ -176,11 +196,14 @@
     if (button) button.disabled = true;
     setText("#asset-status", `Uploading ${name}…`);
     try {
+      const content = await fileToBase64(file);
+      if (!isCurrent(context)) return;
       const result = await api()(`/assets/${kind}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, content_b64: await fileToBase64(file), enabled: true }),
+        body: JSON.stringify({ name, content_b64: content, enabled: true }),
       });
+      if (!isCurrent(context)) return;
       if (![200, 201].includes(result.status)) throw new Error(result.data?.error || `HTTP ${result.status}`);
       setText("#asset-status", `Uploaded ${result.data?.asset?.name || name}.`);
       $("#asset-file").value = "";
@@ -189,31 +212,35 @@
       if (kind === "skills") window.fetchAiSkills?.();
       if (kind === "rclone") window.refreshRmmExfilStatus?.();
     } catch (error) {
-      setText("#asset-status", error.message, true);
+      if (isCurrent(context)) setText("#asset-status", error.message, true);
     } finally {
       if (button) button.disabled = false;
     }
   }
 
   async function startProfile() {
+    const context = connectionContext();
     const name = $("#asset-profile-name")?.value.trim() || "cloudflared";
     const result = await api()("/profile", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
-    if (result.status !== 200) setText("#asset-profile-status", result.data?.detail || "Profile start failed.", true);
+    if (!isCurrent(context)) return;
     await refreshTransport();
+    if (isCurrent(context) && result.status !== 200) setText("#asset-profile-status", result.data?.detail || "Profile start failed.", true);
   }
 
   async function stopProfile() {
+    const context = connectionContext();
     const result = await api()("/profile", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ stop: true }),
     });
-    if (result.status !== 200) setText("#asset-profile-status", result.data?.detail || "Profile stop failed.", true);
+    if (!isCurrent(context)) return;
     await refreshTransport();
+    if (isCurrent(context) && result.status !== 200) setText("#asset-profile-status", result.data?.detail || "Profile stop failed.", true);
   }
 
   function bind() {

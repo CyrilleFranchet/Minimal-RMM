@@ -41,6 +41,16 @@ class SettingsTests(unittest.TestCase):
         reopened.update({"settings": {"RMM_CLOUDFLARE_TOKEN": None}})
         self.assertNotIn("RMM_CLOUDFLARE_TOKEN", self.store().effective)
 
+    def test_duplicate_workspace_ids_cannot_silently_replace_credentials(self):
+        for value in ({'alice': 'first-secret', ' alice ': 'second-secret'},
+                      [{'id': 'alice', 'token': 'first-secret'},
+                       {'workspace_id': 'alice', 'token': 'second-secret'}]):
+            with self.subTest(value=value), self.assertRaisesRegex(SettingsError, 'duplicate workspace IDs'):
+                self.store(environment={'RMM_WORKSPACES': json.dumps(value)})
+            with self.assertRaises(SettingsError):
+                self.store().update({'settings': {'RMM_WORKSPACES': value}})
+            self.assertFalse(self.path.exists())
+
     def test_invalid_patch_is_atomic_and_wrong_scope_refused(self):
         store = self.store()
         store.update({"settings": {"RMM_MAX_BODY_BYTES": 65536}})

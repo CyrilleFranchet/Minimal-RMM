@@ -136,6 +136,7 @@ function ensureWebSocketConnected() {
 }
 
 async function api(path, options = {}) {
+  const authGeneration = state.authGeneration || 0;
   const connectionGeneration = state.connectionGeneration || 0;
   const headers = {
     Accept: "application/json",
@@ -148,11 +149,14 @@ async function api(path, options = {}) {
   try {
     res = await fetch(`/api/v1${path}`, { ...options, headers });
   } catch (err) {
-    if (connectionGeneration === (state.connectionGeneration || 0) && !options.signal?.aborted && err.name !== "AbortError") {
+    if (authGeneration === (state.authGeneration || 0) && connectionGeneration === (state.connectionGeneration || 0) && !options.signal?.aborted && err.name !== "AbortError") {
       if (WORKSPACE_MODE) { state.workspaceReachable = false; setWsStatus(false); }
       noteServerUnreachable(err.message || "Cannot reach the RMM server.");
     }
     return { status: 0, data: { error: err.message || "network_error" } };
+  }
+  if (authGeneration !== (state.authGeneration || 0)) {
+    return { status: 0, data: { error: "stale_connection_response" } };
   }
   if (connectionGeneration === (state.connectionGeneration || 0)) {
     if (WORKSPACE_MODE) state.workspaceReachable = res.ok;
@@ -160,6 +164,9 @@ async function api(path, options = {}) {
   }
   let data = {};
   const text = await res.text();
+  if (authGeneration !== (state.authGeneration || 0)) {
+    return { status: 0, data: { error: "stale_connection_response" } };
+  }
   if (text) {
     try {
       data = JSON.parse(text);
@@ -2379,9 +2386,11 @@ function configureWorkspaceAccess(health) {
 }
 
 async function connect() {
+  const authGeneration = state.authGeneration = (state.authGeneration || 0) + 1;
   const token = $("#token-input").value.trim();
   state.token = token;
   const { status, data } = await api("/health");
+  if (authGeneration !== state.authGeneration) return;
   if (status === 401) {
     showLogin("Invalid API token");
     return;
@@ -2395,6 +2404,7 @@ async function connect() {
   if (typeof window.loadRmmUiConfig === "function") {
     await window.loadRmmUiConfig().catch(() => false);
   }
+  if (authGeneration !== state.authGeneration) return;
   showApp();
   configureWorkspaceAccess(data);
   if (typeof window.refreshAgentScriptTemplate === "function") {
@@ -2426,6 +2436,7 @@ async function connect() {
 }
 
 function disconnect() {
+  state.authGeneration = (state.authGeneration || 0) + 1;
   window.stopBloodHoundHealth?.();
   window.renderRmmDeploymentMode?.();
   hideServerUnreachableDialog();

@@ -45,6 +45,18 @@ class ProfileLifecycleTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 2)
         self.assertIsNone(self.manager.status()["active"])
 
+    def test_invalid_manifest_does_not_break_discovery_of_valid_profiles(self):
+        self.runner("pass\n")
+        invalid = Path(self.directory.name) / "invalid"
+        invalid.mkdir()
+        (invalid / "runner.py").write_text("pass\n")
+        for contents in (b"\xff", json.dumps({**self.manifest, "name": "invalid", "command": []}).encode(),
+                         json.dumps({**self.manifest, "name": "invalid", "args": "--flag"}).encode()):
+            with self.subTest(contents=contents):
+                (invalid / "profile.json").write_bytes(contents)
+                self.assertEqual([row["name"] for row in self.manager.list()], ["fake"])
+                self.assertIsNone(self.manager.status()["active"])
+
     def test_error_message_and_stderr_do_not_expose_token(self):
         self.runner("import json, sys\nprint('private-token', file=sys.stderr, flush=True)\nprint(json.dumps({'event':'error','message':'private-token'}), flush=True)\n")
         with self.assertRaises(ProfileError) as failure:
@@ -142,7 +154,7 @@ class ProfileLifecycleTests(unittest.TestCase):
         self.assertNotIn("private-token", json.dumps(self.manager.status()))
 
     def test_public_origins_reject_unsafe_url_components(self):
-        for value in ("javascript:bad", "https://example/path", "https://example?token=x", "https://example#x", "https://example:99999", "https://example\\secret", "https://exa mple"):
+        for value in ("javascript:bad", "https://@example", "https://example/path", "https://example?token=x", "https://example#x", "https://example:99999", "https://example\\secret", "https://exa mple"):
             with self.subTest(value=value), self.assertRaises(ProfileError):
                 _ready_event({"public_url": value})
 

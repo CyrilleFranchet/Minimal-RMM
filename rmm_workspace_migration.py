@@ -46,9 +46,10 @@ def copy_storage(source, destination):
             with tempfile.TemporaryDirectory(prefix='rmm-migration-sqlite-') as temp:
                 clone = Path(temp) / entry.name
                 shutil.copy2(entry, clone)
-                wal = entry.with_name(entry.name + '-wal')
-                if wal.exists():
-                    shutil.copy2(wal, clone.with_name(clone.name + '-wal'))
+                for suffix in ('-wal', '-journal'):
+                    sidecar = entry.with_name(entry.name + suffix)
+                    if sidecar.exists():
+                        shutil.copy2(sidecar, clone.with_name(clone.name + suffix))
                 origin = sqlite3.connect(clone)
                 output = sqlite3.connect(target)
                 try:

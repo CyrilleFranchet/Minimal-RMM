@@ -976,6 +976,10 @@ def _run_cli_readline(server, cli):
             break
 
 
+class ProfileConfigError(ProfileError):
+    """Reject invalid operator profile configuration before changing the transport."""
+
+
 class RMMServer:
     storage_mode = "workspace"
 
@@ -1135,6 +1139,8 @@ class RMMServer:
 
     def profile_config(self, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         """Resolve the active Cloudflare settings for every start path."""
+        if overrides is not None and not isinstance(overrides, dict):
+            raise ProfileConfigError("profile config must be a JSON object")
         config = {}
         if name == "cloudflared":
             for key, setting in {
@@ -1148,17 +1154,20 @@ class RMMServer:
             config.setdefault("binary", settings_getenv("CLOUDFLARED_BIN", "cloudflared"))
         config.update(overrides or {})
         if name == "cloudflared":
+            for key in ("mode", "public_url", "token", "binary", "origin_host"):
+                if key in config and not isinstance(config[key], str):
+                    raise ProfileConfigError(f"Cloudflare {key} must be a string")
             mode = config.get("mode", "quick")
             if mode not in {"quick", "named"}:
-                raise ProfileError("Cloudflare mode must be quick or named")
+                raise ProfileConfigError("Cloudflare mode must be quick or named")
             if mode == "named":
                 from rmm_settings import validate
                 try:
                     validate("RMM_CLOUDFLARE_PUBLIC_URL", config.get("public_url", ""), "server")
                 except SettingsError:
-                    raise ProfileError("named tunnels require a valid HTTPS public URL") from None
+                    raise ProfileConfigError("named tunnels require a valid HTTPS public URL") from None
                 if not config.get("public_url") or not isinstance(config.get("token"), str) or not config["token"].strip():
-                    raise ProfileError("named tunnels require a public URL and token")
+                    raise ProfileConfigError("named tunnels require a public URL and token")
         return config
 
     def start_profile(self, name: str | None = None, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1170,9 +1179,11 @@ class RMMServer:
 
     def _start_profile(self, name, config):
         """Start a profile while holding the service lifecycle lock."""
+        if name is not None and not isinstance(name, str):
+            raise ProfileConfigError("profile name must be a string")
         selected = (name or self.profile_name or "").strip().lower()
         if not selected:
-            raise ProfileError("profile name is required")
+            raise ProfileConfigError("profile name is required")
         resolved = self.profile_config(selected, config)
         event = self.profile_manager.start(
             selected,
@@ -1558,12 +1569,17 @@ class RMMServer:
 
     def resolve_workspace_session(self, workspace_id: str, session_ref: str):
         """Resolve a session only when it belongs to the authenticated workspace."""
-        if not valid_workspace_id(workspace_id):
+        if not valid_workspace_id(workspace_id) or not isinstance(session_ref, str):
             return None
-        session = self.resolve_session(session_ref)
-        if session and session.workspace_id == workspace_id:
-            return session
-        return None
+        with self.session_lock:
+            visible = {sid: session for sid, session in self.sessions.items()
+                       if session.workspace_id == workspace_id}
+            if session_ref in visible:
+                return visible[session_ref]
+            if len(session_ref) < 4:
+                return None
+            matches = [session for sid, session in visible.items() if sid.startswith(session_ref)]
+            return matches[0] if len(matches) == 1 else None
 
     def workspace_sessions(self, workspace_id: str) -> list[dict]:
         """Return active sessions assigned to one workspace."""
@@ -3248,6 +3264,8 @@ class RMMHandler(BaseHTTPRequestHandler):
 
     def _read_body_bytes(self):
         length = int(self.headers.get("Content-Length", 0))
+        if length < 0:
+            raise ValueError("invalid_content_length")
         if length > MAX_BODY_BYTES:
             raise ValueError("body_too_large")
         if length <= 0:
@@ -3258,7 +3276,10 @@ class RMMHandler(BaseHTTPRequestHandler):
         raw = self._read_body_bytes().decode(errors="replace")
         if not raw.strip():
             return {}
-        return json.loads(raw)
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ValueError("json_object_required")
+        return value
 
     def _api_token_from_request(self, qs=None):
         auth = self.headers.get("Authorization", "")
@@ -3313,6 +3334,12 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
         if not self._api_authorized(qs):
             self._respond(401, "Unauthorized")
+            return True
+
+        # The central hub is an administrator feed, not a workspace-filtered one.
+        # Workspaces consume their authenticated event queue through HTTP polling.
+        if self._workspace_scope():
+            self._respond(403, "Workspace connections must use the workspace event polling API")
             return True
 
         ws = WebSocketConnection.from_http_request(
@@ -3620,6 +3647,16 @@ class RMMHandler(BaseHTTPRequestHandler):
         self._json(status, result)
         return True
 
+    def _reject_workspace_storage_access(self, method, parts):
+        """Reject direct workspace access to administrator-owned legacy storage."""
+        owner = getattr(self, '_workspace_scope', lambda: None)()
+        local_storage = parts and parts[0] in {'assets', 'history'}
+        asset_alias = method == 'POST' and parts in (["ai", "skills"], ["rclone", "profiles"])
+        if owner and (local_storage or asset_alias):
+            self._json(409, {"error": "storage_is_workspace_local", "detail": "Use the local workspace API URL."})
+            return True
+        return False
+
     def _handle_api_get(self, path, qs):
         if not self._api_authorized(qs):
             self._api_unauthorized()
@@ -3629,7 +3666,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if RMMHandler._relay_local_operator(self, 'GET', path, qs=qs):
             return True
-        if len(parts) >= 2 and parts[0] == "assets" and parts[1] in {"plugin", "plugins"}:
+        if RMMHandler._reject_workspace_storage_access(self, 'GET', parts):
+            return True
+        if len(parts) >= 2 and parts[0] == "assets" and parts[1].strip().lower() in {"plugin", "plugins"}:
             self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
             return True
         if parts == ["workspace", "bloodhound", "requests"]:
@@ -3848,13 +3887,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "events":
-            since_id = int(qs.get("since", ["0"])[0] or 0)
-            limit = int(qs.get("limit", ["50"])[0] or 50)
-            if workspace_id and not _resolve_api_session(self, parts[1]):
+            try:
+                since_id = int(qs.get("since", ["0"])[0] or 0)
+                limit = int(qs.get("limit", ["50"])[0] or 50)
+            except ValueError:
+                self._json(400, {"error": "invalid_cursor"})
+                return True
+            session = _resolve_api_session(self, parts[1])
+            if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
             forward = qs.get("forward", ["0"])[0] == "1"
-            events = srv.get_events(parts[1], since_id=since_id, limit=0 if forward else limit)
+            events = srv.get_events(session.id, since_id=since_id, limit=0 if forward else limit)
             if forward and events is not None:
                 events = events[:max(1, min(1000, limit))]
             if events is None:
@@ -3876,10 +3920,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":
-            if workspace_id and not _resolve_api_session(self, parts[1]):
+            session = _resolve_api_session(self, parts[1]) if workspace_id else None
+            if workspace_id and not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
-            session_id, messages = srv.get_ai_chat(parts[1])
+            session_id, messages = srv.get_ai_chat(session.id if session else parts[1])
             if session_id is None or messages is None:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -3941,8 +3986,12 @@ class RMMHandler(BaseHTTPRequestHandler):
             if workspace_id:
                 self._json(404, {"error": "session_not_found"})
                 return True
-            since_id = int(qs.get("since", ["0"])[0] or 0)
-            limit = int(qs.get("limit", ["500"])[0] or 500)
+            try:
+                since_id = int(qs.get("since", ["0"])[0] or 0)
+                limit = int(qs.get("limit", ["500"])[0] or 500)
+            except ValueError:
+                self._json(400, {"error": "invalid_cursor"})
+                return True
             forward = qs.get("forward", ["0"])[0] == "1"
             session_id, events = srv.get_history_events(parts[1], since_id=since_id, limit=0 if forward else limit)
             if forward and events is not None:
@@ -4003,7 +4052,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if RMMHandler._relay_local_operator(self, 'POST', path, payload=body):
             return True
-        if len(parts) >= 2 and parts[0] == "assets" and parts[1] in {"plugin", "plugins"}:
+        if RMMHandler._reject_workspace_storage_access(self, 'POST', parts):
+            return True
+        if len(parts) >= 2 and parts[0] == "assets" and parts[1].strip().lower() in {"plugin", "plugins"}:
             self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
             return True
         if len(parts) == 4 and parts[:3] == ["workspace", "bloodhound", "requests"]:
@@ -4108,13 +4159,19 @@ class RMMHandler(BaseHTTPRequestHandler):
                 if workspace_id:
                     self._json(403, {"error": "administrator_required"})
                     return True
+                if "stop" in body and not isinstance(body["stop"], bool):
+                    raise ProfileConfigError("profile stop must be a boolean")
+                if "config" in body and not isinstance(body["config"], dict):
+                    raise ProfileConfigError("profile config must be a JSON object")
                 if body.get("stop"):
                     stopped = srv.stop_profile()
                     self._json(200, {"ok": True, "stopped": stopped, "profile": srv.profile_status()})
                 else:
-                    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+                    config = body.get("config", {})
                     status = srv.start_profile(body.get("name"), config=config)
                     self._json(200, {"ok": True, "profile": status})
+            except ProfileConfigError as exc:
+                self._json(400, {"error": "invalid_profile_config", "detail": str(exc)})
             except ProfileError as exc:
                 self._json(503, {"error": "profile_start_failed", "detail": str(exc), "profile": srv.profile_status()})
             return True
@@ -4721,7 +4778,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if RMMHandler._relay_local_operator(self, 'PATCH', path, payload=body):
             return True
-        if len(parts) >= 2 and parts[0] == "assets" and parts[1] in {"plugin", "plugins"}:
+        if RMMHandler._reject_workspace_storage_access(self, 'PATCH', parts):
+            return True
+        if len(parts) >= 2 and parts[0] == "assets" and parts[1].strip().lower() in {"plugin", "plugins"}:
             self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
             return True
         srv = self.server_instance
@@ -4801,7 +4860,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             return False
         if RMMHandler._relay_local_operator(self, 'DELETE', path):
             return True
-        if len(parts) >= 2 and parts[0] == "assets" and parts[1] in {"plugin", "plugins"}:
+        if RMMHandler._reject_workspace_storage_access(self, 'DELETE', parts):
+            return True
+        if len(parts) >= 2 and parts[0] == "assets" and parts[1].strip().lower() in {"plugin", "plugins"}:
             self._json(409, {"error": "plugins_are_workspace_local", "detail": "Use the local workspace API URL."})
             return True
         if parts and parts[0] == "embeddings":
@@ -4821,10 +4882,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 4 and parts[0] == "sessions" and parts[2] == "ai" and parts[3] == "chat":
-            if getattr(self, "_workspace_scope", lambda: None)() and not _resolve_api_session(self, parts[1]):
+            session = _resolve_api_session(self, parts[1]) if workspace_id else None
+            if workspace_id and not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
-            session_id, _messages = srv.get_ai_chat(parts[1])
+            session_id, _messages = srv.get_ai_chat(session.id if session else parts[1])
             if session_id is None:
                 self._json(404, {"error": "session_not_found"})
                 return True
@@ -5054,11 +5116,12 @@ class RMMHandler(BaseHTTPRequestHandler):
         if path.startswith(API_PREFIX):
             try:
                 body = self._read_json_body()
-            except ValueError:
-                self._json(413, {"error": "payload_too_large"})
-                return
             except json.JSONDecodeError:
                 self._json(400, {"error": "invalid_json"})
+                return
+            except ValueError as exc:
+                too_large = str(exc) == "body_too_large"
+                self._json(413 if too_large else 400, {"error": "payload_too_large" if too_large else "invalid_request_body"})
                 return
             if self._handle_api_post(path, body):
                 return
@@ -5130,11 +5193,12 @@ class RMMHandler(BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json_body()
-        except ValueError:
-            self._json(413, {"error": "payload_too_large"})
-            return
         except json.JSONDecodeError:
             self._json(400, {"error": "invalid_json"})
+            return
+        except ValueError as exc:
+            too_large = str(exc) == "body_too_large"
+            self._json(413 if too_large else 400, {"error": "payload_too_large" if too_large else "invalid_request_body"})
             return
         if self._handle_api_patch(path, body):
             return

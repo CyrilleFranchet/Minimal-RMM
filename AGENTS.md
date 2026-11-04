@@ -13,7 +13,7 @@ workspace_service.py ── operator API/UI, local evidence, Exegol/BloodHound
         ▼
 server_rmm.py  ── central administration + beacon /register /cmd /result /socks
         │
-        ├── rmm_socks.py   SOCKS5 listeners (per session) on 127.0.0.1:N
+        ├── transient SOCKS/TUN transport queues for workspace-owned listeners
         ├── rmm_ws.py      stdlib WebSocket (operator events + agent SOCKS channel)
         └── workspace event transport → workspace-owned evidence storage
 
@@ -27,7 +27,7 @@ agent-powershell/client_rmm.ps1 (Windows agent)
 | `server_rmm.py` | Threaded HTTP server, sessions, command queue, results, operator API |
 | `agent-powershell/client_rmm.ps1` | Windows beacon + SOCKS relay worker (separate runspace) |
 | `rmm_cli.py` | Operator CLI (`RmmApiClient` → `/api/v1`) |
-| `rmm_socks.py` | SOCKS5 bridge: listener on server, TCP relayed through agent |
+| `rmm_socks.py` | SOCKS5 bridge used by workspace listeners, with traffic relayed through central to the agent |
 | `rmm_tools.py` | Shared tool implementations for MCP and web AI |
 | `mcp_rmm_server.py` | FastMCP server exposing operator actions |
 | `web/` | Static operator UI at `/ui/` |
@@ -50,7 +50,7 @@ agent-powershell/client_rmm.ps1 (Windows agent)
 ## SOCKS (important)
 
 - Start: operator `socks [port]` → server sets `socks_active` on `/cmd` → agent opens WS to `GET /socks`
-- Use proxy at **`socks5://127.0.0.1:1080` on the machine running the server** (traffic exits the agent host)
+- Use proxy at **`socks5://127.0.0.1:1080` in the owning workspace's network namespace** (traffic exits the agent host)
 - List relays: `GET /api/v1/socks`, CLI `socks list`, MCP `list_socks`
 - Agent logs: `[+] SOCKS WebSocket channel active`, `SOCKS outbound TCP host:port`
 

@@ -147,26 +147,23 @@ Then queue exfil again (new jobs pick up the updated limit). Check your cloud ba
 
 The web UI **Exfil** hint shows the current per-file cap from `GET /api/v1/rclone/config` (`max_bytes`).
 
-Start the server with profiles in server mode:
+Configure profiles in the operator workspace:
 
 ```bash
-python server_rmm.py --rclone-profiles /path/to/profiles.json
-# or
 export RMM_RCLONE_PROFILES_FILE="/path/to/profiles.json"
-python server_rmm.py
-
-In workspace mode, set `RMM_RCLONE_PROFILES_FILE` in the workspace service
-environment instead and point the WebUI and CLI at that local service. The
-central workspace endpoint `/api/v1/rclone/config` intentionally does not
-return workspace profiles.
+python3 rmm_deployment.py run --root /path/to/deployment --component workspace --workspace-id default
 ```
+
+Point the WebUI and CLI at that workspace service. Direct central requests to
+`/api/v1/rclone/config` do not return workspace profiles; central Web AI uses
+the authenticated owner relay for this operation.
 
 Check status:
 
 ```bash
 rmm_cli.py rclone-config
 # or
-curl -s -H "Authorization: Bearer $RMM_API_TOKEN" http://127.0.0.1:8080/api/v1/rclone/config
+curl -s -H "Authorization: Bearer $RMM_WORKSPACE_LOCAL_TOKEN" http://127.0.0.1:8787/api/v1/rclone/config
 ```
 
 ## Operator API

@@ -22,9 +22,13 @@ Go or PowerShell agent
 ```
 
 Install release artifacts through the workspace WebUI, CLI, or MCP release
-controls or URL asset API. The workspace persists source files and republishes
-them to central after startup. Central serves only the cache belonging to the
+controls or URL asset API. The workspace persists source files and reconciles
+them with central at startup and every 30 seconds after each reconciliation ends.
+Only missing or changed enabled bytes are transferred; disabled and orphaned
+cache entries are revoked. Central serves only the cache belonging to the
 requesting agent's workspace; there is no shared global plugin fallback.
+Corrupt local inventory metadata aborts reconciliation without deleting cached
+publications; repair the workspace metadata before synchronization can resume.
 See [operator-managed assets](operator-assets.md).
 
 The cache defaults to `RMM_LOG_DIR/plugin-cache`, configurable with
@@ -131,10 +135,24 @@ saved configurations readable. Runtime code ignores it; remove it after migratio
 
 Plugin deletion disables the workspace asset before requesting central revocation.
 If synchronization fails, the API returns 502 and retains the disabled record;
-retry deletion after restoring connectivity. Workspace startup synchronization
-also republishes disabled records to revoke their cached copies. Until central
+retry deletion after restoring connectivity. Background synchronization
+also retries revocation of disabled records. Until central
 acknowledges revocation, its existing copy may still be downloadable.
 `WorkspacePluginRevocationTests` covers this failure and retry sequence.
+
+`serialize_plugin_mutation` serializes local plugin installation, enable/disable,
+and deletion with reconciliation. `_sync_plugin_asset` rereads authoritative local
+metadata rather than publishing a stale caller snapshot. `_publish_plugin_asset`
+sends that locked snapshot; `_sync_workspace_plugins` compares the authenticated
+remote inventory with local assets, and `_plugin_sync_loop` retries independently
+of session/event polling. Shutdown waits for this worker before closing storage.
+Use one workspace process per workspace identity and data directory; this lock
+does not coordinate multiple processes sharing the same store.
+
+`WorkspacePluginSyncTests` covers recovery after an unavailable central server,
+cache loss, unchanged-content suppression, orphan/disabled revocation, stale
+metadata, corrupt inventories, kind aliases, and concurrent publication/deletion. The fixture
+`request` emulates the authenticated central inventory and publication API.
 
 Workspace partitioning is not per-agent cryptographic authentication. Beacon
 downloads still use the deployment's shared beacon secret and a registered session
