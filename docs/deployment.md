@@ -299,6 +299,28 @@ python3 rmm_deployment.py prepare --preset single --output /path/to/deployment
 python3 rmm_deployment.py run --root /path/to/deployment --component single
 ```
 
+`run` starts the control and workspace processes with the binds saved in
+`prepare`'s settings files, which default to `127.0.0.1` on each service
+(`RMM_ADMIN_BIND`, `RMM_BEACON_BIND`, `RMM_WORKSPACE_BIND`; see
+[service settings](service-settings.md)). Inside an Exegol container, nothing
+outside that container's network namespace can reach a loopback-only listener,
+so export the binds before `run` to make the WebUI, beacon, and workspace API
+reachable from the operator's browser or from agents on the host network:
+
+```bash
+RMM_ADMIN_BIND=0.0.0.0 \
+RMM_BEACON_BIND=0.0.0.0 \
+RMM_WORKSPACE_BIND=0.0.0.0 \
+python3 rmm_deployment.py run --root /path/to/deployment --component single
+```
+
+`prepare` already wrote random `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, and
+per-workspace tokens into the deployment's settings files, so widening these
+binds does not disable authentication; it only changes which interface each
+listener accepts connections on. Restrict this to a trusted network/VPN the
+same way as the native central server (see "Start the central server on
+Ubuntu" above).
+
 The single launcher supervises separate control and workspace processes on the
 same host. Run it inside Exegol when using AI, collection, or local pivots.
 When `--central-url` is omitted, preparation derives the workspace connection

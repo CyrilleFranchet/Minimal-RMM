@@ -126,8 +126,10 @@ the destination, and reports failures through the text-only `message` helper.
 (`runtime.container`) to both the always-visible `mcp-status-label` summary
 button and the detailed `exegol-mcp-status` panel line once known;
 `startHealth`/`stopHealth` manage authenticated connection polling and its
-`refresh` callback; `operation` follows owner relay results and `pause`
-bounds waits with cancellation. These checks do not start CE.
+`refresh` callback, which calls `ensure` (see above) on an interval, so it can
+itself dispatch a CE launch once Exegol becomes reachable and CE is stopped —
+not only when the operator clicks **Open BloodHound**; `operation` follows
+owner relay results and `pause` bounds waits with cancellation.
 
 ### BloodHound CE service startup
 
@@ -210,10 +212,17 @@ token, container, or CE endpoint invalidates it with
 No configuration secrets are included in the status response.
 
 `health` reads runtime readiness without launching services. `ensure` requests
-a single-flight check/start operation. The WebUI checks health on connection
-and reconnect; **Open BloodHound** can recover a stopped, previously confirmed
-instance through `ensure`. Repeated tabs and concurrent calls do not create
-parallel launches. A startup intent is persisted before dispatch. Lost replies
+a single-flight check/start operation. The WebUI's status badge polls `ensure`
+(not `health`) every 10 seconds, so a `failed`/`blocked` state — for example
+an unreachable or misconfigured Exegol MCP endpoint — retries on its own once
+the underlying cause is fixed outside the browser tab, without an operator
+action or a workspace process restart. This is safe because `ensure` itself
+no-ops and returns the current snapshot for `ready`, `uncertain`, and
+`resetting` (see below), and is single-flight for every other state, so
+background polling cannot duplicate a startup attempt or replay an uncertain
+launch. **Open BloodHound** can recover a stopped, previously confirmed
+instance through the same `ensure`. Repeated tabs and concurrent calls do not
+create parallel launches. A startup intent is persisted before dispatch. Lost replies
 or interrupted launches become `uncertain`; another request or process restart
 does not replay that launch on its own — this is deliberate, so a lost reply
 can never cause two `bloodhound-ce` processes to be dispatched. Read-only

@@ -202,7 +202,7 @@ function setup(api, blocked = false) {
   await monitor.window.startBloodHoundHealth();
   monitor.window.stopBloodHoundHealth();
   await monitor.window.startBloodHoundHealth();
-  assert.deepEqual(healthActions, ['health', 'health']);
+  assert.deepEqual(healthActions, ['ensure', 'ensure']);
   assert.match(monitor.readiness.textContent, /BloodHound: ready/);
   assert.equal(monitor.mcpLabel.dataset.state, 'ready');
   assert.match(monitor.mcpHelp.textContent, /not a persistent/);

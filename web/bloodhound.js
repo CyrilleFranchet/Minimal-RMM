@@ -100,7 +100,14 @@
       healthController = controller;
       const timeout = setTimeout(() => controller.abort(), 30000);
       try {
-        const result = await operation({ action: "health" }, controller, { remaining: 30 });
+        // "ensure" (not the read-only "health") so a stuck failed/blocked
+        // state retries on its own once the underlying cause (Exegol MCP
+        // reachability, credentials, …) is fixed outside this tab. ensure()
+        // is safe to call on every poll: it no-ops and returns the current
+        // snapshot for 'ready'/'uncertain'/'resetting', and is single-flight
+        // for 'failed'/'blocked', so this cannot duplicate a startup attempt
+        // or replay an uncertain launch. See docs/bloodhound-workflow.md.
+        const result = await operation({ action: "ensure" }, controller, { remaining: 30 });
         if (generation !== healthGeneration) return;
         if (result.status === 200 && result.data?.runtime) showRuntime(result.data.runtime);
         else {
