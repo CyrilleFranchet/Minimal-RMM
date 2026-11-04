@@ -9,6 +9,37 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Dispatch bloodhound-ce detached so startup can actually finish
+
+- Reported symptom: BloodHound CE start from the WebUI/Exegol MCP always
+  ended in `bloodhound_startup_uncertain` (`rmm_exegol_runtime.py`'s 90-second
+  `READY_TIMEOUT` poll never saw CE's `/api/version` answer), even though
+  `command -v bloodhound-ce` found the launcher and running it by hand in an
+  interactive shell worked and listened on `127.0.0.1:1030` fine.
+- Root cause: `_check_and_start()` dispatched the bare `bloodhound-ce` command
+  through the Exegol MCP `execute_command_in_container` tool. `bloodhound-ce`
+  runs in the foreground and never exits on its own, so the exec call blocked
+  for the life of the server; the existing 30-second `wait_for`/`except
+  Exception: pass` around that call (added on the assumption that only the
+  *reply* could be lost, not the process) then either timed out or had the
+  process killed with the exec session, leaving nothing running in the
+  container — confirmed live: `ps aux` showed no bloodhound-ce process at all
+  after a dispatched run that reported uncertain.
+- Fixed by dispatching a new `LAUNCH_COMMAND` constant instead of the bare
+  command: `setsid nohup bloodhound-ce >/dev/null 2>&1 </dev/null & disown`,
+  fully detaching the process from the exec session so it survives the exec
+  tool call returning. Updated the six `tests/test_exegol_runtime.py`
+  assertions that pinned the literal `'bloodhound-ce'` command string to use
+  the new constant instead. Documented the reasoning in
+  [BloodHound CE service startup](bloodhound-workflow.md#bloodhound-ce-service-startup).
+- Validation: `tests/test_exegol_runtime.py` (19 tests; one pre-existing,
+  unrelated flake — `test_read_only_health_reconciles_uncertainty` fails only
+  under the system Python 3.9 outside `.venv`, and reproduces identically on
+  unmodified `v2`). Full suite under `.venv` (493 tests) and `make check`
+  (parity, web contracts, lint) pass. No live Exegol/CE re-verification of the
+  detached dispatch was performed in this session; the operator should retry
+  a BloodHound start and confirm it now reaches `ready`.
+
 ### 2026-11-04 — Support mcp>=2.0's FastMCP→MCPServer rename
 
 - `requirements-mcp.txt` pins `mcp>=1.6.0` unbounded, so an operator can end up

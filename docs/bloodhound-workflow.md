@@ -131,6 +131,14 @@ It validates the live execution-tool schema and uses only the installed
 `bloodhound-ce` launcher through Exegol MCP. No model or loaded skill is needed.
 The CE endpoint must be local to the owner's network namespace.
 
+`bloodhound-ce` runs in the foreground and never exits on its own, so the
+runtime dispatches it detached (`LAUNCH_COMMAND` in `rmm_exegol_runtime.py`:
+`setsid nohup`, output redirected, backgrounded, and `disown`ed) instead of
+the bare command. Dispatching the bare command blocks the exec tool call for
+the life of the server and gets the process killed with that call/session,
+which otherwise surfaces as a 90-second `bloodhound_startup_uncertain` with
+no BloodHound process ever actually running in the container.
+
 Without `RMM_EXEGOL_CONTAINER`, the runtime calls MCP
 `list_exegol_containers` and tests running candidates with a temporary identity
 file, hostname, and network namespace. Exactly one candidate must match; its
