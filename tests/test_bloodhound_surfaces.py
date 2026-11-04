@@ -105,7 +105,7 @@ class BloodHoundSurfaceTests(unittest.TestCase):
         with patch('rmm_exegol_runtime.get_runtime') as runtime, patch('rmm_bloodhound_proxy.open_ui', return_value=(200, {'url': 'http://localhost:1031/launch'})) as launch:
             runtime.return_value.ensure.return_value = {'state': 'ready', 'exegol_status': 'ready'}
             self.assertEqual(bloodhound_api('/tmp/unused-ui', {'action': 'ui'})[0], 200)
-            launch.assert_called_once_with()
+            launch.assert_called_once_with('/tmp/unused-ui')
             self.assertEqual(bloodhound_api('/tmp/unused-ui', {'action': 'ui', 'options': {'url': 'http://evil'}})[0], 400)
             self.assertEqual(launch.call_count, 1)
 

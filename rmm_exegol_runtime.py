@@ -58,6 +58,26 @@ def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def append_log(root, message):
+    """Append one secret-free lifecycle line to '<root>/runtime.log'.
+
+    Best-effort: a logging failure must never block startup, health checks,
+    or UI access. The file never receives MCP output, URLs, or credentials —
+    only the bounded state fields already safe for the operator API response.
+    """
+    try:
+        directory = Path(root)
+        directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        line = f"{timestamp()} {message}\n".encode()
+        fd = os.open(directory / 'runtime.log', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def runtime_failure_code(error):
     """Classify nested MCP failures without exposing URLs, tokens, or exception text."""
     pending, seen, codes = [error], set(), set()
@@ -210,7 +230,7 @@ def discovery_candidates(value):
     return running
 
 
-async def discover_container(session, command, expected):
+async def discover_container(session, command, expected, root=None):
     """Select exactly one running container proving the owner identity; never start candidates."""
     matches = [row.get('function', {}) for row in session.openai_tools
                if row.get('function', {}).get('name') == LIST_TOOL]
@@ -224,6 +244,12 @@ async def discover_container(session, command, expected):
         lines = [line.strip() for text in output_strings(result) for line in text.splitlines()]
         if expected in lines:
             verified.append((name, lines))
+    if root:
+        # Container names only (already validated, logged elsewhere once identity is
+        # confirmed); this line is what makes a live ambiguous/not-found failure
+        # diagnosable without rerunning with extra instrumentation.
+        append_log(root, f"discovery: {len(candidates)} running candidate(s) ({', '.join(candidates) or 'none'}), "
+                          f"{len(verified)} matched identity")
     if len(verified) != 1:
         raise RuntimeErrorCode('exegol_workspace_identity_ambiguous' if verified else 'exegol_workspace_not_found')
     return verified[0]
@@ -249,8 +275,22 @@ class ExegolRuntime:
             if self.stopped.is_set():
                 values.update(state='blocked', ready=False, exegol_status='stopped',
                               mcp_status='stopped', error='runtime_stopped')
+            previous = dict(self.snapshot)
             self.snapshot.update(values, updated_at=timestamp())
+            if any(self.snapshot.get(k) != previous.get(k) for k in ('state', 'container', 'error')):
+                self._log_transition(previous)
             return dict(self.snapshot)
+
+    def _log_transition(self, previous):
+        """Record one line per meaningful lifecycle change (state, container, or error)."""
+        parts = [f"state={previous.get('state')}->{self.snapshot.get('state')}"]
+        if self.snapshot.get('container') and self.snapshot.get('container') != previous.get('container'):
+            parts.append(f"container={self.snapshot['container']}")
+        if self.snapshot.get('error'):
+            parts.append(f"error={self.snapshot['error']}")
+        if self.snapshot.get('launch_exit_code') is not None:
+            parts.append(f"launch_exit_code={self.snapshot['launch_exit_code']}")
+        append_log(self.root, ' '.join(parts))
 
     def _intent(self):
         """Load durable dispatch state; corrupt intent is uncertain, never absent."""
@@ -320,12 +360,14 @@ class ExegolRuntime:
                 raise RuntimeErrorCode('bloodhound_already_ready')
             if self.snapshot.get('state') != 'uncertain':
                 raise RuntimeErrorCode('bloodhound_reset_requires_uncertain_state')
+            previous_state = self.snapshot.get('state')
             (self.root / 'ce-startup.json').unlink(missing_ok=True)
             self.verified_configuration = None
             self.last_probe = 0.0
             self.snapshot = dict(required=True, state='blocked', exegol_status='not_checked',
                                  mcp_status='not_checked', bloodhound_status='not_checked',
                                  ready=False, exegol_verified_at=None, updated_at=timestamp())
+            append_log(self.root, f"operator reset: cleared uncertain dispatch intent (state={previous_state}->blocked)")
             return dict(self.snapshot)
 
     def status(self):
@@ -427,12 +469,13 @@ class ExegolRuntime:
             self._update(mcp_status='connecting')
             async with McpHttpSession(url, token) as session:
                 self._update(mcp_status='connected')
+                append_log(self.root, 'mcp: connected to Exegol MCP')
                 if container:
                     arguments = execution_arguments(session.openai_tools, container, command)
                     result = await session.call_tool(EXEC_TOOL, arguments)
                     lines = [line.strip() for text in output_strings(result) for line in text.splitlines()]
                 else:
-                    container, lines = await discover_container(session, command, expected)
+                    container, lines = await discover_container(session, command, expected, self.root)
                 if expected not in lines:
                     raise RuntimeErrorCode('exegol_workspace_identity_mismatch')
                 if configuration() != config:

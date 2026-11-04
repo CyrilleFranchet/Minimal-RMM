@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.parse
 
+from rmm_exegol_runtime import append_log
 from rmm_settings import getenv
 
 MAX_BODY = 64 * 1024 * 1024
@@ -33,12 +34,13 @@ class BrowserProxy(ThreadingHTTPServer):
     """Own one fixed CE upstream and short-lived browser access grants."""
     daemon_threads = True
 
-    def __init__(self, address, upstream, public_url):
+    def __init__(self, address, upstream, public_url, root=None):
         self.upstream = endpoint(upstream, local_http=True)
         self.public = endpoint(public_url)
         self.tickets = {}
         self.sessions = {}
         self.lock = threading.Lock()
+        self.root = root
         super().__init__(address, BrowserHandler)
         self.cookie_name = 'rmm_bloodhound_proxy_' + str(self.server_port)
         self.ce_cookie_prefix = 'bhce_' + str(self.server_port) + '_'
@@ -56,15 +58,21 @@ class BrowserProxy(ThreadingHTTPServer):
                 raise ValueError('bloodhound_ui_capacity')
             token = secrets.token_urlsafe(32)
             self.tickets[token] = time.monotonic() + 60
+        if self.root:
+            append_log(self.root, 'ui: launch ticket issued')
         return self.public.geturl() + '/_rmm_launch?ticket=' + token
 
     def _prune(self):
-        """Expire grants under the caller-held lock."""
+        """Expire grants under the caller-held lock; log each expired browser session."""
         now = time.monotonic()
-        for entries in (self.tickets, self.sessions):
-            for token, expiry in list(entries.items()):
-                if expiry <= now:
-                    entries.pop(token, None)
+        for token, expiry in list(self.tickets.items()):
+            if expiry <= now:
+                self.tickets.pop(token, None)
+        for token, expiry in list(self.sessions.items()):
+            if expiry <= now:
+                self.sessions.pop(token, None)
+                if self.root:
+                    append_log(self.root, 'ui: browser proxy session expired')
 
     def exchange(self, token):
         """Consume one ticket and issue an eight-hour proxy session."""
@@ -74,7 +82,9 @@ class BrowserProxy(ThreadingHTTPServer):
                 return None
             session = secrets.token_urlsafe(32)
             self.sessions[session] = time.monotonic() + 8 * 3600
-            return session
+        if self.root:
+            append_log(self.root, 'ui: browser proxy session opened')
+        return session
 
     def valid_session(self, token):
         """Check an opaque proxy session without refreshing its expiry."""
@@ -234,7 +244,7 @@ def close_ui():
 atexit.register(close_ui)
 
 
-def open_ui():
+def open_ui(root=None):
     """Start the configured proxy lazily and mint a launch URL for an authenticated caller."""
     global _instance, _configuration
     try:
@@ -253,11 +263,15 @@ def open_ui():
         configuration = (upstream.rstrip('/'), public.rstrip('/'), bind, port)
         with _instance_lock:
             if _instance is None:
-                proxy = BrowserProxy((bind, port), upstream, public)
+                proxy = BrowserProxy((bind, port), upstream, public, root)
                 threading.Thread(target=proxy.serve_forever, name='bloodhound-browser-proxy', daemon=True).start()
                 _instance = proxy
                 _configuration = configuration
+                if root:
+                    append_log(root, f"ui: proxy listener started bind={bind} port={port}")
             elif _configuration != configuration:
+                if root:
+                    append_log(root, 'ui: bloodhound_ui_restart_required (settings changed since the proxy started)')
                 return 409, {'ok': False, 'error': 'bloodhound_ui_restart_required'}
             instance = _instance
         connection = instance.connection()
@@ -266,12 +280,21 @@ def open_ui():
             connection.request('GET', '/api/version')
             response = connection.getresponse()
             if response.status != 200:
+                if root:
+                    append_log(root, f"ui: bloodhound_ui_upstream_unavailable (CE responded {response.status})")
                 return 503, {'ok': False, 'available': False, 'error': 'bloodhound_ui_upstream_unavailable'}
-        except (OSError, http.client.HTTPException):
+        except (OSError, http.client.HTTPException) as exc:
+            if root:
+                append_log(root, f"ui: bloodhound_ui_upstream_unavailable ({exc})")
             return 503, {'ok': False, 'available': False, 'error': 'bloodhound_ui_upstream_unavailable'}
         finally:
             connection.close()
         url = instance.grant()
         return 200, {'ok': True, 'available': True, 'url': url, 'expires_in': 60}
-    except (ValueError, OSError):
+    except (ValueError, OSError) as exc:
+        # The real reason (bloodhound_ui_proxy_loop, invalid_bloodhound_ui_port, a
+        # bind error, ...) is logged here even though the API response always
+        # returns the single generic code below, to keep that contract stable.
+        if root:
+            append_log(root, f"ui: bloodhound_ui_proxy_configuration_or_bind_failed ({exc})")
         return 503, {'ok': False, 'available': False, 'error': 'bloodhound_ui_proxy_configuration_or_bind_failed'}

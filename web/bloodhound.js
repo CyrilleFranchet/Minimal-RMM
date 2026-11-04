@@ -27,7 +27,8 @@
     const verified = ["connected", "verified"].includes(runtime.mcp_status);
     const failed = !!runtime.error || runtime.mcp_status === "error";
     if (mcpLabel) {
-      mcpLabel.textContent = failed ? "MCP · Check needed" : verified ? "MCP · Verified" : "MCP · Checking";
+      const base = failed ? "MCP · Check needed" : verified ? "MCP · Verified" : "MCP · Checking";
+      mcpLabel.textContent = runtime.container ? `${base} · ${runtime.container}` : base;
       mcpLabel.dataset.state = failed ? "error" : verified ? "ready" : "checking";
     }
     if (mcpStatus) mcpStatus.textContent = `Exegol MCP: ${runtime.mcp_status || "not_checked"}${runtime.container ? ` · ${runtime.container}` : ""}`;

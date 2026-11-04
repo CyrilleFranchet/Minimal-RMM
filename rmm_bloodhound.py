@@ -634,7 +634,7 @@ def bloodhound_api(root, body):
                     payload['error'] = snapshot.get('error') or 'bloodhound_runtime_unavailable'
                 return code, payload
             from rmm_bloodhound_proxy import open_ui
-            return open_ui()
+            return open_ui(root)
         if action == 'reset':
             if options or body.get('run_id'):
                 raise WorkflowError('unexpected_reset_options')

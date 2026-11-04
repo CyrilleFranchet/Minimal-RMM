@@ -98,6 +98,7 @@ historical notes in `progress.md`.
 | Server-side AI skills | [AI skills](web-ai-skills.md) |
 | BloodHound CE collection, ingestion, and candidate paths | [BloodHound workflow](bloodhound-workflow.md) |
 | BloodHound technical validation and operator parity | [Audit findings](bloodhound-technical-audit.md) |
+| Validate a live Exegol MCP endpoint (deployment/dev diagnostic) | [Exegol MCP verification](exegol-mcp-verification.md) |
 | Move legacy standalone storage into a workspace | [Migration guide](workspace-migration.md) |
 | Workspace and URL-installed AI skills | [Operator-managed assets](operator-assets.md) |
 | Per-session chat persistence | [AI chat memory](web-ai-chat-memory.md) |

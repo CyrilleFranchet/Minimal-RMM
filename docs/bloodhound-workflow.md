@@ -112,15 +112,22 @@ does not prove CE stopped processing it. Inspect CE before repeating work.
 
 Implementation: `rmm_bloodhound_proxy.endpoint` validates configured origins;
 `BrowserProxy` owns the listener, upstream connections, launch tickets, expiry,
-and browser sessions; `BrowserHandler` validates and forwards requests, rewrites
-redirects/cookies, and returns safe errors without logging credentials.
-`open_ui` owns lazy startup and readiness checks; `close_ui` closes the listener
-at process exit. In `web/bloodhound.js`,
+and browser sessions, and logs (via `append_log`, see
+[server-side lifecycle logging](#server-side-lifecycle-logging)) listener
+startup, ticket issuance, session exchange, and session expiry to the
+`root` it was constructed with; `BrowserHandler` validates and forwards
+requests, rewrites redirects/cookies, and returns safe errors without logging
+credentials. `open_ui(root)` owns lazy startup and readiness checks and
+passes `root` through to `BrowserProxy` for logging; `close_ui` closes the
+listener at process exit. In `web/bloodhound.js`,
 `openBloodHound` reserves a tab, requests/polls the launch operation, validates
 the destination, and reports failures through the text-only `message` helper.
-`showRuntime` renders readiness; `startHealth`/`stopHealth` manage authenticated
-connection polling and its `refresh` callback; `operation` follows owner relay
-results and `pause` bounds waits with cancellation. These checks do not start CE.
+`showRuntime` renders readiness, appends the identified Exegol container name
+(`runtime.container`) to both the always-visible `mcp-status-label` summary
+button and the detailed `exegol-mcp-status` panel line once known;
+`startHealth`/`stopHealth` manage authenticated connection polling and its
+`refresh` callback; `operation` follows owner relay results and `pause`
+bounds waits with cancellation. These checks do not start CE.
 
 ### BloodHound CE service startup
 
@@ -249,6 +256,67 @@ endpoint. `/api/version` readiness does not validate signed API permissions;
 run `preflight` before collection/import. A 401/403 is a configuration blocker,
 not a reason to restart. CE stays running when RMM stops. No live Exegol startup
 or Ludus collection was performed during implementation.
+
+### Server-side lifecycle logging
+
+Before this logging was added, a definite `bloodhound_launch_failed` or a
+stuck `uncertain` state left no trace on the RMM server itself: only
+`/var/log/rmm-bloodhound-ce.log`, written by the wrapper *inside* the Exegol
+container, carried the failure, and RMM never reads that file. An operator
+asking "who started CE, and when" had no server-side answer.
+
+`rmm_exegol_runtime.append_log(root, message)` appends one timestamped,
+secret-free line to `<root>/runtime.log` (created `0700`, file `0600`,
+best-effort — a write failure never blocks startup, health checks, or UI
+access). `ExegolRuntime._update` is the single chokepoint for every lifecycle
+state change; it diffs the previous snapshot against the new one and calls
+the new `ExegolRuntime._log_transition` helper whenever `state`, `container`,
+or `error` changes, so one line is written per meaningful transition (not per
+health poll) — `ensure()` dispatching a pass, the Exegol container identity
+being confirmed (`container=<name>`), the launch command being dispatched,
+`RMM_CE_LAUNCH_EXITED:<code>` mapping to `bloodhound_launch_failed`, reaching
+`ready`, falling back to `uncertain`, and read-only health reconciling a
+stuck `uncertain` run back to `ready`. `ExegolRuntime.reset()` bypasses
+`_update` (it rebuilds the snapshot directly) and logs the operator's clear
+explicitly.
+
+`rmm_bloodhound_proxy.py` logs through the same `append_log` into the
+*same* `<root>/runtime.log` (passed in from `rmm_bloodhound.bloodhound_api`
+as the `ui` action's `root`, and from the first `open_ui(root)` call into
+`BrowserProxy.root`): the proxy listener starting, a launch ticket being
+issued (`BrowserProxy.grant`), a browser exchanging it for an eight-hour
+proxy session (`BrowserProxy.exchange`), and a proxy session expiring
+(`BrowserProxy._prune`). No ticket, session token, launch URL, or upstream
+response is ever written.
+
+`open_ui`'s failure paths are logged too: a settings change requiring a
+restart (`bloodhound_ui_restart_required`), CE answering with a non-200
+status or being unreachable (`bloodhound_ui_upstream_unavailable`, with the
+HTTP status or exception text), and the catch-all
+`bloodhound_ui_proxy_configuration_or_bind_failed` — for that last one the
+*real* cause (`bloodhound_ui_proxy_loop`, `invalid_bloodhound_ui_port`, a
+bind `OSError`, …) is written to the log even though the API response always
+returns the single generic code, so the operator-visible contract stays
+unchanged while `runtime.log` keeps the detail needed to diagnose it.
+
+To validate the Exegol MCP endpoint itself, independent of BloodHound, see
+[Exegol MCP verification](exegol-mcp-verification.md) (`make check-exegol-mcp`).
+
+Two further diagnostics close the gap for a first live Exegol MCP
+verification: `_check_and_start` logs `mcp: connected to Exegol MCP` right
+after the MCP session opens (a fixed checkpoint distinct from the container
+identification that may fail afterward), and `discover_container` logs how
+many running containers were found and how many matched the identity probe
+(`discovery: <n> running candidate(s) (<names>), <m> matched identity`) —
+so an `exegol_workspace_not_found` or `exegol_workspace_identity_ambiguous`
+error is diagnosable from `runtime.log` alone, without rerunning anything.
+Only validated container names (already restricted to a safe pattern) are
+logged — never raw MCP tool output.
+
+`runtime.log` lives under the same owner-local storage root as the rest of
+the BloodHound workflow state (`<LOG_DIR>/bloodhound/runtime.log` in
+single-server mode; the workspace's own root in workspace mode) — never on
+the target agent, consistent with the [logging boundary](../AGENTS.md).
 
 ### Workflow operations
 
@@ -398,6 +466,10 @@ without a shell. Raw collector logs stay local and may contain directory data.
   single-flight lifecycle, namespace verification, and shutdown cancellation.
 - `_intent` and `_save`: durable dispatch/ready checkpoints; `get_runtime`:
   one runtime per owner root in the process.
+- `append_log`: best-effort, secret-free lifecycle line appended to
+  `<root>/runtime.log`; `ExegolRuntime._log_transition`: called from `_update`
+  whenever `state`, `container`, or `error` changes. See
+  [server-side lifecycle logging](#server-side-lifecycle-logging).
 
 `rmm_bloodhound.py` contains the workflow:
 

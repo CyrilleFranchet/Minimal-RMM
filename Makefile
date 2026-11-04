@@ -9,7 +9,7 @@ PY_MODULES := rmm_settings.py rmm_plugin_sources.py rmm_plugin_releases.py rmm_e
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-cli check-parity check-web-contracts check go-test tun-build workspace-service docker-build docker-up
+.PHONY: help install-lint lint-md lint-yaml lint test check-cli check-parity check-web-contracts check check-exegol-mcp go-test tun-build workspace-service docker-build docker-up
 
 help:
 	@printf "Available targets:\n"
@@ -22,6 +22,7 @@ help:
 	@printf "  make check-cli     CLI dispatch and interactive completion tests\n"
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
+	@printf "  make check-exegol-mcp  Validate a live Exegol MCP endpoint (needs RMM_EXEGOL_MCP_URL); not part of 'check'\n"
 	@printf "  make go-test       Cross-build the Go agent and test the pivot components\n"
 	@printf "  make tun-build     Build the server-side TUN helper\n"
 	@printf "  make workspace-service  Start the local Exegol workspace service\n"
@@ -68,7 +69,7 @@ lint-yaml:
 lint: lint-md lint-yaml
 
 test:
-	@$(PYTHON) -m py_compile $(PY_MODULES) scripts/check_operator_parity.py scripts/check_web_contracts.py
+	@$(PYTHON) -m py_compile $(PY_MODULES) scripts/check_operator_parity.py scripts/check_web_contracts.py scripts/check_exegol_mcp.py
 
 check-parity:
 	@$(PYTHON) scripts/check_operator_parity.py
@@ -88,3 +89,6 @@ check-web-contracts:
 	@node tests/test_agent_redirects.cjs
 
 check: test check-cli check-parity check-web-contracts lint
+
+check-exegol-mcp:
+	@$(PYTHON) scripts/check_exegol_mcp.py

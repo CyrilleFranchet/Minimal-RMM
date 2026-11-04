@@ -9,6 +9,102 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Standalone Exegol MCP verification script (not an operator command)
+
+- Request: CLI slash commands `/mcp_list_containers` and
+  `/mcp_list_installed_tools` to validate Exegol MCP on a new deployment —
+  explicitly not tied to BloodHound.
+- Declined the slash-command shape: it would need REST/CLI/MCP parity for
+  something with no operator/agent-session use case
+  ([mcp-parity.md](mcp-parity.md)), duplicate the connection/validation
+  logic already in `rmm_exegol_runtime.py` outside `ExegolRuntime`'s
+  single-flight/identity guarantees, and print raw MCP tool output to an
+  operator terminal — the exact thing the rest of this codebase is careful
+  never to do.
+- Added `scripts/check_exegol_mcp.py` instead: a standalone diagnostic in
+  the same family as `scripts/check_operator_parity.py`, run directly by
+  whoever holds the Exegol MCP credentials. It validates
+  `RMM_EXEGOL_MCP_URL` without requiring `RMM_BLOODHOUND_URL`, lists
+  advertised tool names and flags whether `list_exegol_containers`/
+  `execute_command_in_container` are present, lists running containers
+  through the same `discovery_candidates` parser the runtime uses, and runs
+  the exact one-line identity `printf` probe `_check_and_start` runs before
+  ever touching `bloodhound-ce` — never starting, stopping, or otherwise
+  changing anything. With more than one running container and no
+  `--container`, it reports them and stops rather than guessing.
+- Added `make check-exegol-mcp` (not part of `make check`: it needs a real
+  endpoint to mean anything) and `tests/test_check_exegol_mcp.py` (6 tests:
+  single-container success, mismatched identity, ambiguous containers,
+  `--no-probe`, classified connection failure, rejected container name).
+  New doc: [Exegol MCP verification](exegol-mcp-verification.md), linked
+  from `docs/README.md` and `docs/bloodhound-workflow.md`.
+- `make check` passes with the new script added to `PY_MODULES`'s syntax
+  check; the new test module passes standalone.
+
+### 2026-11-04 — Close the remaining BloodHound/Exegol logging gaps before a live MCP verification
+
+- Follow-up to the server-side lifecycle logging added earlier today: the
+  first pass covered the CE startup state machine and successful UI access,
+  but left three gaps that would specifically block diagnosing a first real
+  Exegol MCP verification.
+- `rmm_bloodhound_proxy.open_ui`'s failure paths now log to `runtime.log`:
+  `bloodhound_ui_restart_required`, `bloodhound_ui_upstream_unavailable`
+  (with the HTTP status or exception), and the catch-all
+  `bloodhound_ui_proxy_configuration_or_bind_failed` — for the last one the
+  real underlying reason (`bloodhound_ui_proxy_loop`,
+  `invalid_bloodhound_ui_port`, a bind error, …) is logged even though the
+  API response keeps returning the single generic code, so the operator
+  contract is unchanged.
+- `rmm_exegol_runtime._check_and_start` now logs `mcp: connected to Exegol
+  MCP` as soon as the MCP session opens, a checkpoint distinct from the
+  container identification that may fail afterward.
+- `discover_container` now takes an optional `root` and logs how many
+  running containers were found and how many matched the identity probe
+  (names only, already restricted to a safe pattern), so
+  `exegol_workspace_not_found`/`exegol_workspace_identity_ambiguous` are
+  diagnosable from the log alone instead of only by a bucketed error code.
+- All three changes are additive and keep existing call signatures backward
+  compatible (`root`/`exc` are new optional trailing parameters). Verified
+  manually: a 2-candidate/0-match discovery and a misconfigured
+  `RMM_BLOODHOUND_UI_PORT` both produce the expected diagnostic line.
+- `make check` and the targeted BloodHound/Exegol test modules pass (same
+  two pre-existing timing-sensitive `test_exegol_runtime` failures as
+  before, confirmed unrelated).
+
+### 2026-11-04 — Server-side BloodHound lifecycle logging; show identified Exegol container in the WebUI
+
+- Gap: `rmm_exegol_runtime.py`, `rmm_bloodhound_proxy.py`, and `rmm_bloodhound.py`
+  had zero server-side logging. A launch failure, an `uncertain` startup, or a
+  browser opening the BloodHound UI left no trace anywhere on the RMM server —
+  only `/var/log/rmm-bloodhound-ce.log`, written by the wrapper inside the
+  Exegol container, which RMM never reads.
+- Added `rmm_exegol_runtime.append_log(root, message)`: a best-effort,
+  secret-free line appended to `<root>/runtime.log` (`0700`/`0600`). Wired it
+  through the single `ExegolRuntime._update` chokepoint via the new
+  `_log_transition` helper, which logs once per meaningful change (`state`,
+  `container`, or `error` — not per health poll): startup dispatched,
+  Exegol container identity confirmed, launch command dispatched,
+  `bloodhound_launch_failed` with its exit code, reaching `ready`, falling
+  back to `uncertain`, and read-only health reconciling `uncertain` back to
+  `ready`. `ExegolRuntime.reset()` (bypasses `_update`) logs the operator
+  clear explicitly.
+- `rmm_bloodhound_proxy.open_ui` now takes `root` (threaded from
+  `rmm_bloodhound.bloodhound_api`'s `ui` action) and passes it to
+  `BrowserProxy`, which logs listener startup, ticket issuance, session
+  exchange, and session expiry into the same `runtime.log` — never the
+  ticket, session token, or launch URL.
+- WebUI: `web/bloodhound.js` `showRuntime` now appends the identified Exegol
+  container name to the always-visible `mcp-status-label` summary button
+  (previously only shown inside the collapsed detail panel), so the operator
+  sees which container owns the workspace without expanding it.
+- Updated `tests/test_bloodhound_surfaces.py` (`open_ui` is now called with
+  `root`). Added a full doc section:
+  [server-side lifecycle logging](bloodhound-workflow.md#server-side-lifecycle-logging).
+- `make test`, `make check-parity`, `make check-web-contracts`, and the full
+  Python test suite pass (one pre-existing `prompt_toolkit`-missing import
+  error and two pre-existing timing-sensitive `test_exegol_runtime` failures,
+  both unrelated — confirmed present before this change via `git stash`).
+
 ### 2026-11-04 — Diagnose permanent `bloodhound_startup_uncertain`; report confirmed dead launches
 
 - Reported symptom: the detached-launch and reset fixes above still left
