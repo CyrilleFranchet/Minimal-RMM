@@ -253,9 +253,12 @@ updates `updated_at` without changing that verification timestamp.
 
 Startup never installs CE, resets databases or credentials, or changes its
 endpoint. `/api/version` readiness does not validate signed API permissions;
-run `preflight` before collection/import. A 401/403 is a configuration blocker,
-not a reason to restart. CE stays running when RMM stops. No live Exegol startup
-or Ludus collection was performed during implementation.
+run `preflight` before collection/import. A 401/403 answer proves the CE API
+daemon has started, so the lifecycle reports ready (`bloodhound_status` keeps
+`authentication_failed` as the visible probe result) and never restarts CE for
+that reason; it remains a configuration blocker for the signed workflow API
+until valid CE tokens are configured, and the browser login through the UI
+proxy uses normal CE credentials. CE stays running when RMM stops.
 
 ### Server-side lifecycle logging
 

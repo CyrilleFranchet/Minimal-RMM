@@ -168,6 +168,32 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             asyncio.run(discover_container(session, 'identity', 'expected'))
 
+    def test_authenticated_ce_api_counts_as_started_without_launch(self):
+        with patch('rmm_exegol_runtime.probe_ce', return_value='authentication_failed'):
+            self.runtime._run()
+            self.assertTrue(self.runtime.status()['ready'])
+            self.assertTrue(self.runtime.ensure()['ready'])
+        self.assertEqual(self.runtime.snapshot['state'], 'ready')
+        self.assertEqual(self.runtime.snapshot['bloodhound_status'], 'authentication_failed')
+        self.assertEqual(self.runtime._intent(), 'ready')
+        self.assertFalse(any(row.get('command') == LAUNCH_COMMAND for row in self.calls))
+        self.assertEqual(self.runtime.snapshot['mcp_status'], 'verified')
+        # A later probe answering 401 again keeps the ready state stable.
+        self.runtime.last_probe = 0
+        with patch('rmm_exegol_runtime.probe_ce', return_value='authentication_failed'):
+            self.runtime.status()
+        self.assertTrue(self.runtime.snapshot['ready'])
+        self.assertEqual(self.runtime.snapshot['bloodhound_status'], 'authentication_failed')
+
+    def test_launch_poll_treats_authenticated_ce_as_started(self):
+        with patch('rmm_exegol_runtime.probe_ce', side_effect=['stopped', 'authentication_failed']), \
+                patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
+            self.runtime._run()
+        self.assertEqual(self.calls[-1]['command'], LAUNCH_COMMAND)
+        self.assertEqual(self.runtime.snapshot['state'], 'ready')
+        self.assertEqual(self.runtime.snapshot['bloodhound_status'], 'authentication_failed')
+        self.assertEqual(self.runtime._intent(), 'ready')
+
     def test_launch_dispatch_durable_before_mcp_and_reconciled(self):
         with patch('rmm_exegol_runtime.probe_ce', side_effect=['stopped', 'ready']), \
                 patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
@@ -330,8 +356,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertIsNone(self.runtime._intent())
 
-    def test_unavailable_or_authenticated_endpoint_is_never_restarted(self):
-        for result in ('authentication_failed', 'invalid_response', 'unavailable'):
+    def test_unavailable_endpoint_answers_are_never_restarted(self):
+        # 'authentication_failed' is deliberately absent: a CE answering 401
+        # to the credential-free probe has started (see the tests above);
+        # only an unhealthy or invalid answer must not relaunch the service.
+        for result in ('invalid_response', 'unavailable'):
             with self.subTest(result=result), patch('rmm_exegol_runtime.probe_ce', return_value=result):
                 self.runtime._run()
                 self.assertEqual(self.runtime.snapshot['exegol_status'], 'ready')

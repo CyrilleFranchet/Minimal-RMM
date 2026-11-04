@@ -158,6 +158,19 @@ def probe_ce(endpoint):
         connection.close()
 
 
+def ce_started(availability):
+    """Classify one probe result as 'the CE API daemon is up and answering'.
+
+    Recent BloodHound CE versions answer 401 to the credential-free
+    /api/version probe even once the server has started successfully, so an
+    authentication demand proves startup the same way a 200 does. The CE
+    login itself happens in the operator's browser through the UI proxy with
+    normal CE credentials; the workflow API uses its own configured token.
+    Any other answered-but-unhealthy result keeps its failure diagnosis.
+    """
+    return availability in ('ready', 'authentication_failed')
+
+
 def execution_arguments(tools, container, command):
     """Match the installed execution schema; refuse unknown required arguments."""
     matches = [row.get('function', {}) for row in tools
@@ -401,9 +414,10 @@ class ExegolRuntime:
                     return dict(self.snapshot)
                 if self.stopped.is_set():
                     return self._update(state='blocked', ready=False, error='runtime_stopped')
-                if availability == 'ready':
+                if ce_started(availability):
                     self._save('ready')
-                    return self._update(state='ready', ready=True, bloodhound_status='ready', error=None, launch_exit_code=None)
+                    return self._update(state='ready', ready=True, bloodhound_status=availability,
+                                        error=None, launch_exit_code=None)
                 uncertain = self._intent() == 'dispatched'
                 if uncertain:
                     error = 'bloodhound_startup_uncertain'
@@ -487,9 +501,9 @@ class ExegolRuntime:
                 availability = await asyncio.to_thread(probe_ce, endpoint)
                 if configuration() != config:
                     raise RuntimeErrorCode('runtime_configuration_changed')
-                if availability == 'ready':
+                if ce_started(availability):
                     self._save('ready')
-                    self._update(state='ready', ready=True, bloodhound_status='ready', error=None, launch_exit_code=None)
+                    self._update(state='ready', ready=True, bloodhound_status=availability, error=None, launch_exit_code=None)
                     return
                 if availability != 'stopped':
                     self._update(state='failed', ready=False, bloodhound_status=availability, error='bloodhound_' + availability)
@@ -533,11 +547,12 @@ class ExegolRuntime:
                     # may still be starting, so poll without replaying it.
                 deadline = time.monotonic() + READY_TIMEOUT
                 while not self.stopped.is_set() and time.monotonic() < deadline:
-                    if await asyncio.to_thread(probe_ce, endpoint) == 'ready':
+                    availability = await asyncio.to_thread(probe_ce, endpoint)
+                    if ce_started(availability):
                         if configuration() != config:
                             raise RuntimeErrorCode('runtime_configuration_changed')
                         self._save('ready')
-                        self._update(state='ready', ready=True, bloodhound_status='ready', error=None, launch_exit_code=None)
+                        self._update(state='ready', ready=True, bloodhound_status=availability, error=None, launch_exit_code=None)
                         return
                     await asyncio.sleep(2)
                 self._update(state='uncertain', ready=False, bloodhound_status='unavailable', error='bloodhound_startup_uncertain')

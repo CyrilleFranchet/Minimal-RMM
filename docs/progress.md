@@ -9,6 +9,39 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-04 — Live BloodHound launch diagnosis: a 401 on the readiness probe proves CE started
+
+- Reported live: "Open BloodHound" never worked on the operator's real
+  deployment (remote Exegol container, workspace service inside it, Termius
+  tunnel). Diagnosis through the workspace API and the container showed the
+  launch command executed, postgres + neo4j came up, and the CE API logged
+  `Server started successfully` — but the operator's BloodHound CE answers
+  401 to the credential-free `GET /api/version` probe, and `probe_ce()`
+  classified 401/403 as `authentication_failed`, which no call site
+  (`status()`, `_check_and_start()` pre-flight, post-launch poll) treated as
+  started. The launch therefore always exhausted `READY_TIMEOUT` and fell
+  back to `uncertain` while CE was running fine. An earlier silent failure
+  (intent `dispatched` at 08:34 with no wrapper log) was an older service
+  process running the pre-logging `LAUNCH_COMMAND`; restarting the service
+  loaded the logged command, whose `/var/log/rmm-bloodhound-ce.log` made the
+  real behavior visible.
+- Fixed by classifying, not by sending credentials: new
+  `ce_started(availability)` treats both `ready` and `authentication_failed`
+  as "the CE API daemon is up and answering" at all three call sites, so the
+  lifecycle reaches `ready` and never restarts CE for an auth demand.
+  `bloodhound_status` keeps the raw probe result (`authentication_failed`).
+- The 08:34-style stuck `uncertain` also needed the documented operator
+  `reset` action (cleared live via the workspace API) before a retry could
+  dispatch at all.
+- Tests: `test_authenticated_ce_api_counts_as_started_without_launch` and
+  `test_launch_poll_treats_authenticated_ce_as_started` added;
+  `test_unavailable_or_authenticated_endpoint_is_never_restarted` renamed and
+  reduced to the still-failing probe results. The module keeps the same two
+  pre-existing timing-sensitive failures as the baseline (verified by
+  stashing the change). Updated [bloodhound-workflow.md](bloodhound-workflow.md)
+  (401/403 semantics) — "configuration blocker for the signed workflow API,
+  not a lifecycle blocker".
+
 ### 2026-11-04 — Exegol container moves to the Workspace badge
 
 - Reported: the Exegol container name appeared in the MCP control label
