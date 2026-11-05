@@ -4,6 +4,11 @@ Operators can browse files pulled from agents (`__DOWNLOAD__`) and screenshots
 in the web console without digging through the shell transcript or the artifact
 directories on disk.
 
+Inline screenshot results in the shell reserve a bounded image preview while
+the artifact loads. The image appears above a single-line Download button;
+the button stays in normal flow rather than overlaying an unsized image.
+Wide and portrait screenshots preserve their proportions inside the preview.
+
 ## Surfaces
 
 | Surface | Support |

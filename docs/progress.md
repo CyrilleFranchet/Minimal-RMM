@@ -9,6 +9,14 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-05 — Stabilize inline screenshot layout
+
+- Reserve responsive preview space for shell screenshots while images load.
+  Place Download below the image in normal flow and prevent its label wrapping
+  vertically. Preserve screenshot proportions within the bounded thumbnail.
+- Existing WebUI contract checks pass. Live visual inspection was unavailable
+  because browser access and local computer-use permissions were unavailable.
+
 ### 2026-11-05 — Consolidate deployment ownership and configuration
 
 - Made `rmm_deployment.py` the supported startup path. Native single mode
