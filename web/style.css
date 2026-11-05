@@ -1515,10 +1515,8 @@ body.sidebar-resizing iframe {
 }
 
 .screenshot-preview {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.5rem;
+  position: relative;
+  display: block;
   width: min(100%, 36rem);
   max-width: 100%;
   margin-top: 0.35rem;
@@ -1539,8 +1537,10 @@ body.sidebar-resizing iframe {
 }
 
 .screenshot-download {
-  flex: 0 0 auto;
-  align-self: flex-start;
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  visibility: hidden;
   white-space: nowrap;
   opacity: 0.82;
   padding: 0.3rem 0.55rem;
@@ -1549,6 +1549,10 @@ body.sidebar-resizing iframe {
   color: var(--text);
   box-shadow: none;
   transition: opacity 0.15s ease;
+}
+
+.screenshot-preview.screenshot-ready .screenshot-download {
+  visibility: visible;
 }
 
 .screenshot-preview:hover .screenshot-download,

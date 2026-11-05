@@ -14,6 +14,14 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-05 — Restore screenshot download overlay after image load
+
+- Restored Download to the screenshot's bottom-right corner while keeping its
+  label on one line and preserving the bounded preview dimensions.
+- Reveal the overlay only after a successful image load. Capture image load
+  events on the shell container for live results and restored history; failed
+  images leave the button hidden.
+
 ### 2026-11-05 — Validate playbook changes for commit
 
 - Updated security regressions to require Exegol even when a legacy request

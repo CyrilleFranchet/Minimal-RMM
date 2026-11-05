@@ -5,8 +5,10 @@ in the web console without digging through the shell transcript or the artifact
 directories on disk.
 
 Inline screenshot results in the shell reserve a bounded image preview while
-the artifact loads. The image appears above a single-line Download button;
-the button stays in normal flow rather than overlaying an unsized image.
+the artifact loads. A single-line Download button overlays the bottom-right
+corner once the image loads successfully; it stays hidden during loading or
+if the image fails to load. A capturing load listener handles live and restored
+shell screenshots through the same container.
 Wide and portrait screenshots preserve their proportions inside the preview.
 
 ## Surfaces

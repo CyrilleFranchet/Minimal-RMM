@@ -3561,6 +3561,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   bindShellInputCompletion();
 
+  // Image load does not bubble; capture it for live and restored screenshots.
+  $("#shell-output").addEventListener("load", (e) => {
+    if (e.target.matches("img.screenshot-image") && e.target.naturalWidth > 0) {
+      e.target.closest(".screenshot-preview")?.classList.add("screenshot-ready");
+    }
+  }, true);
+
   $("#shell-output").addEventListener("click", (e) => {
     const screenshotDownload = e.target.closest("button.screenshot-download");
     if (screenshotDownload) {
