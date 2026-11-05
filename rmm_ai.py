@@ -28,6 +28,27 @@ MISTRAL_MODELS_URL = "https://api.mistral.ai/v1/models"
 ANTHROPIC_VERSION = "2023-06-01"
 
 
+def ai_engine():
+    """Select the v3 episode engine, with an explicit legacy rollback option."""
+    engine = settings_getenv('RMM_AI_ENGINE', 'v3').strip()
+    if engine not in {'v3', 'legacy_v2'}:
+        raise ValueError('invalid_ai_engine')
+    return engine
+
+
+def legacy_admission(workflow, execution_scope, engine=None):
+    """Require an explicit legacy workflow; never silently ignore v3 UI promises."""
+    if (engine if engine is not None else ai_engine()) != 'legacy_v2':
+        if workflow == 'legacy':
+            return {'ok': False, 'error': 'legacy_engine_not_selected', 'message': 'Select the legacy_v2 engine before using the legacy workflow.'}
+        return None
+    if workflow != 'legacy':
+        return {'ok': False, 'error': 'legacy_workflow_required', 'message': 'The legacy engine cannot enforce v3 workflows. Switch to v3, or explicitly select Legacy v2 (unrestricted tools).'}
+    if execution_scope and (not isinstance(execution_scope, dict) or any(execution_scope.values())):
+        return {'ok': False, 'error': 'legacy_scope_not_supported', 'message': 'Legacy execution does not enforce v3 scope fields. Clear them or use v3.'}
+    return None
+
+
 def _max_tool_rounds() -> int:
     """Return the configured AI tool-round limit with a safe lower bound."""
     raw = settings_getenv("RMM_AI_MAX_TOOL_ROUNDS", "32").strip()
@@ -559,9 +580,18 @@ def _run_ai_chat_mcp(
     skill_documents: list[dict] | None = None,
     skill_policy: list[dict] | None = None,
     context_scope: str | None = None,
+    workflow: str = "auto",
+    execution_scope: dict | None = None,
+    request_id: str | None = None,
+    state_owner: str | None = None,
+    exegol_container: str | None = None,
     progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run a provider chat loop using the local RMM MCP server and optional Exegol MCP."""
+    engine = ai_engine()
+    rejection = legacy_admission(workflow, execution_scope, engine)
+    if rejection:
+        return rejection
     from rmm_mcp_client import run_with_mcp_session
     connected = False
     client = make_client(rmm_base_url, rmm_token, extra_headers=rmm_headers)
@@ -573,6 +603,20 @@ def _run_ai_chat_mcp(
     async def chat(mcp) -> dict:
         nonlocal connected
         connected = True
+        if engine == 'v3':
+            from rmm_ai_v3 import run_v3
+            sid = selected_session_id
+            if sid and workflow not in {'auto', 'explain'}:
+                sid, _ = await resolve_session(sid)
+                if not sid:
+                    return {'ok': False, 'error': 'selected_session_unavailable', 'message': 'Select an available scoped agent.'}
+            if progress:
+                progress({'phase': 'ready', 'mcp_status': 'connected', 'tool_count': len(mcp.openai_tools)})
+            return await run_v3(provider=provider, api_key=api_key, model=model, messages=messages,
+                documents=skill_documents or [], tools=mcp.openai_tools, call_tool=mcp.call_tool,
+                scope=hashlib.sha256(json.dumps([rmm_base_url, state_owner, sid]).encode()).hexdigest() if state_owner else context_scope, selected_session_id=sid, container=exegol_container,
+                external_tool_names=getattr(mcp, 'external_tool_names', ()), workflow=workflow,
+                max_tasks=min(max_rounds, 32), progress=progress, policy=skill_policy, execution_scope=execution_scope, request_id=request_id)
         core, catalog, tools, call_tool = prepare_skill_context(
             skill_documents, mcp.openai_tools, mcp.call_tool, progress,
             external_tool_names=getattr(mcp, 'external_tool_names', ()), policy=skill_policy,
@@ -641,9 +685,18 @@ def _run_ai_chat_direct(
     skill_documents: list[dict] | None = None,
     skill_policy: list[dict] | None = None,
     context_scope: str | None = None,
+    workflow: str = "auto",
+    execution_scope: dict | None = None,
+    request_id: str | None = None,
+    state_owner: str | None = None,
+    exegol_container: str | None = None,
     progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run a provider chat loop with direct in-process RMM tool execution."""
+    engine = ai_engine()
+    rejection = legacy_admission(workflow, execution_scope, engine)
+    if rejection:
+        return rejection
     client = make_client(rmm_base_url, rmm_token, extra_headers=rmm_headers)
     async def execute(name: str, arguments: dict) -> str:
         return await asyncio.to_thread(execute_tool, client, name, arguments)
@@ -651,6 +704,21 @@ def _run_ai_chat_direct(
     async def resolve_session(ref):
         """Resolve visible session aliases without blocking concurrent tools."""
         return await asyncio.to_thread(_resolve_session_id, client, ref)
+
+    if engine == 'v3':
+        from rmm_ai_v3 import run_v3
+        async def run_episode_engine():
+            """Resolve canonical session identity before creating the durable run."""
+            sid = selected_session_id
+            if sid and workflow not in {'auto', 'explain'}:
+                sid, _ = await resolve_session(sid)
+                if not sid:
+                    return {'ok': False, 'error': 'selected_session_unavailable', 'message': 'Select an available scoped agent.'}
+            return await run_v3(provider=provider, api_key=api_key, model=model, messages=messages,
+                documents=skill_documents or [], tools=OPENAI_TOOLS, call_tool=execute,
+                scope=hashlib.sha256(json.dumps([rmm_base_url, state_owner, sid]).encode()).hexdigest() if state_owner else context_scope, selected_session_id=sid, workflow=workflow,
+                max_tasks=min(max_rounds, 32), progress=progress, policy=skill_policy, execution_scope=execution_scope, request_id=request_id)
+        return asyncio.run(run_episode_engine())
 
     core, catalog, tools, call_tool = prepare_skill_context(
         skill_documents, OPENAI_TOOLS, execute, progress, policy=skill_policy,
@@ -698,10 +766,20 @@ def run_ai_chat(
     skill_documents: list[dict] | None = None,
     skill_policy: list[dict] | None = None,
     context_scope: str | None = None,
+    workflow: str = "auto",
+    execution_scope: dict | None = None,
+    request_id: str | None = None,
+    state_owner: str | None = None,
+    exegol_container: str | None = None,
     progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run an AI provider agent loop and return its final response and tool activity."""
     started_at = datetime.now(timezone.utc)
+    if not isinstance(workflow, str) or workflow not in {'legacy', 'auto', 'observe', 'network', 'directory', 'collect', 'files', 'embeddings', 'agent_commands', 'explain'}:
+        raise ValueError('invalid_ai_workflow')
+    rejection = legacy_admission(workflow, execution_scope)
+    if rejection:
+        return _append_task_timing(rejection, started_at, datetime.now(timezone.utc))
     provider = (provider or "").strip().lower()
     api_key = (api_key or "").strip()
     if provider not in SUPPORTED_PROVIDERS:
@@ -733,7 +811,7 @@ def run_ai_chat(
             skill_policy = snapshot_policy
     if skill_policy is None:
         skill_policy = resolve_ai_skill_policy()
-    wants_exegol = backend_enabled('external', skill_documents, skill_policy)
+    wants_exegol = (ai_engine() == 'legacy_v2' or workflow in {'network', 'directory', 'collect'}) and backend_enabled('external', skill_documents, skill_policy)
     exegol_enabled = exegol_enabled and wants_exegol
     execution = {
         "tool_path": "mcp" if use_mcp else "direct",
@@ -746,7 +824,7 @@ def run_ai_chat(
     def report_execution(event):
         """Attach the resolved execution context to every job checkpoint."""
         execution.update({k: event[k] for k in ("mcp_status", "skills", "active_skills", "step",
-                                               "step_summary", "step_checkpoint", "context_compactions") if k in event})
+                                               "step_summary", "step_checkpoint", "context_compactions", "run_id", "task_id", "role") if k in event})
         if event.get("mcp_status") == "connected" and exegol_enabled:
             execution["exegol_status"] = "connected"
         if original_progress:
@@ -779,6 +857,11 @@ def run_ai_chat(
         "skill_documents": skill_documents,
         "skill_policy": skill_policy,
         "context_scope": context_scope,
+        "workflow": workflow,
+        "execution_scope": execution_scope,
+        "request_id": request_id,
+        "state_owner": state_owner,
+        "exegol_container": exegol_container,
         "progress": progress,
     }
     if use_mcp:

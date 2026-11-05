@@ -86,6 +86,7 @@ FIELDS = {
     "RMM_TUN_HELPER": field("TUN helper executable", "TUN", scopes=S),
     "RMM_WORKSPACE_TUN_HELPER": field("TUN helper executable", "TUN", default="tools/rmm-tun", scopes=W),
     "RMM_TUN_LOG_LEVEL": field("TUN log level", "TUN", default="info", choices=["debug", "info", "warn", "error"]),
+    "RMM_AI_ENGINE": field("AI execution engine", "AI", default="v3", choices=["v3", "legacy_v2"], scopes=S),
     "RMM_AI_MAX_TOOL_ROUNDS": field("Maximum AI tool rounds", "AI", "integer", 32, minimum=1, maximum=256, scopes=S),
     "RMM_AI_USE_MCP": field("Use MCP tools", "AI", "boolean", True, scopes=S),
     "RMM_AI_CONTEXT_BUDGET": field("AI context budget (conservative tokens)", "AI", "integer", 65536, minimum=8192, maximum=2000000, scopes=S),

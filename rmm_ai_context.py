@@ -20,12 +20,13 @@ class ContextBudgetExceeded(RuntimeError):
 class ContextWindow:
     """Conservatively budget UTF-8 bytes and archive complete message groups."""
 
-    def __init__(self, progress=None, scope=None):
+    def __init__(self, progress=None, scope=None, include_archive_index=True):
         self.budget = int(getenv('RMM_AI_CONTEXT_BUDGET', '65536'))
         self.reserve = int(getenv('RMM_AI_OUTPUT_RESERVE', '4096'))
         if self.budget <= self.reserve or self.reserve < 1024:
             raise ValueError('invalid AI context budget')
         self.artifacts = {}
+        self.include_archive_index = include_archive_index
         self.progress = progress
         self.compactions = 0
         self.diagnostics = {}
@@ -176,7 +177,7 @@ class ContextWindow:
         if size() > limit:
             self.diagnostics = self.measure(body, limit)
             raise ContextBudgetExceeded('AI context budget exceeded; reduce active skills or split the task')
-        if self.artifacts:
+        if self.artifacts and self.include_archive_index:
             # Keep a bounded index; complete artifacts remain retrievable by ID.
             note = ('Recent archived evidence IDs available through read_context: '
                     + ', '.join(list(self.artifacts)[-8:])
@@ -188,7 +189,7 @@ class ContextWindow:
             if size() > limit + 1024:
                 self.diagnostics = self.measure(body, limit + 1024)
                 raise ContextBudgetExceeded('AI context budget exceeded after evidence index')
-        self.diagnostics = self.measure(body, limit + 1024 if self.artifacts else limit)
+        self.diagnostics = self.measure(body, limit + 1024 if self.artifacts and self.include_archive_index else limit)
         source[:] = ([original_system] + messages[1:]) if original_system else messages
         return body
 

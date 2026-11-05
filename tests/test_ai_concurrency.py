@@ -232,6 +232,9 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
 
 class TransportTests(unittest.TestCase):
     def setUp(self):
+        legacy = patch('rmm_ai.ai_engine', return_value='legacy_v2')
+        legacy.start()
+        self.addCleanup(legacy.stop)
         setting = patch("rmm_ai_concurrency.getenv", return_value="4")
         setting.start()
         self.addCleanup(setting.stop)
@@ -264,7 +267,7 @@ class TransportTests(unittest.TestCase):
         headers = {"X-RMM-Workspace": "visible-workspace", "X-RMM-Workspace-Token": "scoped-token"}
         with patch("rmm_ai.make_client", return_value=Client()) as make_client, patch("rmm_ai._run_provider_loop", side_effect=loop):
             results = rmm_ai._run_ai_chat_direct(rmm_base_url="http://localhost", rmm_token="test", rmm_headers=headers,
-                provider="openai", api_key="test", messages=[], model="test", selected_session_id=None, max_rounds=2)
+                provider="openai", api_key="test", messages=[], model="test", selected_session_id=None, max_rounds=2, workflow='legacy')
         make_client.assert_called_once_with("http://localhost", "test", extra_headers=headers)
         self.assertEqual([json.loads(result)["output"] for result in results], ["a1", "a2", "b1"])
         self.assertEqual(started[-1], ("aaaa-full", "a2"))
@@ -278,7 +281,7 @@ class TransportTests(unittest.TestCase):
         with patch("rmm_ai._resolve_session_id", side_effect=AssertionError("Must not pre-resolve malformed input")), \
                 patch("rmm_ai._run_provider_loop", side_effect=loop):
             results = rmm_ai._run_ai_chat_direct(rmm_base_url="http://localhost", rmm_token="test",
-                provider="openai", api_key="test", messages=[], model="test", selected_session_id=None, max_rounds=2)
+                provider="openai", api_key="test", messages=[], model="test", selected_session_id=None, max_rounds=2, workflow='legacy')
         self.assertFalse(json.loads(results[0])["ok"])
 
     def test_configuration_bounds(self):
@@ -315,7 +318,7 @@ def ordinary_function(): pass
 
         with patch("rmm_ai.execute_tool", side_effect=execute), patch("rmm_ai._run_provider_loop", side_effect=loop):
             result = rmm_ai._run_ai_chat_direct(rmm_base_url="http://localhost", rmm_token="test", provider="openai",
-                api_key="test", messages=[], model="test", selected_session_id=None, max_rounds=2)
+                api_key="test", messages=[], model="test", selected_session_id=None, max_rounds=2, workflow='legacy')
         self.assertEqual(result["results"], ["ok", "ok"])
 
     @unittest.skipUnless(importlib.util.find_spec("mcp"), "MCP SDK not installed")

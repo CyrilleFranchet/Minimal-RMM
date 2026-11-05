@@ -411,6 +411,33 @@
               <button type="button" class="secondary ai-provider-validate" data-provider="mistral">Validate Mistral key</button>
               <p class="ai-provider-status" id="mistral-provider-status" aria-live="polite">Not configured.</p>
             </div>
+            <label for="ai-workflow">Workflow</label>
+            <select id="ai-workflow">
+              <option value="auto">Plan only (no operations)</option>
+              <option value="observe">Host baseline and observation</option>
+              <option value="directory">BloodHound graph queries</option>
+              <option value="collect">BloodHound collection</option>
+              <option value="files">Inspect file download records</option>
+              <option value="embeddings">Inspect embedding records</option>
+              <option value="network">Network discovery through Exegol</option>
+              <option value="agent_commands">Agent commands on the selected host</option>
+              <option value="explain">Explain only (no operations)</option>
+              <option value="legacy">Legacy v2 (unrestricted tools; requires legacy engine)</option>
+            </select>
+            <p class="ai-hint">Select an execution workflow to enable its specialists. Enabled skills are required methods; disabled methods cannot execute.</p>
+            <label for="ai-scope-targets">Allowed IPv4 targets (one host or CIDR per line)</label>
+            <textarea id="ai-scope-targets" rows="2"></textarea>
+            <label for="ai-scope-exclude">Excluded IPv4 targets (one per line)</label>
+            <textarea id="ai-scope-exclude" rows="2"></textarea>
+            <label for="ai-scope-proxy">SOCKS host in the verified owner namespace (optional)</label>
+            <input id="ai-scope-proxy" type="text" placeholder="Loopback only; defaults to the verified owner listener">
+            <label for="ai-scope-tun">TUN device inside Exegol (optional match)</label>
+            <input id="ai-scope-tun" type="text" placeholder="Derived from the selected relay">
+            <label for="ai-scope-directory">Collection domain</label>
+            <input id="ai-scope-directory" type="text" autocomplete="off">
+            <label for="ai-scope-commands">Exact approved agent commands (one per line)</label>
+            <textarea id="ai-scope-commands" rows="2"></textarea>
+            <p class="ai-hint">Execution scope comes from these fields. Addresses and commands in chat do not grant execution authority.</p>
             <label for="ai-provider-select">Provider</label>
             <select id="ai-provider-select" disabled title="AI service to use. Validate its API key before selecting it." aria-description="AI service to use. Validate its API key before selecting it."></select>
             <label for="ai-model-select">Model</label>
@@ -420,7 +447,7 @@
           </details>
           <details class="ai-settings" open>
             <summary>Skills</summary>
-            <p class="ai-hint">Built-in defaults and uploaded Markdown skills are listed here. Checked skills are available for selection at each step. Active skill instructions load before execution.</p>
+            <p class="ai-hint">Built-in defaults and uploaded Markdown skills are listed here. Enabled methods are attached by the selected specialist capability. Disabling a required method blocks that capability.</p>
             <div id="ai-skills-list" class="ai-skills-list">
               <p class="ai-skills-empty">Connect to load skills.</p>
             </div>

@@ -4606,6 +4606,17 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not workspace_id and srv.storage_mode != "server":
                 self._json(409, {"error": "ai_requires_operator_workspace"})
                 return True
+            from rmm_ai_capsules import WORKFLOWS, validate_execution_scope
+            workflow = body.get('workflow', 'auto')
+            try:
+                if not isinstance(workflow, str) or workflow not in WORKFLOWS:
+                    raise ValueError('invalid_ai_workflow')
+                execution_scope = validate_execution_scope(body.get('execution_scope', {}))
+                if workflow == 'network' and not execution_scope['targets']:
+                    raise ValueError('explicit_network_scope_required')
+            except ValueError as exc:
+                self._json(400, {'error': str(exc)})
+                return True
             asynchronous = parts == ["ai", "jobs"]
             provider = str(body.get("provider") or "openai").strip().lower()
             api_key = str(
@@ -4658,14 +4669,14 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not isinstance(skill_policy, list) or not all(isinstance(rule, dict) for rule in skill_policy):
                 self._json(400, {"error": "invalid_skill_policy"})
                 return True
-            needs_external = backend_enabled('external', skill_documents, skill_policy)
+            needs_external = (settings_getenv('RMM_AI_ENGINE', 'v3') == 'legacy_v2' or body.get('workflow', 'auto') in ('network', 'directory', 'collect')) and backend_enabled('external', skill_documents, skill_policy)
             if not workspace_id and srv.storage_mode == "server" and needs_external:
                 from rmm_exegol_runtime import get_runtime
                 runtime = get_runtime(os.path.join(LOG_DIR, "bloodhound")).status()
                 if runtime.get("exegol_status") != "ready":
                     self._json(503, {"error": "exegol_workspace_not_ready", "runtime": runtime})
                     return True
-                body = dict(body, exegol_mcp_enabled=True,
+                body = dict(body, exegol_container=runtime.get("container"), exegol_mcp_enabled=True,
                             exegol_mcp_url=settings_getenv("RMM_EXEGOL_MCP_URL", ""),
                             exegol_mcp_token=settings_getenv("RMM_EXEGOL_MCP_TOKEN", ""))
             workspace_id = getattr(self, "_workspace_scope", lambda: None)()
@@ -4699,6 +4710,11 @@ class RMMHandler(BaseHTTPRequestHandler):
                     exegol_mcp_enabled=body.get("exegol_mcp_enabled") if not workspace_id else None,
                     exegol_mcp_url=body.get("exegol_mcp_url") if not workspace_id else None,
                     exegol_mcp_token=body.get("exegol_mcp_token") if not workspace_id else None,
+                    workflow=body.get("workflow", "auto"),
+                    execution_scope=body.get("execution_scope", {}),
+                    request_id=body.get("request_id"),
+                    state_owner=workspace_id or "standalone",
+                    exegol_container=body.get("exegol_container") if not workspace_id else None,
                     skill_ids=skill_ids,
                     skill_documents=skill_documents,
                     skill_policy=skill_policy,
@@ -4713,7 +4729,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                         if code != 200:
                             return {"ok": False, "error": context.get("error", "exegol_workspace_not_ready")}
                         arguments.update({key: context[key] for key in
-                                          ("exegol_mcp_enabled", "exegol_mcp_url", "exegol_mcp_token")})
+                                          ("exegol_mcp_enabled", "exegol_mcp_url", "exegol_mcp_token", "exegol_container") if key in context})
                     return run_ai_chat(**arguments, progress=progress)
 
                 if asynchronous:

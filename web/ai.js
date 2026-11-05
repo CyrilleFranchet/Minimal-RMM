@@ -523,6 +523,7 @@
     execution.textContent = context.tool_path
       ? `Tools: ${context.tool_path} · MCP: ${context.mcp_status} · Exegol: ${context.exegol_status}. Skills loaded: ${(context.skills || []).join(", ") || "none"}. Loaded skills are instructions, not proof that a technique ran.`
       : "Execution details are not available for this job.";
+    if (context.run_id) execution.textContent += ` Run: ${context.run_id} · Role: ${context.role || "supervisor"}.`;
     if (context.step_summary) {
       execution.textContent += ` Step ${context.step || ""}: ${context.step_summary} Active skills: ${(context.active_skills || []).join(", ") || "core only"}.`;
     }
@@ -753,6 +754,15 @@
       model,
       messages: chatHistory.map((message) => ({ ...message })),
       selected_session_id: sessionId,
+      workflow: $("#ai-workflow")?.value || "auto",
+      execution_scope: {
+        targets: ($("#ai-scope-targets")?.value || "").split("\n").map(x => x.trim()).filter(Boolean),
+        exclude: ($("#ai-scope-exclude")?.value || "").split("\n").map(x => x.trim()).filter(Boolean),
+        proxy_host: ($("#ai-scope-proxy")?.value || "").trim(),
+        tun_device: ($("#ai-scope-tun")?.value || "").trim(),
+        directory: ($("#ai-scope-directory")?.value || "").trim(),
+        commands: ($("#ai-scope-commands")?.value || "").split("\n").filter(x => x.trim()),
+      },
       skill_ids: getEnabledSkillIds(),
     };
     pendingSubmission = { body, sessionId };

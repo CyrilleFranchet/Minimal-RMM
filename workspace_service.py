@@ -1257,7 +1257,7 @@ class WorkspaceService:
                 if method == 'DELETE':
                     return self.delete_json(path)
                 return None
-            code, result = execute_workspace_request(self.store.data_dir / "bloodhound", task, operator=operator)
+            code, result = execute_workspace_request(self.store.data_dir / "bloodhound", task, operator=operator, network_resolver=self._collection_network)
             self.upstream.request("POST", "/api/v1/workspace/bloodhound/requests/" + task["id"],
                                   {"status": code, "payload": result}, timeout=5)
 
@@ -1564,12 +1564,22 @@ class WorkspaceService:
             return 200, path_obj.read_bytes(), content_types.get(parts[1], "application/octet-stream")
         return None
 
+    def _collection_network(self, request):
+        """Resolve a collection binding from this owner's live selected-session SOCKS relay."""
+        from rmm_bloodhound import WorkflowError
+        if not isinstance(request, dict) or set(request) != {'transport', 'session_id'} or request.get('transport') != 'socks' or not isinstance(request.get('session_id'), str):
+            raise WorkflowError('invalid_collection_network')
+        for row in self.pivots.list_socks_status():
+            if row.get('session_id') == request['session_id'] and row.get('listener_running') is True and row.get('bind_host') in {'127.0.0.1', 'localhost'} and type(row.get('port')) is int and 1 <= row['port'] <= 65535:
+                return {'request': dict(request), 'port': row['port'], 'bind_host': row['bind_host']}
+        raise WorkflowError('collection_live_socks_required')
+
     @serialize_plugin_mutation
     def post_json(self, path: str, body: dict[str, Any]) -> tuple[int, Any, str] | None:
         """Handle local pivot and AI persistence endpoints or return ``None``."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
         if parts == ["bloodhound"]:
-            status, payload = bloodhound_api(self.store.data_dir / "bloodhound", body)
+            status, payload = bloodhound_api(self.store.data_dir / "bloodhound", body, network_resolver=self._collection_network)
             return status, payload, "application/json"
         if parts and parts[0] == "embeddings":
             return self._embedding_api("POST", parts, body)
@@ -1704,7 +1714,7 @@ class WorkspaceService:
             if skill_ids is not None and not isinstance(skill_ids, list):
                 return 400, {"error": "invalid_skill_ids"}, "application/json"
             documents, policy = resolve_ai_skill_snapshot(skill_ids, self.store.skill_directories(), self.store.skill_overrides())
-            if backend_enabled('external', documents, policy):
+            if (settings_getenv('RMM_AI_ENGINE', 'v3') == 'legacy_v2' or body.get('workflow', 'auto') in ('network', 'directory', 'collect')) and backend_enabled('external', documents, policy):
                 runtime = get_runtime(self.store.data_dir / "bloodhound").status()
                 if runtime.get("exegol_status") != "ready":
                     return 503, {"error": "exegol_workspace_not_ready", "runtime": runtime}, "application/json"
@@ -1712,7 +1722,7 @@ class WorkspaceService:
             if forwarded.get("provider", "openai") == "openai" and not (forwarded.get("api_key") or forwarded.get("openai_api_key")):
                 forwarded["api_key"] = settings_getenv("OPENAI_API_KEY", "")
             # The central worker obtains these directly from the owner's runtime relay.
-            for key in ("exegol_mcp_url", "exegol_mcp_token", "exegol_mcp_enabled"):
+            for key in ("exegol_mcp_url", "exegol_mcp_token", "exegol_mcp_enabled", "exegol_container"):
                 forwarded.pop(key, None)
             skill_ids = forwarded.get("skill_ids")
             if skill_ids is not None and not isinstance(skill_ids, list):

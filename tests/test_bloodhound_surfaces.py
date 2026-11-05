@@ -209,7 +209,7 @@ class BloodHoundSurfaceTests(unittest.TestCase):
             body = {'action': 'preflight'}
             result = service.post_json('/api/v1/bloodhound', body)
             self.assertEqual(result, (200, {'ready': True}, 'application/json'))
-            api.assert_called_once_with(Path('/tmp/workspace-a/bloodhound'), body)
+            api.assert_called_once_with(Path('/tmp/workspace-a/bloodhound'), body, network_resolver=service._collection_network)
             service._proxy.assert_not_called()
 
     def test_credentials_are_secret_owner_scoped_settings(self):

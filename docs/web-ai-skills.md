@@ -1,5 +1,10 @@
 # Web AI skills
 
+V3 is now the default. See [AI v3 architecture](ai-v3-architecture.md) for
+current role boundaries, step-level method loading, typed execution scope,
+evidence, context budgets, and limitations. The `prepare_step` and continuing
+provider-conversation behavior below describes `RMM_AI_ENGINE=legacy_v2`.
+
 Skills are server-side workflow instructions for the WebUI agent, independent
 of the IDE's skill system. Selection is evaluated for the **immediate step**,
 not only for the operator's high-level task.

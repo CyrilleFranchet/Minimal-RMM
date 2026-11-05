@@ -34,7 +34,7 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(snapshot["restart_required"])
         self.assertNotIn("never-return-me", json.dumps(snapshot))
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
-        self.assertNotIn("RMM_MAX_BODY_BYTES", store.effective)
+        self.assertEqual(store.effective["RMM_MAX_BODY_BYTES"], 65536)
         reopened = self.store()
         self.assertEqual(reopened.effective, patch_values)
         self.assertFalse(reopened.snapshot()["restart_required"])

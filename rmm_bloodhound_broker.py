@@ -157,7 +157,7 @@ def sync_directory(directory):
         os.close(descriptor)
 
 
-def execute_workspace_request(root, task, operator=None):
+def execute_workspace_request(root, task, operator=None, network_resolver=None):
     """Persist intent and cache replies locally so redispatch never repeats work."""
     if not isinstance(task, dict) or set(task) != {'id', 'body'}:
         raise WorkflowError('invalid_workspace_request')
@@ -169,13 +169,14 @@ def execute_workspace_request(root, task, operator=None):
         if runtime.get('exegol_status') != 'ready':
             return 503, {'error': 'workspace_exegol_not_ready', 'runtime': runtime}
         return 200, {
+            'exegol_container': runtime.get('container'),
             'exegol_mcp_enabled': True,
             'exegol_mcp_url': getenv('RMM_EXEGOL_MCP_URL', ''),
             'exegol_mcp_token': getenv('RMM_EXEGOL_MCP_TOKEN', ''),
         }
     if isinstance(task['body'], dict) and task['body'].get('action') in ('health', 'library_search', 'library_get'):
         # Read-only discovery may repeat and must not fill the durable journal.
-        return bloodhound_api(root, task['body'])
+        return bloodhound_api(root, task['body'], network_resolver=network_resolver)
     directory = Path(root) / 'relay-results'
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     # The journal directory itself must survive a crash before dispatch.
@@ -208,7 +209,7 @@ def execute_workspace_request(root, task, operator=None):
             else:
                 status, payload = response[:2]
     else:
-        status, payload = bloodhound_api(root, task['body'])
+        status, payload = bloodhound_api(root, task['body'], network_resolver=network_resolver)
     if len(json.dumps({'status': status, 'payload': payload}).encode()) > 1048576:
         status, payload = 502, {'error': 'workspace_result_too_large_inspect_locally'}
     result = json.dumps({'state': 'complete', 'status': status, 'payload': payload})

@@ -1,5 +1,10 @@
 # Web AI providers
 
+V3 is now the default. See [AI v3 architecture](ai-v3-architecture.md) for
+current role boundaries, step-level method loading, typed execution scope,
+evidence, context budgets, and limitations. The `prepare_step` and continuing
+provider-conversation behavior below describes `RMM_AI_ENGINE=legacy_v2`.
+
 The web AI panel supports OpenAI, Anthropic, and Mistral. An operator enters a
 provider key in the browser and validates it before the provider becomes
 selectable. After connection, keys, validation state, selected provider, and

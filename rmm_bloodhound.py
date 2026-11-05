@@ -335,10 +335,15 @@ class BloodHoundWorkflow:
         self.save(run)
         return run
 
-    def launch(self, run_id, action):
+    def launch(self, run_id, action, network=None, network_resolver=None):
         """Admit one phase once; repeat submissions return the existing run."""
         with self.lock:
             run = self.get(run_id)
+            if network is not None:
+                if action != 'collect' or network_resolver is None:
+                    raise WorkflowError('collection_network_resolver_required')
+                binding = network_resolver(network)
+                run['collection_network'] = binding
             expected = 'created' if action == 'collect' else 'collected'
             if run['state'] != expected:
                 if (action == 'collect' and run.get('collection_started_at')) or (action == 'collect' and run['state'] == 'collecting') or (action == 'import' and run.get('ingestion') != 'not_started') or (action == 'import' and run['state'] == 'uploading'):
@@ -350,7 +355,7 @@ class BloodHoundWorkflow:
             try:
                 run['state'] = 'collecting' if action == 'collect' else 'uploading'
                 self.save(run)
-                worker = threading.Thread(target=self._work, args=(run, action), daemon=True)
+                worker = threading.Thread(target=self._work, args=(run, action, network_resolver), daemon=True)
                 self.threads.add(worker)
                 worker.start()
             except Exception:
@@ -362,11 +367,14 @@ class BloodHoundWorkflow:
                 raise WorkflowError('worker_start_failed') from None
             return run
 
-    def _work(self, run, action):
+    def _work(self, run, action, network_resolver=None):
         """Run a phase without the model request's lifetime or HTTP wait budget."""
         try:
             if action == 'collect':
-                self.collect(run)
+                if network_resolver is None:
+                    self.collect(run)
+                else:
+                    self.collect(run, network_resolver)
             else:
                 self.import_artifacts(run)
         except Exception as exc:
@@ -382,7 +390,7 @@ class BloodHoundWorkflow:
                 self.threads.discard(threading.current_thread())
             self.slots.release()
 
-    def collect(self, run):
+    def collect(self, run, network_resolver=None):
         """Run the CE collector with an existing Kerberos cache, no shell or password."""
         info = collector_info()
         validate_cache(run['username'], run['domain'])
@@ -392,6 +400,18 @@ class BloodHoundWorkflow:
         command = [info['executable'], '-u', run['username'], '-k', '-no-pass', '--auth-method', 'kerberos',
                    '-d', run['domain'], '-dc', run['dc'], '-ns', run['nameserver'], '--dns-tcp',
                    '-c', 'DCOnly', '--zip', '-op', run['id']]
+        binding = run.get('collection_network')
+        if binding:
+            if network_resolver is None or network_resolver(binding['request']) != binding:
+                raise WorkflowError('collection_pivot_changed')
+            wrapper = shutil.which('proxychains4') or shutil.which('proxychains')
+            if not wrapper:
+                raise WorkflowError('collection_proxychains_required')
+            config = self.root / run['id'] / 'proxychains.conf'
+            with open(config, 'x', encoding='utf-8') as handle:
+                os.chmod(config, 0o600)
+                handle.write('strict_chain\nproxy_dns\ntcp_read_time_out 15000\ntcp_connect_time_out 8000\n[ProxyList]\nsocks5 127.0.0.1 ' + str(binding['port']) + '\n')
+            command = [wrapper, '-q', '-f', str(config), *command]
         run.update(collector=info, collection='running', collection_started_at=now())
         self.save(run)
         log_path = self.root / run['id'] / 'collector.log'
@@ -659,7 +679,7 @@ def _schedule_ce_auth_bootstrap(root) -> None:
     threading.Thread(target=run, name='ce-credential-bootstrap', daemon=True).start()
 
 
-def bloodhound_api(root, body):
+def bloodhound_api(root, body, network_resolver=None):
     """Dispatch authenticated owner-local API actions with bounded typed options."""
     try:
         if not isinstance(body, dict) or set(body) - {'action', 'run_id', 'options'}:
@@ -738,7 +758,7 @@ def bloodhound_api(root, body):
                 return 409, {'ok': False, 'error': str(exc), 'runtime': runtime.status()}
             return 200, {'ok': True, 'runtime': snapshot}
         if action in ('create', 'collect', 'import', 'verify', 'query'):
-            if options and action in ('collect', 'import', 'verify'):
+            if options and (action in ('import', 'verify') or (action == 'collect' and set(options) != {'network'})):
                 raise WorkflowError('unexpected_options')
             from rmm_exegol_runtime import get_runtime
             snapshot = get_runtime(root).status()
@@ -771,6 +791,10 @@ def bloodhound_api(root, body):
                      for edge in graph['edges'][:50] if isinstance(edge, dict)]
             return 200, {'ok': True, 'evidence': summary, 'graph_preview': {'nodes': preview, 'edges': edges},
                          'preview_truncated': len(nodes) < len(graph['nodes']) or len(graph['edges']) > 50}
+        if action == 'collect' and options:
+            if set(options) != {'network'}:
+                raise WorkflowError('invalid_collection_network_options')
+            return 202, {'ok': True, 'run': store.launch(body.get('run_id', ''), action, options['network'], network_resolver)}
         if options:
             raise WorkflowError('unexpected_options')
         if action == 'preflight':

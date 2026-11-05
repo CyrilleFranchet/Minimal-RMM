@@ -85,7 +85,7 @@ class ExecutionContextTests(unittest.TestCase):
         for selected, installed in ((False, True), (True, False)):
             with self.subTest(selected=selected), patch('rmm_mcp_client.use_mcp_for_ai', return_value=selected), patch('rmm_mcp_client.mcp_available', return_value=installed), patch('rmm_ai._run_ai_chat_direct') as direct:
                 events = []
-                result = rmm_ai.run_ai_chat(rmm_base_url='http://local', rmm_token='test', api_key='test', messages=[], exegol_mcp_enabled=True, skill_documents=[{'id': 'exegol-rmm-pivot', 'body': 'Pivot'}], progress=events.append)
+                result = rmm_ai.run_ai_chat(rmm_base_url='http://local', rmm_token='test', api_key='test', messages=[], workflow='network', exegol_mcp_enabled=True, skill_documents=[{'id': 'exegol-rmm-pivot', 'body': 'Pivot'}], progress=events.append)
                 self.assertEqual(result['error'], 'exegol_requires_mcp')
                 direct.assert_not_called()
                 self.assertEqual(events[0]['exegol_status'], 'requested')

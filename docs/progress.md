@@ -1,5 +1,38 @@
 # Progress Log
 
+## 2026-11-05 — Full v3 verification
+
+Full review found and fixed legacy workflow/scope bypass, live engine-switch
+drift during transport setup, incomplete baseline admission/content, and TUN
+subnet route checking that missed more-specific routes. Added receipt-scoped
+source paging for large baseline/Nmap output, malformed-value checks, accurate
+Supervisor progress, a collection wall-clock deadline, and removed the legacy
+archive-tool directive from v3 prompts. Updated stale security/settings fixtures
+against the existing HEAD contracts. `make check` passes; full Python discovery
+runs 598 tests with five skips, including 37 v3 tests. Independent reviews found
+no remaining blocker in those fixes.
+
+**Not ready as a general replacement:** enabled lateral movement, deployment,
+and other execution-oriented skills still lack the required typed adapters.
+Instruction loading does not supply those capabilities. See the
+[full review and open acceptance issue](ai-v3-review.md). No deployment, commit,
+push, target scan, or live Windows/Exegol validation was performed in this review.
+
+## 2026-11-05 — AI v3 architecture branch
+
+Implemented a separate v3 episode engine over durable SQLite task/evidence state,
+a tool-less Supervisor, code-owned specialist tools, mandatory enabled methods,
+and optional current-step skills. Added explicit workflow/scope controls, Nmap
+through verified remote Exegol SOCKS/TUN, task-specific completion checks, and
+owner-validated strict SOCKS wrapping for AI BloodHound collection. Preserved
+legacy_v2 as an explicit rollback path and left the BloodHound query catalog
+unchanged. See [architecture and known limits](ai-v3-architecture.md). V3 does
+not automatically resume kernels after restart; files/embeddings inspect records
+only and the baseline currently supports Windows. This branch has not been
+deployed or validated against a live Exegol/agent pair. Validation: `make check`,
+84 BloodHound tests (one skipped), and 57 workspace tests pass. Added v3
+provider, context admission, scope, evidence, safe retry, and async wait regressions.
+
 For current runtime behavior, use the [documentation wiki](README.md) and its
 [architecture overview](architecture.md). This file remains the chronological
 implementation log.

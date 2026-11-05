@@ -70,10 +70,10 @@ class SettingsSecurityTests(unittest.TestCase):
 
     def test_workspace_ai_rejects_missing_exegol_without_forwarding(self):
         service = WorkspaceService.__new__(WorkspaceService)
-        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'))
+        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'), skill_directories=lambda: [str(Path(__file__).resolve().parents[1] / 'ai-skills')], skill_overrides=lambda: {})
         service._proxy = Mock()
         self.runtime.status.return_value = {'state': 'blocked', 'exegol_status': 'unavailable'}
-        status, payload, _ = service.post_json('/api/v1/ai/jobs', {'messages': []})
+        status, payload, _ = service.post_json('/api/v1/ai/jobs', {'messages': [], 'workflow': 'network', 'execution_scope': {'targets': ['10.0.0.1']}})
         self.assertEqual(status, 503)
         self.assertEqual(payload['error'], 'exegol_workspace_not_ready')
         service._proxy.assert_not_called()
@@ -103,7 +103,8 @@ class SettingsSecurityTests(unittest.TestCase):
             "rmm_ai.run_ai_chat", return_value={"ok": True, "message": "done"}
         ) as run:
             RMMHandler._handle_api_post(handler, "/api/v1/ai/chat", {
-                "provider": "openai", "api_key": "provider-secret", "skill_documents": [],
+                "provider": "openai", "api_key": "provider-secret", "workflow": "network", "execution_scope": {"targets": ["10.0.0.1"]},
+                "skill_documents": [{"id": "exegol-rmm-pivot", "body": "Pivot", "tool_rules": [{"backend": "external", "requires": ["exegol-rmm-pivot"]}]}],
                 "exegol_mcp_enabled": False, "exegol_mcp_url": "http://untrusted:8000/mcp", "exegol_mcp_token": "untrusted",
                 "messages": [{"role": "user", "content": "show settings"}],
             })
@@ -180,9 +181,18 @@ class SettingsSecurityTests(unittest.TestCase):
                 self.assertNotIn("RMM_WORKSPACE_ID", env)
                 self.assertNotIn("RMM_WORKSPACE_TOKEN", env)
 
+    def test_workspace_plan_does_not_resolve_exegol_or_receive_admin_credentials(self):
+        handler = ScopedHandler()
+        with patch('server_rmm.API_TOKEN', 'central-admin-secret'), patch('rmm_ai.run_ai_chat', return_value={'ok': True, 'message': 'Plan'}) as run:
+            RMMHandler._handle_api_post(handler, '/api/v1/ai/chat', {'api_key': 'provider-secret', 'workflow': 'auto', 'skill_documents': [], 'messages': [{'role': 'user', 'content': 'Plan inventory'}]})
+        self.assertEqual(run.call_args.kwargs['rmm_token'], '')
+        self.assertIsNone(run.call_args.kwargs['exegol_mcp_url'])
+        self.assertIsNone(run.call_args.kwargs['exegol_mcp_token'])
+        handler.server_instance.bloodhound_broker.resolve_ai_context.assert_not_called()
+
     def test_workspace_forwards_provider_defaults_but_strips_mcp_overrides(self):
         service = WorkspaceService.__new__(WorkspaceService)
-        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'), selected_skill_documents=lambda _ids: [])
+        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'), skill_directories=lambda: [str(Path(__file__).resolve().parents[1] / 'ai-skills')], skill_overrides=lambda: {})
         service._proxy = Mock(return_value=(200, {"ok": True}, "application/json"))
         defaults = {"OPENAI_API_KEY": "saved-key", "RMM_EXEGOL_MCP_URL": "http://exegol:8000",
                     "RMM_EXEGOL_MCP_TOKEN": "saved-exegol-token"}
@@ -201,7 +211,7 @@ class SettingsSecurityTests(unittest.TestCase):
 
     def test_workspace_does_not_send_saved_exegol_token_to_request_url(self):
         service = WorkspaceService.__new__(WorkspaceService)
-        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'), selected_skill_documents=lambda _ids: [])
+        service.store = SimpleNamespace(data_dir=Path('/tmp/test-workspace'), skill_directories=lambda: [str(Path(__file__).resolve().parents[1] / 'ai-skills')], skill_overrides=lambda: {})
         service._proxy = Mock(return_value=(200, {"ok": True}, "application/json"))
         defaults = {"OPENAI_API_KEY": "saved-key", "RMM_EXEGOL_MCP_URL": "http://trusted:8000",
                     "RMM_EXEGOL_MCP_TOKEN": "trusted-token"}

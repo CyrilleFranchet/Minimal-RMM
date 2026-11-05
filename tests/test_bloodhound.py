@@ -110,6 +110,56 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('older', report['run']['provenance_warning'])
         self.assertEqual([path for method, path, _ in self.client.calls if method == 'POST'], ['/api/v2/file-upload/start', '/api/v2/file-upload/42', '/api/v2/file-upload/42/end'])
 
+    def test_ai_collection_wraps_collector_in_owner_validated_strict_socks(self):
+        request = {'transport': 'socks', 'session_id': 'session-a'}
+        binding = {'request': request, 'port': 1080, 'bind_host': '127.0.0.1'}
+        self.run['collection_network'] = binding
+        resolver = Mock(return_value=binding)
+        def collector(command, **kwargs):
+            self.assertEqual(command[:3], ['/usr/bin/proxychains4', '-q', '-f'])
+            config = Path(command[3])
+            self.assertIn('strict_chain', config.read_text())
+            self.assertIn('socks5 127.0.0.1 1080', config.read_text())
+            self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            self.assertIn('--dns-tcp', command)
+            self.assertNotIn('shell', kwargs)
+            collection_file(kwargs['cwd'])
+            return Mock(returncode=0)
+        with patch('rmm_bloodhound.collector_info', return_value={'executable': '/tools/collector'}), patch('rmm_bloodhound.validate_cache'), patch('rmm_bloodhound.shutil.which', return_value='/usr/bin/proxychains4'), patch('rmm_bloodhound.subprocess.run', side_effect=collector):
+            self.store.collect(self.run, resolver)
+        resolver.assert_called_once_with(request)
+        self.assertEqual(self.store.get(self.run['id'])['collection'], 'complete')
+
+    def test_ai_collection_never_falls_back_when_pivot_changes(self):
+        self.run['collection_network'] = {'request': {'transport': 'socks', 'session_id': 'session-a'}, 'port': 1080}
+        with patch('rmm_bloodhound.collector_info', return_value={'executable': '/tools/collector'}), patch('rmm_bloodhound.validate_cache'), patch('rmm_bloodhound.subprocess.run') as run:
+            with self.assertRaisesRegex(bh.WorkflowError, 'collection_pivot_changed'):
+                self.store.collect(self.run, Mock(return_value={'port': 1081}))
+            run.assert_not_called()
+
+    def test_collection_network_binding_reaches_worker_through_broker_and_api(self):
+        from types import SimpleNamespace
+        from workspace_service import WorkspaceService
+        from rmm_bloodhound_broker import execute_workspace_request
+        owner = object.__new__(WorkspaceService)
+        owner.pivots = SimpleNamespace(list_socks_status=lambda: [{'session_id': 'session-a', 'listener_running': True, 'bind_host': '127.0.0.1', 'port': 1080}])
+        task = {'id': 'e' * 32, 'body': {'action': 'collect', 'run_id': self.run['id'], 'options': {'network': {'transport': 'socks', 'session_id': 'session-a'}}}}
+        commands = []
+        def collector(command, **kwargs):
+            commands.append(command)
+            collection_file(kwargs['cwd'])
+            return Mock(returncode=0)
+        with patch.dict(bh._STORES, {str(Path(self.temp.name).resolve()): self.store}), patch('rmm_exegol_runtime.get_runtime', return_value=SimpleNamespace(status=lambda: {'exegol_status': 'ready'})), patch('rmm_bloodhound.collector_info', return_value={'executable': '/tools/collector'}), patch('rmm_bloodhound.validate_cache'), patch('rmm_bloodhound.shutil.which', return_value='/usr/bin/proxychains4'), patch('rmm_bloodhound.subprocess.run', side_effect=collector):
+            code, result = execute_workspace_request(self.temp.name, task, network_resolver=owner._collection_network)
+            self.assertEqual(code, 202, result)
+            for worker in list(self.store.threads):
+                worker.join(3)
+            self.assertEqual(self.store.get(self.run['id'])['collection'], 'complete')
+            # Repeated broker delivery returns its receipt without repeating the collector.
+            execute_workspace_request(self.temp.name, task, network_resolver=owner._collection_network)
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0][0], '/usr/bin/proxychains4')
+
     def test_repeat_submissions_do_not_repeat_collection(self):
         entered, release = threading.Event(), threading.Event()
         def collect(run):

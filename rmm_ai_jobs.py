@@ -105,7 +105,7 @@ def _safe_progress(event):
     if not isinstance(event, dict):
         return {}
     clean = {}
-    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status"):
+    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status", "run_id", "task_id", "role"):
         value = event.get(key)
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", value):
             clean[key] = value

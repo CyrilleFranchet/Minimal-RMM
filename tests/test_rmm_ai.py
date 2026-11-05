@@ -443,6 +443,11 @@ class McpChatErrorLabelingTests(unittest.TestCase):
     as an MCP installation/connection problem (e.g. a provider quota error
     must not read as "MCP server failed... install MCP support")."""
 
+    def setUp(self):
+        legacy = patch('rmm_ai.ai_engine', return_value='legacy_v2')
+        legacy.start()
+        self.addCleanup(legacy.stop)
+
     class DummyMcp:
         openai_tools = []
         server_instructions = None
@@ -461,7 +466,7 @@ class McpChatErrorLabelingTests(unittest.TestCase):
                 rmm_ai._run_ai_chat_mcp(
                     rmm_base_url="http://local", rmm_token="tok", provider="mistral",
                     api_key="key", messages=[], model="mistral-test",
-                    selected_session_id=None, max_rounds=2,
+                    selected_session_id=None, max_rounds=2, workflow='legacy',
                 )
         self.assertEqual(str(ctx.exception), "mistral quota exceeded")
 
@@ -471,7 +476,7 @@ class McpChatErrorLabelingTests(unittest.TestCase):
                 rmm_ai._run_ai_chat_mcp(
                     rmm_base_url="http://local", rmm_token="tok", provider="mistral",
                     api_key="key", messages=[], model="mistral-test",
-                    selected_session_id=None, max_rounds=2,
+                    selected_session_id=None, max_rounds=2, workflow='legacy',
                 )
         self.assertIn("MCP server failed", str(ctx.exception))
         self.assertIn("Install MCP support", str(ctx.exception))

@@ -11,6 +11,9 @@ import server_rmm
 
 class AISessionRoutingTests(unittest.TestCase):
     def setUp(self):
+        legacy = patch('rmm_ai.ai_engine', return_value='legacy_v2')
+        legacy.start()
+        self.addCleanup(legacy.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.patch = patch.object(server_rmm, 'LOG_DIR', self.directory.name)
         self.patch.start()
@@ -61,7 +64,7 @@ class AISessionRoutingTests(unittest.TestCase):
             result = rmm_ai._run_ai_chat_direct(
                 rmm_base_url='http://unused', rmm_token='test', provider='openai', api_key='test',
                 messages=[{'role': 'user', 'content': 'Check both test sessions'}], model='test',
-                selected_session_id='session-a', max_rounds=4, skill_documents=[])
+                selected_session_id='session-a', max_rounds=4, skill_documents=[], workflow='legacy')
         self.assertTrue(result['ok'])
         self.assertEqual(destinations, ['session-a', 'session-b'])
         for session in reversed(self.sessions):
