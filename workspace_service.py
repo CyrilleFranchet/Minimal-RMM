@@ -732,7 +732,8 @@ class WorkspaceStore:
                 continue
             if message.get("role") not in {"user", "assistant"} or not isinstance(message.get("content"), str):
                 continue
-            normalized.append({"role": message["role"], "content": message["content"]})
+            normalized.append({"role": message["role"], "content": message["content"],
+                               **({"step_state": message["step_state"]} if isinstance(message.get("step_state"), dict) else {})})
         with self._lock:
             self._db.execute(
                 "INSERT INTO ai_chats(session_id,payload) VALUES(?,?) "
@@ -1697,9 +1698,16 @@ class WorkspaceService:
             return self._proxy("POST", path, {})
         if parts in (["ai", "chat"], ["ai", "jobs"]):
             from rmm_exegol_runtime import get_runtime
-            runtime = get_runtime(self.store.data_dir / "bloodhound").status()
-            if runtime.get("exegol_status") != "ready":
-                return 503, {"error": "exegol_workspace_not_ready", "runtime": runtime}, "application/json"
+            from rmm_ai_skills import resolve_ai_skill_snapshot
+            from rmm_ai_skill_context import backend_enabled
+            skill_ids = body.get("skill_ids")
+            if skill_ids is not None and not isinstance(skill_ids, list):
+                return 400, {"error": "invalid_skill_ids"}, "application/json"
+            documents, policy = resolve_ai_skill_snapshot(skill_ids, self.store.skill_directories(), self.store.skill_overrides())
+            if backend_enabled('external', documents, policy):
+                runtime = get_runtime(self.store.data_dir / "bloodhound").status()
+                if runtime.get("exegol_status") != "ready":
+                    return 503, {"error": "exegol_workspace_not_ready", "runtime": runtime}, "application/json"
             forwarded = dict(body)
             if forwarded.get("provider", "openai") == "openai" and not (forwarded.get("api_key") or forwarded.get("openai_api_key")):
                 forwarded["api_key"] = settings_getenv("OPENAI_API_KEY", "")
@@ -1709,13 +1717,14 @@ class WorkspaceService:
             skill_ids = forwarded.get("skill_ids")
             if skill_ids is not None and not isinstance(skill_ids, list):
                 return 400, {"error": "invalid_skill_ids"}, "application/json"
-            forwarded["skill_documents"] = self.store.selected_skill_documents(skill_ids)
+            forwarded["skill_documents"] = documents
+            forwarded["skill_policy"] = policy
             status, payload, content_type = self._proxy("POST", path, forwarded, timeout=30 if parts == ["ai", "jobs"] else 300)
             if parts == ["ai", "chat"] and status == 200 and isinstance(payload, dict) and payload.get("ok") and body.get("selected_session_id"):
                 messages = list(body.get("messages") or [])
                 reply = payload.get("message")
                 if isinstance(reply, str):
-                    messages.append({"role": "assistant", "content": reply})
+                    messages.append({"role": "assistant", "content": reply, "step_state": payload.get("step_state", {})})
                 self.store.save_ai_chat(str(body["selected_session_id"]), messages)
             return status, payload, content_type
         return None

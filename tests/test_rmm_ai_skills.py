@@ -13,6 +13,15 @@ import rmm_ai_skills
 class AiSkillsTests(unittest.TestCase):
     """Verify default and always-enabled server skills."""
 
+    def test_instruction_and_policy_snapshot_reads_each_version_once(self):
+        first = {'id': 'review', 'body': 'VERSION_A', 'tool_rules': [{'tool': 'inspect', 'requires': ['review']}]}
+        second = {'id': 'review', 'body': 'VERSION_B', 'tool_rules': []}
+        with patch('rmm_ai_skills._load_all_skills_full', side_effect=[[first], [second]]) as load:
+            documents, policy = rmm_ai_skills.resolve_ai_skill_snapshot(['review'])
+        load.assert_called_once()
+        self.assertEqual(documents[0]['body'], 'VERSION_A')
+        self.assertEqual(policy, first['tool_rules'])
+
     def test_split_skill_selection_and_disablements_survive_rename(self):
         directory = str(Path(__file__).resolve().parents[1] / 'ai-skills')
         selected = rmm_ai_skills.resolve_ai_skills(['ad-collection-analysis'], [directory])

@@ -3,6 +3,8 @@ id: bloodhound-analysis
 title: BloodHound graph investigation and candidate-path assessment
 description: Analyze an existing verified BloodHound run, choose queries from evidence, assess candidate paths and missing prerequisites, and distinguish expected telemetry from confirmed detection. Does not initiate collection or execute paths.
 default: false
+tool_rules: [{"tool":"bloodhound","requires_any":["bloodhound-analysis","bloodhound-ce-python-collection"]},{"tool":"bloodhound","actions":["query","queries","library_search","library_get"],"requires":["bloodhound-analysis"]}]
+priority: 30
 ---
 
 # BloodHound graph investigation and candidate-path assessment

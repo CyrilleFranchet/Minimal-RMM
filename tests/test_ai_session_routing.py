@@ -48,6 +48,11 @@ class AISessionRoutingTests(unittest.TestCase):
         responses = []
         for index, session in enumerate(self.sessions):
             responses.append({'choices': [{'message': {'tool_calls': [{
+                'id': f'prepare-{index}', 'type': 'function', 'function': {
+                    'name': 'prepare_step', 'arguments': json.dumps({
+                        'summary': f'Check test session {index}', 'checkpoint': 'Previous queue state recorded',
+                        'skill_ids': [], 'tools': ['queue_command']})}}]}}]})
+            responses.append({'choices': [{'message': {'tool_calls': [{
                 'id': str(index), 'type': 'function', 'function': {
                     'name': 'queue_command', 'arguments': json.dumps({
                         'session_ref': session.id, 'command': f'echo {session.id}'})}}]}}]})

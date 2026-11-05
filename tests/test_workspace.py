@@ -111,6 +111,26 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.store.close()
         self.temp_dir.cleanup()
 
+    def test_rmm_only_ai_forwards_one_local_skill_snapshot_without_exegol_readiness(self):
+        import rmm_ai_skills
+        service = WorkspaceService.__new__(WorkspaceService)
+        service.store = self.store
+        service._proxy = MagicMock(return_value=(202, {'job': {'id': 'queued'}}, 'application/json'))
+        with patch('rmm_exegol_runtime.get_runtime') as runtime, patch('rmm_ai_skills._load_all_skills_full', wraps=rmm_ai_skills._load_all_skills_full) as load:
+            status, _, _ = service.post_json('/api/v1/ai/jobs', {
+                'provider': 'openai', 'api_key': 'test', 'skill_ids': [],
+                'exegol_mcp_enabled': True, 'exegol_mcp_url': 'https://browser-override.invalid',
+                'messages': [{'role': 'user', 'content': 'Inspect local agent state'}]})
+        self.assertEqual(status, 202)
+        runtime.assert_not_called()
+        load.assert_called_once()
+        forwarded = service._proxy.call_args.args[2]
+        self.assertEqual({skill['id'] for skill in forwarded['skill_documents']},
+                         {'operator-boundaries', 'task-completion-report'})
+        self.assertTrue(forwarded['skill_policy'])
+        self.assertNotIn('exegol_mcp_enabled', forwarded)
+        self.assertNotIn('exegol_mcp_url', forwarded)
+
     def test_session_prefixes_are_literal_case_sensitive_and_at_least_four_characters(self):
         for ref in ("s", "sess%", "sess_on", "SESS"):
             with self.subTest(ref=ref):

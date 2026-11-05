@@ -10,7 +10,7 @@ private operator content.
 | Kind | Accepted files | Runtime use |
 | --- | --- | --- |
 | `plugins` | `.dll`, `.ps1` | Served to an authenticated agent on demand |
-| `skills` | `.md` | Added to the on-demand skill catalog; only the two core skills are loaded initially |
+| `skills` | `.md` | Available for per-step activation; core skills and explicit invocations load before the first request |
 | `rclone` | `.json` | Workspace-local named rclone profiles |
 
 Names are treated as basenames and path traversal is rejected. Downloads are
@@ -115,15 +115,18 @@ default: false
 always: false
 ---
 
-Instructions injected into the AI system prompt.
+Instructions followed when this skill is activated.
 ```
 
-The `id` is the merge key. `default` controls the initial selection and
-`always` keeps a skill in the prompt even when the request selects specific
-skill IDs. Built-in skills are returned by `GET /api/v1/ai/skills` alongside
+The `id` is the merge key. `default` is legacy preference metadata; without
+a saved selection, enabled skills are available. `always` keeps a skill
+available even when a request selects specific IDs, subject to asset-level
+disablement. Custom `always` bodies are still loaded on demand; the two core
+skill bodies and explicit invocations are loaded before the first request. Built-in skills are returned by `GET /api/v1/ai/skills` alongside
 uploaded skills and are shown in the expanded **AI → Skills** section. The
 selection follows the server/workspace SQLite UI state, while the asset API
-persists enablement for built-in and uploaded skills.
+persists enablement for built-in and uploaded skills. Dependencies, tool guards,
+priority, and activation behavior are documented in [Web AI skills](web-ai-skills.md).
 
 ## rclone profile format
 

@@ -3,6 +3,8 @@ id: bloodhound-ce-python-collection
 title: BloodHound CE Python collector (bloodhound-ce-python) collection
 description: Collect AD data with the official BloodHound CE Python collector (bloodhound-ce-python) in Exegol using DCOnly, import it into local BloodHound CE, and verify the dataset. Use for acquisition or refresh; use bloodhound-analysis for questions about existing graph data. Not the legacy bloodhound-python tool.
 default: false
+tool_rules: [{"tool":"bloodhound","requires_any":["bloodhound-analysis","bloodhound-ce-python-collection"]},{"tool":"bloodhound","actions":["create","collect","import","verify"],"requires":["bloodhound-ce-python-collection"]},{"tool":"bloodhound","actions":["collect"],"requires":["exegol-rmm-pivot"]}]
+priority: 30
 ---
 
 # BloodHound CE Python collector collection
@@ -27,8 +29,8 @@ collecting the directory. This skill takes precedence over the general
 ADWS-first preference when Python BloodHound collection is requested.
 
 Before acquisition, record the requested domain, collection purpose, expected
-coverage, and existing run IDs. Load `exegol-rmm-pivot` only if routing needs
-work. A connected MCP server or live agent does not prove that Exegol can reach
+coverage, and existing run IDs. The `exegol-rmm-pivot` skill must be enabled for acquisition; establish
+or reuse SOCKS5 or TUN before contacting target resources. A connected MCP server or live agent does not prove that Exegol can reach
 the DC or resolve its domain. Check those prerequisites in the owner's network
 namespace, not on the central server or operator laptop.
 

@@ -8,6 +8,7 @@ from rmm_settings import getenv as settings_getenv
 
 import os
 import re
+import json
 
 _SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 SKILL_REPLACEMENTS = {
@@ -97,6 +98,31 @@ def load_skill_file(path: str) -> dict | None:
         return None
     title = (meta.get("title") or skill_id.replace("-", " ").title()).strip()
     description = (meta.get("description") or "").strip()
+    try:
+        requires = json.loads(meta.get('requires', '[]'))
+        required_tools = json.loads(meta.get('required_tools', '[]'))
+        rules = json.loads(meta.get('tool_rules', '[]'))
+        priority = int(meta.get('priority', '0'))
+        if not isinstance(requires, list) or not all(isinstance(x, str) and _SKILL_ID_RE.fullmatch(x) for x in requires):
+            raise ValueError('invalid dependencies')
+        if not isinstance(required_tools, list) or not all(isinstance(x, str) for x in required_tools):
+            raise ValueError('invalid required tools')
+        if not isinstance(rules, list):
+            raise ValueError('invalid rules')
+        for rule in rules:
+            if not isinstance(rule, dict) or set(rule) - {'tool', 'backend', 'actions', 'requires', 'requires_any'}:
+                raise ValueError('invalid rule')
+            if bool(rule.get('tool')) == bool(rule.get('backend')):
+                raise ValueError('rule needs one selector')
+            if rule.get('backend') not in (None, 'external'):
+                raise ValueError('invalid backend')
+            if 'tool' in rule and not isinstance(rule['tool'], str):
+                raise ValueError('invalid tool')
+            for key in ('requires', 'requires_any', 'actions'):
+                if key in rule and (not isinstance(rule[key], list) or not all(isinstance(x, str) for x in rule[key])):
+                    raise ValueError('invalid rule list')
+    except (ValueError, TypeError) as error:
+        raise ValueError(f'Invalid skill metadata: {filename}') from error
     return {
         "id": skill_id,
         "title": title,
@@ -105,6 +131,10 @@ def load_skill_file(path: str) -> dict | None:
         "always": _truthy(meta.get("always")),
         "body": body.strip(),
         "filename": filename,
+        "requires": requires,
+        "required_tools": required_tools,
+        "priority": priority,
+        "tool_rules": rules,
     }
 
 
@@ -166,16 +196,23 @@ def resolve_ai_skills(
     - skill_ids is None: all available skills (optional bodies load on demand)
     - skill_ids is a list: those ids plus all always: true skills
     """
+    return resolve_ai_skill_snapshot(skill_ids, directories, enabled_overrides)[0]
+
+
+def resolve_ai_skill_snapshot(skill_ids, directories=None, enabled_overrides=None):
+    """Select instructions and body-free guards from the same parsed file versions."""
+    documents = _load_all_skills_full(directories)
+    policy = [dict(rule) for skill in documents for rule in skill.get('tool_rules', [])]
     skill_ids = expand_skill_ids(skill_ids)
     enabled_overrides = expand_skill_overrides(enabled_overrides)
     available = {
         row["id"]: row
-        for row in (_load_all_skills_full(directories))
+        for row in documents
         if not enabled_overrides or enabled_overrides.get(row["id"], True)
     }
     always = [skill for skill in available.values() if skill.get("always")]
     if skill_ids is None:
-        return list(available.values())
+        return list(available.values()), policy
     chosen: list[dict] = []
     included = set()
     for skill in always:
@@ -186,7 +223,7 @@ def resolve_ai_skills(
         if sid and sid in available and sid not in included:
             chosen.append(available[sid])
             included.add(sid)
-    return chosen
+    return chosen, policy
 
 
 def _load_all_skills_full(directories: list[str] | None = None) -> list[dict]:
@@ -207,6 +244,12 @@ def _load_all_skills_full(directories: list[str] | None = None) -> list[dict]:
             if skill and skill['id'] not in SKILL_REPLACEMENTS:
                 rows_by_id[skill["id"]] = skill
     return sorted(rows_by_id.values(), key=lambda row: row["id"])
+
+
+def resolve_ai_skill_policy(directories=None):
+    """Read body-free guards even for unchecked skills, using workspace overlays."""
+    return [dict(rule) for skill in _load_all_skills_full(directories)
+            for rule in skill.get('tool_rules', [])]
 
 
 def compose_system_prompt(

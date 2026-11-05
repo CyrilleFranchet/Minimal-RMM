@@ -3,13 +3,13 @@ PYTHON ?= python3
 
 PY_MODULES := rmm_settings.py rmm_plugin_sources.py rmm_plugin_releases.py rmm_embeddings.py server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
 	rmm_deployment.py rmm_workspace_migration.py \
-	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_ai_concurrency.py rmm_ai_jobs.py rmm_run_on_host.py rmm_kill_host_sessions.py \
+	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_ai_skill_context.py rmm_ai_context.py rmm_ai_skills.py rmm_ai_concurrency.py rmm_ai_jobs.py rmm_run_on_host.py rmm_kill_host_sessions.py \
 	rmm_workspace.py workspace_pivot.py workspace_service.py rmm_asset_store.py rmm_profile.py rmm_bloodhound.py rmm_bloodhound_broker.py rmm_bloodhound_proxy.py rmm_exegol_runtime.py rmm_bloodhound_library.py scripts/import_bloodhound_library.py
 
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-cli check-parity check-web-contracts check check-exegol-mcp go-test tun-build workspace-service docker-build docker-up
+.PHONY: help install-lint lint-md lint-yaml lint test check-ai check-cli check-parity check-web-contracts check check-exegol-mcp go-test tun-build workspace-service docker-build docker-up
 
 help:
 	@printf "Available targets:\n"
@@ -20,6 +20,7 @@ help:
 	@printf "  make test          Python syntax check (py_compile)\n"
 	@printf "  make check-parity  MCP / API client / web shell alignment\n"
 	@printf "  make check-cli     CLI dispatch and interactive completion tests\n"
+	@printf "  make check-ai      AI skill, context, provider and route regression tests\n"
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
 	@printf "  make check-exegol-mcp  Validate a live Exegol MCP endpoint (needs RMM_EXEGOL_MCP_URL); not part of 'check'\n"
@@ -78,6 +79,12 @@ check-parity:
 check-cli:
 	@$(PYTHON) -m unittest discover -s tests -p 'test_cli*.py'
 
+check-ai:
+	@$(PYTHON) -m unittest discover -s tests -p 'test_ai*.py'
+	@$(PYTHON) -m unittest discover -s tests -p 'test_rmm_ai*.py'
+	@$(PYTHON) -m unittest discover -s tests -p 'test_server_rmm_ai.py'
+	@node tests/test_ai_jobs_ui.cjs
+
 check-web-contracts:
 	@$(PYTHON) scripts/check_web_contracts.py
 	@node tests/test_shell_completion.cjs
@@ -89,7 +96,7 @@ check-web-contracts:
 	@node tests/test_assets_ui.cjs
 	@node tests/test_agent_redirects.cjs
 
-check: test check-cli check-parity check-web-contracts lint
+check: test check-ai check-cli check-parity check-web-contracts lint
 
 check-exegol-mcp:
 	@$(PYTHON) scripts/check_exegol_mcp.py $(ARGS)

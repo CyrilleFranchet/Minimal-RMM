@@ -88,6 +88,8 @@ FIELDS = {
     "RMM_TUN_LOG_LEVEL": field("TUN log level", "TUN", default="info", choices=["debug", "info", "warn", "error"]),
     "RMM_AI_MAX_TOOL_ROUNDS": field("Maximum AI tool rounds", "AI", "integer", 32, minimum=1, maximum=256, scopes=S),
     "RMM_AI_USE_MCP": field("Use MCP tools", "AI", "boolean", True, scopes=S),
+    "RMM_AI_CONTEXT_BUDGET": field("AI context budget (conservative tokens)", "AI", "integer", 65536, minimum=8192, maximum=2000000, scopes=S),
+    "RMM_AI_OUTPUT_RESERVE": field("AI output token reserve", "AI", "integer", 4096, minimum=1024, maximum=65536, scopes=S),
     "RMM_AI_SKILLS_DIR": field("Additional AI skills directory", "AI"),
     "OPENAI_API_KEY": field("Default OpenAI API key", "AI", secret=True),
     "RMM_EXEGOL_MCP_URL": field("Exegol MCP URL", "AI"),

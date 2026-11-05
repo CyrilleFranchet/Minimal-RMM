@@ -3,6 +3,8 @@ id: exegol-rmm-pivot
 title: Exegol tools and RMM pivots
 description: Route authorized security tasks between Minimal-RMM agents and Exegol MCP; choose SOCKS5 or TUN when Exegol must reach an agent network.
 default: false
+tool_rules: [{"backend":"external","requires":["exegol-rmm-pivot"]}]
+priority: 20
 ---
 
 # Exegol tools and RMM pivots
@@ -18,7 +20,9 @@ agent with Exegol MCP tools. Keep the two execution environments separate:
 Only use a tool when it is present in the live MCP tool list. Exegol MCP tool
 names and input schemas can change between versions; inspect the available
 tool description instead of inventing arguments. If Exegol MCP is not
-connected, say so and use the Minimal-RMM tools that can complete the task.
+connected, report the missing prerequisite for Exegol-dependent steps. RMM
+tools remain appropriate for inherently agent-local checks; do not silently
+substitute them for requested Exegol execution.
 
 ## Choose the right tool surface
 
@@ -30,7 +34,7 @@ do not present agent-side execution as equivalent.
 For connectivity diagnostics, use a few agent-side checks to establish a
 baseline. For a larger requested network inventory, prefer an existing Exegol
 scanner with bounded scope and saved output over constructing serial PowerShell
-loops. Reuse a working route; establishing a new pivot is not always necessary.
+loops. Reuse a working SOCKS5 or TUN relay when available.
 Distinguish refusal, timeout, DNS failure, and missing route. A short timeout
 does not establish that a port is closed.
 
@@ -54,7 +58,7 @@ managed by the beacon.
 An RMM command does not require SOCKS or TUN: the authenticated beacon already
 connects the operator API to the Windows agent. A pivot is required when a
 tool running in Exegol must open a connection to the agent host or to another
-network reachable from that host, and Exegol has no route to that network.
+network reachable from that host, using SOCKS5 or TUN through that host.
 
 Before starting a pivot:
 
@@ -63,8 +67,8 @@ Establish or reuse the selected agent's local baseline as described in
 configuration, and domain context before choosing targets or routes.
 
 1. Use RMM `list_sessions` and `get_session` to select the exact live agent.
-2. Check whether the target is already reachable from the Exegol namespace.
-   Do not create a pivot just because the agent is selected.
+2. Exegol is remote. Target resources require SOCKS5 or TUN through the
+   selected agent; a direct target route is not available in this deployment.
 3. Check `list_socks` and `list_tun` so an existing relay is reused when it
    matches the selected session.
 4. Choose only routes covered by the task and existing operator consent.

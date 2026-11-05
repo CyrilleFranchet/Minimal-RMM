@@ -35,7 +35,10 @@ Enter used to confirm an input-method composition does not send the message.
 The old server-owned format is no longer used by production startup. The
 copy-only migration imports it into workspace storage.
 
-Each message has `role` (`user` / `assistant`), `content`, and optional `tool_calls_made` on assistant turns. Error lines shown in the UI are **not** persisted.
+Each message has `role` (`user` / `assistant`), `content`, and optional `tool_calls_made` on assistant turns. UI-only validation/error notifications are **not** persisted. A failed job
+can still return a structured response with an execution checkpoint; its scoped
+job record retains that result, and the response can appear in the subsequent
+submitted conversation.
 
 The file lives next to `meta.json` and `events.jsonl` for the same session. Up to **500** messages are kept (oldest dropped when saving).
 
@@ -156,3 +159,14 @@ adds the job ID, last recorded round/activity, and bounded server diagnostics
 (exception types, HTTP status, traceback line numbers) to the failure status.
 Raw exception messages, URLs, and credentials are excluded. The last recorded
 round is a progress checkpoint, not proof that the round completed.
+
+## Per-step skills and bounded working context
+
+Assistant messages may also retain `step_state`: active skill IDs, content
+versions, a public step summary, and an execution checkpoint. This is historical
+evidence; each new task reselects from currently enabled skills. Full active
+instructions are pinned during execution, while large outputs and old complete
+conversation groups can be archived outside the prompt. Scoped evidence IDs
+remain retrievable across tasks with the same credentials and selected session.
+See [Web AI skills](web-ai-skills.md) for preparation gates, budgets, retention,
+and the difference between declarative guards and model instruction compliance.

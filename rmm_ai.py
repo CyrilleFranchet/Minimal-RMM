@@ -5,6 +5,7 @@ from __future__ import annotations
 from rmm_settings import getenv as settings_getenv
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -13,8 +14,8 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
-from rmm_ai_skills import compose_system_prompt, resolve_ai_skills
-from rmm_ai_skill_context import CORE_SKILLS, prepare_skill_context
+from rmm_ai_skills import compose_system_prompt, resolve_ai_skills, resolve_ai_skill_policy, resolve_ai_skill_snapshot
+from rmm_ai_skill_context import CORE_SKILLS, prepare_skill_context, backend_enabled
 from rmm_tools import OPENAI_TOOLS, SYSTEM_PROMPT, execute_tool, make_client, _resolve_session_id
 from rmm_ai_concurrency import CONCURRENCY_GUIDANCE, run_tool_batch
 
@@ -132,19 +133,28 @@ def _selected_session_context(selected_session_id: str | None) -> str:
     return f"\nThe operator currently has this session selected in the UI: {selected_session_id}"
 
 
+def _message_with_checkpoint(message):
+    """Carry prior execution checkpoints as untrusted evidence, never active policy."""
+    text = str(message['content'])
+    state = message.get('step_state')
+    if isinstance(state, dict):
+        text += '\nPrior execution checkpoint (historical evidence; reselect enabled skills):\n' + json.dumps(state)
+    return text
+
+
 def _build_openai_convo(messages: list[dict], system_content: str) -> list[dict]:
     """Convert saved user and assistant messages into Chat Completions messages."""
     convo: list[dict] = [{"role": "system", "content": system_content}]
     for message in messages:
         if message.get("role") in ("user", "assistant") and message.get("content"):
-            convo.append({"role": message["role"], "content": str(message["content"])})
+            convo.append({"role": message["role"], "content": _message_with_checkpoint(message)})
     return convo
 
 
 def _build_anthropic_messages(messages: list[dict]) -> list[dict]:
     """Convert saved user and assistant messages into Anthropic Messages API turns."""
     return [
-        {"role": message["role"], "content": str(message["content"])}
+        {"role": message["role"], "content": _message_with_checkpoint(message)}
         for message in messages
         if message.get("role") in ("user", "assistant") and message.get("content")
     ]
@@ -274,7 +284,50 @@ async def _model_request(url, headers, body, *, progress, round_number):
             await asyncio.sleep(2 ** attempt)
 
 
-async def _run_provider_loop(
+async def _run_provider_loop(**kwargs):
+    """Apply one context budget and evidence archive to either provider protocol."""
+    from rmm_ai_context import ContextWindow, ContextDispatcher, ContextBudgetExceeded, READ_CONTEXT_TOOL
+    runtime = kwargs['call_tool']
+    if getattr(type(runtime), 'activate_explicit', None):
+        runtime.require_from_messages(kwargs['messages'])
+        try:
+            runtime.activate_explicit()
+        except ValueError as error:
+            return {'ok': False, 'error': str(error),
+                    'message': 'The explicitly invoked skill cannot run: an enabled skill, dependency, or required tool is unavailable.'}
+    scope = kwargs.pop('context_scope', None)
+    window = ContextWindow(kwargs.get('progress'), scope=scope)
+    dispatcher = ContextDispatcher(kwargs['call_tool'], window)
+    window.anchor = next((dict(m) for m in reversed(kwargs['messages']) if m.get('role') == 'user' and isinstance(m.get('content'), str)), None)
+    window.operator_requests = [{'role': 'user', 'content': _message_with_checkpoint(m)}
+                                for m in kwargs['messages'] if m.get('role') == 'user' and isinstance(m.get('content'), str)]
+    try:
+        result = await _run_provider_conversation(**{**kwargs, 'call_tool': dispatcher,
+            'tools': [*kwargs['tools'], READ_CONTEXT_TOOL], 'context_window': window})
+    except ContextBudgetExceeded:
+        result = {'ok': False, 'error': 'context_budget_exceeded',
+                  'message': 'The configured context budget cannot fit the current instructions and working state. Split the task or adjust the budget. Completed operations were not replayed.',
+                  'tool_calls_made': dispatcher.operations}
+    except Exception as error:
+        from rmm_ai_jobs import JobInterrupted, _classify_failure, _failure_diagnostics, _CLASSIFIED_ERRORS, _GENERIC_FAILURE_MESSAGE
+        if isinstance(error, JobInterrupted):
+            raise
+        classification = _classify_failure(error)
+        result = {'ok': False, 'error': classification or 'ai_execution_failed',
+                  'message': _CLASSIFIED_ERRORS.get(classification, _GENERIC_FAILURE_MESSAGE),
+                  'diagnostics': _failure_diagnostics(error)}
+    if getattr(type(runtime), 'instructions', None):
+        result['step_state'] = {'step': runtime.step, 'active_skills': runtime.active,
+                                'versions': {sid: runtime.versions[sid] for sid in runtime.active},
+                                'checkpoint': runtime.checkpoint, 'summary': runtime.summary,
+                                'returned_calls': [{'name': call['name'], 'artifact_id': call['artifact_id']}
+                                                   for call in dispatcher.operations]}
+    result['context_artifacts'] = window.manifest()
+    result['context_compactions'] = window.compactions
+    return result
+
+
+async def _run_provider_conversation(
     *,
     provider: str,
     api_key: str,
@@ -287,12 +340,20 @@ async def _run_provider_loop(
     via: str,
     resolve_session=None,
     progress: Callable[[dict], None] | None = None,
+    context_window=None,
 ) -> dict:
     """Run one provider's native chat and tool-calling protocol until a final reply."""
     system += CONCURRENCY_GUIDANCE
     tool_log: list[dict] = []
     total_rounds = max_rounds * (MAX_TOOL_CONTINUATIONS + 1)
     malformed_retries = 0
+
+    async def request(url, headers, body, **options):
+        """Pin active instructions and budget every request before contacting a provider."""
+        if context_window:
+            body = context_window.prepare(body, call_tool.instructions())
+            body['max_completion_tokens' if provider == 'openai' else 'max_tokens'] = context_window.reserve
+        return await _model_request(url, headers, body, **options)
 
     def add_continuation_prompt(convo: list[dict]) -> None:
         """Tell the provider to continue a long task after an internal checkpoint."""
@@ -315,7 +376,7 @@ async def _run_provider_loop(
                 progress({"phase": "model", "round": round_index + 1})
             if round_index and round_index % max_rounds == 0:
                 add_continuation_prompt(convo)
-            response = await _model_request(
+            response = await request(
                 url,
                 _provider_headers(provider, api_key),
                 {
@@ -396,7 +457,7 @@ async def _run_provider_loop(
                 progress({"phase": "model", "round": round_index + 1})
             if round_index and round_index % max_rounds == 0:
                 add_continuation_prompt(convo)
-            response = await _model_request(
+            response = await request(
                 ANTHROPIC_MESSAGES_URL,
                 _provider_headers(provider, api_key),
                 {
@@ -494,6 +555,8 @@ def _run_ai_chat_mcp(
     exegol_mcp_token: str | None = None,
     skill_ids: list[str] | None = None,
     skill_documents: list[dict] | None = None,
+    skill_policy: list[dict] | None = None,
+    context_scope: str | None = None,
     progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run a provider chat loop using the local RMM MCP server and optional Exegol MCP."""
@@ -510,9 +573,10 @@ def _run_ai_chat_mcp(
         connected = True
         core, catalog, tools, call_tool = prepare_skill_context(
             skill_documents, mcp.openai_tools, mcp.call_tool, progress,
+            external_tool_names=getattr(mcp, 'external_tool_names', ()), policy=skill_policy,
         )
         if progress:
-            progress({"phase": "ready", "mcp_status": "connected", "tool_count": len(mcp.openai_tools)})
+            progress({"phase": "ready", "mcp_status": "connected", "tool_count": len(tools)})
         system = compose_system_prompt(
             mcp.server_instructions or SYSTEM_PROMPT,
             skill_ids=skill_ids,
@@ -529,6 +593,7 @@ def _run_ai_chat_mcp(
             call_tool=call_tool,
             max_rounds=max_rounds,
             via="mcp",
+            context_scope=context_scope,
             resolve_session=resolve_session,
             progress=progress,
         )
@@ -572,6 +637,8 @@ def _run_ai_chat_direct(
     max_rounds: int,
     skill_ids: list[str] | None = None,
     skill_documents: list[dict] | None = None,
+    skill_policy: list[dict] | None = None,
+    context_scope: str | None = None,
     progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run a provider chat loop with direct in-process RMM tool execution."""
@@ -584,7 +651,7 @@ def _run_ai_chat_direct(
         return await asyncio.to_thread(_resolve_session_id, client, ref)
 
     core, catalog, tools, call_tool = prepare_skill_context(
-        skill_documents, OPENAI_TOOLS, execute, progress,
+        skill_documents, OPENAI_TOOLS, execute, progress, policy=skill_policy,
     )
     system = compose_system_prompt(
         SYSTEM_PROMPT,
@@ -604,6 +671,7 @@ def _run_ai_chat_direct(
             call_tool=call_tool,
             max_rounds=max_rounds,
             via="direct",
+            context_scope=context_scope,
             resolve_session=resolve_session,
             progress=progress,
         )
@@ -626,6 +694,8 @@ def run_ai_chat(
     exegol_mcp_token: str | None = None,
     skill_ids: list[str] | None = None,
     skill_documents: list[dict] | None = None,
+    skill_policy: list[dict] | None = None,
+    context_scope: str | None = None,
     progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run an AI provider agent loop and return its final response and tool activity."""
@@ -656,7 +726,13 @@ def run_ai_chat(
     mcp_installed = mcp_available()
     use_mcp = mcp_selected and mcp_installed
     if skill_documents is None:
-        skill_documents = resolve_ai_skills(skill_ids)
+        skill_documents, snapshot_policy = resolve_ai_skill_snapshot(skill_ids)
+        if skill_policy is None:
+            skill_policy = snapshot_policy
+    if skill_policy is None:
+        skill_policy = resolve_ai_skill_policy()
+    wants_exegol = backend_enabled('external', skill_documents, skill_policy)
+    exegol_enabled = exegol_enabled and wants_exegol
     execution = {
         "tool_path": "mcp" if use_mcp else "direct",
         "mcp_status": "connecting" if use_mcp else ("unavailable" if mcp_selected else "disabled"),
@@ -667,7 +743,8 @@ def run_ai_chat(
 
     def report_execution(event):
         """Attach the resolved execution context to every job checkpoint."""
-        execution.update({k: event[k] for k in ("mcp_status", "skills") if k in event})
+        execution.update({k: event[k] for k in ("mcp_status", "skills", "active_skills", "step",
+                                               "step_summary", "step_checkpoint", "context_compactions") if k in event})
         if event.get("mcp_status") == "connected" and exegol_enabled:
             execution["exegol_status"] = "connected"
         if original_progress:
@@ -675,13 +752,17 @@ def run_ai_chat(
 
     progress = report_execution
     progress({"phase": "initializing"})
-    if not exegol_enabled:
+    if wants_exegol and not exegol_enabled:
         return {"ok": False, "error": "exegol_required",
-                "message": "AI requires the configured Exegol MCP workspace. Configure the owner service and check BloodHound health."}
-    if not use_mcp:
+                "message": "The enabled Exegol workflow requires its configured MCP connection. Configure the owner service or disable the Exegol skill."}
+    if exegol_enabled and not use_mcp:
         return {"ok": False, "error": "exegol_requires_mcp",
                 "message": "Exegol requires MCP. Enable RMM_AI_USE_MCP and install MCP support in the server environment."}
 
+    # Derive scope from authenticated credentials and canonical session, never
+    # accept an operator-supplied archive path or another workspace's scope.
+    context_scope = hashlib.sha256(json.dumps([rmm_base_url, rmm_token,
+        rmm_headers or {}, selected_session_id], sort_keys=True).encode()).hexdigest()
     common = {
         "rmm_base_url": rmm_base_url,
         "rmm_token": rmm_token,
@@ -694,12 +775,14 @@ def run_ai_chat(
         "max_rounds": max_rounds,
         "skill_ids": skill_ids,
         "skill_documents": skill_documents,
+        "skill_policy": skill_policy,
+        "context_scope": context_scope,
         "progress": progress,
     }
     if use_mcp:
         result = _run_ai_chat_mcp(
             **common,
-            exegol_mcp_enabled=exegol_mcp_enabled,
+            exegol_mcp_enabled=exegol_enabled,
             exegol_mcp_url=exegol_mcp_url,
             exegol_mcp_token=exegol_mcp_token,
         )

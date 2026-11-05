@@ -256,6 +256,9 @@ class TransportTests(unittest.TestCase):
         async def loop(**kwargs):
             calls = [call("exec_command", session_ref=ref, command=cmd) for ref, cmd in
                      [("host-a", "a1"), ("aaaa", "a2"), ("HOST-B", "b1")]]
+            await run_tool_batch([{"name": "prepare_step", "arguments": {
+                "summary": "Run independent host checks", "checkpoint": "No commands completed",
+                "skill_ids": [], "tools": ["exec_command"]}}], kwargs["call_tool"])
             return await run_tool_batch(calls, kwargs["call_tool"], resolve_session=kwargs["resolve_session"])
 
         headers = {"X-RMM-Workspace": "visible-workspace", "X-RMM-Workspace-Token": "scoped-token"}
@@ -305,6 +308,9 @@ def ordinary_function(): pass
 
         async def loop(**kwargs):
             self.assertIsNotNone(kwargs["resolve_session"])
+            await run_tool_batch([{"name": "prepare_step", "arguments": {
+                "summary": "Read independent service state", "checkpoint": "No reads completed",
+                "skill_ids": [], "tools": ["health", "list_sessions"]}}], kwargs["call_tool"])
             return {"results": await run_tool_batch([call(), call("list_sessions")], kwargs["call_tool"])}
 
         with patch("rmm_ai.execute_tool", side_effect=execute), patch("rmm_ai._run_provider_loop", side_effect=loop):

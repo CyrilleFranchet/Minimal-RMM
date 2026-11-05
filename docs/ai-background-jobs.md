@@ -35,8 +35,11 @@ Idempotent requests for the original job continue to return its recorded state.
   recursive AI tasks.
 
 States are queued, running, succeeded, failed, and interrupted. Progress records
-model rounds and tool names/status, not tool arguments or raw outputs. Final
-results include the chat transcript and existing tool-call trace. A tool error
+model rounds, tool names/status, active skill IDs, a public step summary and a
+bounded execution checkpoint. It does not record tool arguments or raw outputs;
+step summaries and checkpoints must not contain secrets. Final
+results can include the chat transcript, tool-call trace, final step state,
+and a manifest of scoped evidence artifacts. A tool error
 can still be handled by the model; job success means the model returned a final
 response, not that every requested remote operation succeeded.
 
@@ -99,8 +102,11 @@ HTTP status for urllib HTTP errors. `_failure_diagnostics` follows at most eight
 causes or unsuppressed contexts and handles cycles. It excludes exception
 messages, URLs, headers, source text, and local variables. The existing `progress`
 field identifies the last model round or tool checkpoint; it is not proof that
-the corresponding operation failed or had no effects. No partial tool outputs
-are retained by this diagnostic mechanism.
+the corresponding operation failed or had no effects. The diagnostic metadata does not contain partial tool outputs. The AI runtime
+separately retains received outputs in scoped evidence archives and attaches
+artifact manifests and returned-call references to structured provider/tool
+failure results, preserving the latest step checkpoint without exposing the
+provider exception text. See [context evidence](web-ai-skills.md).
 
 Deploy and restart the server to enable this for future failures. Existing failed
 jobs cannot recover discarded exception details. No database migration is needed.
@@ -167,15 +173,15 @@ cancellation request is pending and restores Send when the job terminates.
 
 Each new job reports its resolved tool path, MCP status,
 Exegol status, and loaded skill IDs in the chat. MCP is marked connected only
-once session initialization and tool discovery succeed. AI now requires Exegol
-and MCP; disabling Exegol produces `exegol_required`, with no direct fallback.
-Missing MCP support or
-`RMM_AI_USE_MCP=0` produces `exegol_requires_mcp` instead of silently dropping
-Exegol tools. Existing jobs without this metadata show details as unavailable.
+once session initialization and tool discovery succeed. Enabled skill metadata
+determines whether the external Exegol backend is required. If required, an
+unconfigured connection produces `exegol_required`; missing MCP support or
+`RMM_AI_USE_MCP=0` produces `exegol_requires_mcp`. Without that requirement,
+RMM-only AI can use MCP or direct execution. Existing jobs without this metadata show details as unavailable.
 
 `run_ai_chat.report_execution` attaches resolved context to each progress event.
-The job store retains bounded skill IDs and status labels, not skill bodies,
-endpoint URLs, tokens, or tool arguments. Skills are resolved once per run so
+The job progress stores bounded skill IDs, status labels, a public step summary
+and checkpoint, but no skill bodies, endpoint URLs, tokens, or tool arguments. Skills are resolved once per run so
 reported IDs match the prompt snapshot; loading does not prove the model used
 or followed each instruction. A connection error reports MCP error; a later
 model failure does not reclassify an established MCP connection as failed.
@@ -253,3 +259,18 @@ barriers, rollback, failure draining, cancellation, all three provider result
 formats, direct blocking calls, and registered MCP dispatch/schema preservation.
 The MCP test requires the MCP SDK. These are deterministic mocked workflow tests;
 no live endpoint, provider, or Vectra detection claim is made.
+
+## Per-step preparation and context
+
+Each operational batch must follow a separate successful `prepare_step` call.
+The scheduler consumes that preparation once; mixing it with execution is
+rejected. Skill selection is made for the immediate action, not merely the
+overall task. `load_skill` and `read_context` remain internal preparation tools.
+The WebUI displays a brief operational rationale and active skill IDs.
+
+Skill bodies and declarative guards use one parsed-file snapshot per submission.
+Active instructions are pinned outside evictable conversation history. Large
+results and older complete message groups are archived with unique scoped IDs;
+job polling returns manifests rather than duplicating full archived evidence.
+Full protocol, configuration, retention, and failure behavior are described in
+[Web AI skills](web-ai-skills.md).

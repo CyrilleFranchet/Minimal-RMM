@@ -1,166 +1,189 @@
 # Web AI skills
 
-Operators can use built-in Markdown skill files and install additional skill
-files from URLs. The web AI assistant loads enabled skills and injects the
-core documents into the model system prompt on each AI request. Only
-`operator-boundaries` and `task-completion-report` are loaded initially.
-Other available skills contribute ID, title, and a bounded description to a
-catalog; the model calls the read-only `load_skill` tool when instructions are
-needed. Their bodies appear as tool results, not in the initial system prompt.
+Skills are server-side workflow instructions for the WebUI agent, independent
+of the IDE's skill system. Selection is evaluated for the **immediate step**,
+not only for the operator's high-level task.
 
-Skills are **not** Cursor IDE skills — they are server-side instructions for the in-browser AI panel only.
+## Availability and activation
 
-## Directory
+The UI checkboxes determine which optional skills are available. An unchecked
+skill's body is absent from the run snapshot and cannot be loaded through
+`load_skill` or as a dependency. The two locked core skills,
+`operator-boundaries` and `task-completion-report`, enter the initial prompt.
+Asset-level disablement still overrides selection. Changes apply to the next
+submitted task; an accepted background job retains its original snapshot.
+Existing conversation and archived evidence are historical data, not newly
+enabled instructions.
 
-Built-in default: `ai-skills/` at the repo root (next to `server_rmm.py`). In
-workspace mode, URL-installed files are persisted under
-`RMM_WORKSPACE_DATA/assets/skills/` and overlay built-ins by skill ID.
+All other enabled skills initially contribute their full description and
+metadata to a catalog. There are no special eager-loading rules for Exegol,
+BloodHound, or other workflows. Enabling a skill does not execute it on every
+step: its directives govern steps to which it applies.
 
-The server can add another built-in directory with:
+Before every batch of operational tools, the model must call `prepare_step`
+**alone**, supplying:
 
-```bash
-export RMM_AI_SKILLS_DIR=/path/to/my-skills
-```
+- `summary`: a short public explanation of the immediate action and skill choice.
+  This is operational rationale, not private model reasoning. Include no secrets.
+- `skill_ids`: relevant enabled skills, including prerequisites as applicable.
+- `tools`: intended tools for this step.
+- `checkpoint`: completed work, pending or uncertain operations, and evidence IDs.
+  Include no secrets and never claim a queued command has completed.
 
-Operators can install `.md` files from the WebUI, CLI, or API. See
-[operator-managed assets](operator-assets.md) for URL upload, enable/disable,
-and workspace persistence.
+The runtime resolves enabled dependencies, returns complete instructions, and
+requires a later provider round before execution. Preparation is consumed by
+one operational batch. Another batch requires another selection. A mixed
+preparation/execution batch is rejected. Read-only tools are operational too;
+`load_skill` and `read_context` can be used during preparation.
 
-Each skill is one `*.md` file with optional YAML frontmatter:
+A leading `/skill-id` in the newest user message explicitly invokes that skill.
+Its complete instructions and enabled dependencies are attached before the
+first provider request, including responses that use no operational tools.
+It is also included in each preparation for that submitted task. An unavailable ID
+blocks preparation; it never enables a disabled skill.
+
+The WebUI execution panel keeps the public step summary and active skill IDs
+visible through subsequent model/tool progress events.
+Progress and final checkpoints are retained with the scoped job. Subsequent
+chat turns carry the final checkpoint as historical evidence; enabled skills
+must be selected again, using the current snapshot and current file contents.
+
+## Files and selection API
+
+Built-in files are immediate `*.md` files in `ai-skills/`. A custom directory
+can be set with `RMM_AI_SKILLS_DIR`. Workspace URL-installed files live under
+`RMM_WORKSPACE_DATA/assets/skills/` and override built-ins by ID. Uploaded files
+must be trusted operator content; they define instructions and tool policy.
+
+`GET /api/v1/ai/skills` returns metadata, never bodies. `skill_ids` on chat/job
+submission has these meanings:
+
+- Omitted or `null`: all enabled skills are available.
+- `[]`: only `always: true` skills are available.
+- A list: those IDs plus enabled `always: true` skills.
+
+Custom `always` skills remain available on demand. Only the two core IDs are
+initially injected. The UI persists checkbox selection in workspace UI state.
+
+## Metadata
+
+Existing Markdown files remain compatible. New fields use JSON values on one
+frontmatter line; this loader does not implement arbitrary YAML structures.
 
 ```markdown
 ---
-id: my-skill-id
-title: Short title for the UI
-description: One-line summary (tooltip)
-default: true
+id: file-review
+title: Review file evidence
+description: Use before interpreting file metadata or file contents.
+default: false
+requires: ["agent-command-dispatch"]
+required_tools: ["get_session"]
+priority: 10
+tool_rules: [{"tool":"inspect_files","requires":["file-review"]}]
 ---
 
-# Skill body
-
-Markdown instructions for the model…
+Follow these instructions when reviewing file evidence...
 ```
 
-| Field | Required | Notes |
-|-------|----------|--------|
-| `id` | No | Lowercase `a-z`, digits, `_`, `-` (max 64). Defaults to filename without `.md`. |
-| `title` | No | Shown in the AI panel checkbox list. |
-| `description` | No | Tooltip in the web UI. |
-| `default` | No | Legacy preference metadata; enabled skills are now available on demand when no selection is supplied. |
-| `always` | No | Always available even with an explicit selection; UI checked and locked. Only the two core IDs are eagerly injected. |
+`requires` names enabled dependencies. Missing dependencies, cycles, malformed
+metadata, and unavailable required tools fail closed. `priority` defaults to
+zero; larger values take precedence for conflicting workflow preferences.
+Operator instructions and core boundaries prevail. Same-priority conflicts
+must be reported rather than silently choosing one.
 
-Core bodies are appended under `## Operator skills`. Optional bodies are held
-in the per-run snapshot until requested. Even a custom `always` skill is loaded
-on demand; only the two core IDs receive initial body injection.
+Each `tool_rules` entry has one selector, `tool` or `backend: "external"`.
+Optional `actions` narrows an action-based tool rule. Live-schema action enums
+are validated before dispatch; guarded actions without enums use conservative
+whitespace-insensitive, case-insensitive comparison. `requires` means all
+listed skills must be active; `requires_any` means at least one must be active.
+Multiple matching rules are cumulative. Rules without `actions` also hide a
+tool when its prerequisites are disabled. Backend identity comes from MCP
+ownership, not tool-name guesses.
 
-## REST API
+Body-free rules are read even from unchecked or asset-disabled files, so
+unchecking a skill cannot erase its tool guard. Workspace overlays supply both
+documents and policy to the central worker. Both come from the same parsed
+file versions; submission does not read the bodies and guards independently. Deleting a file or changing its
+rules changes policy and therefore requires the same trust as editing code.
 
-```http
-GET /api/v1/ai/skills
-```
+Backend selection uses the same metadata. An enabled external-backend rule
+requests the configured Exegol MCP connection; without one, chat remains
+available with RMM tools. There are no skill-ID checks in the connection policy.
 
-Returns `{ "skills": [ { "id", "title", "description", "default", "always", "enabled", "filename" } ], "count", "directory" }` (no body text).
+These guards enforce declared prerequisites, not arbitrary prose semantics.
+The agent still decides relevance. It is instructed to select applicable skills
+at every step, honor their directives, and report workflow failures instead of
+silently substituting another method. Behavioral acceptance needs real model
+trials in addition to protocol tests.
 
-```http
-POST /api/v1/ai/chat
-```
+## Context budget and evidence
 
-Add optional JSON field:
+`RMM_AI_CONTEXT_BUDGET` defaults to 65,536 conservative tokens;
+`RMM_AI_OUTPUT_RESERVE` defaults to 4,096 and caps provider output. Configure
+these within the selected model's actual context and output limits. The input
+estimate counts UTF-8 bytes of serialized messages and tool schemas, plus an
+overhead allowance, deliberately overestimating ordinary text token counts.
+It is a conservative estimate, not an exact provider tokenizer.
 
-```json
-{ "skill_ids": ["windows-user-profile-path", "another-skill"] }
-```
+Complete active skill instructions and the latest checkpoint are attached to
+every provider request independently of conversation history. They are never
+silently truncated. If mandatory content cannot fit, execution stops with
+`context_budget_exceeded`; it does not replay completed operations.
 
-- **Omitted** or **`null`**: all enabled skills are available.
-- **Empty array `[]`**: only skills with `always: true` are available.
-- **Non-empty array**: those IDs plus every `always: true` skill are available.
+Large tool results become previews with opaque artifact IDs. Under pressure,
+older complete conversation groups are archived while preserving original
+operator requests and consent and complete tool-use/result pairs. This is deterministic
+history eviction with a structured checkpoint, not a generated narrative
+summary. `read_context` retrieves exact evidence in bounded character pages, preserving
+Unicode and embedded NULs. New persisted results store separate pages so retrieval
+does not load the whole output. Earlier archive schemas remain readable.
+Job responses contain an artifact manifest rather than full archived blobs.
 
-Availability does not imply body injection. Asset-level disable overrides are
-still respected. Existing saved checkbox selections remain availability filters.
+Artifacts use unique IDs and owner-only SQLite files under
+`RMM_LOG_DIR/ai-context/`. The store scope is derived from authenticated RMM
+credentials, endpoint, and canonical selected session. Another workspace or
+session cannot retrieve it by supplying an artifact ID. The same scope can
+retrieve earlier artifacts on subsequent tasks. Credential rotation changes
+scope. Stores are retained as execution evidence; resetting chat does not
+purge them. Include this directory in the operator's evidence retention policy.
+Provider/tool failures retain a structured, credential-safe diagnostic response
+with the latest step state, returned-call references and artifact manifest.
+Those references remain usable after reconnects and in subsequent tasks with
+the same authenticated scope. A returned call is not proof of remote success.
+Background execution still stops on server restart and is never auto-replayed;
+this does not guarantee recovery of in-flight output during abrupt process loss.
 
-## Web UI
+The BloodHound `bloodhound-queries/catalog.json` remains query guidance used by
+its adapter and skill; it is not a skill selector or a context registry.
 
-AI panel → **Skills** → checkboxes. Selection is synchronized to the
-server/workspace SQLite UI state (`rmm_ai_skills_enabled`) after connection.
-Checkboxes now select availability on demand, not eager prompt inclusion.
-The execution panel lists bodies actually loaded, and updates after `load_skill`.
+## Runtime reference
 
-On connect, the UI calls `GET /api/v1/ai/skills` and renders the list. The
-Skills section is open by default so the shipped skills are visible without
-another click. Core skills are marked always loaded; other skills are marked
-load on demand.
+| Component | Responsibility |
+|-----------|----------------|
+| `prepare_skill_context`, `_tool` | Build the catalog, internal schemas and dispatcher. |
+| `StepSkills.__init__`, `require_from_messages`, `activate_explicit` | Snapshot enabled files, versions, guards and explicit invocation. |
+| `StepSkills.begin_batch`, `__call__` | Enforce preparation barriers and dispatch declared operations. |
+| `StepSkills._resolve`, `available`, `instructions` | Resolve dependencies, filter tools and rebuild active instructions. |
+| `backend_enabled` | Evaluate declarative backend connection requirements. |
+| `resolve_ai_skill_snapshot`, `resolve_ai_skill_policy` | Read a consistent instruction/policy snapshot, or standalone body-free policy for legacy supplied documents. |
+| `ContextWindow.__init__`, `archive`, `read`, `read_page`, `manifest` | Own the budget and scoped persistent evidence store. |
+| `ContextWindow.bounded_result`, `prepare` | Bound results and archive complete older history groups. |
+| `ContextDispatcher.__init__`, `begin_batch`, `instructions`, `__call__` | Preserve step gates while paging evidence and bounding output. |
+| `_run_provider_loop`, `_run_provider_conversation` | Share budgeting around each provider's native tool protocol. |
+| `_message_with_checkpoint` | Carry prior checkpoints as evidence, never as active policy. |
 
-`rmm_ai_skill_context.prepare_skill_context` builds the catalog and wraps either
-transport's dispatcher. Its run-local `dispatch` accepts exact catalog IDs,
-never filesystem paths, and avoids returning a body twice. Unknown IDs return
-an error; a backend tool named `load_skill` fails initialization rather than
-shadowing the internal tool. Loading does not run the skill's commands.
+## Adding or updating a skill
 
-The catalog uses existing descriptions as activation hints. Focused workflow
-phases, prerequisites, expected evidence, and stop conditions are useful
-patterns from Claude-Red; importing entire technique catalogs is unnecessary.
-Bodies loaded during a run remain in its conversation. This is lazy loading,
-not automatic context eviction or a guarantee that the model chooses correctly.
+Add a Markdown file with a useful activation description, ordered instructions,
+and any dependencies or declared tool guards. Enable it in the AI panel. Files
+are read on submission, so editing skill files needs no service restart.
+Python runtime updates require restarting the affected service. Test both
+successful activation and disabled/missing prerequisites. Do not change global
+runtime code merely to add another workflow.
 
-## Shipped skills
+## Validation
 
-Select `exegol-rmm-pivot` when using Exegol and verify MCP is connected in execution
-details. Instructions cannot supply tools missing from the live tool list.
-
-See [lab skill review](lab-skill-review.md) for the upstream comparison,
-remaining runtime limitations, and acceptance scenarios.
-
-| File | Purpose |
-|------|---------|
-| `ai-skills/operator-boundaries.md` | **Always enabled.** Prohibit installations on execution hosts; require explicit, scoped operator consent before local or remote settings and password changes. |
-| `ai-skills/agent-command-dispatch.md` | **On demand.** CMD vs PowerShell dispatch; always use `PS:` for PowerShell (CMD breaks `\|` in `powershell -Command`). |
-| `ai-skills/windows-identity-and-groups.md` | **On demand.** Identity and groups via `whoami` / token; do not use `net user %USERNAME%` on domain accounts. |
-| `ai-skills/windows-ad-recon-stealth.md` | **On demand.** Prefer **ADWS** (`Get-AD*`) over direct LDAP and `net.exe` RPC recon. |
-| `ai-skills/windows-user-profile-path.md` | Do not assume `C:\Users\<username>`; resolve profile path on the agent before file ops. |
-| `ai-skills/exegol-rmm-pivot.md` | **On demand.** Route work between Minimal-RMM and Exegol MCP; choose RMM control tools, Exegol execution tools, and SOCKS5/TUN based on where the operation must run. |
-| `ai-skills/task-completion-report.md` | **Always enabled.** End every task with a concise work report; the server appends authoritative UTC start and completion timestamps. |
-| `ai-skills/document-embeddings.md` | **On demand.** Explain document classification, use saved profiles through RMM tools, distinguish operator commands from target commands, and diagnose execution/results. |
-| `ai-skills/bloodhound-ce-python-collection.md` | **On demand.** Python BloodHound CE with enforced DCOnly; persisted collection, import, verification, and evidence handoff. ldeep is planned separately. |
-| `ai-skills/bloodhound-analysis.md` | **On demand.** Consume verified runs, choose graph queries, assess candidate-path prerequisites and coverage, and distinguish expected telemetry from detection. |
-| `ai-skills/offensive-netexec.md` | **On demand.** Evidence-led protocol selection and targeted authentication/access validation in Exegol. |
-| `ai-skills/offensive-windows-privesc.md`, `ai-skills/offensive-linux-privesc.md` | **On demand.** Target-local privilege assessment, effective permission checks, and bounded validation. |
-| `ai-skills/web-*.md` | **On demand.** All 16 web topics in the pinned Claude-Red snapshot; see the [adaptation map and provenance](claude-red-adaptations.md). |
-| `ai-skills/local-recon-before-network.md` | **On demand.** Establish agent identity, token, OS, interfaces/routes, and domain context before network discovery; distinguish local DC hints from live directory lookups; then hunt scoped local secrets (scheduled tasks, web configs, etc.) to progress faster, with Seatbelt-style tools as a last resort. |
-| `ai-skills/lateral-movement.md` | **On demand.** Evaluate authorized remote-access attempts, verify completion before changing methods, and report success, partial completion, failure, or uncertainty with sanitized evidence. |
-| `ai-skills/agent-deployment.md` | **On demand.** Deploy an RMM agent on another authorized machine end to end: `deploy_agent_script` or `build_go_agent` produce server-configured artifacts, `queue_upload` stages them, a lateral technique executes them, and registration in `list_sessions` is the only success proof; artifact contents stay out of chat output. |
-
-### Operator boundaries
-
-`operator-boundaries` applies across technique skills, including lateral
-movement and deployment. Existing authorization for a specific setting or
-credential change remains valid; broad task authorization does not supply it.
-Installations on execution hosts remain prohibited under this skill.
-
-These are model instructions, not a tool-level enforcement mechanism.
-`always: true` includes the skill regardless of chat skill selection, but
-runtime asset disable overrides, workspace overlays, or an alternate skills
-directory can still remove or replace it. Hard enforcement requires separate
-tool authorization controls.
-
-### Why `PS:` matters for the AI
-
-The agent default shell is **cmd.exe**. Lines sent as `powershell -Command "script | pipeline"` are parsed by CMD first; pipe characters split the line so cmdlets like `Select-Object` run as CMD programs and fail. Skills instruct the model to prefix PowerShell with **`PS:`** (script body only, no `powershell.exe` wrapper). See `docs/client-command-execution.md` for agent-side behavior.
-
-## Code
-
-| Module | Role |
-|--------|------|
-| `rmm_ai_skills.py` | Load skills, `compose_system_prompt()` |
-| `rmm_ai.py` | Passes selected skill documents into the required MCP chat loop; `_append_task_timing()` appends server-generated UTC task timing to successful responses |
-| `server_rmm.py` | `GET …/ai/skills`, `skill_ids` on `POST …/ai/chat` |
-| `web/ai.js` | Skill list UI, persistence, chat payload |
-
-## Adding a skill
-
-1. Create `ai-skills/your-skill-id.md` for a built-in skill, or install a
-   Markdown URL asset for one workspace.
-2. Set frontmatter (`default: true` if it should be on for new operators).
-3. Enable or disable the skill from **AI → Skills** or **Config → Runtime
-   assets and beacon transport**.
-4. Reload the web UI (or reconnect). Files are read on each chat and skills
-   request; no server restart is required.
+`make check-ai` runs the AI/provider/context/route suites and UI recovery test.
+It is included in `make check` alongside syntax, CLI, parity, WebUI contracts,
+and lint. Provider protocol tests use scripted responses; they do not establish
+semantic skill-selection quality against a live provider or remote workspace.

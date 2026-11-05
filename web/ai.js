@@ -48,6 +48,7 @@
         return {
           role: m.role,
           content: m.content,
+          ...(m.step_state && typeof m.step_state === "object" ? { step_state: m.step_state } : {}),
           toolCalls: toolCalls?.length ? toolCalls : undefined,
         };
       });
@@ -59,7 +60,7 @@
   }
 
   function welcomeText() {
-    return "RMM tools plus required Exegol MCP. Configure Exegol in the owning service's Config settings. Select an RMM session in the sidebar for beacon context.";
+    return "RMM tools with optional Exegol and BloodHound workflows. Enable their skills to use them; configure Exegol in the owning service's Config settings. Select an RMM session in the sidebar for beacon context.";
   }
 
   function getProviderState() {
@@ -252,10 +253,6 @@
     renderProviderControls();
   }
 
-  function getExegolMcpSettings() {
-    return { enabled: true };
-  }
-
   function persistExegolMcpSettings() {
     // Browser preferences no longer control or retain MCP endpoint credentials.
     sessionStorage.removeItem(EXEGOL_ENABLED_STORAGE);
@@ -333,7 +330,8 @@
       const text = document.createElement("span");
       text.className = "ai-skill-label";
       text.title = skill.description || skill.id;
-      const marker = ["operator-boundaries", "task-completion-report"].includes(skill.id) ? " · always loaded" : " · load on demand";
+      const initial = ["operator-boundaries", "task-completion-report"].includes(skill.id);
+      const marker = initial ? " · loaded when enabled" : " · selected per step";
       text.textContent = `${skill.title || skill.id}${marker}`;
       label.appendChild(input);
       label.appendChild(text);
@@ -517,6 +515,9 @@
     execution.textContent = context.tool_path
       ? `Tools: ${context.tool_path} · MCP: ${context.mcp_status} · Exegol: ${context.exegol_status}. Skills loaded: ${(context.skills || []).join(", ") || "none"}. Loaded skills are instructions, not proof that a technique ran.`
       : "Execution details are not available for this job.";
+    if (context.step_summary) {
+      execution.textContent += ` Step ${context.step || ""}: ${context.step_summary} Active skills: ${(context.active_skills || []).join(", ") || "core only"}.`;
+    }
     const saved = jobState(sessionId);
     if (pendingSubmission?.body.request_id === job.request_id) pendingSubmission = null;
     saveJobState(sessionId, { ...saved, job_id: job.id, request_id: job.request_id });
@@ -567,8 +568,8 @@
     if (job.status === "succeeded" || typeof result.message === "string") {
       if (Array.isArray(result.chat_messages)) {
         chatHistory = normalizeStoredMessages(result.chat_messages);
-      } else if (typeof result.message === "string" && !chatHistory.some((m) => m.role === "assistant" && m.content === result.message)) {
-        chatHistory.push({ role: "assistant", content: result.message, toolCalls: result.tool_calls_made });
+      } else if (typeof result.message === "string" && !chatHistory.some((m) => m.role === "assistant" && m.content === result.message && (!result.step_state || JSON.stringify(m.step_state) === JSON.stringify(result.step_state)))) {
+        chatHistory.push({ role: "assistant", content: result.message, toolCalls: result.tool_calls_made, step_state: result.step_state });
       }
       renderChatLog();
     }
@@ -722,7 +723,6 @@
       return;
     }
     persistExegolMcpSettings();
-    const exegol = getExegolMcpSettings();
 
     const sessionId = activeSessionId();
     if (loadedChatSessionId === undefined) {
@@ -745,7 +745,6 @@
       model,
       messages: chatHistory.map((message) => ({ ...message })),
       selected_session_id: sessionId,
-      exegol_mcp_enabled: exegol.enabled,
       skill_ids: getEnabledSkillIds(),
     };
     pendingSubmission = { body, sessionId };

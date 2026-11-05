@@ -7,6 +7,13 @@ default: true
 
 # AD reconnaissance method selection
 
+Enabled BloodHound analysis and collection workflows take precedence for
+directory graph questions and acquisition. Use the Exegol-hosted database
+through the `bloodhound` adapter and its query catalog. Do not silently fall
+back to manual directory queries when those workflows fail. The following
+preference applies to explicitly requested live directory lookups or when
+BloodHound workflows are disabled.
+
 For authorized domain queries, prefer ADWS through the ActiveDirectory
 PowerShell module, then direct LDAP if the module or ADWS is unavailable.
 Avoid legacy `net.exe`/`net1.exe` enumeration by default. This is an operator

@@ -49,6 +49,12 @@ function setup(api) {
   assert.ok(!details.includes('secret-token'));
   diagnosticUi.test.displayAiJob(failed, 'a', diagnosticUi.test.state().token);
   assert.equal(diagnosticUi.test.state().history.filter(m => m.content === 'Partial report').length, 1);
+  diagnosticUi.test.displayAiJob({ id: 'step-job', status: 'running', progress: {
+    tool_path: 'mcp', mcp_status: 'connected', exegol_status: 'disabled', step: 2,
+    step_summary: 'Inspect <file> evidence', active_skills: ['file-review'], skills: ['file-review']
+  } }, 'a', diagnosticUi.test.state().token);
+  assert.match(diagnosticUi.nodes.get('#ai-job-execution').textContent, /Step 2: Inspect <file> evidence/);
+  assert.match(diagnosticUi.nodes.get('#ai-job-execution').textContent, /Active skills: file-review/);
   let stopPath;
   const stopUi = setup(async (path, options) => {
     if (options?.method === 'POST') {
@@ -83,7 +89,7 @@ function setup(api) {
   assert.equal(ui.test.state().history.length, 1, 'lost POST retains user history');
   assert.equal(calls.filter(c => c.options.method === 'POST').length, 1);
   const request = JSON.parse(calls.find(c => c.options.method === 'POST').options.body);
-  assert.equal(request.exegol_mcp_enabled, true);
+  assert.equal(request.exegol_mcp_enabled, undefined, "backend selection belongs to the service and skill policy");
   assert.equal(request.exegol_mcp_url, undefined);
   assert.equal(request.exegol_mcp_token, undefined);
   assert.equal(ui.storage.has('rmm_exegol_mcp_token'), false);

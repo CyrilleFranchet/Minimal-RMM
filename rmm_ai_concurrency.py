@@ -28,6 +28,8 @@ def tool_concurrency():
 
 async def run_tool_batch(calls, call_tool, *, resolve_session=None, progress=None, round_number=1):
     """Execute normalized calls with barriers, host exclusion, and ordered results."""
+    if getattr(type(call_tool), 'begin_batch', None):
+        call_tool.begin_batch(calls)
     limit = tool_concurrency()
     results = [None] * len(calls)
 

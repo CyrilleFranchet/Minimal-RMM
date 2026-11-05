@@ -9,15 +9,18 @@ protocol notes remain in the linked feature pages.
 
 The [BloodHound CE workflow](bloodhound-workflow.md) executes at the storage
 owner: the workspace service inside Exegol.
-Exegol is mandatory at that operator storage owner for AI and mutating
-BloodHound operations. The central server remains independent of Exegol in
+Exegol is required there for enabled external-backend AI workflows and
+mutating BloodHound operations. RMM-only AI skips Exegol readiness and can
+use MCP or direct RMM execution. The central server remains independent of Exegol in
 both single-workspace and multi-workspace deployments.
 An owner-local runtime checks MCP/container identity and starts or reuses CE
 at service startup. Reconnecting browsers read health; CE failures leave the
 workspace and agent-management paths available.
 It persists run checkpoints and artifacts, invokes an installed CE collector,
 and uses a configured CE API. It never moves collection onto the Windows agent
-or forwards workspace artifacts to the central control plane.
+or forwards raw collection files to the central control plane. Bounded tool
+responses can become centrally stored AI evidence; they are separate from the
+workspace-owned raw collection artifacts.
 
 Minimal-RMM has four boundaries:
 
@@ -237,6 +240,7 @@ raw packets or ICMP.
 | Operator transcripts and events | `RMM_logs/` | Workspace SQLite database |
 | Downloads, screenshots, keylogs | `RMM_logs/` | Workspace artifact directories |
 | AI chat history | `RMM_logs/history/` | Workspace SQLite database |
+| Reconnectable AI jobs and evidence | `RMM_logs/ai-jobs.sqlite3` and `RMM_LOG_DIR/ai-context/` | Same central stores, scoped to workspace credentials and selected session |
 | WebUI operator configuration | `RMM_UI_STATE_DB` (default `RMM_logs/ui-state.db`) | `ui_state` table in workspace SQLite database |
 | rclone profiles | Server environment or asset store | Workspace asset store and optional profile file |
 | SOCKS listener | Central server process | Workspace service |

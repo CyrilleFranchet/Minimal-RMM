@@ -256,6 +256,12 @@ class McpCompositeSession:
         self._stack = AsyncExitStack()
 
     @property
+    def external_tool_names(self) -> set[str]:
+        """Identify tools owned by non-RMM backends for per-run selection."""
+        return {name for name, backend in self._tool_route.items()
+                if backend is not self._backends[0]}
+
+    @property
     def openai_tools(self) -> list[dict]:
         return self._openai_tools
 

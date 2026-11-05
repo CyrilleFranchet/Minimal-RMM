@@ -50,7 +50,8 @@ server relays workspace-scoped requests to their authenticated workspace instead
 of reading its own files. Only structured requests and bounded replies pass
 through the central relay; CE credentials and raw collection files stay local.
 A single-workspace installation uses this same workspace-owned storage and
-execution path. The central server remains independent of Exegol. Exegol identity is mandatory for AI and mutating BloodHound operations;
+execution path. The central server remains independent of Exegol. Exegol identity is required for AI workflows whose enabled metadata requests
+the external backend and for mutating BloodHound operations;
 configuration, diagnostics, and ordinary agent management remain available when
 that prerequisite is blocked. A MCP connection alone does not prove ownership.
 

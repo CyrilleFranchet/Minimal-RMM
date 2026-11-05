@@ -777,7 +777,8 @@ Today deployment is manual:
 - Typical lab start inside Exegol, after preparing the deployment:
   `python3 rmm_deployment.py run --root /path/to/deployment --component single`
 - Default HTTP bind is `127.0.0.1` — fine on host, **insufficient inside a container** (agents and port publishing need `--bind 0.0.0.0`)
-- Exegol MCP is required for AI/BloodHound (`RMM_EXEGOL_MCP_URL`, with optional
+- Exegol MCP is required for enabled external-backend AI workflows and the
+  BloodHound runtime (`RMM_EXEGOL_MCP_URL`, with optional
   `RMM_EXEGOL_CONTAINER` override); it can run in the
   workspace network or be reached through the workspace container
 

@@ -1,6 +1,7 @@
 """Exercise scoped, durable, bounded AI job execution without provider calls."""
 
 import json
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -8,12 +9,52 @@ import threading
 import time
 import unittest
 import urllib.error
+from unittest.mock import patch
 from pathlib import Path
 
 from rmm_ai_jobs import AIJobManager, JobCapacityError, JobClosedError, JobConflictError, JobInterrupted
 
 
 class AIJobManagerTests(unittest.TestCase):
+    def test_provider_failure_preserves_scoped_evidence_and_http_classification(self):
+        import rmm_ai
+        from rmm_ai_context import ContextWindow
+        from rmm_ai_skill_context import prepare_skill_context
+        requests = []
+        async def remote(name, args):
+            return 'COMPLETED EVIDENCE'
+        def request(url, headers, body):
+            requests.append(body)
+            if len(requests) == 1:
+                name, args = 'prepare_step', {'summary': 'Inspect evidence', 'checkpoint': 'No earlier operations',
+                                             'skill_ids': ['review'], 'tools': ['inspect']}
+            elif len(requests) == 2:
+                name, args = 'inspect', {}
+            else:
+                raise urllib.error.HTTPError('https://private-provider-secret', 429, 'private-token', {}, None)
+            return {'choices': [{'message': {'tool_calls': [{'id': str(len(requests)), 'type': 'function',
+                       'function': {'name': name, 'arguments': json.dumps(args)}}]}}]}
+        def run(progress):
+            _, catalog, tools, dispatch = prepare_skill_context([{'id': 'review', 'body': 'Review safely'}],
+                [{'type': 'function', 'function': {'name': 'inspect'}}], remote, progress)
+            return asyncio.run(rmm_ai._run_provider_loop(provider='openai', api_key='test', messages=[{'role': 'user', 'content': 'Inspect'}],
+                model='test', system=catalog, tools=tools, call_tool=dispatch, max_rounds=4, via='test', progress=progress,
+                context_scope='f' * 64))
+        with patch('rmm_ai._json_request', side_effect=request), patch('rmm_ai_context.getenv', side_effect=lambda key, default=None: self.directory.name if key == 'RMM_LOG_DIR' else default):
+            job, _ = self.submit(run=run)
+            final = self.wait_for(job['id'], {'failed'})
+            result = final['result']
+            self.assertEqual(result['error'], 'ai_provider_rate_limited_or_quota_exceeded')
+            self.assertEqual(result['step_state']['active_skills'], ['review'])
+            returned = next(call for call in result['step_state']['returned_calls'] if call['name'] == 'inspect')
+            self.assertIn(returned['artifact_id'], result['context_artifacts'])
+            reopened = ContextWindow(scope='f' * 64)
+            self.assertEqual(reopened.read_page(returned['artifact_id'], 0, 4096)['content'], 'COMPLETED EVIDENCE')
+            self.assertIsNone(self.manager.get(job['id'], 'another-owner'))
+            self.assertEqual(len(requests), 3)
+            self.assertNotIn('private-token', json.dumps(final))
+            self.assertNotIn('private-provider-secret', json.dumps(final))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name) / "jobs.sqlite3"

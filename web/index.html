@@ -420,17 +420,14 @@
           </details>
           <details class="ai-settings" open>
             <summary>Skills</summary>
-            <p class="ai-hint">Built-in defaults and uploaded Markdown skills are listed here. Checked skills are injected into the system prompt.</p>
+            <p class="ai-hint">Built-in defaults and uploaded Markdown skills are listed here. Checked skills are available for selection at each step. Active skill instructions load before execution.</p>
             <div id="ai-skills-list" class="ai-skills-list">
               <p class="ai-skills-empty">Connect to load skills.</p>
             </div>
           </details>
           <details class="ai-settings">
-            <summary>Exegol MCP (required)</summary>
-            <label class="ai-checkbox">
-              <input type="checkbox" id="exegol-mcp-enabled" checked disabled>
-              Required for operator workspaces and AI tools
-            </label>
+            <summary>Exegol MCP connection</summary>
+            <p class="ai-hint">Required for enabled workflows that use Exegol. Disable the relevant skill to keep it unavailable to the AI; RMM-only chat can continue.</p>
             <p class="ai-hint">Configure the MCP endpoint, credentials, and container in <strong>Config → Service settings</strong> on the owning workspace or standalone service. AI chat uses those saved settings; browser overrides are disabled.</p>
           </details>
         </div>

@@ -109,13 +109,18 @@ def _safe_progress(event):
         value = event.get(key)
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", value):
             clean[key] = value
-    for key in ("round", "tool_count"):
+    for key in ("round", "tool_count", "step", "context_compactions"):
         value = event.get(key)
         if type(value) is int and 0 <= value <= 1000000:
             clean[key] = value
-    if isinstance(event.get("skills"), list):
-        clean["skills"] = [s for s in event["skills"][:100]
-                           if isinstance(s, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", s)]
+    for key in ('skills', 'active_skills'):
+        if isinstance(event.get(key), list):
+            clean[key] = [s for s in event[key][:100]
+                          if isinstance(s, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", s)]
+    if isinstance(event.get('step_summary'), str):
+        clean['step_summary'] = ''.join(c for c in event['step_summary'][:500] if c.isprintable())
+    if isinstance(event.get('step_checkpoint'), str):
+        clean['step_checkpoint'] = ''.join(c for c in event['step_checkpoint'][:2000] if c.isprintable())
     return clean
 
 

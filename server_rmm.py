@@ -1971,6 +1971,8 @@ class RMMServer:
             if role not in ("user", "assistant") or not isinstance(content, str):
                 continue
             row: dict = {"role": role, "content": content}
+            if isinstance(m.get("step_state"), dict):
+                row["step_state"] = m["step_state"]
             tool_calls = m.get("tool_calls_made")
             if not isinstance(tool_calls, list):
                 tool_calls = m.get("toolCalls")
@@ -4604,15 +4606,6 @@ class RMMHandler(BaseHTTPRequestHandler):
             if not workspace_id and srv.storage_mode != "server":
                 self._json(409, {"error": "ai_requires_operator_workspace"})
                 return True
-            if not workspace_id and srv.storage_mode == "server":
-                from rmm_exegol_runtime import get_runtime
-                runtime = get_runtime(os.path.join(LOG_DIR, "bloodhound")).status()
-                if runtime.get("exegol_status") != "ready":
-                    self._json(503, {"error": "exegol_workspace_not_ready", "runtime": runtime})
-                    return True
-                body = dict(body, exegol_mcp_enabled=True,
-                            exegol_mcp_url=settings_getenv("RMM_EXEGOL_MCP_URL", ""),
-                            exegol_mcp_token=settings_getenv("RMM_EXEGOL_MCP_TOKEN", ""))
             asynchronous = parts == ["ai", "jobs"]
             provider = str(body.get("provider") or "openai").strip().lower()
             api_key = str(
@@ -4648,14 +4641,33 @@ class RMMHandler(BaseHTTPRequestHandler):
             if skill_documents is not None and not isinstance(skill_documents, list):
                 self._json(400, {"error": "invalid_skill_documents"})
                 return True
+            snapshot_policy = None
             if skill_documents is None:
-                from rmm_ai_skills import ai_skills_dir, resolve_ai_skills
+                from rmm_ai_skills import ai_skills_dir, resolve_ai_skill_snapshot
 
-                skill_documents = resolve_ai_skills(
+                skill_documents, snapshot_policy = resolve_ai_skill_snapshot(
                     skill_ids,
                     srv.skill_directories() if hasattr(srv, "skill_directories") else [ai_skills_dir()],
                     srv.skill_overrides() if hasattr(srv, "skill_overrides") else None,
                 )
+            from rmm_ai_skills import resolve_ai_skill_policy
+            from rmm_ai_skill_context import backend_enabled
+            skill_policy = body.get("skill_policy") if workspace_id else None
+            if skill_policy is None:
+                skill_policy = snapshot_policy if snapshot_policy is not None else resolve_ai_skill_policy(srv.skill_directories() if hasattr(srv, "skill_directories") else None)
+            if not isinstance(skill_policy, list) or not all(isinstance(rule, dict) for rule in skill_policy):
+                self._json(400, {"error": "invalid_skill_policy"})
+                return True
+            needs_external = backend_enabled('external', skill_documents, skill_policy)
+            if not workspace_id and srv.storage_mode == "server" and needs_external:
+                from rmm_exegol_runtime import get_runtime
+                runtime = get_runtime(os.path.join(LOG_DIR, "bloodhound")).status()
+                if runtime.get("exegol_status") != "ready":
+                    self._json(503, {"error": "exegol_workspace_not_ready", "runtime": runtime})
+                    return True
+                body = dict(body, exegol_mcp_enabled=True,
+                            exegol_mcp_url=settings_getenv("RMM_EXEGOL_MCP_URL", ""),
+                            exegol_mcp_token=settings_getenv("RMM_EXEGOL_MCP_TOKEN", ""))
             workspace_id = getattr(self, "_workspace_scope", lambda: None)()
             workspace_token = self.headers.get("X-RMM-Workspace-Token", "").strip() if workspace_id else ""
             rmm_headers = {}
@@ -4689,11 +4701,12 @@ class RMMHandler(BaseHTTPRequestHandler):
                     exegol_mcp_token=body.get("exegol_mcp_token") if not workspace_id else None,
                     skill_ids=skill_ids,
                     skill_documents=skill_documents,
+                    skill_policy=skill_policy,
                 )
                 def run_assistant(progress=None):
                     """Resolve workspace-owned MCP prerequisites without trusting browser overrides."""
                     arguments = dict(run_args)
-                    if workspace_id:
+                    if workspace_id and needs_external:
                         if progress:
                             progress({"phase": "workspace_prerequisites"})
                         code, context = srv.bloodhound_broker.resolve_ai_context(workspace_id)
@@ -4713,7 +4726,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                         if result.get("ok"):
                             stored = list(messages)
                             stored.append({"role": "assistant", "content": result.get("message", ""),
-                                           "tool_calls_made": result.get("tool_calls_made", [])})
+                                           "tool_calls_made": result.get("tool_calls_made", []),
+                                           "step_state": result.get("step_state", {})})
                             if selected:
                                 srv.save_ai_chat(str(selected), stored)
                             result["chat_messages"] = stored
@@ -4741,7 +4755,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     stored = list(messages)
                     reply = result.get("message")
                     if isinstance(reply, str):
-                        assistant_row: dict = {"role": "assistant", "content": reply}
+                        assistant_row: dict = {"role": "assistant", "content": reply, "step_state": result.get("step_state", {})}
                         tool_calls = result.get("tool_calls_made")
                         if isinstance(tool_calls, list) and tool_calls:
                             assistant_row["tool_calls_made"] = tool_calls

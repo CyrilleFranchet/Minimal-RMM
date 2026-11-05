@@ -106,6 +106,17 @@ class AiProviderRouteTests(unittest.TestCase):
         )
         self.assertEqual((status, body), (400, {"error": "missing_api_key"}))
 
+    def test_rmm_only_chat_skips_external_runtime_readiness(self):
+        self.runtime.status.return_value = {'exegol_status': 'failed'}
+        with patch('rmm_ai.run_ai_chat', return_value={'ok': True, 'message': 'Ready'}) as run:
+            status, _ = self.call(f'{API_PREFIX}/ai/chat', {
+                'provider': 'openai', 'api_key': 'key', 'skill_ids': [],
+                'messages': [{'role': 'user', 'content': 'Inspect the agent'}]})
+        self.assertEqual(status, 200)
+        self.runtime.status.assert_not_called()
+        self.assertIn('skill_policy', run.call_args.kwargs)
+        self.assertNotIn('exegol-rmm-pivot', {s['id'] for s in run.call_args.kwargs['skill_documents']})
+
 
 if __name__ == "__main__":
     unittest.main()

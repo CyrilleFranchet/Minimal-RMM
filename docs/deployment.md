@@ -154,7 +154,9 @@ central administrator token. Do not share the administrator environment file
 with operators. Setting up the standalone MCP endpoint is separate from the
 WebUI AI loop; see [MCP parity](mcp-parity.md).
 
-Exegol is required for the operator workspace's AI and BloodHound workflow.
+Exegol is required for AI workflows whose enabled skill metadata requests its
+external backend, and for the BloodHound runtime. RMM-only AI remains available
+without Exegol readiness; it can use MCP or direct RMM execution.
 Configure `RMM_EXEGOL_MCP_URL`, its credential `RMM_EXEGOL_MCP_TOKEN` when
 required, in owner-local settings. Container selection is automatic through MCP
 discovery and workspace identity verification; `RMM_EXEGOL_CONTAINER` is an

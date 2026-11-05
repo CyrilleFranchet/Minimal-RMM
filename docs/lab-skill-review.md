@@ -33,9 +33,11 @@ uniform, tested integration contract.
 
 Minimal-RMM reads immediate `.md` files and resolves available IDs. It now
 injects only the two core bodies and an optional metadata catalog, with a
-`load_skill` tool for on-demand body retrieval. It has no recursive discovery
-or automatic dependency loading. A referenced skill is not automatically
-loaded. Keep the existing format and select a set relevant to the deliverable.
+`load_skill` tool for inspection and a mandatory `prepare_step` barrier before
+operational batches. Explicit invocations load before the first provider request.
+It has no recursive discovery. The per-step runtime resolves explicit
+`requires` metadata inside the enabled snapshot. A prose reference alone does
+not load or enable a dependency. Keep the existing format and select a set relevant to the deliverable.
 Saved UI selections and workspace overlays can
 override what a repository edit appears to provide; verify execution details
 and the installed skill content on the actual deployment.

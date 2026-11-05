@@ -288,9 +288,11 @@ transit the central AI handler before reaching the provider; workspace
 persistence does not make the central broker blind to this traffic. Keep the
 workspace data directory private and trust the central service accordingly.
 
-Exegol MCP is mandatory for AI; there is no direct-tool fallback. Owner-local
-service settings choose its endpoint and credential, rather than each chat
-request. The workspace runtime verifies container ownership and starts or
+Exegol MCP is required when enabled skill metadata requests the external
+backend. RMM-only chat skips that readiness requirement and can use MCP or
+direct RMM execution. Required external workflows never silently fall back.
+Owner-local service settings choose the endpoint and credential, rather than
+each chat request. The workspace runtime verifies container ownership and starts or
 reuses CE asynchronously when the service starts. Browser reconnects only
 check readiness. CE startup failure does not prevent ordinary agent management
 or configuration. See [BloodHound lifecycle](bloodhound-workflow.md).

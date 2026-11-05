@@ -58,7 +58,9 @@ coverage must be established before enabling it.
 
 Only `operator-boundaries` and `task-completion-report` bodies enter the initial
 prompt. These adaptations have `default: false`; enabled optional skills appear
-as metadata and are loaded individually with `load_skill`. Availability is
+as metadata and are activated for each immediate step with `prepare_step`.
+`load_skill` supports read-only inspection during preparation; explicit
+`/skill-id` invocations load before the first provider request. Availability is
 distinct from loading. Existing saved selections continue to exclude skills
 not selected: enable the new entries in the AI panel when using such a preset.
 

@@ -9,6 +9,78 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-05 — Documentation consistency and failure handoff review
+
+- Reconciled README, deployment, provider, background-job, settings, and skill
+  adaptation docs with metadata-conditional Exegol requirements and RMM-only
+  direct execution. Corrected stale WebUI copy and removed the unconditional
+  browser Exegol-enable flag. Documented central-worker context settings.
+- Skill instructions and declarative guards now use the same parsed-file
+  snapshot instead of two independent reads during submission.
+- Provider/tool failures preserve scoped evidence references and the latest
+  step state in structured results without raw exception messages, retaining
+  HTTP classification. Returned-call references carry into later chat turns.
+- Step summaries and active IDs remain in subsequent progress events, rather
+  than disappearing as soon as the next model/tool phase starts.
+- Added snapshot consistency, provider-failure evidence recovery, persistent
+  step-progress, and workspace submission regression tests.
+- Final validation: `make check` passes (74 AI tests with one MCP-dependent
+  skip, 26 skill/provider tests, six route tests, 15 CLI tests, UI recovery,
+  syntax, parity, WebUI contracts, and lint). All 57 workspace tests pass.
+  Checked 127 local Markdown links with no missing targets. Independent
+  failure-path and documentation review found no remaining concrete blocker.
+- `bloodhound-queries/catalog.json` is unchanged. Live model/remote deployment
+  acceptance remains unverified; the unrelated baseline settings-test failure
+  documented below is unchanged.
+
+### 2026-11-05 — Adversarial follow-up review of general skill runtime
+
+- Found and fixed an explicit invocation gap: `/skill-id` now resolves enabled
+  dependencies and pins instructions before the first provider request, even
+  when the model returns a tool-free answer. Disabled invocations fail early.
+- Closed conditional action-guard bypasses from handler normalization: validate
+  action enums before dispatch and compare no-enum guarded actions conservatively.
+- Removed full archived blobs from final job responses and persistent-run memory;
+  return only artifact manifests. Persist new results in bounded character pages
+  to preserve Unicode and embedded NULs without full reads. Existing archives
+  remain readable through a backward-compatible schema upgrade.
+- Added regression cases for all four findings and legacy archive compatibility.
+  The BloodHound query catalog is unchanged.
+- Final validation: `make check` passes (72 AI tests, one MCP-SDK-dependent skip;
+  25 RMM AI tests; six provider-route tests; 15 CLI tests; syntax, parity,
+  WebUI contracts, UI recovery, and lint). All 56 workspace tests pass.
+  Live provider/remote Exegol acceptance remains unverified. The unrelated
+  baseline settings assertion documented below remains outside this fix.
+
+### 2026-11-05 — General per-step skill activation and bounded context
+
+- Replaced the earlier Exegol/BloodHound eager-loading exceptions with a generic
+  `prepare_step` barrier before every operational batch. The model selects
+  skills for the immediate action and publishes a brief operational rationale.
+- Skill metadata declares dependencies, required tools, priority, and tool or
+  backend guards. Disabled dependencies never auto-enable; cycles and missing
+  tools block preparation. Rules are forwarded from the workspace owner.
+- Core boundaries remain pinned. Active instructions and a structured checkpoint
+  survive history eviction; provider requests have a configurable conservative
+  input budget and matching output reserve. Complete old message groups and
+  large results move to scoped, durable, uniquely identified evidence archives.
+- Historical checkpoints persist across chat reloads. Artifact retrieval is
+  scoped to authenticated credentials, endpoint and selected session. RMM-only
+  chats skip external runtime readiness when no enabled metadata requests it.
+- The BloodHound query catalog remains unchanged. Deployment facts stay in
+  skill bodies; no workflow-specific skill IDs remain in the generic loader.
+- Validation: `make check` passes with the IDE interpreter and temporary CLI
+  dependencies in `/private/tmp/rmm-skill-test-deps`; the IDE environment was
+  not modified. Its AI target ran 66 tests (one MCP-SDK-dependent skip),
+  25 RMM AI tests, six provider-route tests, and UI recovery checks. All
+  56 workspace tests pass. Code/security review found no blocking issues.
+- Separate settings tests exposed an existing assertion expecting settings
+  changes to remain unavailable until restart; reproduced against HEAD's
+  unmodified `rmm_settings.py`. That unrelated behavior was not changed.
+- Live provider and remote deployment acceptance remain unverified. No local
+  RMM service is running; remote host/service details are required to deploy.
+  Evidence retention is documented and currently operator-managed.
+
 ### 2026-11-04 — Classify AI provider HTTP failures (401/403/429/5xx) in the async job path
 
 - Follow-up to the MCP-mislabeling fix above: the WebUI's actual chat path

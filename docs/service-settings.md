@@ -13,10 +13,12 @@ the server, or `settings.json` inside the workspace data directory. Select a
 custom file with `--config FILE` or `RMM_CONFIG_FILE`. Back up this file with
 the service's data; it contains credentials and must not be committed to Git.
 
-**Restart the affected Python service after saving settings.** Running services
-use an immutable startup snapshot. Saving a tunnel configuration and restarting
-only its connector does not load the new service settings. Restart the central
-service, then start the profile if autostart is disabled.
+**Restart the affected Python service to apply startup configuration consistently.**
+Saved overrides become available to subsequent settings lookups immediately,
+but already initialized listeners, clients, and connectors can retain their
+previous configuration. Saving a value does not guarantee that every running
+component has reconfigured itself. After restart, start the profile if
+autostart is disabled.
 
 Precedence is **explicit startup flags → nonempty environment overrides → saved
 settings → built-in defaults**. The settings view identifies the source and
@@ -92,7 +94,7 @@ configuration stores.
 | Authentication and connection | `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, `RMM_WORKSPACES`, `RMM_C2_URL`, `RMM_WORKSPACE_ID`, `RMM_WORKSPACE_TOKEN`, `RMM_WORKSPACE_LOCAL_TOKEN` |
 | Listeners | `RMM_ADMIN_BIND`, `RMM_ADMIN_PORT`, `RMM_BEACON_PORT`, `RMM_BEACON_BIND`, `RMM_WORKSPACE_BIND`, `RMM_WORKSPACE_PORT`; explicit flags still win |
 | Assets and helper paths | `RMM_PLUGIN_CACHE_DIR`, `RMM_ASSETS_DIR`, `RMM_PROFILES_DIR`, `RMM_UI_STATE_DB`, `RMM_TUN_HELPER`, `RMM_WORKSPACE_TUN_HELPER`, `RMM_TUN_LOG_LEVEL`, `RMM_RCLONE_BIN` |
-| AI | Server-only engine controls: `RMM_AI_MAX_TOOL_ROUNDS`, `RMM_AI_USE_MCP`. Owner-scoped defaults: `RMM_AI_SKILLS_DIR`, `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_EXEGOL_CONTAINER`, `OPENAI_API_KEY` |
+| AI | Server-only engine controls: `RMM_AI_MAX_TOOL_ROUNDS`, `RMM_AI_USE_MCP`, `RMM_AI_CONTEXT_BUDGET`, `RMM_AI_OUTPUT_RESERVE`. Owner-scoped defaults: `RMM_AI_SKILLS_DIR`, `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_EXEGOL_CONTAINER`, `OPENAI_API_KEY` |
 | BloodHound | Owner-local `RMM_BLOODHOUND_URL`, `RMM_BLOODHOUND_TOKEN_ID`, `RMM_BLOODHOUND_TOKEN_KEY`, `RMM_BLOODHOUND_COLLECTOR`, `RMM_BLOODHOUND_UI_BIND`, `RMM_BLOODHOUND_UI_PORT`, `RMM_BLOODHOUND_UI_PUBLIC_URL`; see [lifecycle and proxy configuration](bloodhound-workflow.md) |
 | Plugin sources | `RMM_PLUGIN_REPOSITORY` seeds the default source; edit existing repositories/branches through the source editor. Store credentials using `RMM_PLUGIN_GITHUB_TOKEN` or the source's `RMM_PLUGIN_TOKEN_<NAME>` reference |
 | Rclone | `RMM_RCLONE_DEFAULT_PROFILE`, `RMM_RCLONE_MAX_BYTES`, `RMM_RCLONE_PROFILES`, `RMM_RCLONE_PROFILES_FILE`; managed profile assets remain available |
@@ -101,8 +103,9 @@ Workspace AI requests carry their configured provider defaults to the central
 execution service; explicit provider request values take precedence. Exegol
 configuration is resolved from the owning service through a private relay;
 browser/request Exegol overrides are ignored. AI engine limits and MCP
-execution mode belong to the central server. Disabling MCP blocks AI instead
-of selecting a direct fallback. Internal AI tools retain the requesting
+execution mode belong to the central server. Without an enabled external
+backend requirement, disabling MCP selects direct RMM execution. When an
+enabled workflow requires Exegol, missing MCP remains a blocking prerequisite. Internal AI tools retain the requesting
 workspace's credentials and cannot administer central settings.
 
 The following are deliberately outside ordinary service configuration:
@@ -172,3 +175,13 @@ The persisted file uses  `schema: "minimal-rmm-settings-v1"`, its `scope`, and a
 are correct. Client scope defaults to `~/.minimal-rmm/client-settings.json`.
 
 See the [deployment guide](deployment.md) and [documentation index](README.md).
+
+## AI context settings
+
+Set `RMM_AI_CONTEXT_BUDGET` (default 65,536) and `RMM_AI_OUTPUT_RESERVE`
+(default 4,096) on the **central service that runs the provider loop**, not on
+a remote workspace expecting those values to forward automatically. Configure
+them within the selected model's actual context/output limits. The budget is
+a conservative UTF-8 byte estimate including message and tool schemas, with
+additional overhead; it is not the model's exact tokenizer. Output reserve
+also caps the provider response. See [skill and context behavior](web-ai-skills.md).
