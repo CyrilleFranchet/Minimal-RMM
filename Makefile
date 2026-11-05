@@ -1,5 +1,7 @@
 SHELL := /bin/bash
 PYTHON ?= python3
+DEPLOYMENT_ROOT ?= /workspace/rmm-deployment
+WORKSPACE_ID ?= default
 
 PY_MODULES := rmm_settings.py rmm_plugin_sources.py rmm_plugin_releases.py rmm_embeddings.py server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
 	rmm_deployment.py rmm_workspace_migration.py \
@@ -28,7 +30,7 @@ help:
 	@printf "  make go-test       Cross-build the Go agent and test the pivot components\n"
 	@printf "  make tun-build     Build the server-side TUN helper\n"
 	@printf "  make workspace-service  Start the local Exegol workspace service\n"
-	@printf "  make docker-build  Build the control-plane/workspace image\n"
+	@printf "  make docker-build  Build the distributed central-only image\n"
 	@printf "  make docker-up     Start the central control plane with Compose\n"
 
 go-test:
@@ -41,13 +43,13 @@ tun-build:
 	@cd server-tun && go build -buildvcs=false -trimpath -ldflags "-s -w" -o ../tools/rmm-tun .
 
 workspace-service:
-	@$(PYTHON) workspace_service.py
+	@$(PYTHON) rmm_deployment.py run --root "$(DEPLOYMENT_ROOT)" --component workspace --workspace-id "$(WORKSPACE_ID)"
 
 docker-build:
 	docker build -t minimal-rmm:local .
 
 docker-up:
-	docker compose up --build
+	$(PYTHON) rmm_deployment.py run --root "$(DEPLOYMENT_ROOT)" --component control --docker
 
 install-lint:
 	$(PYTHON) -m pip install pymarkdownlnt yamllint

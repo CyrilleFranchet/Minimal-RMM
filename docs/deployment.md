@@ -1,50 +1,68 @@
 # Deployment guide
 
-Use this page to choose and start a deployment. The other pages are references,
-not additional steps to run on every machine. Work on branch **v2**;
-Minimal-RMM `main` remains v1. The separate plugin repository uses `main`.
+`rmm_deployment.py` is the supported service launcher on branch **v2**.
+Use it for preparation, native single mode, the distributed central container,
+and the workspace process inside Exegol. Direct `server_rmm.py`,
+`workspace_service.py`, old environment-file recipes, and a generic workspace
+Docker sidecar are implementation/compatibility details, not deployment paths.
 
-## Configuration before startup
+## Three infrastructure models
 
-Use [persistent service settings](service-settings.md) for new installations.
-Initialize authentication locally with `rmm_settings.py`, then manage operational
-settings through Config, CLI, or MCP. Restart after saving. The environment-file
-recipes below remain a compatible migration path; nonempty environment values
-override saved settings until removed.
-
-## Choose one topology
-
-| Setup | Use it for | Processes |
+| Model | Status | Placement |
 | --- | --- | --- |
-| **Ubuntu central server + one Exegol workspace per operator** | Your multi-operator setup | `server_rmm.py` on Ubuntu; `workspace_service.py` inside each Exegol environment |
-| Compose central server + optional workspace sidecar | Container deployment on a Linux Docker host | Same processes, packaged in the shared image |
-| Single-workspace preset | One operator or a shared lab | The same central server plus one workspace service |
+| Single | Supported; local testing | Central and one workspace are separate Python processes together inside the existing Exegol environment. One wrapper supervises both; no dedicated RMM Docker container. |
+| Distributed on one host | Supported | Central runs in a dedicated Docker container. Each workspace runs inside its existing Exegol container/environment on the same host. Only central uses the RMM Docker image. |
+| Distributed across hosts with an overlay | Future work | Central and Exegol workspaces on different machines, connected through an overlay such as Tailscale. There is no supported overlay deployment recipe yet. |
 
-For the recommended first setup, follow steps 1–5 below. Do not also start the
-Compose workspace sidecar for the same operator. Each operator needs a unique
-workspace ID/token and its own persistent directory. Users sharing a workspace
-also share its plugins and settings.
+Single describes one operator deployment, not a combined service or shared
+credentials. Both supported models use identical control/workspace ownership.
+A workspace and its Exegol tools must share a filesystem and network namespace;
+the central service can be elsewhere and must not need that filesystem.
 
-```mermaid
-flowchart LR
-    browser["Browser / CLI / MCP"] -->|"Workspace API :8787"| workspace["Exegol workspace\nsettings, plugins, history, local pivots"]
-    workspace -->|"Central admin API :8080"| central["Ubuntu central server\nclaims, command queue, transport, plugin cache"]
-    agent["Managed agent"] -->|"Beacon :8081 or transport URL"| central
+## One storage convention, separate owners
+
+Keep the deployment root outside the source checkout, on a persistent mount:
+
+```text
+/workspace/rmm-deployment/
+├── deployment.json                  # schema, topology preset, workspace IDs; no secrets
+├── central/
+│   ├── settings.json                # admin/beacon secrets, workspace registry, service settings
+│   ├── sessions.json                # live session metadata and ownership
+│   ├── profiles/                    # installed RMM-Profile transport bundles
+│   ├── plugin-cache/                # disposable workspace-scoped delivery copies
+│   ├── assets/                      # central-managed assets, including optional skills
+│   ├── ui-state.db                  # central administration UI state
+│   └── ...                          # central jobs, build artifacts, diagnostics
+└── workspaces/
+    └── default/
+        ├── settings.json            # upstream/local tokens, Exegol, AI defaults, feature settings
+        ├── workspace.db             # sessions, events, UI settings, AI chat, embeddings
+        ├── assets/
+        │   ├── metadata.json        # installed files and explicit enablement
+        │   ├── plugin-sources.json  # saved source repositories and credential references
+        │   ├── plugins/
+        │   ├── skills/
+        │   └── rclone/              # registered profile files, commonly profiles.json
+        ├── artifacts/               # downloads, screenshots, keylogs
+        ├── parts/                   # interrupted transfer staging
+        └── bloodhound/              # owner-local workflows, evidence, lifecycle state
 ```
 
-| Address or secret | Used by | Purpose |
-| --- | --- | --- |
-| Central administration URL, usually `:8080` | Workspace service and central administrator | Broker API; not the normal operator UI in workspace mode |
-| Beacon URL, direct `:8081` or profile URL | Managed agents | Registration, polling, results, and plugin downloads |
-| Workspace URL, usually `:8787` | Browser, CLI, standalone MCP | Operator's own API and UI |
-| `RMM_API_TOKEN` on the central process | Central administrator | Global access |
-| `RMM_BEACON_SECRET` | Central server and agents | Beacon authentication |
-| `RMM_WORKSPACE_TOKEN` | Workspace service | Must match its ID in central `RMM_WORKSPACES` |
-| `RMM_WORKSPACE_LOCAL_TOKEN` | Browser, CLI, standalone MCP | Authenticate to that workspace |
+There is one directory convention, not one shared settings file or database.
+Each service's authoritative configuration and state belong to its owner.
+`settings.json` contains credentials: back up privately, retain owner-only
+permissions, and keep it out of Git and Docker build contexts. The deployment
+root is never inferred from the working directory or a shell's old variables.
 
-## 1. Prepare both checkouts
+In distributed mode, copy/mount only `deployment.json` plus `central/` for the
+central service. Give Exegol only `deployment.json` plus its own
+`workspaces/default/` subtree. These may have different absolute paths on each
+machine/container. Neither role needs the other role's settings or database.
 
-Use the current `v2` checkout on Ubuntu and inside Exegol. On each machine:
+## Prepare the source environment
+
+Inside the environment where a native component will run:
 
 ```bash
 git switch v2
@@ -54,367 +72,173 @@ python3 -m venv .venv
 python3 -m pip install -r requirements.txt
 ```
 
-These examples use a POSIX shell and run from the repository root. They assume
-Python 3.11+ and the OS's venv support are installed. No Go compiler is needed
-for ordinary Python startup. See the optional-feature table below before using
-TUN or generating a Go agent.
+Use an existing configured Python environment if appropriate. Before TUN use,
+build the workspace helper with `make tun-build` and install the external
+`tun.dll` plugin through workspace assets/releases. Exegol needs Linux
+`/dev/net/tun` and `NET_ADMIN`; central does not. Service startup never builds
+TUN or installs plugins. See [TUN](tun-pivot.md) and [plugin releases](plugin-releases-operator.md).
 
-If Git reports divergent history, stop here and inspect it. Do not resolve a
-rewritten history with an arbitrary merge. Keep a backup branch and reconcile
-local work before updating. Do not delete `.env` or runtime directories.
+## Single: start everything together
 
-## 2. Start the central server on Ubuntu
-
-Copy the native configuration template to a private location:
+Prepare once, inside Exegol, using a fresh destination:
 
 ```bash
-mkdir -p "$HOME/.config/minimal-rmm"
-cp deploy/central.env.example "$HOME/.config/minimal-rmm/central.env"
-chmod 600 "$HOME/.config/minimal-rmm/central.env"
+python3 rmm_deployment.py prepare --preset single \
+  --output /workspace/rmm-deployment
 ```
 
-Edit that file before starting. Replace all secrets; put one entry per operator
-in `RMM_WORKSPACES`. The template's address `10.254.50.203` is an example private
-Ubuntu address: replace it with an address reachable by your workspaces and
-agents. Its direct beacon URL must be reachable by the agents too.
+Preparation generates distinct admin, beacon, workspace, and local operator
+secrets. It refuses to overwrite an existing deployment. Configure optional
+features in the two generated `settings.json` files, using Config, offline
+`rmm_settings.py`, or authenticated settings APIs; see the
+[configuration reference](service-settings.md). Never put workspace settings
+in the central file or copy central admin credentials into Exegol settings.
+
+Start both components:
 
 ```bash
-set -a
-. "$HOME/.config/minimal-rmm/central.env"
-set +a
-python3 server_rmm.py --bind 10.254.50.203 --beacon-bind 10.254.50.203
+python3 rmm_deployment.py run --root /workspace/rmm-deployment --component single
 ```
 
-Replace both bind addresses with the actual interface address on Ubuntu.
-This initial recipe assumes a trusted private network/VPN. Restrict the admin
-port to operators/workspaces; use HTTPS termination for untrusted networks.
-Python serves HTTP directly. Do not put the administration API behind the
-agent-only transport profile.
+The wrapper supervises the two processes and shuts down the peer if one exits.
+Ctrl+C stops both. Open `http://127.0.0.1:8787/ui/` from the workspace namespace
+and use the workspace's local operator token. Central admin is `:8080`; agents
+use beacon `:8081` or the configured transport URL. Published Exegol ports or
+host networking are container-launcher responsibilities.
 
-Workspace storage is the default for native and Docker deployments. Explicit
-`RMM_STORAGE_MODE=server` is rejected to prevent silently stranding legacy data.
-There is no `--storage-mode` argument.
-
-Neither Python entry point loads `.env` automatically. The two `deploy/*.env.example`
-files are shell-compatible templates. The root `.env.example` is for Compose;
-its JSON syntax must not be assumed safe to load with shell `source`.
-
-For systemd or another process manager, keep `WorkingDirectory` set to the
-repository root, use the venv Python executable, and load the role-specific
-environment file. Restart the central service after changing its workspace
-registry or environment. The removed `run_server.py` wrapper is not needed.
-
-## 3. Start one workspace inside Exegol
-
-Inside the operator's Exegol container, using its own checkout:
+Loopback binds are the safe defaults. If a browser outside Exegol needs the
+workspace UI, or remote agents need the beacon listener, save the necessary
+binds before startup:
 
 ```bash
-mkdir -p "$HOME/.config/minimal-rmm"
-cp deploy/workspace.env.example "$HOME/.config/minimal-rmm/workspace.env"
-chmod 600 "$HOME/.config/minimal-rmm/workspace.env"
+python3 rmm_settings.py --scope workspace \
+  --config /workspace/rmm-deployment/workspaces/default/settings.json \
+  set RMM_WORKSPACE_BIND 0.0.0.0
+python3 rmm_settings.py --scope server \
+  --config /workspace/rmm-deployment/central/settings.json \
+  set RMM_BEACON_BIND 0.0.0.0
 ```
 
-Edit the file: set `RMM_C2_URL` to Ubuntu's **admin** URL, match the workspace ID
-and token to the central registry, and choose a separate local token. Set
-`RMM_WORKSPACE_DATA` to a directory on an actual persistent mount, not merely
-a writable container layer. Set a read-only GitHub plugin token if needed.
+Publish workspace port 8787 and beacon port 8081 through the existing Exegol
+launcher as needed. Keep central administration loopback-only when both
+processes share Exegol. Configure the agent-facing beacon URL separately;
+changing a bind does not create a public transport URL.
+
+## Distributed on one host
+
+Prepare outside the checkout on the Docker host:
 
 ```bash
-set -a
-. "$HOME/.config/minimal-rmm/workspace.env"
-set +a
-python3 workspace_service.py
+python3 rmm_deployment.py prepare --preset distributed \
+  --output /srv/rmm-deployment \
+  --central-url http://192.0.2.10:8080
 ```
 
-The workspace initiates its connections to Ubuntu; Ubuntu does not initiate a
-connection to the workspace. For a central server on another machine, use its
-reachable IP/DNS name. `rmm-control` is a Compose service name available only to
-containers on that Docker network.
+Replace `192.0.2.10` with the host address reachable from Exegol. Repeat
+`--workspace-id NAME` for multiple workspaces. With one registered workspace,
+new sessions are assigned to it; multiple workspaces use explicit claims.
+The distributed preset saves `0.0.0.0` container listener binds. The external
+URL must match the reachable administration endpoint; if choosing different
+ports, save the corresponding listener settings too.
 
-Open `http://127.0.0.1:8787/ui/` **from the workspace's network namespace** and
-enter its local token. A browser on your host can use that address only when
-it shares the namespace or a port has been forwarded. For a bridge-networked
-Exegol container, configure localhost-only host port publication/forwarding to
-container port 8787 and set `RMM_WORKSPACE_BIND=0.0.0.0` inside the container.
-Retain the local token. Port publication belongs to the container launcher;
-changing the service bind alone does not publish a host port.
-
-For CLI or standalone MCP running inside that Exegol environment:
+Start the dedicated central container through the wrapper:
 
 ```bash
-export RMM_SERVER_URL=http://127.0.0.1:8787
-export RMM_API_TOKEN="$RMM_WORKSPACE_LOCAL_TOKEN"
-python3 rmm_cli.py list
-# For a stdio MCP client, use this executable command with the same environment:
-# .venv/bin/python mcp_rmm_server.py
+python3 rmm_deployment.py run --root /srv/rmm-deployment --component control \
+  --docker --admin-publish-bind 192.0.2.10
 ```
 
-Here `RMM_API_TOKEN` is the client's token for the **local workspace**, not the
-central administrator token. Do not share the administrator environment file
-with operators. Setting up the standalone MCP endpoint is separate from the
-WebUI AI loop; see [MCP parity](mcp-parity.md).
+The wrapper derives `compose.generated.json` from saved listener ports and local
+paths, then runs Docker Compose in the foreground. That file is generated output,
+not a second operational configuration source. Re-run the wrapper after changing
+settings to regenerate it. Remove redundant absolute host storage overrides
+before container startup, or use owner-relative values such as `profiles` for
+`RMM_PROFILES_DIR`; the container mounts central at `/deployment/central`. The defaults publish admin on host loopback and beacon
+on all interfaces; set the admin bind to an appropriate host address when a
+bridge-networked Exegol container must reach it. Do not use the beacon URL as
+the workspace's `RMM_C2_URL`. Ctrl+C stops the container through Compose.
 
-Exegol is required for AI workflows whose enabled skill metadata requests its
-external backend, and for the BloodHound runtime. RMM-only AI remains available
-without Exegol readiness; it can use MCP or direct RMM execution.
-Configure `RMM_EXEGOL_MCP_URL`, its credential `RMM_EXEGOL_MCP_TOKEN` when
-required, in owner-local settings. Container selection is automatic through MCP
-discovery and workspace identity verification; `RMM_EXEGOL_CONTAINER` is an
-optional override. The workspace service must run in the selected container's
-filesystem and network namespace.
-It verifies ownership through MCP and ensures CE is running at startup, without
-an AI request. The WebUI shows readiness; reconnects only check health.
+Central mounts only its own subtree plus read-only `deployment.json`; it gets
+no workspace database, rclone credentials, TUN device, or `NET_ADMIN`. The image
+contains Python and the Go toolchain for agent generation; workspace TUN helpers
+belong in Exegol. The retired root Compose sidecar recipe is not supported.
 
-The WebUI AI loop runs centrally. The configured Exegol MCP URL must be reachable
-from both the workspace runtime and central server: `127.0.0.1:8000` refers to each caller's network
-namespace, not the operator's Exegol container. Configure an authenticated
-endpoint reachable over the trusted network when those services are separate.
-For a bridge container calling MCP on its Docker host, use a host address
-reachable from that container. A host MCP listener bound only to `127.0.0.1`
-cannot accept requests to the bridge gateway address. Bind MCP to an appropriate
-host interface and permit the container network through the host firewall.
-Publishing RMM ports does not configure this outbound connection.
-`host.docker.internal` must resolve inside the container before it can be used;
-the deployment launcher does not create that alias or discover the host endpoint.
-Test from inside the workspace container using the actual MCP URL. An HTTP error
-response proves reachability, but only successful MCP initialization and tool
-discovery establish protocol readiness.
-
-Runtime diagnostics distinguish `exegol_mcp_connection_failed`,
-`exegol_mcp_authentication_failed`, `exegol_mcp_http_error`,
-`exegol_mcp_dependency_missing`, and `exegol_mcp_timeout`.
-`runtime_failure_code` classifies bounded nested exception chains without exposing
-exception text or credentials. Unclassified failures retain `exegol_runtime_failed`;
-failures after startup dispatch retain the uncertainty state to prevent replay.
-
-Do not select a different MCP endpoint in an individual AI request. See the
-[BloodHound runtime and proxy guide](bloodhound-workflow.md) for readiness,
-uncertain startup handling, and browser-facing proxy settings.
-
-## 4. Claim sessions and install plugins
-
-An empty workspace can mean that no sessions have been claimed. With the local
-workspace environment loaded, list candidates and claim a chosen session:
+Place the matching metadata and selected workspace subtree on Exegol's
+persistent volume, then run inside Exegol:
 
 ```bash
-curl --fail-with-body -H "Authorization: Bearer $RMM_WORKSPACE_LOCAL_TOKEN" \
-  http://127.0.0.1:8787/api/v1/workspace/candidates
-curl --fail-with-body -X POST \
-  -H "Authorization: Bearer $RMM_WORKSPACE_LOCAL_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"session_id":"REPLACE_WITH_SESSION_ID"}' \
-  http://127.0.0.1:8787/api/v1/workspace/claims
+python3 rmm_deployment.py run --root /workspace/rmm-deployment \
+  --component workspace --workspace-id default
 ```
 
-Wait for the next workspace sync, then refresh the session list. Auto-claim is
-**off by default**; enable it only when one workspace should claim all
-unassigned sessions. A session already owned by another workspace is rejected.
+The workspace initiates authenticated connections to central. Keep its local
+WebUI/CLI token distinct from the workspace-to-central token. Shared volumes
+between central and Exegol are not required. Overlay connectivity, TLS/routing
+automation across machines, and Tailscale integration remain future work.
 
-In the **workspace UI**, open **Config → Plugins**.
-Save the operator's repository/branch source, select **Load plugins**, check the
-required files, and select **Install selected**. Or use `plugin sources`, `plugin releases`, and `plugin install`
-through the local CLI. See [plugin source and release controls](plugin-releases-operator.md).
-The workspace stores the binaries and synchronizes a workspace-specific delivery
-cache on Ubuntu. Central does not offer a shared global plugin installation
-directory; install through the workspace instead.
-
-Do not confuse saved plugin sources with beacon transport profiles. Sources
-select compiled plugin releases; an RMM-Profile is a central transport process
-such as Cloudflared. Embedding profiles are another separate concept: saved
-model/classification settings in the workspace.
-
-## 5. Add optional features deliberately
-
-| Feature | Where to prepare it | Prerequisite |
-| --- | --- | --- |
-| Public beacon via Cloudflared or another RMM-Profile | Central Ubuntu server/container | Install the trusted profile bundle and provider executable; then set `RMM_PROFILE_AUTOSTART=1` and the selected profile |
-| SOCKS | Workspace and managed agent | Install the matching SOCKS plugin through the workspace; tools use the workspace listener |
-| TUN | Exegol workspace and managed agent | Install `tun.dll`; run `make tun-build` on the workspace host; Linux needs `ip`, `/dev/net/tun`, and `CAP_NET_ADMIN` |
-| Go agent generation through API/WebUI | Central server | Go toolchain available centrally; the shipped runtime Docker image does not include Go |
-| Document embeddings | Workspace and agent | Install the autonomous DLL, then configure/save the model profile; no ONNX compiler on either Python service |
-| Rclone profiles | Workspace | Configure/upload profiles locally; the central service relays selected jobs |
-
-The central broker needs no TUN privileges in workspace mode. TUN routes and
-SOCKS listeners must share the namespace of the tools using them. The optional
-workspace sidecar is not automatically in an existing Exegol tool namespace.
-
-For a public beacon, follow [RMM-Profiles](rmm-profiles.md), then check
-`python3 rmm_cli.py profile status` and use the returned beacon URL in agents.
-Keep `RMM_C2_URL` pointed at the central admin API. The initial native template
-disables profile autostart so missing optional bundles do not obscure setup.
-
-## Compose alternative
-
-Use the root `.env.example` only for Compose bootstrap and optional legacy
-credential overrides. Operational settings live in each persistent data volume.
-Do not overwrite an existing `.env` on updates. Initialize configuration before
-first startup, for example:
+## Find the active files
 
 ```bash
-docker compose build rmm-control
-docker compose run --rm -T rmm-control python3 rmm_settings.py --scope server --config RMM_logs/settings.json import - < /private/path/central-settings.json
-docker compose up -d rmm-control
+python3 rmm_deployment.py paths --root /workspace/rmm-deployment --workspace-id default
+python3 rmm_deployment.py paths --root /srv/rmm-deployment --component control
 ```
 
-The private import file is a JSON object containing the central API/beacon
-secrets and workspace registry. For the sidecar, initialize its settings in the
-workspace volume too, including `RMM_C2_URL=http://rmm-control:8080`, its workspace
-identity/token, and a distinct local token:
+These print paths and ownership only, never credential values. Normal wrapper
+startup uses saved service settings; inherited service environment variables
+are ignored. `--allow-env-overrides` is an explicit compatibility escape hatch
+for native startup, not the recommended configuration method. Wrapper-owned
+storage paths stay pinned and a workspace identity override cannot select a
+different owner's data. See [settings and variable inventory](service-settings.md).
+
+## Rclone profiles: registration is required
+
+Copying `profiles.json` into `workspaces/default/assets/rclone/` **does not
+register or activate it**. Assets are selected through `assets/metadata.json`.
+Use the workspace WebUI's **Config → Runtime assets → rclone profiles → Upload
+profiles.json**, the connected asset API/CLI, or this offline import into a
+stopped workspace with a fresh destination:
 
 ```bash
-docker compose run --rm -T workspace python3 rmm_settings.py --scope workspace --config /workspace/data/settings.json import - < /private/path/workspace-settings.json
+python3 rmm_deployment.py import-rclone --root /workspace/rmm-deployment \
+  --workspace-id default --file /private/path/profiles.json
 ```
 
-Choose **one** workspace placement:
+The import registers the file and refuses to replace existing content. If the
+file was already copied manually, use WebUI upload to replace/register it
+explicitly; do not hand-edit inventory metadata. Invalid enabled assets are
+reported and prevent transfer job construction. Missing, empty, or disabled
+profiles do not activate repository examples or legacy environment profiles.
+Check `get_rclone_config` via MCP or `rclone-config` via CLI against the workspace,
+not central. See [rclone configuration](rclone-exfil.md).
 
-- Existing Exegol container: follow step 3, using a reachable central URL.
-- Example sidecar on the Docker host: `docker compose --profile workspace up --build -d`.
-  This is a workspace service, not a full Exegol tools image.
+## Existing installations
 
-The shipped Compose file publishes ports on host interfaces; restrict access
-with host/cloud firewall rules or adjust the mappings for your network.
-The sidecar binds inside its container and publishes host port 8787. Its TUN
-configuration requires a Linux host with `/dev/net/tun`; the central service
-has no such requirement. Container port numbers remain 8080/8081/8787 even if
-you change the published host ports in `.env`.
+Back up the existing owner roots before moving anything. Never prepare over an
+existing deployment or regenerate tokens merely to fix a profile lookup.
+Existing `single` and `multi` metadata remain readable. Use the generated root
+and its existing credentials. Move old external profile bundles and mutable
+assets into their corresponding owner subtree, remove redundant absolute
+storage-path overrides from settings, then use `paths` to verify the result.
+Relative executable/helper paths in saved settings resolve against the owner
+directory; installed bare executable names remain PATH-based where supported.
 
-The image includes Python dependencies, the native helper, and Linux `ip`.
-It does not include the Go compiler, Cloudflared, or private profile/plugin
-bundles. Install optional providers in a derived image when needed. Both
-services use the same image, so an image build compiles the helper once;
-ordinary process startup compiles nothing.
+`prepare --legacy-settings FILE` imports a standalone central settings source
+into a fresh deployment and preserves its existing admin/beacon secrets. It
+refuses an existing workspace registry that needs explicit reconciliation.
+[Workspace migration](workspace-migration.md) covers old durable server data.
+Do not delete users' old settings, environment files, or data automatically.
 
-The example defines one workspace and one data volume. For multiple operators,
-use separate workspace services/projects with distinct IDs, tokens, volumes,
-and published ports. Do not scale copies sharing the same identity and volume.
-See [workspace reference](workspace-deployment.md) for the protocol and volume
-layout. Rclone configuration is optional; create the local profile file only
-when using that feature.
+## Wrapper implementation
 
-## Single-workspace and multi-workspace presets
-
-Standalone now means one workspace, not server-owned operator storage. Prepare
-protected configuration files without printing credentials:
-
-```bash
-python3 rmm_deployment.py prepare --preset single --output /path/to/deployment
-python3 rmm_deployment.py run --root /path/to/deployment --component single
-```
-
-`run` starts the control and workspace processes with the binds saved in
-`prepare`'s settings files, which default to `127.0.0.1` on each service
-(`RMM_ADMIN_BIND`, `RMM_BEACON_BIND`, `RMM_WORKSPACE_BIND`; see
-[service settings](service-settings.md)). Inside an Exegol container, nothing
-outside that container's network namespace can reach a loopback-only listener,
-so export the binds before `run` to make the WebUI, beacon, and workspace API
-reachable from the operator's browser or from agents on the host network:
-
-```bash
-RMM_ADMIN_BIND=0.0.0.0 \
-RMM_BEACON_BIND=0.0.0.0 \
-RMM_WORKSPACE_BIND=0.0.0.0 \
-python3 rmm_deployment.py run --root /path/to/deployment --component single
-```
-
-`prepare` already wrote random `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, and
-per-workspace tokens into the deployment's settings files, so widening these
-binds does not disable authentication; it only changes which interface each
-listener accepts connections on. Restrict this to a trusted network/VPN the
-same way as the native central server (see "Start the central server on
-Ubuntu" above).
-
-The single launcher supervises separate control and workspace processes on the
-same host. Run it inside Exegol when using AI, collection, or local pivots.
-When `--central-url` is omitted, preparation derives the workspace connection
-URL from the saved central administration bind and port; wildcard binds become
-loopback addresses. Supply an explicit externally reachable URL for remote
-workspaces or a TLS reverse proxy.
-Connect operators to the workspace WebUI, normally port 8787; the central
-administration listener remains on port 8080. Configure the workspace MCP URL
-before using AI/BloodHound. Container selection is automatic.
-
-For multiple workspaces, prepare named identities and a central URL reachable
-from each Exegol environment:
-
-```bash
-python3 rmm_deployment.py prepare --preset multi --output /path/to/deployment --workspace-id alice --workspace-id bob --central-url https://rmm.example
-python3 rmm_deployment.py run --root /path/to/deployment --component control
-python3 rmm_deployment.py run --root /path/to/deployment --component workspace --workspace-id alice
-```
-
-Distribute each workspace's configuration only to its owner; do not give operators
-the central registry or another workspace's credentials. The preset creates
-`central/settings.json`, `workspaces/ID/settings.json`, and deployment metadata.
-It does not create Exegol containers, configure a VPN, or install external tools.
-Separate-host Tailscale/WireGuard deployment remains planned work.
-
-`rmm_deployment.write_private` writes protected configuration files;
-`prepare` generates preset credentials and settings; `commands` resolves the
-selected component commands and checks the workspace identity against deployment
-metadata; `child_environment` filters known settings to each service's scope;
-`run_services` supervises child processes and
-their shutdown; `main` validates the CLI. The central and workspace settings
-stores remain separate even when the single launcher starts both locally.
-Nonempty environment overrides valid for that service still take precedence
-over saved settings; remove old overrides before relying on generated configuration.
-The launcher rejects an inherited `RMM_WORKSPACE_ID` that differs from the
-selected workspace before starting any child. This prevents credentials for
-one operator from opening another operator's prepared data directory. A matching
-ID and same-owner token rotation remain supported.
-The launcher does not forward central-only credentials to the workspace. It
-also removes legacy singleton workspace credentials from the central environment,
-which uses the prepared registry (or an explicit `RMM_WORKSPACES` override).
-
-The WebUI `configureWorkspaceAccess` helper uses the authenticated health
-response to expose AI/BloodHound controls only on a workspace connection.
-Central administration shows an operator-routing notice and does not poll
-local BloodHound readiness. `renderDeploymentMode` labels workspace identity,
-central administration, and legacy deployments distinctly.
-
-A sole registered workspace receives new sessions automatically. With multiple
-registered workspaces, use explicit claims and preserve existing ownership.
-
-Legacy data must be migrated before switching an existing installation. See
-[workspace migration](workspace-migration.md); the migration copies data to a
-fresh destination and never deletes the source.
-When preparing an upgrade, pass `--legacy-settings /old/RMM_logs/settings.json`
-to `prepare` so saved beacon/API secrets, public URL, and profile configuration
-are retained. Existing workspace registrations require explicit reconciliation;
-the importer will not silently replace them. Preserve environment-only beacon
-secrets through the environment or import them into protected settings before
-switching, otherwise existing agents will no longer authenticate.
-
-## Verify, update, and preserve data
-
-| Symptom/check | What to inspect |
+| Symbol | Responsibility |
 | --- | --- |
-| Workspace `/ui/` loads, API returns 401 | Enter the workspace local token; do not use the central admin/workspace transport token |
-| Workspace has no sessions | Correct central admin URL, matching ID/token, connectivity, and explicit claims |
-| Plugin source reports missing credentials | Save the referenced credential in workspace service settings, remove conflicting environment overrides, and restart |
-| Plugin install succeeds locally but reports sync failure | Central reachability/token and its 128 MiB `RMM_MAX_BODY_BYTES` setting; retry install |
-| Missing TUN helper or `ip` | Install on the pivot owner's host/namespace; ordinary startup does not build it |
-| Cloudflared unavailable | Install provider and trusted bundle centrally, or keep profile autostart disabled |
-| Go agent generation fails | Install Go on the central build host or use a suitable derived image |
-| Permission errors in runtime directories | Preserve volume ownership; do not recursively chmod/chown just to make Git inspect runtime data |
-
-Back up each workspace data directory, the central `RMM_logs` control state,
-profile bundles, persistent plugin caches, and the external environment files.
-Use a consistent SQLite backup or stop the workspace while copying its database
-and WAL files. A persistent directory survives a service restart only if its
-underlying volume/mount survives container replacement.
-
-For native deployments, update `v2`, update dependencies when they change, and
-restart the affected Python process. For Compose, rebuild/recreate the affected
-service after code changes, retaining named volumes. Never use `down -v` or
-`git clean` as an update step. Plugin upgrades happen separately through the
-workspace release controls; RMM updates do not rebuild plugin DLLs.
-
-### Login regression coverage
-
-`tests/test_workspace_login.py` uses `WorkspaceLoginTests` to verify the public
-static-login boundary against authenticated operator APIs. `setUp` creates a
-temporary workspace and loopback HTTP server; `tearDown` closes both and removes
-the temporary store. `request` sends exact paths and an optional bearer token.
-`test_login_assets_load_before_api_authentication` checks public UI assets and
-protected API access. `test_public_static_routing_does_not_allow_traversal_or_other_methods`
-checks traversal rejection and authentication for non-GET methods.
+| `write_private` | Create a new owner-only JSON file without replacement. |
+| `prepare` | Validate topology and prepare isolated credentials/settings and asset directories. |
+| `commands` | Validate metadata/identity and resolve native component commands. |
+| `owner_paths` | Derive owner-root storage and resolve relative helper paths; reject conflicting saved storage locations. |
+| `child_environment` | Filter inherited service settings by default; support explicit scoped compatibility overrides. |
+| `run_services` | Supervise child processes and forward shutdown with bounded cleanup. |
+| `deployment_paths` | Report one owner's config/data locations without secrets. |
+| `import_rclone` | Validate and register an explicit profile asset without replacing another file. |
+| `central_compose` | Generate a distributed central-only container definition from saved settings. |
+| `main` | Dispatch preparation, startup, paths, and offline profile import. |

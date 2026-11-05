@@ -2,8 +2,12 @@
 .gitignore
 .env
 .env.*
-!.env.example
 RMM_logs
+rmm-deployment
+deployments
+**/settings.json
+**/workspace.db*
+**/assets/rclone/*.json
 docker-data
 plugin-store
 .venv

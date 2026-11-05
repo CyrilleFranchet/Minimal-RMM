@@ -38,7 +38,7 @@ current data-flow details.
 | `rmm_workspace.py` | Workspace registry and bounded transient event broker for multi-operator mode |
 | `workspace_service.py` | Per-operator local API, SQLite persistence, artifact store, and upstream proxy |
 | `workspace_pivot.py` | Workspace-local SOCKS/TUN listeners and central transport bridge |
-| `Dockerfile` + `docker-compose.yml` | Containerized control plane and optional workspace sidecar |
+| `Dockerfile` + `rmm_deployment.py` | Dedicated distributed central container; workspace stays inside Exegol |
 | `agent-powershell/client_rmm.ps1` | Windows PowerShell beacon — unchanged protocol |
 
 1. **Server** listens on HTTP. By default it runs **headless** (API only). Use `rmm_cli.py` against your workspace for the operator console.
@@ -58,17 +58,17 @@ transcripts, artifacts, AI chat, SOCKS, and TUN. Legacy
 
 ## Security
 
-The server **requires secrets by default** (no `--insecure`):
+Services require the credentials generated in their owner-local settings files:
 
-| Secret | Env / flag | Protects |
+| Secret | Setting | Protects |
 |--------|------------|----------|
-| Operator API | `RMM_API_TOKEN` / `--token` | `/api/v1/*` — list sessions, queue commands, full control |
-| Beacon | `RMM_BEACON_SECRET` / `--beacon-secret` | `/register`, `/cmd`, `/result`, `/ping` — impersonation / hijack |
-| rclone exfil (optional) | `RMM_RCLONE_PROFILES` or `RMM_RCLONE_PROFILES_FILE` | Named cloud profiles in server or workspace scope; agent uploads via rclone (see `docs/rclone-exfil.md`) |
+| Operator API | `RMM_API_TOKEN` | `/api/v1/*` — list sessions, queue commands, full control |
+| Beacon | `RMM_BEACON_SECRET` | `/register`, `/cmd`, `/result`, `/ping` — impersonation / hijack |
+| rclone exfil (optional) | Registered workspace `assets/rclone/` files | Named owner-local cloud profiles; loose copies are inactive (see `docs/rclone-exfil.md`) |
 
 Also: listens on **127.0.0.1** by default (`--bind 0.0.0.0` only behind a firewall), **beacon session IDs** validated (no path-like `id`), artifact files use a **hash prefix** (not `session_id[:8]`), **path traversal** blocked on uploaded filenames, **32 MB** default POST body cap (`RMM_MAX_BODY_BYTES`), constant-time token checks.
 
-**Lab only:** `python server_rmm.py --insecure` restores the old open API/beacon (never on a real network).
+The deployment wrapper prepares distinct credentials; retain authenticated defaults.
 
 Set the same `RMM_BEACON_SECRET` on Windows clients (`$env:RMM_BEACON_SECRET = "…"`).
 
@@ -76,24 +76,34 @@ Set the same `RMM_BEACON_SECRET` on Windows clients (`$env:RMM_BEACON_SECRET = "
 
 ## Quick start
 
-Choose one setup in the [deployment guide](docs/deployment.md):
+Use **`rmm_deployment.py`** as the only service launcher. Keep all mutable data
+under an explicit deployment root, outside the source checkout. The complete
+[topology, startup, storage, and migration guide](docs/deployment.md) documents:
 
-| Setup | Start here |
+| Infrastructure | Status |
 | --- | --- |
-| Ubuntu central server + one Exegol workspace per operator (recommended) | Native steps 1–5; separate [central](deploy/central.env.example) and [workspace](deploy/workspace.env.example) configuration templates |
-| Compose central server + optional workspace sidecar | Compose alternative; use the root [.env.example](.env.example) |
-| Single-workspace installation | Single preset in the deployment guide; one control process plus one workspace |
+| Single: central + workspace together in Exegol | Supported for testing |
+| Distributed, same host: dedicated central Docker + existing Exegol workspace | Supported |
+| Distributed across hosts through an overlay such as Tailscale | Future work |
 
-In workspace mode, operators use the workspace URL on port **8787**; the
-workspace connects to the central admin API on **8080**; agents use the beacon
-URL on **8081** or the selected transport profile's URL. The central server
-uses workspace storage for every deployment. Neither Python entry point reads
-`.env` automatically.
+For single mode inside Exegol:
 
-Install compiled plugins through the **workspace's** [release controls](docs/plugin-releases-operator.md).
-Prepare TUN only when needed, on the host owning the pivot. Docker image builds
-include the helper; process startup never compiles it. Public beacon profiles,
-Go agent generation, and rclone configuration are separate optional setup steps.
+```bash
+python3 rmm_deployment.py prepare --preset single --output /workspace/rmm-deployment
+python3 rmm_deployment.py run --root /workspace/rmm-deployment --component single
+```
+
+Configuration belongs in `central/settings.json` and
+`workspaces/<id>/settings.json`; registered plugins/skills/rclone files and the
+workspace database stay in that workspace subtree. Normal wrapper startup
+ignores inherited service-setting variables. See the complete
+[settings/variable inventory](docs/service-settings.md). Do not combine old
+`.env`, direct-service, or generic workspace-sidecar startup recipes.
+
+The operator WebUI is on `:8787`, central administration on `:8080`, and the
+agent beacon on `:8081` or the selected transport URL. Optional TUN helpers and
+plugins are installed separately. Rclone profile files must be registered by
+workspace upload/import; copying them into a directory does not activate them.
 
 ### Operator CLI
 
@@ -181,11 +191,11 @@ Full REST ↔ MCP mapping: `docs/mcp-parity.md`.
 
 Interactive-only: `use`, `background`, `clear`, `help`, `quit` (session selection is via `session_ref` on each tool).
 
-### Embedded console (optional)
+### Service startup
 
-```bash
-python server_rmm.py --cli
-```
+Use the deployment wrapper recipes above. The operator interactive console is
+`rmm_cli.py` against the workspace API; the retired embedded server console is
+not a startup option.
 
 ### RMM-Profile transport
 
@@ -355,8 +365,8 @@ Queue the same tokens via `rmm_cli.py run` / `exec` or `POST …/commands`.
 | `output` (default) | JSON `{"rmm_cmd":"…","rmm_output":"…"}` or plain text |
 | `file_upload` | JSON with base64 `content` → the workspace artifact store (varied **2 / 5 / 10 / 20 MB** raw chunks on `POST /result` with `offset` / `eof`; no fixed size cap) |
 | `cloud_upload` | JSON with `link`, `dest`, `profile`, `remote_path`, `success`, … |
-| `screenshot` | Base64 PNG → server `RMM_logs/screenshots/` or the workspace artifact store |
-| `keylog` | Text → server `RMM_logs/keylogs/` or the workspace artifact store |
+| `screenshot` | Base64 PNG → workspace `artifacts/screenshots/` |
+| `keylog` | Text → workspace `artifacts/keylogs/` |
 | `config_ack` | Logged / event stream |
 
 Events are also exposed via `GET /api/v1/sessions/{id}/events`.
@@ -465,11 +475,11 @@ Global flags: `--url`, `--token` (or `RMM_SERVER_URL`, `RMM_API_TOKEN`).
 
 ---
 
-## Embedded server CLI (`--cli`)
+## Service configuration
 
-Same commands as before (`list`, `use`, `set_sleep`, shell commands, etc.). Prefer `rmm_cli.py` for automation.
-
----
+See [canonical configuration and variable ownership](docs/service-settings.md).
+The underlying service modules remain implementation details; startup uses the
+[deployment wrapper](docs/deployment.md).
 
 ## Client (`client_rmm.ps1`)
 
@@ -498,11 +508,11 @@ All settings live in a **configuration block at the top of the script** (`$u`, `
 | `rmm_workspace.py` | Workspace authentication and transient central event delivery |
 | `workspace_service.py` | Local per-operator WebUI, persistence, and upstream API proxy |
 | `workspace_pivot.py` | Local SOCKS/TUN listeners and pivot task synchronization |
-| `Dockerfile` / `docker-compose.yml` | Containerized control plane and workspace sidecar |
+| `Dockerfile` / `rmm_deployment.py` | Wrapper-managed distributed central image |
 | `agent-powershell/client_rmm.ps1` | Windows beacon source |
 | `requirements.txt` | `prompt_toolkit` (required for `rmm_cli.py` interactive) |
-| `RMM_logs/` | Server-mode runtime logs/artifacts and central control-plane state |
-| `RMM_WORKSPACE_DATA` | Workspace-mode SQLite database, history, and artifacts inside each operator container |
+| `<deployment-root>/central/` | Central settings, control-plane state, logs, and build artifacts |
+| `<deployment-root>/workspaces/<id>/` | Workspace settings, database, managed assets, and evidence inside Exegol |
 | `~/.rmm_cli_state.json` | CLI selected session |
 | `~/.rmm_cli_history` | Operator command history (prompt_toolkit / readline) |
 | `~/.RMM_history` | Embedded CLI history |
@@ -518,7 +528,7 @@ hydrates truncated live results from the full REST transcript (see
 In workspace mode, the central broker keeps the event queue only long enough
 for the authenticated workspace service to consume it. The local SQLite
 database is the transcript owner, and the local service exposes the same API
-paths to its WebUI and CLI. Central `RMM_logs` contains control-plane session
+paths to its WebUI and CLI. The central owner directory contains control-plane session
 metadata and build artifacts, not workspace transcripts or operator files.
 
 ---

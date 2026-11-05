@@ -73,12 +73,12 @@ container, not in the control-plane volume.
 
 In workspace mode the central server keeps only control-plane state:
 
-- active session metadata and workspace ownership in `RMM_logs/sessions.json`;
+- active session metadata and workspace ownership in `<root>/central/sessions.json`;
 - command queues and pivot transport state in memory;
 - a bounded transient event queue per workspace;
 - workspace-scoped delivery copies under `RMM_LOG_DIR/plugin-cache/workspaces/`,
   republished from authoritative workspace assets;
-- the persistent profile volume at `/app/profiles`, which contains trusted
+- the owner-local transport directory at `<root>/central/profiles`, which contains trusted
   RMM-Profile bundles and runs the selected external transport;
 - server build artifacts such as `rmm-tun` in the configured image or tools
   directory.
@@ -101,10 +101,10 @@ to the central runtime cache so the beacon listener can serve them. The
 workspace republishes this cache on startup and removes disabled or deleted
 plugin copies. See [operator-managed assets](operator-assets.md).
 
-The workspace service stores its data under `RMM_WORKSPACE_DATA`:
+The wrapper pins the workspace data to its owner subtree:
 
 ```text
-/workspace/data/
+/workspace/rmm-deployment/workspaces/<id>/
 ├── workspace.db                 # SQLite sessions, events, downloads, AI chat
 ├── assets/
 │   ├── plugin-sources.json      # saved repository/branch/credential references
@@ -126,59 +126,17 @@ service restart.
 
 ## Configuration
 
-Central server variables:
+The authoritative files are `<root>/central/settings.json` and
+`<root>/workspaces/<id>/settings.json`. Start services only through
+[`rmm_deployment.py`](deployment.md). The complete
+[configuration/variable inventory](service-settings.md) documents scope,
+defaults, wrapper precedence, bootstrap paths, and compatibility overrides.
+This protocol reference does not provide a second startup recipe.
 
-| Variable | Description |
-| --- | --- |
-| `RMM_STORAGE_MODE` | `workspace` only; omitted values default to workspace |
-| `RMM_WORKSPACES` | JSON object such as `{"alice":"token-a","bob":"token-b"}` |
-| `RMM_WORKSPACE_EVENT_LIMIT` | Central transient queue size per workspace; default `10000` |
-| `RMM_MAX_WORKSPACE_PAYLOAD_BYTES` | Maximum one transient event payload; defaults to `RMM_MAX_BODY_BYTES` |
-| `RMM_API_TOKEN` | Global operator or administrator token |
-| `RMM_BEACON_SECRET` | Agent beacon secret |
-| `RMM_ADMIN_PORT` | Central administration listener; default `8080` |
-| `RMM_BEACON_PORT` | Central beacon listener; default `8081` |
-| `RMM_PROFILES_DIR` | Trusted profile bundles; default `/app/profiles` in Compose |
-| `RMM_PROFILE_NAME` | Profile selected for automatic startup; default `cloudflared` |
-| `RMM_PROFILE_AUTOSTART` | Start the selected installed profile; default `1` |
-| `RMM_ASSET_MAX_BYTES` | URL asset download limit; default 64 MiB |
-| `RMM_ASSETS_DIR` | Server-mode asset store; default `RMM_logs/assets` |
-| `RMM_UI_STATE_DB` | Server-mode WebUI state database; default `RMM_logs/ui-state.db` |
-
-Workspace service variables:
-
-| Variable | Description |
-| --- | --- |
-| `RMM_C2_URL` | Central URL, for example `http://rmm-control:8080` |
-| `RMM_WORKSPACE_ID` | Workspace ID registered on the central server |
-| `RMM_WORKSPACE_TOKEN` | Token matching the central workspace registry |
-| `RMM_WORKSPACE_DATA` | Local persistence directory; default `~/.minimal-rmm` |
-| `RMM_WORKSPACE_BIND` | Local HTTP bind; use `127.0.0.1` by default |
-| `RMM_WORKSPACE_PORT` | Local HTTP port; default `8787` |
-| `RMM_WORKSPACE_LOCAL_TOKEN` | Token for the local WebUI and CLI when the service is published; optional only when it is bound to a private loopback |
-| `RMM_WORKSPACE_TUN_HELPER` | Local `rmm-tun` path; default `tools/rmm-tun` |
-| `RMM_WORKSPACE_AUTO_CLAIM` | Claim every unassigned session when set to `1` |
-| `RMM_WORKSPACE_POLL_INTERVAL` | Session/event sync interval in seconds; default `1` |
-| `RMM_EXEGOL_MCP_URL` | Required MCP endpoint reachable by both this runtime and the central AI process |
-| `RMM_EXEGOL_MCP_TOKEN` | MCP credential when the endpoint requires authentication |
-| `RMM_EXEGOL_CONTAINER` | Optional exact container override; otherwise discover the container through MCP and verify workspace identity |
-| `RMM_WORKSPACE_MAX_BODY` | Local upload size cap; set 128 MiB for all current plugins |
-| `RMM_ASSET_MAX_BYTES` | Local download/install size cap; set 128 MiB for all current plugins |
-| `RMM_PLUGIN_GITHUB_TOKEN`, `RMM_PLUGIN_TOKEN_<NAME>` | Private GitHub credentials referenced by saved plugin sources; never returned by the source API |
-| `RMM_RCLONE_PROFILES_FILE` | Workspace-local JSON profile file |
-| `RMM_RCLONE_DEFAULT_PROFILE` | Workspace-local default profile; default `mega-lab` |
-| `RMM_RCLONE_MAX_BYTES` | Workspace-local size cap; `0` means unlimited |
-
-Use different workspace tokens for different operators. A workspace token is
-accepted only with both `X-RMM-Workspace` and `X-RMM-Workspace-Token` headers.
-The central API token remains available for administrative access.
-
-The central WebSocket feed is administrator-only: workspace credentials are
-rejected before the handshake because this feed is not partitioned by workspace.
-Workspace services use authenticated HTTP event polling instead. Direct scoped
-requests to central history or asset storage return 409; owner-local AI relays
-are routed to the workspace before this guard. `_reject_workspace_storage_access`
-enforces that boundary, including legacy skill/rclone upload aliases.
+Workspace requests authenticate with `X-RMM-Workspace` and
+`X-RMM-Workspace-Token`. The central administrator token is separate. Each
+operator keeps a unique workspace ID/token and its own local WebUI token;
+central does not need the workspace's filesystem.
 
 ## Session ownership
 
@@ -299,9 +257,10 @@ or configuration. See [BloodHound lifecycle](bloodhound-workflow.md).
 
 ### Rclone profile scope
 
-The workspace service serves `GET /api/v1/rclone/config` from its own
-`RMM_RCLONE_PROFILES_FILE`, `RMM_RCLONE_DEFAULT_PROFILE`, and
-`RMM_RCLONE_MAX_BYTES` settings. The central broker exposes only
+The workspace service serves `GET /api/v1/rclone/config` from registered,
+enabled profile files in its own `assets/rclone/`, plus owner-local
+`RMM_RCLONE_DEFAULT_PROFILE` and `RMM_RCLONE_MAX_BYTES` settings. Loose files
+are inactive; legacy settings/example files are not fallback profiles. The central broker exposes only
 `GET /api/v1/rclone/capabilities`, which reports whether the Go plugin and the
 optional central binary bootstrap artifact are available. In workspace mode,
 the central `/api/v1/rclone/config` endpoint refuses to return profiles.
@@ -361,70 +320,12 @@ Only the per-operator workspace that owns the local interface receives them.
 
 ## Docker Compose reference
 
-Use the [deployment guide](deployment.md) to choose between the example
-sidecar and an existing Exegol workspace. Do not run both with the same ID.
-The sidecar is a workspace service, not a full Exegol tools container.
-
-Copy `.env.example` to `.env`, replace every placeholder, and start the control
-plane:
-
-```bash
-docker compose up --build -d rmm-control
-```
-
-The control plane listens on the published port and has no TUN device or
-network administration capability. To run the example workspace sidecar on a
-Linux Docker host:
-
-```bash
-docker compose --profile workspace up --build -d
-```
-
-Create the profile file on the operator host before starting the workspace
-service:
-
-```bash
-cp tools/rclone/profiles.example.json tools/rclone/profiles.json
-$EDITOR tools/rclone/profiles.json
-```
-
-Compose mounts `tools/rclone/` into the workspace service at
-`/workspace/rclone/`. The central `rmm-control` service does not receive that
-mount or the workspace rclone environment variables.
-
-Install the trusted Cloudflared profile bundle in the control-plane
-`rmm-profile-store` volume and make the `cloudflared` executable available in
-the control-plane image. The profile forwards the public quick-tunnel URL to
-the central beacon port; the workspace WebUI uses the returned URL when
-generating agents.
-
-The example sidecar is a workspace service image. An existing Exegol
-container can run the same `workspace_service.py` directly instead. Load its
-workspace environment from the [deployment guide](deployment.md) first; on the
-same Compose network, override the central URL as follows:
-
-```bash
-RMM_C2_URL=http://rmm-control:8080 \
-RMM_RCLONE_PROFILES_FILE=/workspace/Minimal-RMM/tools/rclone/profiles.json \
-RMM_RCLONE_DEFAULT_PROFILE=mega-lab \
-RMM_RCLONE_MAX_BYTES=0 \
-python3 workspace_service.py
-```
-
-Attach that Exegol container to the Compose network if it needs to resolve
-`rmm-control` by service name. On Docker Desktop for macOS, a real Linux VM or
-Linux Exegol host is required for a usable `/dev/net/tun`; container device
-behavior is not equivalent to a native Linux host.
-
-The Dockerfile builds only the checked-in TUN helper into the image. The
-workspace owns Windows amd64 pivot DLLs and PowerShell scripts installed through
-its release or asset API. Central receives only workspace-scoped delivery copies
-before a pivot can launch. Outside Docker, run `make tun-build`
-explicitly on the workspace host before using TUN. Set `RMM_WORKSPACE_TUN_HELPER`
-when the helper is installed at a custom path. Startup never compiles it.
-New plugin commands stay in their plugin artifact and
-use the agent's generic isolated PE loader; the workspace service does not need
-a copy of the plugin code.
+The wrapper generates the distributed **central-only** container definition
+from saved central settings. There is no generic workspace sidecar or shared
+state/profile volume. The workspace runs inside existing Exegol with its own
+persistent owner subtree. See the single and distributed same-host procedures
+in the [deployment guide](deployment.md); overlay networking across hosts is
+future work.
 
 ## Startup order and failure behavior
 
@@ -521,11 +422,11 @@ including private helpers that enforce the local storage boundary.
 | --- | --- |
 | valid_workspace_id | Validate workspace IDs used in headers and storage keys |
 | _workspace_event_limit | Read and clamp the central transient queue limit |
-| WorkspaceRegistry.__init__ | Keep validated workspace token mappings in memory |
+| `WorkspaceRegistry.__init__` | Keep validated workspace token mappings in memory |
 | WorkspaceRegistry.from_environment | Parse RMM_WORKSPACES and singular workspace variables |
 | WorkspaceRegistry.authenticate | Compare a workspace token in constant time |
 | WorkspaceRegistry.contains / ids | Inspect configured IDs without exposing tokens |
-| WorkspaceEventBroker.__init__ | Create the cursor and per-workspace bounded queues |
+| `WorkspaceEventBroker.__init__` | Create the cursor and per-workspace bounded queues |
 | WorkspaceEventBroker.publish | Copy an event into a workspace queue and allocate a cursor |
 | WorkspaceEventBroker.read | Return events after a cursor and report queue loss |
 | WorkspaceEventBroker.clear | Discard one workspace queue during an explicit reset |
@@ -544,7 +445,7 @@ including private helpers that enforce the local storage boundary.
 
 | Symbol | Role |
 | --- | --- |
-| WorkspaceStore.__init__ | Create owner-only directories, open SQLite, and initialize the schema |
+| `WorkspaceStore.__init__` | Create owner-only directories, open SQLite, and initialize the schema |
 | WorkspaceStore._init_schema | Create metadata, sessions, events, downloads, and AI tables |
 | WorkspaceStore.close | Close the SQLite connection |
 | WorkspaceStore.get_cursor / set_cursor | Read or atomically persist the central event cursor |
@@ -570,14 +471,14 @@ including private helpers that enforce the local storage boundary.
 
 | Symbol | Role |
 | --- | --- |
-| WorkspaceUpstream.__init__ | Store the central URL and workspace credentials |
+| `WorkspaceUpstream.__init__` | Store the central URL and workspace credentials |
 | WorkspaceUpstream.request | Send authenticated JSON requests and decode JSON or binary responses |
 
 #### WorkspaceService
 
 | Symbol | Role |
 | --- | --- |
-| WorkspaceService.__init__ | Wire local persistence, upstream transport, and pivot callbacks |
+| `WorkspaceService.__init__` | Wire local persistence, upstream transport, and pivot callbacks |
 | WorkspaceService.log | Emit local lifecycle messages without sending them to the agent |
 | WorkspaceService._submit_pivot_tasks | Forward one local SOCKS/TUN task batch to central |
 | WorkspaceService._fetch_pivot_responses | Pull raw agent responses for one local pivot channel |
@@ -614,7 +515,7 @@ including private helpers that enforce the local storage boundary.
 
 | Symbol | Role |
 | --- | --- |
-| WorkspacePivotManager.__init__ | Create local SOCKS/TUN managers and the bridge thread |
+| `WorkspacePivotManager.__init__` | Create local SOCKS/TUN managers and the bridge thread |
 | WorkspacePivotManager.log | Forward safe pivot lifecycle messages to the workspace logger |
 | WorkspacePivotManager.start_socks / stop_socks | Create or stop the local operator SOCKS listener |
 | WorkspacePivotManager.socks_active / list_socks_status | Inspect local SOCKS state |

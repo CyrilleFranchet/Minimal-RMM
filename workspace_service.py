@@ -43,6 +43,7 @@ from rmm_rclone import (
     build_plugin_exfil_job,
     get_rclone_default_profile,
     load_profiles,
+    validate_profiles,
     rclone_public_config,
 )
 from rmm_ai_skills import list_ai_skills, resolve_ai_skills
@@ -162,26 +163,18 @@ class WorkspaceStore:
         return {"state": normalized, "updated_at": updated_at}
 
     def rclone_profiles(self) -> dict[str, dict]:
-        """Load enabled workspace rclone profile files, falling back to legacy config."""
+        """Read registered, enabled owner-local profile assets; loose files never activate."""
         profiles: dict[str, dict] = {}
-        for row in self.assets.list("rclone", include_disabled=False):
-            try:
-                payload = json.loads(self.assets.read("rclone", row["name"]))
-            except (AssetError, json.JSONDecodeError):
-                continue
-            if not isinstance(payload, dict):
-                continue
-            if payload.get("type"):
-                name = str(payload.get("name") or Path(row["name"]).stem).strip()
-                if name:
-                    profiles[name] = payload
-                continue
-            for name, profile in payload.items():
-                if isinstance(profile, dict) and profile.get("type"):
-                    profiles[str(name)] = profile
-        if profiles:
-            return profiles
-        return load_profiles()
+        try:
+            for row in self.assets.list('rclone', include_disabled=False):
+                payload = json.loads(self.assets.read('rclone', row['name']))
+                loaded = validate_profiles(payload, Path(row['name']).stem)
+                if profiles.keys() & loaded.keys():
+                    raise RcloneConfigError('Duplicate rclone profile names; consolidate workspace profile files')
+                profiles.update(loaded)
+        except (AssetError, OSError, UnicodeError, json.JSONDecodeError):
+            raise RcloneConfigError('Cannot read managed workspace rclone profiles; check uploaded assets and asset inventory') from None
+        return profiles
 
     def skill_directories(self) -> list[str]:
         """Return built-in skills followed by the workspace skill overlay."""
@@ -1353,7 +1346,11 @@ class WorkspaceService:
 
     def _rclone_config(self) -> dict[str, Any]:
         """Return local profiles combined with central execution capabilities."""
-        profiles = self.store.rclone_profiles() if hasattr(self, "store") else load_profiles()
+        load_error = None
+        try:
+            profiles = self.store.rclone_profiles() if hasattr(self, "store") else load_profiles()
+        except RcloneConfigError as exc:
+            profiles, load_error = {}, str(exc)
         config = rclone_public_config(
             profiles=profiles,
             default_profile=get_rclone_default_profile(),
@@ -1369,6 +1366,11 @@ class WorkspaceService:
             config["rclone_plugin"] = None
         config["workspace_local"] = True
         config["profiles_scope"] = "workspace"
+        if hasattr(self, 'store'):
+            config['profiles_directory'] = str(self.store.assets.root / 'rclone')
+            config['profiles_source'] = 'registered enabled workspace assets; loose files are ignored'
+        if load_error:
+            config['load_error'] = load_error
         return config
 
     def _workspace_exfil_job(

@@ -1,9 +1,6 @@
 #!/bin/sh
-# Start the requested Minimal-RMM process. Workspaces publish agent plugins
-# into the central workspace-scoped delivery cache.
+# Start the central deployment wrapper; it derives all storage from its root.
 
 set -eu
-
-mkdir -p "${RMM_PROFILES_DIR:-/app/profiles}"
 
 exec "$@"

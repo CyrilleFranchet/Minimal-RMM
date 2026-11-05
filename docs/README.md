@@ -8,8 +8,8 @@ The documentation has five roles:
 
 - `architecture.md` is the canonical description of the current runtime
   topology, data flow, storage ownership, and privilege boundaries.
-- `deployment.md` is the canonical installation path, with separate native
-  central/workspace recipes and Compose/standalone alternatives.
+- `deployment.md` is the canonical installation path, through the deployment wrapper only, with single and distributed same-host
+  topologies; cross-host overlay work is deferred.
 - Feature pages describe setup, operator behavior, protocols, and code
   ownership for one subsystem.
 - `progress.md` is the chronological work log. It records decisions and
@@ -31,7 +31,7 @@ historical notes in `progress.md`.
 | Configure services without maintaining environment-variable lists | [Persistent service settings](service-settings.md) |
 | Choose a setup and deploy without mixing server/workspace settings | [Deployment guide](deployment.md) |
 | Understand the complete system | [Architecture overview](architecture.md) |
-| Look up startup arguments and optional helper setup | [Server startup reference](server-startup.md) |
+| Find the supported launcher and compatibility reference | [Server startup reference](server-startup.md) |
 | Stop services and understand cleanup guarantees | [Service shutdown](shutdown.md) and [agent shutdown](agent-shutdown.md) |
 | Understand workspace claims, storage, and protocol details | [Workspace reference](workspace-deployment.md) |
 | Install plugins, AI skills, and rclone files | [Operator-managed assets](operator-assets.md) |
@@ -58,7 +58,7 @@ historical notes in `progress.md`.
 
 | Topic | Page |
 | --- | --- |
-| Development and Docker startup paths | [Server startup](server-startup.md) |
+| Supported service launcher | [Server startup](server-startup.md) |
 | RMM-Profile volume and Cloudflared Quick/named tunnels | [RMM-Profiles](rmm-profiles.md) |
 | Go agent generation, targets, and runtime settings | [Go agent](go-agent.md) |
 | PowerShell agent generation | [PowerShell agent generator](web-agent-generator.md) |
@@ -130,6 +130,6 @@ For supported graph investigations, see the
 | External `Minimal-RMM-plugins` repository | [External plugin repository](plugin-repository.md), [Plugin architecture](plugin-architecture.md) |
 | `web/` | [WebUI configuration](web-ui-configuration.md), [WebUI pivots](web-socks.md), [AI pages](ai-providers.md) |
 | `rmm_cli.py`, `rmm_tools.py`, `mcp_rmm_server.py` | [Operator parity](mcp-parity.md) |
-| `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh` | [Server startup](server-startup.md), [Workspace deployment](workspace-deployment.md), [Plugin architecture](plugin-architecture.md) |
+| `Dockerfile`, `rmm_deployment.py`, `docker-entrypoint.sh` | [Server startup](server-startup.md), [Workspace deployment](workspace-deployment.md), [Plugin architecture](plugin-architecture.md) |
 
 The full API and command reference remains in the [root README](../README.md).

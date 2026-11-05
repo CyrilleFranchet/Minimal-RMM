@@ -4,7 +4,7 @@ See the [documentation wiki](README.md) and [architecture overview](architecture
 for deployment boundaries. This page covers rclone configuration and operator
 flows.
 
-Operators queue exfil of a **remote file or folder on the agent** to cloud storage (MEGA, S3, …). Go agents can use the isolated `rclone-exfil` plugin child; PowerShell agents and explicit binary mode use the existing rclone executable path. Server mode loads profiles on the RMM server. Workspace mode loads profiles in the active operator workspace and sends only the selected job payload through the central broker.
+Operators queue exfil of a **remote file or folder on the agent** to cloud storage (MEGA, S3, …). Go agents can use the isolated `rclone-exfil` plugin child; PowerShell agents and explicit binary mode use the existing rclone executable path. The active operator workspace owns registered profiles and sends only the selected job payload through the central broker.
 
 ## Execution modes
 
@@ -25,15 +25,17 @@ it, and the WebUI shows it under the queued exfil command.
 
 ## Configuration ownership
 
-In server mode, configure profiles with `RMM_RCLONE_PROFILES` or
-`RMM_RCLONE_PROFILES_FILE` on the RMM server. In workspace mode, configure them
-inside each operator workspace:
-
-```bash
-export RMM_RCLONE_PROFILES_FILE="$PWD/tools/rclone/profiles.json"
-export RMM_RCLONE_DEFAULT_PROFILE=mega-lab
-export RMM_RCLONE_MAX_BYTES=0
-```
+Rclone profiles belong to the workspace's registered asset store at
+`<deployment-root>/workspaces/<id>/assets/rclone/`. Upload `profiles.json`
+through the workspace WebUI or use the explicit offline import in the
+[deployment guide](deployment.md#rclone-profiles-registration-is-required).
+A loose file copied into that directory is ignored until registered; inventory
+enablement still applies. There is no legacy/environment/example fallback.
+Default profile selection and transfer limits belong in that workspace's
+`settings.json` as `RMM_RCLONE_DEFAULT_PROFILE` and `RMM_RCLONE_MAX_BYTES`.
+Malformed enabled files and duplicate names return an explicit load error and
+prevent job construction. Registration, missing profiles, and permission errors
+must be fixed on the workspace rather than by copying secrets to central.
 
 The workspace service reads the profile, default destination folder, and size
 limit locally. It builds the selected plugin or binary payload and sends that
@@ -80,26 +82,30 @@ Traffic exits the **agent network**, not the RMM server.
 
 ### 1. rclone binary
 
-Place Windows **amd64** `rclone.exe` in `tools/rclone/` or set:
-
-```bash
-export RMM_RCLONE_BIN=/path/to/rclone.exe
-```
+Place Windows **amd64** `rclone.exe` in the central code's `tools/rclone/`
+directory, or save `RMM_RCLONE_BIN` in `central/settings.json`. A saved relative
+path is resolved against `central/` by the wrapper. This is a binary bootstrap
+artifact, not a profile credential source.
 
 Agents fetch: `GET /tools/rclone.exe?id=<session_id>` (beacon token required).
 
 ### 2. Remote profiles
 
+The workspace reads registered, enabled assets only. Copying a JSON file into
+`assets/rclone/` does not register it. Upload through Config, install through
+the asset API/CLI, or use the offline wrapper import described in the
+[deployment guide](deployment.md#rclone-profiles-registration-is-required).
+`rmm_rclone.validate_profiles` validates a named collection or a single-profile
+asset before use. Invalid names/backend types and duplicate names across enabled
+assets block job construction with a content-free configuration error.
+
 Define named profiles as JSON:
 
-| Variable | Purpose |
-|----------|---------|
-| `RMM_RCLONE_PROFILES` | Inline JSON object of profiles |
-| `RMM_RCLONE_PROFILES_FILE` | Path to a JSON file (overrides inline if both set) |
-| `server_rmm.py --rclone-profiles PATH` | Same as `RMM_RCLONE_PROFILES_FILE` at startup |
-| `RMM_RCLONE_DEFAULT_PROFILE` | Default profile when `--profile` omitted (default `mega-lab`) |
-| `RMM_RCLONE_MAX_BYTES` | Max exfil size in bytes (file or whole folder; default 100 MB); **`0` = unlimited** |
-| `server_rmm.py --rclone-max-bytes N` | Same as `RMM_RCLONE_MAX_BYTES` at startup |
+| Workspace configuration | Purpose |
+| --- | --- |
+| Registered `assets/rclone/*.json` | Named profile definitions; upload/import required |
+| `RMM_RCLONE_DEFAULT_PROFILE` in workspace settings | Default when the caller omits a profile |
+| `RMM_RCLONE_MAX_BYTES` in workspace settings | Transfer cap; default 100 MiB, `0` means unlimited |
 
 Example file (`tools/rclone/profiles.example.json`):
 
@@ -127,12 +133,10 @@ Copy credentials into your lab config; do not commit real secrets.
 
 For MEGA (and other remotes using `pass`), put the **plain** password in JSON. Both the PowerShell and Go agents run `rclone obscure` before upload. If you pre-obscured with `rclone obscure`, set `"pass_obscured": true` on that profile.
 
-**Large files:** default cap is 100 MB. For multi-GB exfil (e.g. a 6.6 GB ISO), raise the limit and restart the server:
-
-```bash
-python server_rmm.py --rclone-max-bytes 0   # unlimited
-# or: export RMM_RCLONE_MAX_BYTES=7000000000   # ~6.5 GB for one file
-```
+**Large files:** the default cap is 100 MiB. Set a suitable
+`RMM_RCLONE_MAX_BYTES` in the owner's workspace settings (`0` means unlimited),
+then restart that component through the deployment wrapper. Avoid a competing
+central setting or shell variable; see [configuration ownership](service-settings.md).
 
 Then queue exfil again (new jobs pick up the updated limit). Check your cloud backend quota (MEGA free tier may block very large uploads).
 
@@ -140,19 +144,17 @@ Then queue exfil again (new jobs pick up the updated limit). Check your cloud ba
 
 | Symptom | Likely cause |
 |---------|----------------|
-| `exceeds exfil limit` | Default **100 MB** cap — set `RMM_RCLONE_MAX_BYTES=0` in the active server or workspace deployment |
+| `exceeds exfil limit` | Default **100 MB** cap — set `RMM_RCLONE_MAX_BYTES=0` in the workspace settings file |
 | `rclone copyto failed (exit ?)` with stats JSON only | rclone exited before transfer; read the **error** line in the message (agent now parses JSON log `level=error`) |
 | `0 B / 0 B` in log tail | Often auth/config or remote path — verify MEGA credentials in profiles and folder name |
-| Large ISO (~6 GB+) | Raise server size cap **and** confirm cloud storage quota (MEGA free accounts may reject multi-GB files) |
+| Large ISO (~6 GB+) | Raise the workspace size cap **and** confirm cloud storage quota (MEGA free accounts may reject multi-GB files) |
 
 The web UI **Exfil** hint shows the current per-file cap from `GET /api/v1/rclone/config` (`max_bytes`).
 
-Configure profiles in the operator workspace:
-
-```bash
-export RMM_RCLONE_PROFILES_FILE="/path/to/profiles.json"
-python3 rmm_deployment.py run --root /path/to/deployment --component workspace --workspace-id default
-```
+Upload profiles through the workspace Config assets panel or the explicit
+[offline import](deployment.md#rclone-profiles-registration-is-required), then
+start with the deployment wrapper. Exporting legacy profile variables or copying
+an unregistered file does not configure the live workspace loader.
 
 Point the WebUI and CLI at that workspace service. Direct central requests to
 `/api/v1/rclone/config` do not return workspace profiles; central Web AI uses

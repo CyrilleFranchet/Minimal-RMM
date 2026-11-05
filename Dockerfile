@@ -1,36 +1,26 @@
-# Central control plane and the optional workspace sidecar share one image.
-# The control plane has no network namespace privileges; only a workspace
-# container that owns a local TUN device needs NET_ADMIN and /dev/net/tun.
+# Distributed central control plane only. Workspaces run inside Exegol.
 
-FROM golang:1.27-bookworm AS helper-builder
-
-WORKDIR /src
-COPY server-tun ./server-tun
-
-RUN mkdir -p /out/tools \
-    && cd server-tun \
-    && go build -buildvcs=false -trimpath -ldflags "-s -w" -o /out/tools/rmm-tun .
+FROM golang:1.27-bookworm AS go-toolchain
 
 FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     RMM_STORAGE_MODE=workspace \
-    RMM_PROFILES_DIR=/app/profiles \
-    RMM_WORKSPACE_TUN_HELPER=/app/tools/rmm-tun
+    PATH="/usr/local/go/bin:${PATH}"
 
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates iproute2 \
+    && apt-get install --yes --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-mcp.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-COPY --from=helper-builder /out/tools/rmm-tun /app/tools/rmm-tun
+COPY --from=go-toolchain /usr/local/go /usr/local/go
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod 0755 /app/tools/rmm-tun /app/docker-entrypoint.sh
+RUN chmod 0755 /app/docker-entrypoint.sh
 
-EXPOSE 8080 8081 8787
+EXPOSE 8080 8081
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["python3", "server_rmm.py", "--admin-port", "8080", "--beacon-port", "8081", "--bind", "0.0.0.0", "--beacon-bind", "0.0.0.0"]
+CMD ["python3", "rmm_deployment.py", "run", "--root", "/deployment", "--component", "control"]

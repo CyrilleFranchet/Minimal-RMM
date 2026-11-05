@@ -88,7 +88,7 @@ CLI secret-file input, or offline configuration. GitHub credentials are never
 sent to the agent or central broker in workspace mode, and configuration reads
 do not return them. See [service settings](service-settings.md).
 
-For Compose, `.env.example` provides `RMM_WORKSPACE_PLUGIN_GITHUB_TOKEN`.
+Save `RMM_PLUGIN_GITHUB_TOKEN` in the workspace owner settings; no Compose environment file is required.
 Compose maps that value to `RMM_PLUGIN_GITHUB_TOKEN` only in the workspace.
 Protect the environment file and exclude it from source control. Each separately
 deployed workspace can use its own repository credential.

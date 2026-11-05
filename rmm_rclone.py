@@ -95,7 +95,7 @@ def load_profiles(
     path_override: str | None = None,
     raw_override: str | None = None,
 ) -> dict[str, dict]:
-    """Load named rclone remote profiles from an override, env, or example file."""
+    """Read explicit legacy configuration; examples are never runtime profiles."""
     raw = (
         str(raw_override).strip()
         if raw_override is not None
@@ -112,21 +112,26 @@ def load_profiles(
     elif raw:
         data = json.loads(raw)
     else:
-        example = os.path.join(TOOLS_DIR, "profiles.example.json")
-        if os.path.isfile(example):
-            with open(example, encoding="utf-8") as f:
-                data = json.load(f)
-        else:
-            data = {}
+        data = {}
+    return validate_profiles(data)
+
+
+def validate_profiles(data, default_name=None):
+    """Validate a profile collection or one named asset without exposing its contents."""
     if not isinstance(data, dict):
-        raise RcloneConfigError("RMM rclone profiles must be a JSON object")
+        raise RcloneConfigError("Rclone profiles must be a JSON object")
+    if default_name and isinstance(data.get('type'), str):
+        name = data.get('name') or default_name
+        if not isinstance(name, str):
+            raise RcloneConfigError("Invalid rclone profile name; expected a string")
+        data = {name: data}
     out: dict[str, dict] = {}
     for name, profile in data.items():
-        if not isinstance(profile, dict):
-            continue
-        if not profile.get("type"):
-            continue
-        out[str(name)] = profile
+        if (not isinstance(name, str) or not name.strip() or len(name) > 128
+                or not isinstance(profile, dict) or not isinstance(profile.get('type'), str)
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', profile['type'])):
+            raise RcloneConfigError("Invalid rclone profile; expected a named object with a nonempty backend type")
+        out[name] = profile
     return out
 
 

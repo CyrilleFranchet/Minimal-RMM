@@ -1,187 +1,256 @@
-# Persistent service settings
+# Configuration and storage reference
 
-Configure service behavior in **Config → Service settings**, through the CLI,
-or through MCP. The configuration belongs to the service you connect to:
-central infrastructure settings belong to the central administrator; workspace
-settings belong to that workspace. A workspace token cannot administer the
-central server's tunnel or credential registry.
+Use the [deployment wrapper guide](deployment.md) for every service startup.
+The configuration source is the selected owner's `settings.json`, not a second
+`.env`, repository runtime directory, or home-directory service configuration.
 
-## Save and apply
+## Where each kind of configuration lives
 
-Settings are stored in an owner-only JSON file: `RMM_logs/settings.json` for
-the server, or `settings.json` inside the workspace data directory. Select a
-custom file with `--config FILE` or `RMM_CONFIG_FILE`. Back up this file with
-the service's data; it contains credentials and must not be committed to Git.
+| Configuration/state | Canonical location relative to deployment root | Writer |
+| --- | --- | --- |
+| Central operational settings and secrets | `central/settings.json` | Preparation; central Config/settings API; offline settings tool |
+| Workspace settings and secrets | `workspaces/<id>/settings.json` | Preparation; workspace Config/settings API; offline settings tool |
+| Operator UI state, AI chat, embeddings and result collections | `workspaces/<id>/workspace.db` | Workspace APIs/UI |
+| Plugin repositories and credential references | `workspaces/<id>/assets/plugin-sources.json` | Workspace source editor/API |
+| Asset registration and explicit enablement | `workspaces/<id>/assets/metadata.json` | Workspace upload/install/enable APIs |
+| Plugins and optional skill files | `workspaces/<id>/assets/plugins/` and `assets/skills/` | Workspace uploads/releases; built-in skills remain code assets |
+| Rclone profile credentials | Registered files in `workspaces/<id>/assets/rclone/` | Workspace asset upload; explicit offline import |
+| External beacon transport bundles | `central/profiles/` | Explicit trusted bundle installation |
+| Central admin UI, AI jobs and build/cache state | `central/` | Central service |
+| BloodHound lifecycle and workflow state | `workspaces/<id>/bloodhound/` | Owning workspace |
+| Topology/registered owner IDs | `deployment.json` | Deployment preparation; contains no credential values |
+| Container mapping/build definition | `compose.generated.json` | Wrapper; derived output, not editable operational source |
 
-**Restart the affected Python service to apply startup configuration consistently.**
-Saved overrides become available to subsequent settings lookups immediately,
-but already initialized listeners, clients, and connectors can retain their
-previous configuration. Saving a value does not guarantee that every running
-component has reconfigured itself. After restart, start the profile if
-autostart is disabled.
+One directory convention does not mean every subsystem shares one JSON file.
+Credentials/settings, binary assets, explicit enablement, relational event data,
+and generated caches have different formats and lifecycles. They have one owner
+and one predictable root. The central service never opens the workspace's files;
+workspaces communicate with it through authenticated APIs.
 
-Precedence is **explicit startup flags → nonempty environment overrides → saved
-settings → built-in defaults**. The settings view identifies the source and
-restart requirements. A saved value cannot override an environment variable or
-startup flag. Remove that override from the service manager/container launcher
-and restart before expecting the saved value to take effect. Empty legacy
-environment values are treated as unset.
+## Precedence under the wrapper
 
-Secret fields are write-only. Read responses indicate whether a credential is
-configured, without returning its value. Leaving a secret field unchanged keeps
-it; removing a saved value restores environment/default resolution. Secret files
-are protected by filesystem permissions, not encrypted at rest.
+Normal `rmm_deployment.py run` ignores inherited known service-setting variables,
+including provider keys and stale rclone configuration. It keeps OS/tool
+infrastructure such as PATH, certificate settings, Docker connectivity, and an
+existing Kerberos cache selection. It does not load `.env` files.
 
-## First startup without environment secrets
+The wrapper pins the selected owner's settings path, data root, asset directory,
+central plugin cache, UI database, and transport bundle directory. A saved
+storage path that conflicts with that convention is rejected with migration
+guidance instead of silently opening a different installation. Relative saved
+helper/executable paths resolve against the owner's directory; unqualified
+PATH-based program names keep their normal meaning. Default TUN helper binaries
+remain installed code assets, not an extra configuration root.
 
-Initialize configuration locally before starting an authenticated service:
+For normal startup the precedence is **wrapper-owned paths → saved owner settings
+→ schema defaults**. Native `--allow-env-overrides` is an explicit compatibility
+mode: valid same-scope environment settings then override saved values. It cannot
+redirect wrapper-owned storage or change workspace identity. It is unavailable
+for the dedicated central Docker launch. Do not use it for new installations.
+
+The lower-level service modules still accept legacy flags/environment for
+internal tests and compatibility. Their precedence is explicit flags → nonempty
+environment → saved settings → defaults. This is not an alternate startup recipe.
+The settings API labels those sources. Wrapper-derived path values can appear
+as environment provenance because they are passed to the child process; their
+source of truth is the wrapper's root argument.
+
+## Editing and applying settings
+
+Preparation generates secrets and valid scope envelopes. Do not copy a central
+settings file into a workspace. Edit a selected owner through its Config panel,
+CLI/MCP settings tool, or the offline helper with the exact file:
 
 ```bash
-python3 rmm_settings.py --scope server --config RMM_logs/settings.json set RMM_PROFILE_AUTOSTART false
-python3 rmm_settings.py --scope server --config RMM_logs/settings.json set RMM_API_TOKEN --value-file /private/path/admin-token
-python3 rmm_settings.py --scope server --config RMM_logs/settings.json set RMM_BEACON_SECRET --value-file /private/path/beacon-token
-python3 server_rmm.py --config RMM_logs/settings.json
+python3 rmm_settings.py --scope server \
+  --config /workspace/rmm-deployment/central/settings.json \
+  set RMM_AI_OUTPUT_RESERVE 16384
+python3 rmm_settings.py --scope workspace \
+  --config /workspace/rmm-deployment/workspaces/default/settings.json \
+  set RMM_RCLONE_DEFAULT_PROFILE mega-lab
 ```
 
-The input files contain the secret value only. `--value-file -` reads standard
-input; use this for secret-manager integration rather than command-line literals
-that enter shell history or process arguments. Keep `RMM_STORAGE_MODE=workspace`
-when running the central service in workspace mode.
-
-The offline command also supports `show`, `unset KEY`, and `import FILE`.
-Offline imports accept a JSON object of setting names and typed values, or an
-object wrapping them under `settings`. Configure a
-workspace's `RMM_C2_URL`, `RMM_WORKSPACE_ID`, `RMM_WORKSPACE_TOKEN`, and
-`RMM_WORKSPACE_LOCAL_TOKEN` locally, then start `workspace_service.py` with the
-same configuration file and persistent data directory. Add the matching ID/token
-to the central `RMM_WORKSPACES` registry separately.
-
-## Connected interfaces
-
-```bash
-python3 rmm_cli.py settings show
-python3 rmm_cli.py settings set RMM_ASSET_MAX_BYTES 134217728
-python3 rmm_cli.py settings unset RMM_ASSET_MAX_BYTES
-python3 rmm_cli.py settings import /private/path/settings.json
-```
-
-Connected CLI imports use `{"settings":{"KEY":value}}`; `-` reads stdin.
-Use `settings set KEY --value-file FILE` (or `-`) for secrets.
-
-REST uses `GET /api/v1/settings` and `PATCH /api/v1/settings`:
+For secrets use `--value-file FILE` or `--value-file -` rather than placing them
+in argv or shell history. The offline helper also supports `show`, `unset KEY`,
+and `import FILE`; import accepts a settings object or a `settings` envelope.
+Connected APIs use `GET/PATCH /api/v1/settings`, and MCP uses `settings`:
 
 ```json
-{"settings":{"RMM_ASSET_MAX_BYTES":134217728,"RMM_PROFILE_AUTOSTART":false}}
+{"settings":{"RMM_RCLONE_DEFAULT_PROFILE":"mega-lab","RMM_RCLONE_MAX_BYTES":104857600}}
 ```
 
-A `null` value removes the saved override. MCP exposes `settings(action="show")` and `settings(action="update", settings={...})` for
-reading and updating the same configuration. Use the connected service's
-configuration schema for allowed keys, types, defaults, and ownership scope.
+A `null` removes a saved override. Secret fields are write-only in the API.
+Files have owner-only permissions; secrets are not encrypted at rest. Store
+private backups with the owner subtree. Stop/restart the affected service
+through the wrapper after startup-setting changes. Saving updates subsequent
+settings lookups immediately, but does not reinitialize every listener/client.
+Re-run `run --docker` after listener changes to regenerate container mappings.
 
-## Environment migration inventory
+## Rclone registration and migration
 
-Existing environment configuration remains compatible. Move values into saved
-settings, remove their environment definitions, and restart. Existing saved
-plugin sources, managed rclone assets, and embedding profiles remain their own
-configuration stores.
+A file copied directly to `assets/rclone/` is **not active** until registered.
+Upload it through the workspace WebUI or asset API/CLI, or use the wrapper's
+`import-rclone` command offline. Explicitly disabled files stay disabled.
+Malformed enabled files and duplicate profile names block profile loading with
+a content-free error. The public rclone status shows the workspace directory,
+registration source, and any load error; it never returns complete credentials.
 
-| Category | Settings and migration |
+The live workspace loader uses registered assets only. It does not consult
+`RMM_RCLONE_PROFILES`, `RMM_RCLONE_PROFILES_FILE`, or repository examples when
+profiles are missing/disabled/invalid. Those two settings remain compatibility
+inputs for lower-level helpers; migrate an explicit old file with the wrapper
+and remove old definitions. An example file is documentation, not a fallback
+remote destination. Existing multiple registered profile assets remain valid,
+provided their profile names do not collide. See [rclone](rclone-exfil.md).
+
+## Bootstrap arguments and infrastructure variables
+
+| Input | Meaning |
 | --- | --- |
-| Transport | `RMM_PROFILE_NAME`, `RMM_PROFILE_AUTOSTART`, `RMM_BEACON_PUBLIC_URL`; see [named tunnels](rmm-profiles.md) |
-| Cloudflare | `RMM_CLOUDFLARE_MODE`, `RMM_CLOUDFLARE_PUBLIC_URL`, `RMM_CLOUDFLARE_TOKEN`, `RMM_CLOUDFLARE_BINARY`, `RMM_CLOUDFLARE_ORIGIN_HOST`, legacy `CLOUDFLARED_BIN` |
-| Request and asset limits | `RMM_MAX_BODY_BYTES`, `RMM_MAX_WORKSPACE_PAYLOAD_BYTES`, `RMM_WORKSPACE_MAX_BODY`, `RMM_ASSET_MAX_BYTES` |
-| Workspace synchronization | `RMM_WORKSPACE_EVENT_LIMIT`, `RMM_WORKSPACE_AUTO_CLAIM`, `RMM_WORKSPACE_POLL_INTERVAL` |
-| Authentication and connection | `RMM_API_TOKEN`, `RMM_BEACON_SECRET`, `RMM_WORKSPACES`, `RMM_C2_URL`, `RMM_WORKSPACE_ID`, `RMM_WORKSPACE_TOKEN`, `RMM_WORKSPACE_LOCAL_TOKEN` |
-| Listeners | `RMM_ADMIN_BIND`, `RMM_ADMIN_PORT`, `RMM_BEACON_PORT`, `RMM_BEACON_BIND`, `RMM_WORKSPACE_BIND`, `RMM_WORKSPACE_PORT`; explicit flags still win |
-| Assets and helper paths | `RMM_PLUGIN_CACHE_DIR`, `RMM_ASSETS_DIR`, `RMM_PROFILES_DIR`, `RMM_UI_STATE_DB`, `RMM_TUN_HELPER`, `RMM_WORKSPACE_TUN_HELPER`, `RMM_TUN_LOG_LEVEL`, `RMM_RCLONE_BIN` |
-| AI | Server-only engine controls: `RMM_AI_MAX_TOOL_ROUNDS`, `RMM_AI_USE_MCP`, `RMM_AI_CONTEXT_BUDGET`, `RMM_AI_OUTPUT_RESERVE`. Owner-scoped defaults: `RMM_AI_SKILLS_DIR`, `RMM_EXEGOL_MCP_URL`, `RMM_EXEGOL_MCP_TOKEN`, `RMM_EXEGOL_CONTAINER`, `OPENAI_API_KEY` |
-| BloodHound | Owner-local `RMM_BLOODHOUND_URL`, `RMM_BLOODHOUND_TOKEN_ID`, `RMM_BLOODHOUND_TOKEN_KEY`, `RMM_BLOODHOUND_COLLECTOR`, `RMM_BLOODHOUND_UI_BIND`, `RMM_BLOODHOUND_UI_PORT`, `RMM_BLOODHOUND_UI_PUBLIC_URL`; see [lifecycle and proxy configuration](bloodhound-workflow.md) |
-| Plugin sources | `RMM_PLUGIN_REPOSITORY` seeds the default source; edit existing repositories/branches through the source editor. Store credentials using `RMM_PLUGIN_GITHUB_TOKEN` or the source's `RMM_PLUGIN_TOKEN_<NAME>` reference |
-| Rclone | `RMM_RCLONE_DEFAULT_PROFILE`, `RMM_RCLONE_MAX_BYTES`, `RMM_RCLONE_PROFILES`, `RMM_RCLONE_PROFILES_FILE`; managed profile assets remain available |
+| `prepare --output` / `run --root` | Explicit deployment root on this machine/container |
+| `--component single/control/workspace` | Which local service process(es) to supervise |
+| `--workspace-id` | Registered owner to select; required for ambiguous multi-owner roots |
+| `--preset single/distributed` | Topology; old `multi` metadata is retained for compatibility |
+| `--central-url` | Administration origin reachable from the workspace; required for distributed preparation |
+| `--docker` | Dedicated distributed central container only |
+| `--admin-publish-bind`, `--beacon-publish-bind` | Host port publication addresses; listener ports come from central settings |
+| `DEPLOYMENT_ROOT`, `WORKSPACE_ID`, `PYTHON` | Optional Makefile convenience inputs; not service settings |
+| `RMM_CONFIG_FILE`, `RMM_LOG_DIR`, `RMM_WORKSPACE_DATA`, `RMM_STORAGE_MODE` | Wrapper-derived bootstrap values; do not maintain competing shell definitions |
+| `PATH`, `KRB5CCNAME`, Docker/OS certificate variables | External tool/runtime environment; not duplicate service configuration |
+| `RMM_INTERNAL_MCP`, `RMM_WORKSPACE_OPERATOR_RELAY` | Private runtime markers; wrapper strips inherited values |
 
-Workspace AI requests carry their configured provider defaults to the central
-execution service; explicit provider request values take precedence. Exegol
-configuration is resolved from the owning service through a private relay;
-browser/request Exegol overrides are ignored. AI engine limits and MCP
-execution mode belong to the central server. Without an enabled external
-backend requirement, disabling MCP selects direct RMM execution. When an
-enabled workflow requires Exegol, missing MCP remains a blocking prerequisite. Internal AI tools retain the requesting
-workspace's credentials and cannot administer central settings.
+The tables below enumerate the service schema from `rmm_settings.FIELDS`.
+S = central/server, W = workspace, C = standalone operator client. Variable
+names are also the JSON setting keys; normally set them in the matching owner
+file rather than exporting them. Empty defaults mean unset. Derived storage
+locations are supplied by the wrapper, regardless of the schema's empty default.
 
-The following are deliberately outside ordinary service configuration:
+## Listeners
 
-- Mode and configuration/data location: `RMM_STORAGE_MODE`, `RMM_CONFIG_FILE`,
-  `RMM_WORKSPACE_DATA`, `RMM_LOG_DIR`, and the corresponding startup flags.
-- Docker host settings: published host ports and the `RMM_PROFILE_STORE`
-  volume source. Changing a saved listener setting cannot
-  change Docker port publication or mounts. The shipped Compose command fixes
-  its container listener ports; change Compose itself for a different layout.
-- Client connection settings: CLI/MCP URL and authentication must be available
-  before connecting. Use client configuration or connection flags.
-- Agent environment overrides: base URL, beacon secret, proxy, sleep/jitter,
-  retry/log options, and PowerShell HTTP options affect the agent process.
-  They are distinct from service settings; use the agent generator where the
-  option is supported.
-- `RMM_PROFILE_*` subprocess protocol fields, operating-system variables, and
-  `RMM_MSVC_TEST_*` test inputs are internal/runtime controls. `RMM_INTERNAL_MCP`
-  is an internal subprocess marker that bypasses unrelated client config files.
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_ADMIN_BIND` | S | string | `"127.0.0.1"` | Administration bind address |
+| `RMM_ADMIN_PORT` | S | integer | `8080` | Administration port |
+| `RMM_BEACON_BIND` | S | string | `"127.0.0.1"` | Beacon bind address |
+| `RMM_BEACON_PORT` | S | integer | `8081` | Beacon port |
+| `RMM_WORKSPACE_BIND` | W | string | `"127.0.0.1"` | Workspace bind address |
+| `RMM_WORKSPACE_PORT` | W | integer | `8787` | Workspace port |
 
-## Implementation
+## Authentication
 
-If startup rejects `RMM_WORKSPACES`, supply valid JSON: either an object mapping
-workspace IDs to nonempty string tokens, or a list of `id`/`token` records
-(`workspace_id` is also accepted). IDs and tokens are trimmed as in the legacy
-registry. Shell assignments must quote the whole JSON value, for example
-`export RMM_WORKSPACES='{"alice":"replace-with-workspace-token"}'`.
-Startup errors distinguish JSON syntax from invalid entries without displaying
-credentials. An environment override still takes precedence over a saved value;
-remove it only after the intended registry has been saved in configuration.
-Duplicate IDs after whitespace normalization are rejected instead of silently
-replacing one workspace credential with another.
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_API_TOKEN` | S/C | string | `unset; secret` | Operator API token |
+| `RMM_BEACON_SECRET` | S | string | `unset; secret` | Beacon shared secret |
+| `RMM_WORKSPACES` | S | json | `unset; secret` | Workspace IDs and tokens |
+| `RMM_WORKSPACE_LOCAL_TOKEN` | W | string | `unset; secret` | Local operator token |
 
-`rmm_settings.py` defines the shared typed configuration registry, validation,
-protected persistence, redacted public views, startup resolution, and offline
-administration commands. Its `getenv` accessor supplies the active snapshot to
-service consumers without modifying the process environment. Service settings
-APIs save the next-start configuration; they do not mutate live service state.
+## Connection
 
-| Symbol | Responsibility |
-| --- | --- |
-| `SettingsError` | Report invalid configuration without echoing secret values |
-| `field` / `FIELDS` | Define typed settings and UI metadata |
-| `definition` | Restrict supported keys to the owning scope, including named plugin credentials |
-| `validate` / `_decode_environment` | Validate typed input and decode legacy environment strings |
-| `SettingsStore` | Own the file, startup snapshot, environment overrides, and atomic persistence |
-| `SettingsStore._read` | Validate file schema, owner scope, and saved values |
-| `SettingsStore.snapshot` | Return redacted active/saved metadata and pending restart state |
-| `SettingsStore.default_value` | Report derived runtime defaults, including paths and dependent limits |
-| `SettingsStore.update` | Validate an entire patch before atomic replacement |
-| `getenv` | Adapt the startup snapshot to legacy string consumers |
-| `active_store` | Locate the process owner or an isolated embedded-service store |
-| `settings_api` | Share redacted API behavior and safe error handling |
-| `record_flags` | Record explicit startup overrides and their command-line provenance |
-| `bootstrap` | Select and load configuration before application imports |
-| `main` | Implement offline show/set/unset/import commands |
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_WORKSPACE_ID` | S/W/C | string | `unset` | Workspace ID |
+| `RMM_WORKSPACE_TOKEN` | S/W/C | string | `unset; secret` | Workspace token |
+| `RMM_C2_URL` | W | string | `"http://127.0.0.1:8080"` | Central server URL |
+| `RMM_SERVER_URL` | C | string | `"http://127.0.0.1:8787"` | Operator service URL |
+| `RMM_BASE_URL` | C | string | `unset` | Legacy operator URL |
 
-The operator adapters are `RmmApiClient.settings`, CLI `read_settings_json` /
-`cmd_settings`, shared `tool_settings`, and MCP `settings`. The browser
-controller in `web/settings.js` groups rendering/status helpers, typed value and
-change parsing, authenticated requests, and load/save/reset operations.
-`tests/test_settings_security.py` exercises ownership guards, request credential
-isolation, internal child-process configuration, AI defaults, and flag precedence.
+## Workspace
 
-The persisted file uses  `schema: "minimal-rmm-settings-v1"`, its `scope`, and a
-`settings` object. Use the CLI for initialization so the schema and permissions
-are correct. Client scope defaults to `~/.minimal-rmm/client-settings.json`.
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_WORKSPACE_AUTO_CLAIM` | W | boolean | `false` | Automatically claim sessions |
+| `RMM_WORKSPACE_POLL_INTERVAL` | W | number | `1` | Sync interval (seconds) |
 
-See the [deployment guide](deployment.md) and [documentation index](README.md).
+## Limits
 
-## AI context settings
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_WORKSPACE_EVENT_LIMIT` | S | integer | `10000` | Events per workspace |
+| `RMM_MAX_BODY_BYTES` | S | integer | `33554432` | Maximum request bytes |
+| `RMM_MAX_WORKSPACE_PAYLOAD_BYTES` | S | integer | `33554432` | Maximum workspace task bytes |
+| `RMM_WORKSPACE_MAX_BODY` | W | integer | `33554432` | Maximum request bytes |
+| `RMM_ASSET_MAX_BYTES` | S/W | integer | `67108864` | Maximum asset bytes |
 
-Set `RMM_AI_CONTEXT_BUDGET` (default 65,536) and `RMM_AI_OUTPUT_RESERVE`
-(default 4,096) on the **central service that runs the provider loop**, not on
-a remote workspace expecting those values to forward automatically. Configure
-them within the selected model's actual context/output limits. The budget is
-a conservative UTF-8 byte estimate including message and tool schemas, with
-additional overhead; it is not the model's exact tokenizer. Output reserve
-also caps the provider response. See [skill and context behavior](web-ai-skills.md).
+## Storage paths
+
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_PLUGINS_DIR` | S | string | `unset` | Retired global plugin directory (ignored) |
+| `RMM_PLUGIN_CACHE_DIR` | S | string | `unset` | Workspace plugin delivery cache |
+| `RMM_ASSETS_DIR` | S | string | `unset` | Asset directory |
+| `RMM_PROFILES_DIR` | S | string | `unset` | Transport bundle directory |
+| `RMM_UI_STATE_DB` | S | string | `unset` | Browser state database |
+
+## Beacon transport
+
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_PROFILE_NAME` | S | string | `"cloudflared"` | Transport profile |
+| `RMM_PROFILE_AUTOSTART` | S | boolean | `true` | Start transport on boot |
+| `RMM_BEACON_PUBLIC_URL` | S | string | `unset` | Static beacon URL fallback |
+
+## Cloudflare
+
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_CLOUDFLARE_MODE` | S | string | `"quick"` | Cloudflare tunnel mode |
+| `RMM_CLOUDFLARE_PUBLIC_URL` | S | string | `unset` | Named tunnel public URL |
+| `RMM_CLOUDFLARE_TOKEN` | S | string | `unset; secret` | Named tunnel token |
+| `RMM_CLOUDFLARE_BINARY` | S | string | `"cloudflared"` | Cloudflared executable |
+| `CLOUDFLARED_BIN` | S | string | `unset` | Legacy cloudflared executable |
+| `RMM_CLOUDFLARE_ORIGIN_HOST` | S | string | `unset` | Quick tunnel origin host |
+
+## Plugin credentials
+
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_PLUGIN_REPOSITORY` | S/W | string | `"CyrilleFranchet/Minimal-RMM-plugins"` | Initial default plugin repository |
+| `RMM_PLUGIN_GITHUB_TOKEN` | S/W | string | `unset; secret` | Default GitHub token |
+
+## Rclone
+
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_RCLONE_BIN` | S/W | string | `unset` | Rclone executable |
+| `RMM_RCLONE_DEFAULT_PROFILE` | S/W | string | `"mega-lab"` | Default remote profile |
+| `RMM_RCLONE_MAX_BYTES` | S/W | integer | `104857600` | Maximum transfer bytes (0 = unlimited) |
+| `RMM_RCLONE_PROFILES_FILE` | S/W | string | `unset` | Legacy remote profiles file |
+| `RMM_RCLONE_PROFILES` | S/W | json | `unset; secret` | Legacy remote profiles JSON |
+
+## TUN
+
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_TUN_HELPER` | S | string | `unset` | TUN helper executable |
+| `RMM_WORKSPACE_TUN_HELPER` | W | string | `"tools/rmm-tun"` | TUN helper executable |
+| `RMM_TUN_LOG_LEVEL` | S/W | string | `"info"` | TUN log level |
+
+## AI
+
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_AI_MAX_TOOL_ROUNDS` | S | integer | `32` | Maximum AI tool rounds |
+| `RMM_AI_USE_MCP` | S | boolean | `true` | Use MCP tools |
+| `RMM_AI_CONTEXT_BUDGET` | S | integer | `65536` | AI context budget (conservative tokens) |
+| `RMM_AI_OUTPUT_RESERVE` | S | integer | `4096` | AI output token reserve |
+| `RMM_AI_SKILLS_DIR` | S/W | string | `unset` | Additional AI skills directory |
+| `OPENAI_API_KEY` | S/W | string | `unset; secret` | Default OpenAI API key |
+| `RMM_EXEGOL_MCP_URL` | S/W | string | `unset` | Exegol MCP URL |
+| `RMM_EXEGOL_MCP_TOKEN` | S/W | string | `unset; secret` | Exegol MCP token |
+| `RMM_EXEGOL_CONTAINER` | S/W | string | `unset` | Optional Exegol container override (automatic discovery when empty) |
+
+## BloodHound
+
+| Key | Scope | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `RMM_BLOODHOUND_URL` | S/W | string | `"http://127.0.0.1:1030"` | BloodHound CE URL |
+| `RMM_BLOODHOUND_UI_BIND` | S/W | string | `"127.0.0.1"` | BloodHound UI proxy bind address |
+| `RMM_BLOODHOUND_UI_PORT` | S/W | string | `"1031"` | BloodHound UI proxy port |
+| `RMM_BLOODHOUND_UI_PUBLIC_URL` | S/W | string | `"http://127.0.0.1:1031"` | Browser-facing BloodHound proxy origin |
+| `RMM_BLOODHOUND_TOKEN_ID` | S/W | string | `unset; secret` | BloodHound API token ID |
+| `RMM_BLOODHOUND_TOKEN_KEY` | S/W | string | `unset; secret` | BloodHound API token key |
+| `RMM_BLOODHOUND_ADMIN_PASSWORD` | S/W | string | `unset; secret` | BloodHound CE admin password |
+| `RMM_BLOODHOUND_COLLECTOR` | S/W | string | `"bloodhound-ce-python"` | BloodHound CE collector executable |
+
+Additional `RMM_PLUGIN_TOKEN_<NAME>` secret settings are source-specific credential references supported in the owner scope. The GitHub source editor stores the reference, never a token value in plugin-sources.json.

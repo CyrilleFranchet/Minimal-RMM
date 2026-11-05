@@ -9,6 +9,32 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-05 — Consolidate deployment ownership and configuration
+
+- Made `rmm_deployment.py` the supported startup path. Native single mode
+  supervises central and workspace; distributed mode generates central-only
+  Compose from saved settings. Existing Exegol runs its own workspace process.
+  Separate-host overlay deployment remains future work.
+- Pinned mutable data to `central/` and `workspaces/<id>/` beneath an explicit
+  deployment root. Saved settings are authoritative; inherited service variables
+  require an explicit native compatibility flag. Added credential-free `paths`
+  diagnostics and owner-relative executable path resolution.
+- Kept rclone inventory-based: copying `assets/rclone/profiles.json` does not
+  register it. Documented WebUI/API registration and added an offline wrapper
+  import for fresh destinations. Disabled/empty assets never revive legacy
+  profiles or examples; malformed enabled configuration blocks transfer jobs.
+- Replaced competing startup/environment recipes with one deployment guide and
+  a complete settings inventory. Removed the old generic workspace sidecar.
+- Deployment smoke and rclone storage regressions pass. No live Docker rollout,
+  target operation, or credential migration was performed.
+- Generated Compose passed `docker compose config --quiet`. Independent code
+  and documentation reviews found no remaining blocking defect. Final staged
+  snapshot validation passed `make check`, 20 deployment tests, 65 workspace
+  tests, and 12 rclone tests (the workspace/rclone sets overlap).
+- Validation excludes concurrent AI/playbook edits and unrelated untracked demo
+  Markdown. Those working-tree changes remain uncommitted; their previously
+  reported broader-suite failures are outside this deployment change.
+
 ### 2026-11-05 — Hide agent workspace tabs without a selection
 
 - Hide the Shell, Files & Screenshots, and Pivots tab bar and initial shell

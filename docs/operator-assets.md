@@ -25,7 +25,8 @@ do not echo upstream URLs or credentials.
 
 ## Persistence ownership
 
-The storage root is `RMM_WORKSPACE_DATA/assets`. Legacy `RMM_logs/assets` can
+The storage root is `<deployment-root>/workspaces/<id>/assets`, derived by
+the deployment wrapper. Legacy `RMM_logs/assets` can
 be imported with the [workspace migration tool](workspace-migration.md):
 
 ```text
@@ -45,6 +46,18 @@ central cache. This cache is runtime state, not a second operator workspace.
 Built-in AI skills remain in `ai-skills/`. URL-installed skills overlay them by
 skill ID, and a workspace can enable or disable either built-in or installed
 skills without copying the built-in file.
+
+## Rclone file registration
+
+Copying a file into `assets/rclone/` does not install or enable it. The workspace
+loads registered enabled rows from `assets/metadata.json`. Use the WebUI upload,
+asset API/CLI, or the wrapper's explicit offline `import-rclone` command; see
+[deployment and migration](deployment.md#rclone-profiles-registration-is-required).
+A file commonly named `profiles.json` contains a JSON object of named backend
+profiles. Multiple registered files are supported, but duplicate profile names
+are rejected. Invalid enabled files report a load error rather than silently
+activating another source. Empty or disabled configuration does not activate
+legacy environment settings or repository examples. Do not edit metadata by hand.
 
 ## REST API
 

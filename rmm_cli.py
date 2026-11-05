@@ -965,7 +965,7 @@ def _print_rclone_config(data: dict) -> None:
     print(f"Default profile: {data.get('default_profile')}")
     profiles = data.get("profiles") or []
     if not profiles:
-        print("No rclone profiles configured (RMM_RCLONE_PROFILES or RMM_RCLONE_PROFILES_FILE)")
+        print("No rclone profiles configured; register an enabled rclone asset in the workspace")
     for p in profiles:
         name = p.get("name") or "?"
         ptype = p.get("type") or "?"

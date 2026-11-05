@@ -1,108 +1,29 @@
-# Server startup reference
+# Service startup reference
 
-For a complete setup, follow the [deployment guide](deployment.md). This page
-is the argument and helper reference. Use [workspace deployment](workspace-deployment.md)
-for workspace claims, storage, and protocol details.
+The only supported service launcher is **`rmm_deployment.py`**. Follow the
+[deployment guide](deployment.md) for preparation and startup. This page is a
+compatibility landing page, not an alternative installation recipe.
 
-## Entry points
+Supported infrastructure models are single mode inside Exegol and distributed
+mode with central in a dedicated Docker container on the same host. Workspace
+services run inside their existing Exegol environments. Different hosts with
+an overlay such as Tailscale are future work.
 
-| Process | Entry point | Configuration owner |
-| --- | --- | --- |
-| Central broker | `python3 server_rmm.py` | Central administrator |
-| Operator workspace | `python3 workspace_service.py` | Individual operator |
-| Operator CLI | `python3 rmm_cli.py` | Workspace URL/local token; use central credentials only for administration |
-| Standalone MCP | `python3 mcp_rmm_server.py` | Same API URL/token as the CLI |
+All service configuration and mutable state follow the selected deployment root:
+`central/settings.json` for central and `workspaces/<id>/settings.json` for each
+workspace. See the complete [settings and variable reference](service-settings.md).
 
-Run native commands from the repository root, using the configured venv.
-Startup compiles neither agent plugins nor the native TUN helper. Docker and
-Compose use the same direct Python entry points.
+The underlying `server_rmm.py` and `workspace_service.py` modules remain callable
+for internal tests and compatibility, but their implicit home/repository paths,
+startup flags, and legacy shell/environment recipes are not supported deployment
+instructions. Neither module automatically reads a `.env` file.
 
-Neither entry point loads `.env` automatically. Use the role-specific native
-[central](../deploy/central.env.example) and [workspace](../deploy/workspace.env.example)
-templates with the explicit loading commands in the deployment guide. The
-root `.env.example` is the Compose input, not a shell startup script.
+Optional prerequisites are installed separately: transport profile bundles under
+`central/profiles/`, agent plugins in workspace assets, and the workspace's
+`rmm-tun` helper when TUN is required. Startup does not compile or download them.
+Use the feature references for their operational contracts:
 
-## Central server arguments
-
-| Argument | Meaning |
-| --- | --- |
-| `--admin-port N` | Operator/workspace API port; `RMM_ADMIN_PORT`, default 8080 |
-| `--beacon-port N` | Agent listener port; `RMM_BEACON_PORT`, otherwise admin port + 1 |
-| `--bind ADDRESS` | Administration bind; default 127.0.0.1 |
-| `--beacon-bind ADDRESS` | Beacon bind; set explicitly for remote agents (initial default is loopback unless `RMM_BEACON_BIND` is set) |
-| `--token TOKEN` | Central administrator credential; prefer environment `RMM_API_TOKEN` |
-| `--beacon-secret SECRET` | Agent shared secret; prefer `RMM_BEACON_SECRET` |
-| `--profile NAME` | Installed beacon transport profile; `RMM_PROFILE_NAME`, default cloudflared |
-| `--cli` | Retired; startup rejects it and directs operators to the workspace CLI |
-| `--rclone-profiles PATH` | Retained legacy argument; configure operator profiles in the workspace |
-| `--rclone-max-bytes N` | Retained legacy argument; configure operator transfer limits in the workspace |
-| `--insecure` | Lab-only bypass of required secrets |
-| Positional `port` | Legacy alias for the admin port |
-
-`RMM_STORAGE_MODE` accepts only `workspace`, which is also the default.
-Legacy `server` values are rejected with migration guidance. A single-workspace
-deployment runs the same central and workspace services as a multi-workspace
-deployment; use the presets in the [deployment guide](deployment.md).
-`RMM_WORKSPACES` maps workspace IDs to their transport tokens. It does not
-replace the administrator token or the agent beacon secret.
-
-## Transport profiles
-
-The admin listener serves the operator API. The beacon listener serves agents.
-An RMM-Profile forwards traffic to the beacon listener only. Install the trusted
-bundle in `RMM_PROFILES_DIR` and its provider executable centrally before
-setting `RMM_PROFILE_AUTOSTART=1`. Set it to `0` for direct beacon operation.
-`RMM_BEACON_PUBLIC_URL` supplies the externally reachable URL for direct or
-externally managed transport. Check the actual active URL with:
-
-```bash
-python3 rmm_cli.py profile status
-```
-
-Configure that CLI with either the central admin URL/token or the workspace
-URL/local token; the latter proxies transport status. Use the returned beacon
-URL in agents and keep workspaces pointed at the central admin API.
-See [RMM-Profiles](rmm-profiles.md) for bundle/provider installation.
-
-## Prepare TUN only where needed
-
-Outside Docker, run the explicit setup command on the host that owns the pivot:
-
-```bash
-make tun-build
-```
-
-This requires Go and writes `tools/rmm-tun`. Repeat after helper source,
-toolchain, or platform changes. The Docker image builds this executable and
-includes Linux `ip`; the central broker still does not need TUN privileges
-when operating in workspace mode.
-
-Select an existing custom executable with `RMM_WORKSPACE_TUN_HELPER` in the
-workspace. This setting does not compile or install it. Linux TUN also needs
-`/dev/net/tun` and `CAP_NET_ADMIN` in the pivot owner's namespace.
-
-## Plugin and profile stores
-
-In workspace mode, install plugins from the workspace's [release controls](plugin-releases-operator.md).
-The workspace owns sources and files; the central server serves its synchronized
-workspace-specific delivery cache. There is no administrator-seeded shared
-plugin fallback. `RMM_PLUGIN_CACHE_DIR` selects the central cache root, defaulting
-to `RMM_LOG_DIR/plugin-cache`; workspace assets remain authoritative.
-
-Compose's `RMM_PROFILE_STORE` selects a profile bind mount or named volume.
-Python's `RMM_PROFILES_DIR` selects the runtime profile path. These names are
-not interchangeable. Profile bundles stay centrally owned regardless of workspace
-count. The old `RMM_PLUGIN_STORE` and `RMM_PLUGINS_DIR` no longer select an
-installation location; see [migration guidance](workspace-migration.md).
-
-## Migrate existing launch commands
-
-The former `run_server.py` wrapper has been removed. Replace it with
-`server_rmm.py` in shell commands, systemd units, and process-manager settings,
-keeping server arguments. Set the working directory to the repository root:
-the wrapper no longer changes it for you. Remove `--rebuild-tun` and
-`RMM_TUN_REBUILD`; use `make tun-build` during setup when needed.
-Preserve existing environment files, secrets, directories, and volume ownership.
-For former server-owned storage, follow the [copy-only migration procedure](workspace-migration.md)
-before starting the new workspace; changing the entry point alone does not migrate data.
-For installed inventory, use `plugin list` and `profile status` or the UI.
+- [RMM-Profiles](rmm-profiles.md)
+- [Workspace protocols and ownership](workspace-deployment.md)
+- [TUN](tun-pivot.md)
+- [Service shutdown](shutdown.md)

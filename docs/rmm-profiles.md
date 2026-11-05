@@ -39,7 +39,7 @@ the beacon URL, not the administration URL.
 Install one profile in its own directory below `RMM_PROFILES_DIR`:
 
 ```text
-/app/profiles/
+<deployment-root>/central/profiles/
 └── cloudflared/
     ├── profile.json
     └── cloudflared_profile.py
@@ -122,18 +122,10 @@ The profile source and manifest are maintained in the private
 repository. Install the `cloudflared/` directory under the persistent profile
 store before starting the server.
 
-For Compose, a host bind mount is easiest when installing or updating bundles:
-
-```bash
-git clone https://github.com/CyrilleFranchet/Minimal-RMM-profiles.git profiles
-mkdir -p profile-store
-cp -R profiles/cloudflared profile-store/
-RMM_PROFILE_STORE=./profile-store docker compose up --build -d rmm-control
-```
-
-The private repository requires GitHub credentials. The same bundle can be
-copied into the default named `rmm-profile-store` volume when a host bind mount
-is not desired.
+Install the trusted bundle under `<deployment-root>/central/profiles/`.
+That directory is part of the central owner state; the distributed container
+mounts it with `central/`. Start through the [deployment wrapper](deployment.md),
+not a second profile volume or standalone service command.
 
 ### Existing named tunnel
 
@@ -173,11 +165,11 @@ is not returned by settings/status APIs.
 
 ## Startup and operations
 
-Start the server with `python3 server_rmm.py`. Startup does not compile plugins
-or the TUN helper and does not fetch trusted profile executables. Prepare the
-helper explicitly with `make tun-build` when TUN is needed outside Docker;
-install plugin releases and trusted profile bundles separately. See
-[server startup](server-startup.md).
+Start services only through the [deployment wrapper](deployment.md). Startup
+does not compile plugins or the TUN helper, and does not fetch trusted profile
+executables. Install trusted profile bundles in `central/profiles/` and build
+the TUN helper inside the workspace when needed. The distributed central image
+does not own the workspace helper.
 
 With `RMM_PROFILE_AUTOSTART=1` (the default), the selected
 `RMM_PROFILE_NAME` starts after the listeners bind. If it is not installed or

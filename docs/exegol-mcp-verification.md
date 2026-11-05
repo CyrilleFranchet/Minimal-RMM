@@ -77,23 +77,17 @@ Earlier versions of this script only read `os.environ`, so a value saved
 through Config was invisible to it unless the operator also exported it by
 hand before running `make check-exegol-mcp`.
 
-The script now calls `rmm_settings.bootstrap("workspace", ...)` before
-resolving any of those keys — the same call `workspace_service.py` makes at
-startup — so it loads the persisted `settings.json` the running workspace
-actually uses. `--config`/`--data-dir` select that file exactly as they do
-for `workspace_service.py`; with neither flag, it resolves the same default
-location (`RMM_WORKSPACE_DATA` or `~/.minimal-rmm`). A real environment
-variable still takes precedence over the saved value, matching
-`rmm_settings.getenv`'s normal override order, so exporting
-`RMM_EXEGOL_MCP_URL` for a one-off check against a different endpoint still
-works.
+The diagnostic script reads persisted workspace settings. Under the deployment
+wrapper, pass the exact owner file reported by `rmm_deployment.py paths`:
 
-If `workspace_service.py` was started with an explicit `--config` or
-`--data-dir` (for example a per-deployment directory, not the default
-`~/.minimal-rmm`), the Config dialog's saved values live in that file, not
-the default one. Running `make check-exegol-mcp` with no flags will not see
-them — pass the same flag through `ARGS` (see Usage above) so the script
-reads the exact file the running workspace reads.
+```bash
+make check-exegol-mcp ARGS="--config /workspace/rmm-deployment/workspaces/default/settings.json"
+```
+
+Do not rely on the helper's legacy home-directory/default-path lookup. Its
+explicit environment overrides are for diagnostics only; the normal service
+launcher uses saved settings and filters inherited overrides. See the
+[configuration reference](service-settings.md) and [startup guide](deployment.md).
 
 Not part of `make check`: it needs a real `RMM_EXEGOL_MCP_URL` to mean
 anything, so it stays a manual, opt-in step — run it once per new

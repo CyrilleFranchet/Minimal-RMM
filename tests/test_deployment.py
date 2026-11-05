@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from rmm_deployment import child_environment, commands, prepare, run_services
+from rmm_deployment import child_environment, commands, prepare, run_services, central_compose, deployment_paths, import_rclone
 from rmm_settings import SettingsStore
 
 
@@ -18,8 +18,8 @@ class DeploymentTests(unittest.TestCase):
                   'RMM_EXEGOL_MCP_URL': 'http://mcp.example/mcp',
                   'RMM_CONFIG_FILE': '/wrong/settings.json', 'PATH': '/usr/bin'}
         with patch.dict('os.environ', values, clear=True):
-            workspace = child_environment(['python', '/repo/workspace_service.py'], {})
-            central = child_environment(['python', '/repo/server_rmm.py'], {'RMM_STORAGE_MODE': 'workspace'})
+            workspace = child_environment(['python', '/repo/workspace_service.py'], {}, allow_env_overrides=True)
+            central = child_environment(['python', '/repo/server_rmm.py'], {'RMM_STORAGE_MODE': 'workspace'}, allow_env_overrides=True)
         for key in ('RMM_API_TOKEN', 'RMM_BEACON_SECRET', 'RMM_WORKSPACES', 'RMM_CONFIG_FILE'):
             self.assertNotIn(key, workspace)
         self.assertEqual(workspace['RMM_WORKSPACE_TOKEN'], 'workspace-secret')
@@ -123,10 +123,96 @@ class DeploymentTests(unittest.TestCase):
     def test_inherited_identity_cannot_rebind_another_workspace_data_directory(self):
         prepare(self.root, 'multi', ['alice', 'bob'])
         with patch.dict('os.environ', {'RMM_WORKSPACE_ID': 'bob', 'RMM_WORKSPACE_TOKEN': 'bob-token'}):
+            argv, overrides = commands(self.root, 'workspace', 'alice')[0]
+            self.assertNotIn('RMM_WORKSPACE_TOKEN', child_environment(argv, overrides))
             with self.assertRaisesRegex(ValueError, 'selected workspace'):
-                commands(self.root, 'workspace', 'alice')
+                child_environment(argv, overrides, allow_env_overrides=True)
             self.assertEqual(len(commands(self.root, 'workspace', 'bob')), 1)
             self.assertEqual(len(commands(self.root, 'control')), 1)
+
+    def test_default_environment_cannot_redirect_storage_or_replace_saved_configuration(self):
+        prepare(self.root, 'single', None)
+        values = {'RMM_WORKSPACE_DATA': '/wrong', 'RMM_LOG_DIR': '/wrong', 'RMM_ASSETS_DIR': '/wrong',
+                  'RMM_WORKSPACE_PORT': '9999', 'RMM_API_TOKEN': 'wrong-secret', 'OPENAI_API_KEY': 'wrong-key',
+                  'RMM_WORKSPACE_TOKEN': 'wrong-token', 'PATH': '/usr/bin', 'KRB5CCNAME': '/private/cache'}
+        with patch.dict('os.environ', values, clear=True):
+            for argv, overrides in commands(self.root, 'single'):
+                environment = child_environment(argv, overrides)
+                self.assertEqual(environment['PATH'], '/usr/bin')
+                self.assertEqual(environment['KRB5CCNAME'], '/private/cache')
+                self.assertNotIn('RMM_API_TOKEN', environment)
+                self.assertNotIn('OPENAI_API_KEY', environment)
+                self.assertNotIn('RMM_WORKSPACE_TOKEN', environment)
+                self.assertNotIn('RMM_WORKSPACE_PORT', environment)
+                self.assertNotEqual(environment.get('RMM_LOG_DIR'), '/wrong')
+
+    def test_role_roots_work_without_the_other_services_files(self):
+        import shutil
+        prepare(self.root, 'single', None)
+        control = self.root.parent / 'control-only'
+        workspace = self.root.parent / 'workspace-only'
+        for target in (control, workspace):
+            target.mkdir()
+            shutil.copyfile(self.root / 'deployment.json', target / 'deployment.json')
+        shutil.copytree(self.root / 'central', control / 'central')
+        shutil.copytree(self.root / 'workspaces/default', workspace / 'workspaces/default')
+        self.assertEqual(len(commands(control, 'control')), 1)
+        self.assertEqual(len(commands(workspace, 'workspace')), 1)
+        self.assertFalse((workspace / 'central/settings.json').exists())
+        self.assertFalse((control / 'workspaces').exists())
+
+    def test_storage_paths_and_relative_helper_are_owner_local(self):
+        prepare(self.root, 'single', None)
+        store = SettingsStore(self.root / 'workspaces/default/settings.json', 'workspace', environment={})
+        store.update({'settings': {'RMM_WORKSPACE_TUN_HELPER': 'tools/rmm-tun'}})
+        argv, overrides = commands(self.root, 'workspace')[0]
+        self.assertEqual(overrides['RMM_WORKSPACE_TUN_HELPER'], str((self.root / 'workspaces/default/tools/rmm-tun').resolve()))
+        paths = deployment_paths(self.root)
+        self.assertEqual(paths['rclone_profiles_file'], str((self.root / 'workspaces/default/assets/rclone/profiles.json').resolve()))
+        store.update({'settings': {'RMM_AI_SKILLS_DIR': '/outside/skills'}})
+        with self.assertRaisesRegex(ValueError, 'canonical'):
+            commands(self.root, 'workspace')
+
+    def test_distributed_compose_contains_only_central_state_and_derived_ports(self):
+        prepare(self.root, 'distributed', None, 'http://192.0.2.10:9090')
+        store = SettingsStore(self.root / 'central/settings.json', 'server', environment={})
+        store.update({'settings': {'RMM_ADMIN_PORT': 9090, 'RMM_BEACON_PORT': 9091}})
+        spec = json.loads(central_compose(self.root).read_text())
+        self.assertEqual(list(spec['services']), ['rmm-control'])
+        service = spec['services']['rmm-control']
+        self.assertIn('rmm_deployment.py', service['command'])
+        self.assertEqual(service['ports'], ['127.0.0.1:9090:9090', '0.0.0.0:9091:9091'])
+        self.assertEqual(len(service['volumes']), 2)
+        self.assertFalse(any('workspaces' in mount['source'] for mount in service['volumes']))
+        self.assertNotIn('cap_add', service)
+        self.assertNotIn('devices', service)
+        self.assertNotIn('environment', service)
+        self.assertNotIn('RMM_API_TOKEN', json.dumps(spec))
+
+    def test_canonical_profile_import_refuses_overwrite(self):
+        prepare(self.root, 'single', None)
+        source = self.root.parent / 'old-profiles.json'
+        source.write_text('{"lab":{"type":"s3","secret_access_key":"test-secret"}}')
+        target = import_rclone(self.root, None, source)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(FileExistsError):
+            import_rclone(self.root, None, source)
+
+    def test_container_rejects_host_absolute_storage_before_launch(self):
+        prepare(self.root, 'distributed', None, 'http://192.0.2.10:8080')
+        store = SettingsStore(self.root / 'central/settings.json', 'server', environment={})
+        store.update({'settings': {'RMM_PROFILES_DIR': str((self.root / 'central/profiles').resolve())}})
+        with self.assertRaisesRegex(ValueError, 'absolute host storage path'):
+            central_compose(self.root)
+        store.update({'settings': {'RMM_PROFILES_DIR': 'profiles'}})
+        self.assertTrue(central_compose(self.root).is_file())
+
+    def test_helper_home_expansion_reaches_child_environment(self):
+        prepare(self.root, 'single', None)
+        store = SettingsStore(self.root / 'workspaces/default/settings.json', 'workspace', environment={})
+        store.update({'settings': {'RMM_WORKSPACE_TUN_HELPER': '~/bin/rmm-tun'}})
+        argv, overrides = commands(self.root, 'workspace')[0]
+        self.assertEqual(child_environment(argv, overrides)['RMM_WORKSPACE_TUN_HELPER'], str(Path('~/bin/rmm-tun').expanduser()))
 
     def test_supervisor_stops_peer_when_one_process_fails(self):
         first, second = Mock(), Mock()

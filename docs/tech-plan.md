@@ -1,5 +1,10 @@
 # Tech Plan — Minimal-RMM
 
+The historical Docker/sidecar and environment-file plans below are superseded
+by the [deployment wrapper guide](deployment.md). Supported infrastructure is
+single or distributed on one host; cross-host overlay integration is future
+work. This roadmap is not a startup/configuration reference.
+
 Living technical design for planned features. Start with the [documentation
 wiki](README.md) and [architecture overview](architecture.md) for current
 runtime behavior. For completed work and parity gaps, see `progress.md`. For
