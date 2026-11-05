@@ -23,6 +23,15 @@ class ReleaseError(AssetError):
     """Report a safe release error without exposing credentials or signed URLs."""
 
 
+class PluginRuntimeSyncError(AssetError):
+    """Carry numeric synchronization diagnostics without upstream response content."""
+
+    def __init__(self, status, request_bytes):
+        self.status = int(status)
+        self.request_bytes = int(request_bytes)
+        super().__init__(f"Central plugin synchronization failed (HTTP {self.status}; JSON request {self.request_bytes} bytes).")
+
+
 class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
     """Allow GitHub HTTPS asset redirects while dropping authorization headers."""
 
@@ -173,7 +182,7 @@ class PluginReleases:
         if expected and expected != plugin["sha256"]:
             raise ReleaseError("plugin checksum changed since selection; browse the release again")
         if plugin["size"] > _max_bytes():
-            raise ReleaseError("plugin exceeds RMM_ASSET_MAX_BYTES")
+            raise ReleaseError(f"plugin size {plugin['size']} bytes exceeds workspace RMM_ASSET_MAX_BYTES={_max_bytes()}; raise the owner-local asset limit and restart the workspace before retrying")
         cached = False
         try:
             content = store.read("plugins", name, enabled_only=False)
@@ -206,6 +215,12 @@ def plugin_release_api(store: AssetStore, method: str, *, tag="latest", source="
         result.update(source=source, source_revision=config["revision"])
         try:
             synchronized = not publish or publish(result["asset"])
+        except PluginRuntimeSyncError as exc:
+            detail = str(exc)
+            if exc.status == 413:
+                detail += " Increase RMM_MAX_BODY_BYTES in the central service settings and restart central; the limit must fit the base64 JSON request, not just the DLL. Retry installation to reuse the verified local file."
+            return 502, {**result, "error": "plugin_runtime_sync_failed", "local_installed": True,
+                         "sync_status": exc.status, "sync_request_bytes": exc.request_bytes, "detail": detail}
         except (OSError, AssetError):
             synchronized = False
         if not synchronized:

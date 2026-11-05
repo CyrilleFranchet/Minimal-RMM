@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from workspace_service import WorkspaceService
+from rmm_plugin_releases import PluginRuntimeSyncError
 
 
 class WorkspacePluginSyncTests(unittest.TestCase):
@@ -52,6 +53,19 @@ class WorkspacePluginSyncTests(unittest.TestCase):
         self.remote.clear()
         self.service._sync_workspace_plugins()
         self.assertEqual(len(self.posts), 2)
+
+    def test_install_diagnostics_report_status_and_exact_json_size_without_upstream_body(self):
+        row = self.service.store.asset_store.add_bytes('plugins', 'tool.dll', b'current')
+        self.service.upstream.request = lambda *args: (413, {'detail': 'secret-token'}, 'application/json')
+        with self.assertRaises(PluginRuntimeSyncError) as caught:
+            self.service._sync_plugin_asset(row, diagnose=True)
+        self.assertEqual(caught.exception.status, 413)
+        import json
+        payload = {'name': row['name'], 'enabled': True, 'sha256': row['sha256'],
+                   'content_b64': base64.b64encode(b'current').decode('ascii')}
+        self.assertEqual(caught.exception.request_bytes, len(json.dumps(payload, ensure_ascii=False).encode('utf-8')))
+        self.assertNotIn('secret-token', str(caught.exception))
+        self.assertFalse(self.service._sync_plugin_asset(row), 'background reconciliation still receives a boolean')
 
     def test_disabled_and_orphaned_cache_entries_are_revoked(self):
         self.service.store.asset_store.add_bytes('plugins', 'tool.dll', b'current')

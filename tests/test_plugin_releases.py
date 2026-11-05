@@ -15,7 +15,7 @@ import urllib.request
 
 from rmm_asset_store import AssetStore
 from rmm_cli import RmmApiClient
-from rmm_plugin_releases import PluginReleases, ReleaseError, ReleaseRedirect, plugin_release_api
+from rmm_plugin_releases import PluginReleases, PluginRuntimeSyncError, ReleaseError, ReleaseRedirect, plugin_release_api
 from rmm_plugin_sources import PluginSourceStore
 from server_rmm import RMMHandler
 from workspace_service import WorkspaceRequestHandler, WorkspaceService
@@ -117,10 +117,24 @@ class PluginReleaseTests(unittest.TestCase):
         self.release["assets"][1]["size"] = 2048
         self.update_manifest()
         with patch.dict("os.environ", {"RMM_ASSET_MAX_BYTES": "1024"}):
-            self.assertEqual(plugin_release_api(self.store, "POST", body={"tag": TAG, "name": "test.dll"})[0], 400)
+            code, result = plugin_release_api(self.store, "POST", body={"tag": TAG, "name": "test.dll"})
+            self.assertEqual(code, 400)
+            self.assertIn("2048", result["error"])
+            self.assertIn("RMM_ASSET_MAX_BYTES=1024", result["error"])
         self.assertNotIn("/releases/assets/2", [call.args[0] for call in self.request.call_args_list])
         self.assertEqual(self.store.list(), [])
 
+    def test_sync_failure_preserves_numeric_diagnostics_and_verified_local_bytes(self):
+        for status in (413, 403):
+            with self.subTest(status=status):
+                publish = Mock(side_effect=PluginRuntimeSyncError(status, 12345))
+                code, result = plugin_release_api(self.store, "POST", body={"tag": TAG, "name": "test.dll"}, publish=publish)
+                self.assertEqual(code, 502)
+                self.assertTrue(result["local_installed"])
+                self.assertEqual(result["sync_status"], status)
+                self.assertEqual(result["sync_request_bytes"], 12345)
+                self.assertEqual("RMM_MAX_BODY_BYTES" in result["detail"], status == 413)
+                self.assertEqual(self.store.read("plugins", "test.dll"), CONTENT)
     def test_github_digest_is_verified(self):
         self.release["assets"][1]["digest"] = "sha256:" + "b" * 64
         self.update_release()

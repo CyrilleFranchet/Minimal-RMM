@@ -1170,7 +1170,9 @@ OPENAI_TOOLS: list[dict] = [
             "description": (
                 "Queue a PE plugin load on the Go agent. The plugin runs in an "
                 "isolated child; DLLs requiring the Windows loader use a temporary file. Use "
-                "command for plugin-owned dispatch through the Run export."
+                "export=Run for raw input. Set command only for plugins that explicitly support "
+                "the {command,input} dispatch envelope; command=Run is not equivalent to export=Run. "
+                "Use run_embeddings for document classification."
             ),
             "parameters": {
                 "type": "object",
@@ -1524,8 +1526,10 @@ OPENAI_TOOLS.extend(
                               'required': []}}},
  {'type': 'function',
   'function': {'name': 'run_embeddings',
-               'description': 'Queue explicit authorized file or directory paths (including UNC) with a saved profile; requires '
-                              'updated Go agent and autonomous DLL.',
+               'description': 'Classify explicit authorized files or directories (including UNC) using a saved profile. '
+                              'Requires document-embeddings-autonomous.dll and a Go PE agent. Missing DLL is a deployment blocker: '
+                              'do not substitute document-embeddings.dll or retry via queue_pe_load command=Run. '
+                              'Inspect the profile first: copy_documents may copy matching files. Queued is not completed; inspect matching session events.',
                'parameters': {'type': 'object',
                               'properties': {'session_ref': {'type': 'string'},
                                              'profile': {'type': 'string'},

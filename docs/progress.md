@@ -14,6 +14,36 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-05 — Explain plugin installation and synchronization limits
+
+- Release size errors now include the raw size and active workspace asset
+  limit. Install-time synchronization preserves numeric upstream status and
+  exact JSON request bytes while excluding upstream response bodies.
+- HTTP 413 diagnostics explain the central request limit and base64 overhead;
+  the WebUI displays these details and keeps failed items selected for retry.
+  Verified local bytes remain available for checksum-verified reuse.
+- `PluginRuntimeSyncError` carries safe diagnostics; opt-in `diagnose` on the
+  workspace publisher preserves boolean behavior for background reconciliation.
+  Documented per-owner settings, restart/retry, and proxy-limit distinctions.
+- No deployed limit, installed binary, or target state was changed.
+- Validation: full `make check` passed on the intended commit snapshot,
+  excluding untracked runtime logs and the custom lab skill. The 44 focused
+  release/synchronization/embeddings Python regressions and 21 release UI
+  regressions passed. No live download, synchronization, or classification ran.
+
+### 2026-11-05 — Check embeddings prerequisites before dispatch
+
+- Diagnosed the reported missing autonomous DLL and subsequent incompatible
+  command-envelope fallback. The strict embeddings decoder expects raw request
+  JSON; `command=Run` is not equivalent to `export=Run`.
+- Workspace embeddings execution checks the scoped central plugin catalog and
+  fails before queueing when the required autonomous artifact is unavailable.
+  MCP descriptions explain the ABI, avoid unsupported fallback, distinguish
+  queued from completed, and call out saved-profile copy options.
+- Added missing/legacy-only plugin and unavailable/malformed catalog regressions
+  and preserved raw-input dispatch coverage. Provider reasoning-budget exhaustion
+  remains a separate configured limit; no live setting or installed DLL changed.
+
 ### 2026-11-05 — Restore screenshot download overlay after image load
 
 - Restored Download to the screenshot's bottom-right corner while keeping its

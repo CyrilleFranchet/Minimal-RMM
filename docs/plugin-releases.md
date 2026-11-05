@@ -88,20 +88,36 @@ CLI secret-file input, or offline configuration. GitHub credentials are never
 sent to the agent or central broker in workspace mode, and configuration reads
 do not return them. See [service settings](service-settings.md).
 
-Save `RMM_PLUGIN_GITHUB_TOKEN` in the workspace owner settings; no Compose environment file is required.
-Compose maps that value to `RMM_PLUGIN_GITHUB_TOKEN` only in the workspace.
-Protect the environment file and exclude it from source control. Each separately
-deployed workspace can use its own repository credential.
+Save `RMM_PLUGIN_GITHUB_TOKEN` in the workspace owner settings; no Compose
+environment file is required. Each separately deployed workspace can use its
+own repository credential.
 For additional named credentials, save `RMM_PLUGIN_TOKEN_<NAME>` through
 service settings and reference that name in the source editor. Legacy Compose
 users must explicitly forward each environment variable to the container;
 adding it to `.env` alone does not do so. The UI reports presence only.
 
-The largest current plugin is about 75 MB. Set `RMM_ASSET_MAX_BYTES=134217728`
-at the storage owner and `RMM_MAX_BODY_BYTES=134217728` on the central server
-for base64 workspace synchronization. `RMM_WORKSPACE_MAX_BODY=134217728` also
-allows equivalent manual uploads. Existing lower limits fail explicitly; they
-are not silently bypassed.
+Check the selected release's displayed binary sizes before installation.
+`RMM_ASSET_MAX_BYTES` at the workspace owner limits raw downloaded bytes
+(default 64 MiB). Central `RMM_MAX_BODY_BYTES` limits the entire synchronization
+JSON request (default 32 MiB). Base64 requires `4 * ceil(binary_bytes / 3)`
+bytes, plus JSON metadata. Matching the central limit to the raw DLL size is
+therefore insufficient.
+
+For example, to permit plugins up to 128 MiB, save
+`RMM_ASSET_MAX_BYTES=134217728` in workspace settings and
+`RMM_MAX_BODY_BYTES=268435456` in central settings. For browser file uploads,
+also set workspace `RMM_WORKSPACE_MAX_BODY=268435456`; GitHub release downloads
+do not send the DLL through that browser-upload endpoint. Restart each service
+whose settings changed, then retry the checked items. Retrying a locally
+installed plugin reuses bytes whose size and SHA-256 still match the release.
+Limits remain enforced; the installer does not raise them automatically.
+
+Size rejections report the required raw bytes and active asset limit.
+Synchronization diagnostics include `sync_status` and `sync_request_bytes`;
+HTTP 413 identifies a central/proxy request-size rejection, while HTTP 401/403
+requires checking authentication or workspace ownership instead. Upstream
+response bodies and credentials are not returned. If a reverse proxy sits
+between services, its request limit must also accommodate the JSON body.
 
 ## CLI
 
@@ -194,6 +210,7 @@ or restart running plugin processes.
 | --- | --- |
 | `ReleaseError` | Safe download/validation failure without credentials |
 | `ReleaseRedirect.redirect_request` | Restrict redirect hosts and strip authorization |
+| `PluginRuntimeSyncError.__init__` | Retain numeric upstream status and JSON byte count without response content |
 | `PluginReleases.__init__` | Load repository and process-scoped credential |
 | `PluginReleases._latest_tag` | Resolve the selected branch's highest numeric version |
 | `PluginReleases._request` | Bounded GitHub API/content request and safe errors |

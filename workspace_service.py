@@ -51,7 +51,7 @@ from rmm_asset_store import AssetError, AssetStore, decode_asset_content
 from rmm_embeddings import EmbeddingStore, embedding_api
 from rmm_bloodhound import bloodhound_api
 from rmm_bloodhound_broker import execute_workspace_request
-from rmm_plugin_releases import plugin_release_api
+from rmm_plugin_releases import PluginRuntimeSyncError, plugin_release_api
 from rmm_plugin_sources import plugin_sources_api
 from rmm_ui_state import UiStateError, normalize_ui_state
 from workspace_pivot import WorkspacePivotManager
@@ -1058,15 +1058,15 @@ class WorkspaceService:
         responses = payload.get("responses")
         return responses if isinstance(responses, list) else []
 
-    def _sync_plugin_asset(self, row: dict[str, Any] | None) -> bool:
+    def _sync_plugin_asset(self, row: dict[str, Any] | None, *, diagnose: bool = False) -> bool:
         """Publish the current authoritative version, never a stale caller snapshot."""
         with self._plugin_lock:
             if not isinstance(row, dict) or not row.get('name'):
                 return False
             current = next((item for item in self.store.asset_list('plugins') if item['name'] == row['name']), None)
-            return self._publish_plugin_asset(current or {'name': row['name'], 'enabled': False}, removed=current is None)
+            return self._publish_plugin_asset(current or {'name': row['name'], 'enabled': False}, removed=current is None, diagnose=diagnose)
 
-    def _publish_plugin_asset(self, row: dict[str, Any] | None, *, removed: bool = False) -> bool:
+    def _publish_plugin_asset(self, row: dict[str, Any] | None, *, removed: bool = False, diagnose: bool = False) -> bool:
         """Send one snapshot while the caller holds the plugin mutation lock."""
         if not isinstance(row, dict) or not row.get("name"):
             return False
@@ -1085,6 +1085,8 @@ class WorkspaceService:
         status, _response, _content_type = self.upstream.request(
             "POST", "/api/v1/workspace/assets/plugins", payload
         )
+        if status != 200 and diagnose:
+            raise PluginRuntimeSyncError(status, len(json.dumps(payload).encode("utf-8")))
         return status == 200
 
     def _sync_workspace_plugins(self) -> None:
@@ -1435,6 +1437,15 @@ class WorkspaceService:
                 return 404, {"error": "session_not_found"}
             if session.get("agent_type") != "go" or "pe" not in session.get("capabilities", []):
                 return 409, {"error": "requires_go_agent_with_pe_support"}
+            status, catalog, _ = self._proxy("GET", "/api/v1/plugins")
+            if status != 200:
+                return status, {"error": "embedding_plugin_catalog_unavailable"}
+            plugins = catalog.get("plugins") if isinstance(catalog, dict) else None
+            if not isinstance(plugins, list):
+                return 502, {"error": "embedding_plugin_catalog_unavailable"}
+            if not any(isinstance(row, dict) and row.get("name") == request["plugin"] for row in plugins):
+                return 409, {"error": "embedding_plugin_unavailable", "required_plugin": request["plugin"],
+                             "message": "Install the current autonomous embeddings DLL in this workspace. Do not substitute another DLL or use the plugin command envelope."}
             status, payload, _ = self._proxy("POST", f"/api/v1/sessions/{session['id']}/pe", request)
             return status, payload
 
@@ -1576,7 +1587,8 @@ class WorkspaceService:
         if parts and parts[0] == "embeddings":
             return self._embedding_api("POST", parts, body)
         if parts == ["plugin-releases", "install"]:
-            status, payload = plugin_release_api(self.store.asset_store, "POST", body=body, publish=self._sync_plugin_asset)
+            status, payload = plugin_release_api(self.store.asset_store, "POST", body=body,
+                                                 publish=lambda row: self._sync_plugin_asset(row, diagnose=True))
             return status, payload, "application/json"
         if len(parts) == 2 and parts[0] == "plugin-sources":
             status, payload = plugin_sources_api(self.store.asset_store.root, "POST", urllib.parse.unquote(parts[1]), body)

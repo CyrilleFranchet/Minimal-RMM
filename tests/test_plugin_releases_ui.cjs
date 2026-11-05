@@ -366,8 +366,9 @@ test('failed inventory lookup permits installation and explains unavailable comp
   assert.equal(ui.get('install').disabled, false);
 });
 
-test('a local installation with failed runtime sync stays selectable', async () => {
-  const ui = fixture({ status: 502, data: { local_installed: true, error: 'runtime unavailable' } });
+test('a local installation with failed runtime sync stays selectable and displays actionable detail', async () => {
+  const ui = fixture({ status: 502, data: { local_installed: true, error: 'plugin_runtime_sync_failed',
+    detail: 'HTTP 413: increase central RMM_MAX_BODY_BYTES' } });
   await ui.load();
   await ui.click('browse');
   await ui.click('select-all');
@@ -376,4 +377,5 @@ test('a local installation with failed runtime sync stays selectable', async () 
   assert.equal(input.checked, true);
   assert.notEqual(input.disabled, true);
   assert.equal(ui.get('install').disabled, false);
+  assert.match(ui.get('status').textContent, /HTTP 413: increase central RMM_MAX_BODY_BYTES/);
 });

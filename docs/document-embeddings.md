@@ -24,6 +24,30 @@ DLL from the updated plugin source before using these fields. Updating the
 WebUI/server alone does not update the installed DLL; older binaries can
 reject the new request fields.
 
+Before queuing work, the workspace embeddings API now checks the central
+plugin catalog under the current workspace identity. The exact installed name
+must be `document-embeddings-autonomous.dll`. A missing artifact returns HTTP
+409 `embedding_plugin_unavailable` with `required_plugin`; an unavailable or
+malformed catalog returns `embedding_plugin_catalog_unavailable`. Neither
+condition queues agent work. This verifies catalog availability, not the DLL's
+version, export compatibility, or continued availability after the check.
+
+Use `run_embeddings` with a saved profile. It supplies `export=Run` and raw JSON
+input through the PE endpoint. Do not substitute `document-embeddings.dll` or
+retry with `queue_pe_load(command="Run")`: the command mode wraps input in a
+`{"command":"Run","input":"..."}` object, which this plugin does not accept.
+The plugin's strict decoder can report `invalid JSON input` for unknown fields
+as well as malformed JSON. That message alone does not prove broken quoting.
+Install the correct current artifact in the owning workspace before retrying.
+Inspect profile copy options first; classification profiles can also copy
+matching documents when `copy_documents` is enabled.
+
+A later AI `provider_output_truncated` failure is independent of plugin
+execution. If diagnostics show the full output allowance consumed by reasoning,
+adjust `RMM_AI_OUTPUT_RESERVE` in the central worker's service settings within
+the selected model's limits, then restart that worker. Recovery does not replay
+prior calls; inspect matching session events before resubmitting classification.
+
 For **browser upload or workspace plugin synchronization**, configure these
 limits before starting the corresponding services:
 

@@ -190,12 +190,18 @@ class EmbeddingWorkspaceTests(unittest.TestCase):
         self.service.pivots.stop_all(); self.service.store.close(); self.temp.cleanup()
 
     def test_local_http_crud_run_save_export_and_isolation(self):
-        with patch.object(self.service, "_proxy", return_value=(200, {"session_id": "alice-session", "ok": True}, "application/json")) as proxy:
+        def upstream(method, path, body=None):
+            if path == "/api/v1/plugins":
+                return 200, {"plugins": [{"name": "document-embeddings-autonomous.dll"}]}, "application/json"
+            return 200, {"session_id": "alice-session", "ok": True}, "application/json"
+        with patch.object(self.service, "_proxy", side_effect=upstream) as proxy:
             self.assertEqual(self.client.embedding_profiles("save", "strategy", CONFIG)[0], 200)
             proxy.assert_not_called()
             self.assertEqual(self.client.run_embeddings("alice-session", "strategy", ["C:\\Lab\\a.txt"])[0], 200)
             self.assertEqual(proxy.call_args.args[1], "/api/v1/sessions/alice-session/pe")
             self.assertEqual(json.loads(proxy.call_args.args[2]["input"])["documents"], ["C:\\Lab\\a.txt"])
+            self.assertEqual(proxy.call_args.args[2]["export"], "Run")
+            self.assertNotIn("command", proxy.call_args.args[2])
             self.assertEqual(self.client.run_embeddings("bob-session", "strategy", ["a"])[0], 404)
             proxy.reset_mock()
             code, payload = self.client.embedding_results("save", session_ref="alice-session", event_id=4)
@@ -213,6 +219,24 @@ class EmbeddingWorkspaceTests(unittest.TestCase):
             self.assertEqual(store.get("results"), []); self.assertEqual(store.get("profiles"), [])
             store.close()
 
+    def test_missing_autonomous_plugin_blocks_execution_without_legacy_fallback(self):
+        self.service.store.embeddings.put("profiles", "strategy", {"config": profile_config(CONFIG)})
+        for catalog in ({"plugins": []}, {"plugins": [{"name": "document-embeddings.dll"}]}):
+            with self.subTest(catalog=catalog), patch.object(self.service, "_proxy", return_value=(200, catalog, "application/json")) as proxy:
+                code, payload = self.client.run_embeddings("alice-session", "strategy", ["C:\\Lab\\a.txt"])
+                self.assertEqual(code, 409)
+                self.assertEqual(payload["error"], "embedding_plugin_unavailable")
+                self.assertEqual(payload["required_plugin"], "document-embeddings-autonomous.dll")
+                proxy.assert_called_once_with("GET", "/api/v1/plugins")
+
+    def test_unavailable_or_malformed_plugin_catalog_never_queues_work(self):
+        self.service.store.embeddings.put("profiles", "strategy", {"config": profile_config(CONFIG)})
+        for status, catalog, expected in ((503, {}, 503), (200, {}, 502), (200, {"plugins": "bad"}, 502)):
+            with self.subTest(status=status, catalog=catalog), patch.object(self.service, "_proxy", return_value=(status, catalog, "application/json")) as proxy:
+                code, payload = self.client.run_embeddings("alice-session", "strategy", ["C:\\Lab\\a.txt"])
+                self.assertEqual(code, expected)
+                self.assertEqual(payload["error"], "embedding_plugin_catalog_unavailable")
+                proxy.assert_called_once_with("GET", "/api/v1/plugins")
     def test_authentication_and_central_workspace_rejection(self):
         self.client.token = "wrong"
         self.assertEqual(self.client.embedding_profiles()[0], 401)
@@ -285,7 +309,9 @@ class EmbeddingWorkspaceTests(unittest.TestCase):
             args = parser.parse_args(["embeddings", "profiles", "save", "reimported", "--file", str(exported)])
             args.func(self.client, {}, args)
             paths = [r"C:\Lab Docs", r"\\fileserver\share\Lab Docs"]
-            with patch.object(self.service, "_proxy", return_value=(200, {"session_id": "alice-session", "ok": True}, "application/json")) as proxy:
+            with patch.object(self.service, "_proxy", side_effect=[
+                    (200, {"plugins": [{"name": "document-embeddings-autonomous.dll"}]}, "application/json"),
+                    (200, {"session_id": "alice-session", "ok": True}, "application/json")]) as proxy:
                 args = parser.parse_args(["embeddings", "run", "reimported", "--session", "alice-session",
                                          "--document", paths[0], "--document", paths[1]])
                 args.func(self.client, {}, args)

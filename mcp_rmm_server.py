@@ -155,7 +155,7 @@ def embedding_profiles(action: str = "list", name: str = "", config: dict | None
 
 @mcp.tool()
 def run_embeddings(session_ref: str, profile: str, documents: list[str]) -> str:
-    """Queue explicit file or directory paths, including UNC, with a saved embedding profile."""
+    """Classify explicit files/directories with a saved profile. Requires document-embeddings-autonomous.dll; missing DLL is a deployment blocker, not permission to substitute document-embeddings.dll or queue_pe_load command=Run. Inspect profile copy options and matching session events; queued is not completed."""
     return tool_run_embeddings(_client(), session_ref, profile, documents)
 
 
@@ -339,7 +339,7 @@ def queue_pe_load(
     input: str = "",
     command: str = "",
 ) -> str:
-    """Queue an isolated PE command; Windows-loader DLLs use a temporary file."""
+    """Queue an isolated PE load. export=Run passes raw input; command wraps it in {command,input} and is only for plugins supporting that envelope. command=Run is not export=Run. Use run_embeddings for document classification."""
     return tool_queue_pe_load(
         _client(),
         session_ref,

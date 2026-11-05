@@ -307,7 +307,7 @@
           });
           if (![200, 201].includes(response.status)) {
             const prefix = response.data?.local_installed ? "Installed locally, but server synchronization failed: " : "";
-            throw new Error(prefix + (response.data?.error || `HTTP ${response.status}`));
+            throw new Error(prefix + (response.data?.detail || response.data?.error || `HTTP ${response.status}`));
           }
           installed++;
           markInstalled(choices.find((choice) => choice.row === row));
