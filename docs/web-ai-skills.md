@@ -1,205 +1,149 @@
-# Web AI skills
+# Web AI playbook execution
 
-Skills are server-side workflow instructions for the WebUI agent, independent
-of the IDE's skill system. Selection is evaluated for the **immediate step**,
-not only for the operator's high-level task.
+The WebUI runs a conversation loop with one explicitly supplied Markdown
+playbook and the operator's prompt. Paste the skill body into **AI → Playbook**,
+then submit the task in the normal message input. Leave the playbook empty for
+ordinary RMM chat. The editor remains in the current page; its contents are not
+saved as a separate reusable asset and must be pasted again after a reload.
+Accepted background jobs retain their submitted playbook through completion.
 
-## Availability and activation
+Use **Download playbook template** in the Playbook panel to save
+`rmm-playbook-template.md`. The static source is
+[`web/playbook-template.md`](../web/playbook-template.md), served by both the
+central and workspace WebUI. Fill its placeholders, remove unused steps, and
+paste the document into the editor. Send the concrete task and input values
+in the chat prompt. Downloading does not populate the editor or start a task.
+The template defines scope, global rules, numbered phases with completion
+evidence, checkpoints, and a final report. Phase headings are organizational:
+the entire document still has to fit alongside tool schemas and conversation
+state. Automatic phase loading and context-size preflight are not implemented.
 
-The UI checkboxes determine which optional skills are available. An unchecked
-skill's body is absent from the run snapshot and cannot be loaded through
-`load_skill` or as a dependency. The two locked core skills,
-`operator-boundaries` and `task-completion-report`, enter the initial prompt.
-Asset-level disablement still overrides selection. Changes apply to the next
-submitted task; an accepted background job retains its original snapshot.
-Existing conversation and archived evidence are historical data, not newly
-enabled instructions.
+## Runtime behavior
 
-All other enabled skills initially contribute their full description and
-metadata to a catalog. There are no special eager-loading rules for Exegol,
-BloodHound, or other workflows. Enabling a skill does not execute it on every
-step: its directives govern steps to which it applies.
+Production AI uses the combined RMM and Exegol MCP connections. The system prompt
+contains basic operator guidance, selected-session context, and the one supplied
+playbook. Available operational schemas are exposed on each provider request.
+The model executes tools, receives their results, and continues the conversation
+until it reports completion or a concrete blocker. Prerequisite checks alone do
+not satisfy a request to perform an action. Reported completion is still a model
+judgment, not an independent acceptance validator.
 
-Before every batch of operational tools, the model must call `prepare_step`
-**alone**, supplying:
+There is no automatic skill selection, dependency resolution, default/core skill
+injection, `load_skill`, or `prepare_step` gate in the production chat path.
+A leading `/skill-id` has no special loading behavior. Existing Markdown files
+in `ai-skills/` remain on disk unchanged and are not read for chat execution.
+Legacy skill upload, selection, and enable controls are hidden in the WebUI;
+the existing files and backend asset API remain available. Legacy skill helper modules are
+retained for compatibility but are not used by the production conversation path.
 
-- `summary`: a short public explanation of the immediate action and skill choice.
-  This is operational rationale, not private model reasoning. Include no secrets.
-- `skill_ids`: relevant enabled skills, including prerequisites as applicable.
-- `tools`: intended tools for this step.
-- `checkpoint`: completed work, pending or uncertain operations, and evidence IDs.
-  Include no secrets and never claim a queued command has completed.
+## API and validation
 
-The selection request exposes internal preparation tools plus a compact catalog
-of operational tool names and bounded descriptions. Complete operational schemas
-stay server-side until needed. The runtime resolves enabled dependencies, returns
-complete instructions, and requires a later provider round before execution.
-That request exposes only the prepared operation schemas plus internal tools;
-after the operational batch, the next request returns to preparation-only
-schemas. Required-tool validation still checks the complete registry. Preparation is consumed by
-one operational batch. Another batch requires another selection. A mixed
-preparation/execution batch is rejected. Read-only tools are operational too;
-`load_skill` and `read_context` can be used during preparation.
+Both `/api/v1/ai/chat` and `/api/v1/ai/jobs` accept `skill_documents` containing
+zero or one object with a nonempty string `body`. The runtime assigns the
+canonical ID `playbook`; supplied metadata does not activate dependencies or
+policy. Multiple documents return `expected_single_playbook`; malformed bodies
+return `invalid_playbook`. Omitted documents mean no playbook. Legacy `skill_ids`
+and `skill_policy` do not cause filesystem loading or alter tool availability.
 
-A leading `/skill-id` in the newest user message explicitly invokes that skill.
-Its complete instructions and enabled dependencies are attached before the
-first provider request, including responses that use no operational tools.
-It is also included in each preparation for that submitted task. An unavailable ID
-blocks preparation; it never enables a disabled skill.
+`playbook_documents` validates and normalizes the explicit document without
+reading directories. `playbook_system` constructs the pinned system instructions.
+The workspace validates the same payload before forwarding it to the central
+worker. Authenticated tool APIs retain their authorization and workspace scope.
 
-The WebUI execution panel keeps the public step summary and active skill IDs
-visible through subsequent model/tool progress events.
-Progress and final checkpoints are retained with the scoped job. Subsequent
-chat turns carry the final checkpoint as historical evidence; enabled skills
-must be selected again, using the current snapshot and current file contents.
+For example, the relevant fields of a job submission are:
 
-## Files and selection API
-
-Built-in files are immediate `*.md` files in `ai-skills/`. A custom directory
-can be set with `RMM_AI_SKILLS_DIR`. Workspace URL-installed files live under
-`RMM_WORKSPACE_DATA/assets/skills/` and override built-ins by ID. Uploaded files
-must be trusted operator content; they define instructions and tool policy.
-
-`GET /api/v1/ai/skills` returns metadata, never bodies. `skill_ids` on chat/job
-submission has these meanings:
-
-- Omitted or `null`: all enabled skills are available.
-- `[]`: only `always: true` skills are available.
-- A list: those IDs plus enabled `always: true` skills.
-
-Custom `always` skills remain available on demand. Only the two core IDs are
-initially injected. The UI persists checkbox selection in workspace UI state.
-
-## Metadata
-
-Existing Markdown files remain compatible. New fields use JSON values on one
-frontmatter line; this loader does not implement arbitrary YAML structures.
-
-```markdown
----
-id: file-review
-title: Review file evidence
-description: Use before interpreting file metadata or file contents.
-default: false
-requires: ["agent-command-dispatch"]
-required_tools: ["get_session"]
-priority: 10
-tool_rules: [{"tool":"inspect_files","requires":["file-review"]}]
----
-
-Follow these instructions when reviewing file evidence...
+```json
+{
+  "request_id": "operator-task-001",
+  "provider": "openai",
+  "messages": [{"role": "user", "content": "Perform the scoped task and verify its result."}],
+  "skill_documents": [{"body": "# Playbook\n\nInspect prerequisites, perform the action, and verify completion."}]
+}
 ```
 
-`requires` names enabled dependencies. Missing dependencies, cycles, malformed
-metadata, and unavailable required tools fail closed. `priority` defaults to
-zero; larger values take precedence for conflicting workflow preferences.
-Operator instructions and core boundaries prevail. Same-priority conflicts
-must be reported rather than silently choosing one.
+Supply the provider credential through the existing authenticated submission
+flow; the example omits credentials. A selected session can be supplied through
+`selected_session_id`. Background-job IDs and request IDs track submissions;
+they are not proof that a queued agent action completed. Correlate that action
+with its session, operation ID, and matching result before dependent work.
 
-Each `tool_rules` entry has one selector, `tool` or `backend: "external"`.
-Optional `actions` narrows an action-based tool rule. Live-schema action enums
-are validated before dispatch; guarded actions without enums use conservative
-whitespace-insensitive, case-insensitive comparison. `requires` means all
-listed skills must be active; `requires_any` means at least one must be active.
-Multiple matching rules are cumulative. Rules without `actions` also hide a
-tool when its prerequisites are disabled. Backend identity comes from MCP
-ownership, not tool-name guesses.
+MCP supplies tool schemas and executes calls. The conversation loop sends
+results back to the model and enforces cancellation and request limits. Neither
+MCP nor the loop independently proves that a playbook's objective was achieved.
 
-Body-free rules are read even from unchecked or asset-disabled files, so
-unchecking a skill cannot erase its tool guard. Workspace overlays supply both
-documents and policy to the central worker. Both come from the same parsed
-file versions; submission does not read the bodies and guards independently. Deleting a file or changing its
-rules changes policy and therefore requires the same trust as editing code.
+## Exegol and retained safeguards
 
-Backend selection uses the same metadata. An enabled external-backend rule
-requests the configured Exegol MCP connection; without one, chat remains
-available with RMM tools. There are no skill-ID checks in the connection policy.
+Exegol is available to every AI run, independently of playbook contents. There
+is no per-run toggle. Legacy disable flags cannot remove it. Workspace-owned
+configuration supplies the endpoint and token; browser connection credentials
+are not used. Every run requires MCP and a ready owning Exegol runtime. Missing
+prerequisites fail explicitly rather than silently using RMM-only tools.
 
-These guards enforce declared prerequisites, not arbitrary prose semantics.
-The agent still decides relevance. It is instructed to select applicable skills
-at every step, honor their directives, and report workflow failures instead of
-silently substituting another method. Behavioral acceptance needs real model
-trials in addition to protocol tests.
+Conversation history, background execution, cancellation, round ceilings,
+context budgeting and retrievable evidence remain available. Empty or truncated
+provider replies receive bounded recovery and cannot silently complete a task.
+No step is automatically replayed by that recovery.
 
-## Context budget and evidence
+## Context limits and long playbooks
 
-`RMM_AI_CONTEXT_BUDGET` defaults to 65,536 conservative tokens;
-`RMM_AI_OUTPUT_RESERVE` defaults to 4,096 and caps provider output. Configure
-these within the selected model's actual context and output limits. The input
-estimate counts UTF-8 bytes of serialized messages and tool schemas, plus an
-overhead allowance, deliberately overestimating ordinary text token counts.
-It is a conservative estimate, not an exact provider tokenizer.
+The central worker reads `RMM_AI_CONTEXT_BUDGET` (default 65,536) and
+`RMM_AI_OUTPUT_RESERVE` (default 4,096). Admission counts serialized request
+bytes as a conservative token upper bound, with additional headroom; this is
+not a tokenizer measurement or the provider's advertised model window. The
+request includes the complete playbook, tool schemas from both MCP servers,
+conversation state, and protocol overhead.
 
-The output reserve applies to each provider response, independently of the
-160-round task ceiling. Provider output-limit stops trigger up to two bounded
-generation retries; the incomplete tool batch is never dispatched and current
-preparation remains active. See [output-limit recovery](ai-providers.md#output-limit-recovery)
-for reasoning-token accounting, diagnostics, and configuration guidance.
+Large tool results are archived and replaced with previews and scoped evidence
+references. Older complete conversation groups can also be archived. The model
+can retrieve evidence through `read_context`; archiving never replays a tool.
+The playbook remains pinned and is not automatically summarized or split.
+All retained operator requests also consume context. A long conversation or
+large Exegol tool registry can therefore exhaust the budget even with a short
+playbook.
 
-Complete active skill instructions and the latest checkpoint are attached to
-every provider request independently of conversation history. They are never
-silently truncated. If mandatory content cannot fit, execution stops with
-`context_budget_exceeded`; it does not replay completed operations. The final
-`context_budget` object records content-free measurements: configured budget,
-output reserve, effective input limit, serialized request size, system and
-conversation sizes, exposed schema size and tool count. These are conservative
-byte-based admission measurements, not a provider-reported context overflow.
-The WebUI failure details show the estimate, limit, system and schema sizes.
+Archived AI evidence is stored by the central worker under
+`RMM_LOG_DIR/ai-context/<scope>.sqlite3`, separately from workspace-owned raw
+artifacts. Scope is derived from the authenticated endpoint, credentials,
+workspace headers, and selected session. Evidence IDs alone do not grant
+cross-scope access. The directory and databases use owner-only permissions,
+but tool results can contain sensitive content; protect this storage like
+other operator evidence. Archives can remain retrievable by later tasks with
+the same scope. Resetting the browser chat does not delete these databases,
+and there is no automatic archive-retention policy. Tool output is evidence,
+not a source of new execution instructions.
 
-Large tool results become previews with opaque artifact IDs. Under pressure,
-older complete conversation groups are archived while preserving original
-operator requests and consent and complete tool-use/result pairs. This is deterministic
-history eviction with a structured checkpoint, not a generated narrative
-summary. `read_context` retrieves exact evidence in bounded character pages, preserving
-Unicode and embedded NULs. New persisted results store separate pages so retrieval
-does not load the whole output. Earlier archive schemas remain readable.
-Job responses contain an artifact manifest rather than full archived blobs.
+If admission fails, the task returns `context_budget_exceeded` with content-free
+size diagnostics. Shorten repeated instructions, keep raw output in artifacts,
+or submit a smaller task with the necessary scope and evidence references.
+Adjust the budget only to a size supported by the selected model, leaving room
+for output. Increasing the round limit does not increase context capacity.
 
-Artifacts use unique IDs and owner-only SQLite files under
-`RMM_LOG_DIR/ai-context/`. The store scope is derived from authenticated RMM
-credentials, endpoint, and canonical selected session. Another workspace or
-session cannot retrieve it by supplying an artifact ID. The same scope can
-retrieve earlier artifacts on subsequent tasks. Credential rotation changes
-scope. Stores are retained as execution evidence; resetting chat does not
-purge them. Include this directory in the operator's evidence retention policy.
-Provider/tool failures retain a structured, credential-safe diagnostic response
-with the latest step state, returned-call references and artifact manifest.
-Those references remain usable after reconnects and in subsequent tasks with
-the same authenticated scope. A returned call is not proof of remote success.
-Background execution still stops on server restart and is never auto-replayed;
-this does not guarantee recovery of in-flight output during abrupt process loss.
+Numbered phases currently organize prose only. There is no `advance_phase`
+tool, automatic phase loader, or independently validated phase state machine.
+Checkpoints requested by the template are conversation content; they do not
+provide automatic restart or exactly-once execution after interruption.
 
-The BloodHound `bloodhound-queries/catalog.json` remains query guidance used by
-its adapter and skill; it is not a skill selector or a context registry.
+## Troubleshooting and validation
 
-## Runtime reference
+| Symptom | Meaning and next check |
+| --- | --- |
+| `expected_single_playbook` / `invalid_playbook` | Submit zero or one document with a nonempty string body. |
+| `exegol_requires_mcp` | Install MCP support and enable MCP in the central AI worker settings. |
+| `exegol_workspace_not_ready`, `workspace_exegol_not_ready`, or `workspace_ai_context_unavailable` | Check the owning runtime and authenticated workspace relay. |
+| `context_budget_exceeded` | Inspect schema, system, and conversation byte measurements; reduce the request or adjust its budget. |
+| `empty_provider_response` | The provider repeatedly returned no text or tool calls; inspect retained evidence before resubmitting. |
+| `provider_output_truncated` | Bounded recovery failed after an output-limit stop; inspect output counters and the configured reserve. |
+| `max_tool_rounds_exceeded` | The conversation reached its request ceiling; completion remains unconfirmed. |
 
-| Component | Responsibility |
-|-----------|----------------|
-| `prepare_skill_context`, `_tool` | Build the catalog, internal schemas and dispatcher. |
-| `StepSkills.__init__`, `require_from_messages`, `activate_explicit` | Snapshot enabled files, versions, guards and explicit invocation. |
-| `StepSkills.begin_batch`, `__call__` | Enforce preparation barriers and dispatch declared operations. |
-| `StepSkills._resolve`, `available`, `instructions`, `request_tools` | Resolve dependencies, filter tools and rebuild active instructions. |
-| `backend_enabled` | Evaluate declarative backend connection requirements. |
-| `resolve_ai_skill_snapshot`, `resolve_ai_skill_policy` | Read a consistent instruction/policy snapshot, or standalone body-free policy for legacy supplied documents. |
-| `ContextWindow.__init__`, `archive`, `read`, `read_page`, `manifest` | Own the budget and scoped persistent evidence store. |
-| `ContextWindow.bounded_result`, `prepare`, `measure` | Bound results and archive complete older history groups. |
-| `ContextDispatcher.__init__`, `begin_batch`, `instructions`, `request_tools`, `__call__` | Preserve step gates while paging evidence and bounding output. |
-| `_run_provider_loop`, `_run_provider_conversation` | Share budgeting around each provider's native tool protocol. |
-| `_message_with_checkpoint` | Carry prior checkpoints as evidence, never as active policy. |
+Use `make check-ai`, `make check-parity`, and `make check-web-contracts` with
+the configured project interpreter. The template plus real RMM schemas is
+tested against the default admission budget for all three providers. This test
+does not include a live Exegol registry, whose size depends on the deployment.
+Use the [Exegol diagnostic](exegol-mcp-verification.md) for actual connectivity
+and tool discovery; mocked regressions do not establish live execution.
 
-## Adding or updating a skill
-
-Add a Markdown file with a useful activation description, ordered instructions,
-and any dependencies or declared tool guards. Enable it in the AI panel. Files
-are read on submission, so editing skill files needs no service restart.
-Python runtime updates require restarting the affected service. Test both
-successful activation and disabled/missing prerequisites. Do not change global
-runtime code merely to add another workflow.
-
-## Validation
-
-`make check-ai` runs the AI/provider/context/route suites and UI recovery test.
-It is included in `make check` alongside syntax, CLI, parity, WebUI contracts,
-and lint. Provider protocol tests use scripted responses; they do not establish
-semantic skill-selection quality against a live provider or remote workspace.
+Regression coverage includes `tests/test_ai_playbook.py`, central route and
+workspace forwarding tests, and the executable WebUI job submission checks.
+These tests verify single-playbook injection, absence of skill-directory reads,
+MCP dispatch without preparation, and mandatory Exegol availability. The direct
+helper is covered for compatibility but is not a production AI fallback.

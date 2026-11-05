@@ -16,11 +16,11 @@ POST /api/v1/ai/chat accepts provider, api_key, model, and messages. Supported p
 
 ## Implementation
 
-OpenAI and Mistral use Chat Completions function calls. Anthropic uses Messages API tool_use and tool_result blocks. rmm_ai.py keeps the RMM tool loop provider-neutral: validate_ai_provider validates credentials, _anthropic_tools adapts tool schemas, _run_provider_loop executes native tool turns, and run_ai_chat requires the configured Exegol MCP path when its workflow is enabled; RMM-only chats can use MCP or direct execution. The Mistral adapter accepts both the standard `choices[].message` result used by custom function calls and the `choices[].messages` result used by connector completions. It also sends the function name with every Mistral tool result and converts text-content blocks to a plain string before persistence and display.
+OpenAI and Mistral use Chat Completions function calls. Anthropic uses Messages API tool_use and tool_result blocks. rmm_ai.py keeps the RMM tool loop provider-neutral: validate_ai_provider validates credentials, _anthropic_tools adapts tool schemas, _run_provider_loop executes native tool turns, and run_ai_chat always requires the configured Exegol MCP path; there is no per-run enable switch or RMM-only fallback. The Mistral adapter accepts both the standard `choices[].message` result used by custom function calls and the `choices[].messages` result used by connector completions. It also sends the function name with every Mistral tool result and converts text-content blocks to a plain string before persistence and display.
 
-The agent loop allows 32 provider requests per internal checkpoint by default; skill preparation, operational calls, and final replies each consume requests. When a checkpoint is reached, the server automatically asks the provider to continue with the existing conversation and tool results. It permits four continuations, for a total emergency ceiling of 160 rounds. Set `RMM_AI_MAX_TOOL_ROUNDS` to a positive integer before starting the server to change the checkpoint size. If the emergency ceiling is reached, the web UI displays the recorded tool-call trace returned by the server.
+The agent loop allows 32 provider requests per internal checkpoint by default; tool turns and final replies each consume requests. When a checkpoint is reached, the server automatically asks the provider to continue with the existing conversation and tool results. It permits four continuations, for a total emergency ceiling of 160 rounds. Set `RMM_AI_MAX_TOOL_ROUNDS` to a positive integer before starting the server to change the checkpoint size. If the emergency ceiling is reached, the web UI displays the recorded tool-call trace returned by the server.
 
-The module helpers are `_json_request` for JSON HTTP requests, `_provider_headers` and `_provider_models_url` for provider metadata, `supports_rmm_tools` for Mistral capability filtering, `_selected_session_context` for selected-session prompting, `_build_openai_convo` and `_build_anthropic_messages` for stored chat conversion, `_message_text` for text-content normalization, `_chat_completion_message` for Chat Completions response normalization, and `_run_ai_chat_mcp` for the supported tool backend. `_run_ai_chat_direct` is available for RMM-only execution when MCP is disabled or unavailable. An enabled external-backend requirement prevents this fallback and requires its configured MCP connection.
+The module helpers are `_json_request` for JSON HTTP requests, `_provider_headers` and `_provider_models_url` for provider metadata, `supports_rmm_tools` for Mistral capability filtering, `_selected_session_context` for selected-session prompting, `_build_openai_convo` and `_build_anthropic_messages` for stored chat conversion, `_message_text` for text-content normalization, `_chat_completion_message` for Chat Completions response normalization, and `_run_ai_chat_mcp` for the supported tool backend. `_run_ai_chat_direct` remains an internal compatibility helper; production chat requires MCP and its configured Exegol connection.
 
 Provider validation calls an external HTTPS API. Revalidate a key after rotating it or if its provider later revokes access.
 
@@ -47,18 +47,16 @@ model/tool boundaries, which records safe job metadata and checks shutdown.
 See [Background AI jobs](ai-background-jobs.md). Request credentials stay in
 worker memory; completed chat and tool traces remain sensitive persisted data.
 
-## Step selection and context limits
+## Playbook and context limits
 
-The shared wrapper pins explicitly invoked skills before the first model
-request, requires preparation before each operational batch, and bounds context
-for every supported provider. Budget controls belong to the central AI worker:
-`RMM_AI_CONTEXT_BUDGET` and `RMM_AI_OUTPUT_RESERVE`. Full instructions, declared
-guards, evidence retrieval, and the limits of semantic adherence are documented
-in [Web AI skills](web-ai-skills.md). A round continuation is not context
-compaction; the context budget is enforced separately on every request.
-Selection exposes internal tools and a compact operation catalog; full
-operational schemas are sent only for the prepared batch, then removed again.
-Context failures include content-free size measurements for diagnosis.
+The chat injects only the explicit playbook supplied in `skill_documents`.
+It does not resolve `skill_ids`, load default skills, or require per-step
+preparation. All available operational schemas remain exposed throughout the
+conversation. See [Web AI playbooks](web-ai-skills.md) for payload validation
+and mandatory Exegol availability. Context budgeting still belongs to the central AI worker:
+`RMM_AI_CONTEXT_BUDGET` and `RMM_AI_OUTPUT_RESERVE`. Context failures include
+content-free request size measurements. Round continuation does not itself
+compact context.
 
 Provider/tool failures after execution retain a credential-safe diagnostic
 classification, the latest step state, and scoped evidence references. Raw
@@ -67,6 +65,20 @@ mean output was received, not that the remote operation succeeded. Cancellation
 still stops at cooperative checkpoints and does not replay work.
 
 ## Output-limit recovery
+
+Empty final responses are not success. `_final_response_error` classifies a
+response with no visible text and no tool calls as `empty_provider_response`.
+The provider loop's `retry_empty` helper requests continuation at most twice
+per task within the existing round ceiling. It preserves tool results and
+conversation state, and never dispatches or replays tools itself. Cancellation is checked
+through the recovery progress callback. Exhaustion returns an explicit failure
+and retains the tool trace instead of displaying only server timing. This
+does not establish semantic completion of a nonempty model report.
+
+`tests/test_ai_empty_response.py` covers prerequisite checks followed by an
+empty generation and subsequent startup, bounded exhaustion, the last round,
+and a substantive blocker report across all three providers, using mocked
+tools without creating a network relay.
 
 `provider_output_truncated` means the provider reported `finish_reason=length`
 or `stop_reason=max_tokens`. This is different from the local
@@ -87,8 +99,7 @@ current-step instruction. A successful intervening step does not reset that
 recovery allowance. Cancellation is checked at the recovery progress checkpoint
 before another provider request. It does
 not append partial text, JSON, or reasoning blocks to subsequent requests.
-Preparation, full active method bodies, and prior returned results remain in
-place. Recovery neither dispatches the discarded batch nor resubmits prior tool
+The supplied playbook and prior returned results remain in place. Recovery neither dispatches the discarded batch nor resubmits prior tool
 calls. This does not guarantee that a model will never independently propose
 a duplicate operation later.
 

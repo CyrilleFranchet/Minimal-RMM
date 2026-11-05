@@ -9,10 +9,11 @@ protocol notes remain in the linked feature pages.
 
 The [BloodHound CE workflow](bloodhound-workflow.md) executes at the storage
 owner: the workspace service inside Exegol.
-Exegol is required there for enabled external-backend AI workflows and
-mutating BloodHound operations. RMM-only AI skips Exegol readiness and can
-use MCP or direct RMM execution. The central server remains independent of Exegol in
-both single-workspace and multi-workspace deployments.
+Every AI run requires RMM and Exegol MCP; the workspace checks readiness and
+the central AI worker resolves owner-controlled connection settings through
+the authenticated relay. There is no RMM-only AI fallback. The central control
+plane still manages agents independently of AI/Exegol availability in both
+single-workspace and multi-workspace deployments.
 An owner-local runtime checks MCP/container identity and starts or reuses CE
 at service startup. Reconnecting browsers read health; CE failures leave the
 workspace and agent-management paths available.

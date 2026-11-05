@@ -282,3 +282,31 @@ def compose_system_prompt(
     if session_context.strip():
         parts.append(session_context.strip())
     return "\n".join(parts).strip()
+
+
+def playbook_documents(documents=None):
+    """Validate one explicitly supplied playbook without reading skill directories."""
+    if documents is None:
+        return []
+    if not isinstance(documents, list) or len(documents) > 1:
+        raise ValueError('expected_single_playbook')
+    if not documents:
+        return []
+    document = documents[0]
+    if not isinstance(document, dict) or not isinstance(document.get('body'), str) or not document['body'].strip():
+        raise ValueError('invalid_playbook')
+    return [{'id': 'playbook', 'body': document['body']}]
+
+
+def playbook_system(base, documents, session_context=''):
+    """Pin the operator's sole playbook and execution guidance in the system prompt."""
+    text = base + '\n' + session_context + (
+        '\nExecute the operator request as a playbook. Follow the supplied playbook steps in order. '
+        'Use tool results as evidence and continue until the requested outcome is verified or a concrete '
+        'blocker is established. Prerequisite checks alone do not complete an action request. '
+        'Do not load other skills or follow skill-loading or prepare_step references in a playbook. '
+        'Do not repeat completed or uncertain operations. Report completed work, evidence, '
+        'and any unfinished work explicitly. Respect operator scope and authorization.\n')
+    for document in playbook_documents(documents):
+        text += '\n## Operator playbook\n' + document['body']
+    return text

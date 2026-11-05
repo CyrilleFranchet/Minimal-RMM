@@ -111,24 +111,26 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.store.close()
         self.temp_dir.cleanup()
 
-    def test_rmm_only_ai_forwards_one_local_skill_snapshot_without_exegol_readiness(self):
+    def test_ai_always_checks_exegol_and_forwards_playbook_without_loading_skills(self):
         import rmm_ai_skills
         service = WorkspaceService.__new__(WorkspaceService)
         service.store = self.store
         service._proxy = MagicMock(return_value=(202, {'job': {'id': 'queued'}}, 'application/json'))
         with patch('rmm_exegol_runtime.get_runtime') as runtime, patch('rmm_ai_skills._load_all_skills_full', wraps=rmm_ai_skills._load_all_skills_full) as load:
+            runtime.return_value.status.return_value = {'exegol_status': 'ready'}
             status, _, _ = service.post_json('/api/v1/ai/jobs', {
                 'provider': 'openai', 'api_key': 'test', 'skill_ids': [],
-                'exegol_mcp_enabled': True, 'exegol_mcp_url': 'https://browser-override.invalid',
+                'exegol_mcp_enabled': False, 'exegol_mcp_url': 'https://browser-override.invalid',
+                'skill_documents': [{'body': 'Inspect the selected session, then report.'}],
                 'messages': [{'role': 'user', 'content': 'Inspect local agent state'}]})
         self.assertEqual(status, 202)
-        runtime.assert_not_called()
-        load.assert_called_once()
+        runtime.assert_called_once()
+        load.assert_not_called()
         forwarded = service._proxy.call_args.args[2]
         self.assertEqual({skill['id'] for skill in forwarded['skill_documents']},
-                         {'operator-boundaries', 'task-completion-report'})
-        self.assertTrue(forwarded['skill_policy'])
-        self.assertNotIn('exegol_mcp_enabled', forwarded)
+                         {'playbook'})
+        self.assertEqual(forwarded['skill_policy'], [])
+        self.assertTrue(forwarded['exegol_mcp_enabled'])
         self.assertNotIn('exegol_mcp_url', forwarded)
 
     def test_session_prefixes_are_literal_case_sensitive_and_at_least_four_characters(self):

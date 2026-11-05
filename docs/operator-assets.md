@@ -1,16 +1,17 @@
 # Operator-managed assets
 
-Operators can install plugins, AI skills, and rclone profile files from an
-HTTP(S) URL or a local WebUI file upload. The same URL feature is available in
-the WebUI, CLI, MCP, and REST API. This is the extension point for personal or
-private operator content.
+Operators can install plugins and rclone profile files from an HTTP(S) URL or
+a local WebUI file upload. CLI, MCP, and REST retain the legacy Markdown skill
+asset API for compatibility, but skill upload and enable controls are hidden
+in the WebUI. Storing a skill asset does not inject it into an AI run; use the
+explicit [playbook editor](web-ai-skills.md).
 
 ## Asset kinds
 
 | Kind | Accepted files | Runtime use |
 | --- | --- | --- |
 | `plugins` | `.dll`, `.ps1` | Served to an authenticated agent on demand |
-| `skills` | `.md` | Available for per-step activation; core skills and explicit invocations load before the first request |
+| `skills` | `.md` | Legacy stored content; not loaded by AI chat |
 | `rclone` | `.json` | Workspace-local named rclone profiles |
 
 Names are treated as basenames and path traversal is rejected. Downloads are
@@ -115,31 +116,16 @@ agent beacon URL, and refreshes the generated PowerShell and Go agent forms.
 The administration URL remains the URL used by the operator browser; the agent
 forms use the profile's beacon URL.
 
-## AI skill format
+## Legacy Markdown skill assets
 
-Skills are Markdown with optional frontmatter:
-
-```markdown
----
-id: adcs
-title: AD CS workflow
-description: Safe authorized lab workflow for AD CS checks
-default: false
-always: false
----
-
-Instructions followed when this skill is activated.
-```
-
-The `id` is the merge key. `default` is legacy preference metadata; without
-a saved selection, enabled skills are available. `always` keeps a skill
-available even when a request selects specific IDs, subject to asset-level
-disablement. Custom `always` bodies are still loaded on demand; the two core
-skill bodies and explicit invocations are loaded before the first request. Built-in skills are returned by `GET /api/v1/ai/skills` alongside
-uploaded skills and are shown in the expanded **AI → Skills** section. The
-selection follows the server/workspace SQLite UI state, while the asset API
-persists enablement for built-in and uploaded skills. Dependencies, tool guards,
-priority, and activation behavior are documented in [Web AI skills](web-ai-skills.md).
+The asset API still accepts `.md` files with optional frontmatter and preserves
+existing files, enablement metadata, and inventory operations. The discovery
+endpoint `GET /api/v1/ai/skills` remains available for compatibility. Neither
+asset enablement nor discovery activates a skill in an AI conversation.
+Frontmatter such as `default`, `always`, dependencies, and priority does not
+control production playbook execution. Saved skill IDs and `/skill-id` messages
+do not load instructions. To reuse existing content, copy the intended body
+into the single Playbook editor and remove references to the retired loader.
 
 ## rclone profile format
 

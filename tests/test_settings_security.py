@@ -191,13 +191,13 @@ class SettingsSecurityTests(unittest.TestCase):
             forwarded = service._proxy.call_args.args[2]
             self.assertEqual(forwarded["api_key"], "saved-key")
             self.assertNotIn("exegol_mcp_token", forwarded)
-            self.assertNotIn("exegol_mcp_enabled", forwarded)
+            self.assertTrue(forwarded["exegol_mcp_enabled"])
             service.post_json("/api/v1/ai/chat", {"api_key": "request-key", "exegol_mcp_enabled": False,
                                                 "exegol_mcp_url": "http://request:8000", "messages": []})
             forwarded = service._proxy.call_args.args[2]
             self.assertEqual(forwarded["api_key"], "request-key")
             self.assertNotIn("exegol_mcp_url", forwarded)
-            self.assertNotIn("exegol_mcp_enabled", forwarded)
+            self.assertTrue(forwarded["exegol_mcp_enabled"])
 
     def test_workspace_does_not_send_saved_exegol_token_to_request_url(self):
         service = WorkspaceService.__new__(WorkspaceService)

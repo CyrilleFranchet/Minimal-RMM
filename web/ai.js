@@ -10,7 +10,6 @@
   const EXEGOL_ENABLED_STORAGE = "rmm_exegol_mcp_enabled";
   const EXEGOL_URL_STORAGE = "rmm_exegol_mcp_url";
   const EXEGOL_TOKEN_STORAGE = "rmm_exegol_mcp_token";
-  const AI_SKILLS_ENABLED_STORAGE = "rmm_ai_skills_enabled";
   const LEGACY_AI_CHAT_STORAGE_KEY = "rmm_ai_chat_v1";
   const CUSTOM_MODEL_VALUE = "__custom__";
 
@@ -22,7 +21,6 @@
   let loadedChatSessionId = undefined;
   let chatLoadToken = 0;
   let sending = false;
-  let aiSkills = [];
   let jobPollTimer = null;
   let pendingSubmission = null;
   const JOB_STATE_KEY = "rmm_ai_job_state_v1";
@@ -60,7 +58,7 @@
   }
 
   function welcomeText() {
-    return "RMM tools with optional Exegol and BloodHound workflows. Enable their skills to use them; configure Exegol in the owning service's Config settings. Select an RMM session in the sidebar for beacon context.";
+    return "RMM, Exegol, and BloodHound tools. Paste one playbook to guide execution; configure Exegol in the owning service's Config settings. Select an RMM session in the sidebar for beacon context.";
   }
 
   function getProviderState() {
@@ -260,106 +258,6 @@
     sessionStorage.removeItem(EXEGOL_TOKEN_STORAGE);
   }
 
-  function loadEnabledSkillIds() {
-    const raw = sessionStorage.getItem(AI_SKILLS_ENABLED_STORAGE);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          return [...new Set(parsed.map((id) => String(id).trim()).filter(Boolean)
-            .flatMap((id) => {
-              if (id === "ad-collection-analysis") return ["bloodhound-ce-python-collection", "bloodhound-analysis"];
-              if (id === "python-bloodhound-collection") return ["bloodhound-ce-python-collection"];
-              const webTopics = ["sqli", "xss", "ssrf", "ssti", "xxe", "idor", "file-upload", "rce",
-                "deserialization", "race-condition", "request-smuggling", "open-redirect",
-                "parameter-pollution", "graphql", "waf-bypass", "business-logic"];
-              return [id.startsWith("offensive-") && webTopics.includes(id.slice(10))
-                ? `web-${id.slice(10)}` : id];
-            }))];
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-    return aiSkills.filter((s) => s.enabled ?? s.default).map((s) => s.id);
-  }
-
-  function persistEnabledSkillIds(ids) {
-    sessionStorage.setItem(AI_SKILLS_ENABLED_STORAGE, JSON.stringify(ids));
-    window.persistRmmUiConfig?.();
-  }
-
-  function getEnabledSkillIds() {
-    const known = new Set(aiSkills.map((s) => s.id));
-    const selected = loadEnabledSkillIds().filter(
-      (id) => known.has(id) && aiSkills.find((skill) => skill.id === id)?.enabled !== false,
-    );
-    const always = aiSkills.filter((skill) => skill.always && skill.enabled !== false).map((skill) => skill.id);
-    return [...new Set([...always, ...selected])];
-  }
-
-  function renderAiSkillsList() {
-    const container = $("#ai-skills-list");
-    if (!container) return;
-    if (!aiSkills.length) {
-      container.innerHTML = '<p class="ai-skills-empty">No skills on server.</p>';
-      return;
-    }
-    const enabled = new Set(getEnabledSkillIds());
-    container.replaceChildren();
-    for (const skill of aiSkills) {
-      const label = document.createElement("label");
-      label.className = "ai-skill-item";
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.value = skill.id;
-      input.checked = enabled.has(skill.id);
-      input.disabled = Boolean(skill.always);
-      input.addEventListener("change", () => {
-        const next = [];
-        for (const el of container.querySelectorAll('input[type="checkbox"]')) {
-          if (el.checked) next.push(el.value);
-        }
-        persistEnabledSkillIds(next);
-        window.rmmApi?.(`/assets/skills/${encodeURIComponent(skill.id)}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: input.checked }),
-        }).catch(() => {});
-      });
-      const text = document.createElement("span");
-      text.className = "ai-skill-label";
-      text.title = skill.description || skill.id;
-      const initial = ["operator-boundaries", "task-completion-report"].includes(skill.id);
-      const marker = initial ? " · loaded when enabled" : " · selected per step";
-      text.textContent = `${skill.title || skill.id}${marker}`;
-      label.appendChild(input);
-      label.appendChild(text);
-      container.appendChild(label);
-    }
-  }
-
-  async function fetchAiSkills() {
-    const apiFn = window.rmmApi;
-    const st = window.rmmState;
-    const container = $("#ai-skills-list");
-    if (!apiFn || (!st?.token && !window.RMM_WORKSPACE_MODE)) {
-      if (container) {
-        container.innerHTML = '<p class="ai-skills-empty">Connect to load skills.</p>';
-      }
-      return;
-    }
-    const { status, data } = await apiFn("/ai/skills");
-    if (status !== 200) {
-      if (container) {
-        container.innerHTML = '<p class="ai-skills-empty">Failed to load skills.</p>';
-      }
-      return;
-    }
-    aiSkills = data.skills || [];
-    renderAiSkillsList();
-  }
-
   function setAiPanelOpen(open) {
     const panel = $("#ai-panel");
     const body = $("#app-body");
@@ -529,11 +427,8 @@
     }
     const context = job.progress || {};
     execution.textContent = context.tool_path
-      ? `Tools: ${context.tool_path} · MCP: ${context.mcp_status} · Exegol: ${context.exegol_status}. Skills loaded: ${(context.skills || []).join(", ") || "none"}. Loaded skills are instructions, not proof that a technique ran.`
+      ? `Tools: ${context.tool_path} · MCP: ${context.mcp_status} · Exegol: ${context.exegol_status}.`
       : "Execution details are not available for this job.";
-    if (context.step_summary) {
-      execution.textContent += ` Step ${context.step || ""}: ${context.step_summary} Active skills: ${(context.active_skills || []).join(", ") || "core only"}.`;
-    }
     const saved = jobState(sessionId);
     if (pendingSubmission?.body.request_id === job.request_id) pendingSubmission = null;
     saveJobState(sessionId, { ...saved, job_id: job.id, request_id: job.request_id });
@@ -761,7 +656,8 @@
       model,
       messages: chatHistory.map((message) => ({ ...message })),
       selected_session_id: sessionId,
-      skill_ids: getEnabledSkillIds(),
+      skill_documents: $("#ai-playbook")?.value.trim()
+        ? [{ id: "playbook", body: $("#ai-playbook").value }] : [],
     };
     pendingSubmission = { body, sessionId };
     saveJobState(sessionId, { reset_at: jobState(sessionId).reset_at, request_id: requestId });
@@ -892,7 +788,7 @@
       /* ignore */
     }
     renderChatLog();
-    fetchAiSkills().catch(() => {});
+
     syncAiChatWithSession(activeSessionId());
     window.addEventListener("online", () => {
       clearTimeout(jobPollTimer);
@@ -901,7 +797,7 @@
   }
 
   window.initAiPanel = initAiPanel;
-  window.fetchAiSkills = fetchAiSkills;
+
   window.syncAiChatWithSession = syncAiChatWithSession;
   window.clearAiChatMemory = clearAiChatMemory;
   window.purgeAiChatsForSessions = purgeAiChatsForSessions;

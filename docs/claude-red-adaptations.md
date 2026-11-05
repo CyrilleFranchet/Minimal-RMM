@@ -54,35 +54,24 @@ ldeep is a [planned second collection method](tech-plan.md#ad-collection-ldeep-a
 not an installed skill or an automatic fallback. Its output compatibility and
 coverage must be established before enabling it.
 
-## Loading and migration
+## Use with the current playbook runtime
 
-Only `operator-boundaries` and `task-completion-report` bodies enter the initial
-prompt. These adaptations have `default: false`; enabled optional skills appear
-as metadata and are activated for each immediate step with `prepare_step`.
-`load_skill` supports read-only inspection during preparation; explicit
-`/skill-id` invocations load before the first provider request. Availability is
-distinct from loading. Existing saved selections continue to exclude skills
-not selected: enable the new entries in the AI panel when using such a preset.
+These files remain source material in `ai-skills/`; they are not automatically
+loaded by AI chat. Copy the relevant instructions into the single Playbook
+editor, make the objective and scope explicit, and replace references to other
+skills with the instructions the task actually needs. No core bodies,
+dependencies, `/skill-id` invocations, or saved skill selections are injected.
 
-The retired `ad-collection-analysis` selection expands to
-`bloodhound-ce-python-collection` and `bloodhound-analysis`. The server and
-workspace share `resolve_ai_skills`; `expand_skill_ids` maps the old selection,
-and `expand_skill_overrides` preserves legacy disablement unless a replacement
-has an explicit setting. The browser expands the old ID before filtering its
-saved selection. Discovery excludes the retired ID even if a stale overlay
-still contains it, preventing the combined instructions from reappearing.
-No persisted files or operator-installed overlays are deleted. Migrate any
-custom additions from old overlay copies into the appropriate replacement.
-
-The 16 web IDs similarly map from `offensive-<topic>` to `web-<topic>` in the
-server, workspace, and browser. Existing disablement follows the rename unless
-the new ID has an explicit setting. NetExec and privilege-escalation IDs are
-unchanged. Source attribution links keep the actual upstream filenames.
+Legacy discovery helpers preserve renamed IDs and asset metadata for
+compatibility. That mapping is not part of production chat execution and does
+not migrate instructions into a playbook. Existing files and operator overlays
+remain untouched. See [Playbook execution](web-ai-skills.md).
 
 ## Validation boundary
 
-Tests verify discovery, selection migration, disablement, and isolation of
-optional bodies from the initial prompt. Markdown checks validate formatting.
-These checks do not prove model compliance or live tool compatibility. Rehearse
-one scoped case per selected skill against the Ludus lab before relying on it
-for the demo; retain commands, evidence, and observed detector results separately.
+Source attribution and the pinned upstream snapshot describe where the retained
+reference files came from. They do not establish live compatibility or model
+compliance. Current playbook tests verify single-document injection, tool
+execution without preparation, bounded response recovery, and absence of
+skill-directory reads. Rehearse the actual supplied playbook in the authorized
+lab and retain tool results and evidence before relying on its outcome.

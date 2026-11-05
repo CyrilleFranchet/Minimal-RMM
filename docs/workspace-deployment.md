@@ -236,7 +236,8 @@ login form. API requests still require the configured local token.
 
 ### AI tool scope
 
-The local AI request is proxied to the central `/api/v1/ai/chat` endpoint with
+Local AI requests are proxied to the central `/api/v1/ai/jobs` endpoint (or
+the synchronous `/api/v1/ai/chat` endpoint) with
 the workspace headers. The central handler passes those headers to the
 stdio `mcp_rmm_server.py` child. The child
 therefore lists and controls only sessions claimed by the current workspace.
@@ -246,9 +247,10 @@ transit the central AI handler before reaching the provider; workspace
 persistence does not make the central broker blind to this traffic. Keep the
 workspace data directory private and trust the central service accordingly.
 
-Exegol MCP is required when enabled skill metadata requests the external
-backend. RMM-only chat skips that readiness requirement and can use MCP or
-direct RMM execution. Required external workflows never silently fall back.
+Every AI run requires RMM and Exegol MCP, with or without a supplied playbook.
+The workspace checks Exegol readiness, and the central worker resolves the
+owner's connection through its authenticated relay. Missing prerequisites fail
+explicitly; there is no per-run disable switch or direct RMM-only fallback.
 Owner-local service settings choose the endpoint and credential, rather than
 each chat request. The workspace runtime verifies container ownership and starts or
 reuses CE asynchronously when the service starts. Browser reconnects only

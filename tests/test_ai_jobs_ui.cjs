@@ -14,7 +14,7 @@ function setup(api) {
       replaceChildren() { this.children = []; nodes.delete('#ai-job-status'); },
       setAttribute() {}, addEventListener(name, callback) { this[name] = callback; } };
   }
-  for (const key of ['#ai-chat-log', '#ai-chat-input', '#ai-send-btn', '#ai-stop-btn', '#ai-chat-reset-btn', '#ai-provider-select', '#openai-key-input', '#ai-model-select']) nodes.set(key, element());
+  for (const key of ['#ai-playbook', '#ai-chat-log', '#ai-chat-input', '#ai-send-btn', '#ai-stop-btn', '#ai-chat-reset-btn', '#ai-provider-select', '#openai-key-input', '#ai-model-select']) nodes.set(key, element());
   nodes.get('#ai-provider-select').value = 'openai';
   nodes.get('#openai-key-input').value = 'test-key';
   nodes.get('#ai-model-select').value = 'test-model';
@@ -23,19 +23,14 @@ function setup(api) {
   const context = vm.createContext({ window, document: { querySelector: s => nodes.get(s) || null, createElement: element },
     localStorage, sessionStorage: localStorage, crypto, setTimeout: () => 1, clearTimeout() {}, confirm: () => true });
   const exposed = source.replace(/\}\)\(\);\s*$/, `window.test = { syncAiChatWithSession, sendAiMessage, refreshAiJob, resetAiChatForCurrentSession,
-    formatAiFailureDetails, displayAiJob, loadEnabledSkillIds, state: () => ({ history: chatHistory, token: chatLoadToken, sending }), jobState }; })();`);
+    formatAiFailureDetails, displayAiJob, state: () => ({ history: chatHistory, token: chatLoadToken, sending }), jobState }; })();`);
   vm.runInContext(exposed, context);
   return { window, test: window.test, nodes, storage };
 }
 (async () => {
   const diagnosticUi = setup(async () => ({ status: 200, data: { messages: [] } }));
-  diagnosticUi.storage.set('rmm_ai_skills_enabled', JSON.stringify(['ad-collection-analysis', 'bloodhound-analysis']));
-  assert.deepEqual(Array.from(diagnosticUi.test.loadEnabledSkillIds()), ['bloodhound-ce-python-collection', 'bloodhound-analysis']);
-  const webTopics = ['sqli', 'xss', 'ssrf', 'ssti', 'xxe', 'idor', 'file-upload', 'rce',
-    'deserialization', 'race-condition', 'request-smuggling', 'open-redirect',
-    'parameter-pollution', 'graphql', 'waf-bypass', 'business-logic'];
-  diagnosticUi.storage.set('rmm_ai_skills_enabled', JSON.stringify([...webTopics.map(t => 'offensive-' + t), 'offensive-netexec', 'web-sqli']));
-  assert.deepEqual(Array.from(diagnosticUi.test.loadEnabledSkillIds()), [...webTopics.map(t => 'web-' + t), 'offensive-netexec']);
+  assert.ok(!source.includes('/ai/skills'));
+  assert.ok(!source.includes('prepare_step'));
   await diagnosticUi.test.syncAiChatWithSession('a');
   const failed = { id: 'job-failed', status: 'failed', progress: { phase: 'model', round: 7 },
     result: { message: 'Partial report', diagnostics: { exception_chain: [
@@ -71,8 +66,8 @@ function setup(api) {
     tool_path: 'mcp', mcp_status: 'connected', exegol_status: 'disabled', step: 2,
     step_summary: 'Inspect <file> evidence', active_skills: ['file-review'], skills: ['file-review']
   } }, 'a', diagnosticUi.test.state().token);
-  assert.match(diagnosticUi.nodes.get('#ai-job-execution').textContent, /Step 2: Inspect <file> evidence/);
-  assert.match(diagnosticUi.nodes.get('#ai-job-execution').textContent, /Active skills: file-review/);
+  assert.ok(!diagnosticUi.nodes.get('#ai-job-execution').textContent.includes('Active skills'));
+  assert.ok(!diagnosticUi.nodes.get('#ai-job-execution').textContent.includes('Skills loaded'));
   let stopPath;
   const stopUi = setup(async (path, options) => {
     if (options?.method === 'POST') {
@@ -103,11 +98,14 @@ function setup(api) {
   await ui.test.syncAiChatWithSession('a');
   ui.storage.set('rmm_exegol_mcp_token', 'legacy-browser-token');
   ui.storage.set('rmm_exegol_mcp_enabled', '0');
+  ui.nodes.get('#ai-playbook').value = 'Inspect, act, verify.';
   await ui.test.sendAiMessage('Do the task');
   assert.equal(ui.test.state().history.length, 1, 'lost POST retains user history');
   assert.equal(calls.filter(c => c.options.method === 'POST').length, 1);
   const request = JSON.parse(calls.find(c => c.options.method === 'POST').options.body);
-  assert.equal(request.exegol_mcp_enabled, undefined, "backend selection belongs to the service and skill policy");
+  assert.equal(request.exegol_mcp_enabled, undefined);
+  assert.deepEqual(request.skill_documents, [{ id: 'playbook', body: 'Inspect, act, verify.' }]);
+  assert.equal(request.skill_ids, undefined);
   assert.equal(request.exegol_mcp_url, undefined);
   assert.equal(request.exegol_mcp_token, undefined);
   assert.equal(ui.storage.has('rmm_exegol_mcp_token'), false);

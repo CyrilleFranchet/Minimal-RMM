@@ -208,9 +208,6 @@ async function retryServerConnection() {
     await refreshSessions();
     await fetchSessionHistory();
     pollSessionEvents().catch(() => {});
-    if (typeof window.fetchAiSkills === "function") {
-      window.fetchAiSkills().catch(() => {});
-    }
     await refreshExfilStatus();
     await refreshSocksRelays();
     await refreshTunRelays();
@@ -2515,9 +2512,6 @@ async function connect() {
   hideServerUnreachableDialog();
   await refreshSessions();
   await fetchSessionHistory();
-  if (typeof window.fetchAiSkills === "function") {
-    window.fetchAiSkills().catch(() => {});
-  }
   if (typeof window.refreshAssets === "function") {
     window.refreshAssets().catch(() => {});
   }

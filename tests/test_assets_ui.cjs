@@ -77,3 +77,18 @@ test('rendered asset buttons cannot act under a later connection', async () => {
   await row.children[2].handlers.click();
   assert.equal(ui.calls.length, 1);
 });
+
+test('legacy skills have no visible asset selection or enable controls', async () => {
+  const ui = fixture(() => ({ status: 200, data: { assets: [
+    { kind: 'skills', name: 'legacy.md', enabled: true },
+    { kind: 'plugins', name: 'example.dll', enabled: true },
+  ] } }));
+  await ui.window.refreshAssets();
+  const rows = ui.get('#asset-list').children;
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].children[0].textContent, /plugins\/example.dll/);
+  const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
+  assert.ok(!html.includes('<option value="skills">'));
+  assert.ok(!html.includes('id="ai-skills-list"'));
+  assert.ok(html.includes('id="ai-playbook"'));
+});

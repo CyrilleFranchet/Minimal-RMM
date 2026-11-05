@@ -4641,25 +4641,14 @@ class RMMHandler(BaseHTTPRequestHandler):
             if skill_documents is not None and not isinstance(skill_documents, list):
                 self._json(400, {"error": "invalid_skill_documents"})
                 return True
-            snapshot_policy = None
-            if skill_documents is None:
-                from rmm_ai_skills import ai_skills_dir, resolve_ai_skill_snapshot
-
-                skill_documents, snapshot_policy = resolve_ai_skill_snapshot(
-                    skill_ids,
-                    srv.skill_directories() if hasattr(srv, "skill_directories") else [ai_skills_dir()],
-                    srv.skill_overrides() if hasattr(srv, "skill_overrides") else None,
-                )
-            from rmm_ai_skills import resolve_ai_skill_policy
-            from rmm_ai_skill_context import backend_enabled
-            skill_policy = body.get("skill_policy") if workspace_id else None
-            if skill_policy is None:
-                skill_policy = snapshot_policy if snapshot_policy is not None else resolve_ai_skill_policy(srv.skill_directories() if hasattr(srv, "skill_directories") else None)
-            if not isinstance(skill_policy, list) or not all(isinstance(rule, dict) for rule in skill_policy):
-                self._json(400, {"error": "invalid_skill_policy"})
+            from rmm_ai_skills import playbook_documents
+            try:
+                skill_documents = playbook_documents(skill_documents)
+            except ValueError as error:
+                self._json(400, {"error": str(error)})
                 return True
-            needs_external = backend_enabled('external', skill_documents, skill_policy)
-            if not workspace_id and srv.storage_mode == "server" and needs_external:
+            skill_policy = []
+            if not workspace_id and srv.storage_mode == "server":
                 from rmm_exegol_runtime import get_runtime
                 runtime = get_runtime(os.path.join(LOG_DIR, "bloodhound")).status()
                 if runtime.get("exegol_status") != "ready":
@@ -4696,7 +4685,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     messages=messages,
                     model=model,
                     selected_session_id=selected,
-                    exegol_mcp_enabled=body.get("exegol_mcp_enabled") if not workspace_id else None,
+                    exegol_mcp_enabled=True,
                     exegol_mcp_url=body.get("exegol_mcp_url") if not workspace_id else None,
                     exegol_mcp_token=body.get("exegol_mcp_token") if not workspace_id else None,
                     skill_ids=skill_ids,
@@ -4706,7 +4695,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 def run_assistant(progress=None):
                     """Resolve workspace-owned MCP prerequisites without trusting browser overrides."""
                     arguments = dict(run_args)
-                    if workspace_id and needs_external:
+                    if workspace_id:
                         if progress:
                             progress({"phase": "workspace_prerequisites"})
                         code, context = srv.bloodhound_broker.resolve_ai_context(workspace_id)

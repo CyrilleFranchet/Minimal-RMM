@@ -171,20 +171,18 @@ cancellation request is pending and restores Send when the job terminates.
 
 ## Execution details in AI chat
 
-Each new job reports its resolved tool path, MCP status,
-Exegol status, and loaded skill IDs in the chat. MCP is marked connected only
-once session initialization and tool discovery succeed. Enabled skill metadata
-determines whether the external Exegol backend is required. If required, an
-unconfigured connection produces `exegol_required`; missing MCP support or
-`RMM_AI_USE_MCP=0` produces `exegol_requires_mcp`. Without that requirement,
-RMM-only AI can use MCP or direct execution. Existing jobs without this metadata show details as unavailable.
+Each new job reports its tool path, MCP status, and Exegol status. MCP is
+marked connected only after initialization and tool discovery succeed. Every
+AI job requires Exegol independently of its playbook. Missing MCP support or
+`RMM_AI_USE_MCP=0` produces `exegol_requires_mcp`; an unavailable owner runtime
+fails readiness before execution. There is no direct fallback.
 
-`run_ai_chat.report_execution` attaches resolved context to each progress event.
-The job progress stores bounded skill IDs, status labels, a public step summary
-and checkpoint, but no skill bodies, endpoint URLs, tokens, or tool arguments. Skills are resolved once per run so
-reported IDs match the prompt snapshot; loading does not prove the model used
-or followed each instruction. A connection error reports MCP error; a later
-model failure does not reclassify an established MCP connection as failed.
+`run_ai_chat.report_execution` attaches connection status to progress events.
+Legacy skill/step metadata may remain in stored records for compatibility, but
+the current UI does not display skill selection or active-skill labels. The
+explicit playbook is retained in the accepted job's request snapshot, not in
+public progress labels. An established MCP connection is not relabeled failed
+merely because a later model request fails.
 
 ## Concurrent tools within a conversation
 
@@ -209,7 +207,7 @@ physical machine cannot be recognized as one host automatically.
 
 Every other tool is a barrier within the model round: preceding parallel work finishes first, the tool
 runs alone, and subsequent work starts afterward. This includes unknown/external
-MCP tools, skill loading, queued commands, configuration changes, transfers,
+MCP tools, queued commands, configuration changes, transfers,
 BloodHound actions, and lifecycle operations. A tool name alone is not evidence
 that an arbitrary action is safe to overlap. Dependent calls must be requested
 in later model rounds; the model receives explicit guidance about this boundary.
@@ -260,17 +258,15 @@ formats, direct blocking calls, and registered MCP dispatch/schema preservation.
 The MCP test requires the MCP SDK. These are deterministic mocked workflow tests;
 no live endpoint, provider, or Vectra detection claim is made.
 
-## Per-step preparation and context
+## Playbook and bounded context
 
-Each operational batch must follow a separate successful `prepare_step` call.
-The scheduler consumes that preparation once; mixing it with execution is
-rejected. Skill selection is made for the immediate action, not merely the
-overall task. `load_skill` and `read_context` remain internal preparation tools.
-The WebUI displays a brief operational rationale and active skill IDs.
+One explicit playbook and the operator request drive the provider conversation.
+There is no preparation barrier or dynamic skill selection. The full playbook
+is pinned in the system prompt, and operational tool schemas remain available
+on every request. Large results and older complete conversation groups can be
+archived under scoped evidence IDs and retrieved through `read_context`.
+Job polling returns evidence manifests rather than full archived output.
 
-Skill bodies and declarative guards use one parsed-file snapshot per submission.
-Active instructions are pinned outside evictable conversation history. Large
-results and older complete message groups are archived with unique scoped IDs;
-job polling returns manifests rather than duplicating full archived evidence.
-Full protocol, configuration, retention, and failure behavior are described in
-[Web AI skills](web-ai-skills.md).
+Context admission, bounded recovery for empty/truncated replies, checkpoint
+limitations, and template authoring are documented in
+[Playbook execution](web-ai-skills.md) and [AI providers](ai-providers.md).

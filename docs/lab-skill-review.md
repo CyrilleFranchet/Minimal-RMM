@@ -31,16 +31,13 @@ is a broad checklist and uses a metadata heading rather than the contributor
 guide's YAML frontmatter. Treat upstream files as material to review, not as a
 uniform, tested integration contract.
 
-Minimal-RMM reads immediate `.md` files and resolves available IDs. It now
-injects only the two core bodies and an optional metadata catalog, with a
-`load_skill` tool for inspection and a mandatory `prepare_step` barrier before
-operational batches. Explicit invocations load before the first provider request.
-It has no recursive discovery. The per-step runtime resolves explicit
-`requires` metadata inside the enabled snapshot. A prose reference alone does
-not load or enable a dependency. Keep the existing format and select a set relevant to the deliverable.
-Saved UI selections and workspace overlays can
-override what a repository edit appears to provide; verify execution details
-and the installed skill content on the actual deployment.
+The skill catalog described in this historical review is retained as source
+material. Current AI runs use one explicitly supplied playbook; no catalog,
+core skill, dependency, or saved selection is automatically loaded. Copy the
+needed instructions into the Playbook editor and adapt their scope and
+completion criteria. See [Playbook execution](web-ai-skills.md) for current
+behavior. The observations below concern the retained reference content,
+not an automatically enforced runtime policy.
 
 ## Changes and observed reasons
 
@@ -60,7 +57,7 @@ cannot prove the model will behave correctly.
 
 | Scenario | Required behavior |
 |----------|-------------------|
-| Exegol requested but MCP missing | Report the runtime prerequisite; do not silently substitute agent-side tooling. |
+| MCP or required Exegol connection missing | Report the runtime prerequisite; do not silently substitute agent-side tooling. |
 | Command wait expires | Inspect the recorded operation and matching events; do not duplicate execution. |
 | Model request times out after a tool completes | Retry only the model request; retain tool results. |
 | Collector fallback changes the protocol | Report the mismatch against the requested demo before substituting. |
@@ -73,7 +70,7 @@ representative scenario with matching command results before expanding it.
 
 - Prompt checkpoints are not durable execution checkpoints unless explicitly
   stored. A failed job cannot automatically reconstruct its full conversation.
-- The current runtime reports loaded IDs, not a skill-content hash or proof of
-  model compliance. Unknown selected IDs can still be omitted by resolution.
+- Playbook completion remains a model judgment. The runtime does not
+  independently validate phase acceptance criteria or load phases incrementally.
 - Capture tools and the lab topology must be verified on the deployment; this
   review did not start captures, run scans, or validate a replay.

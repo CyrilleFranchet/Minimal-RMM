@@ -98,6 +98,11 @@ The PowerShell and Go beacon secrets are nested in their respective agent
 preference objects and are exported under
 `rmm_agent_gen_prefs.beaconSecret` and `rmm_go_agent_prefs.beaconSecret`.
 
+Legacy `rmm_ai_skills_enabled` and browser Exegol keys remain in the export
+allowlists for compatibility. They do not select instructions or configure the
+current AI connection. Exegol uses owner-local service settings and is required
+for every AI run. The playbook editor is not exported or automatically saved.
+
 ## Automatically persisted state
 
 The automatic SQLite state allowlist is maintained as `PERSISTED_SESSION_KEYS`

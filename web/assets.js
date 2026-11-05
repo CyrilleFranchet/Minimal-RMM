@@ -38,7 +38,7 @@
       list.innerHTML = '<p class="ai-hint">Unable to load managed assets.</p>';
       return;
     }
-    const rows = data?.assets || [];
+    const rows = (data?.assets || []).filter((row) => row.kind !== "skills");
     list.replaceChildren();
     if (!rows.length) {
       list.innerHTML = '<p class="ai-hint">No managed uploads.</p>';
@@ -64,7 +64,6 @@
         if (!isCurrent(context)) return;
         if (result.status !== 200) setText("#asset-status", result.data?.error || "Asset update failed.", true);
         await refreshAssets();
-        if (row.kind === "skills" && typeof window.fetchAiSkills === "function") window.fetchAiSkills();
       });
       item.appendChild(toggle);
       const remove = document.createElement("button");
@@ -140,7 +139,6 @@
       $("#asset-url").value = "";
       $("#asset-name").value = "";
       await refreshAssets();
-      if (kind === "skills" && typeof window.fetchAiSkills === "function") window.fetchAiSkills();
       if (kind === "rclone") window.refreshRmmExfilStatus?.();
     } catch (error) {
       if (isCurrent(context)) setText("#asset-status", error.message, true);
@@ -209,7 +207,6 @@
       $("#asset-file").value = "";
       $("#asset-name").value = "";
       await refreshAssets();
-      if (kind === "skills") window.fetchAiSkills?.();
       if (kind === "rclone") window.refreshRmmExfilStatus?.();
     } catch (error) {
       if (isCurrent(context)) setText("#asset-status", error.message, true);

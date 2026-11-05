@@ -1637,6 +1637,16 @@ body.sidebar-resizing iframe {
   padding: 0.5rem 0;
 }
 
+#ai-playbook {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 10rem;
+  resize: vertical;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+
 .ai-settings label {
   margin-top: 0.5rem;
 }

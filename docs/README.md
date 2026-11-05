@@ -34,7 +34,7 @@ historical notes in `progress.md`.
 | Find the supported launcher and compatibility reference | [Server startup reference](server-startup.md) |
 | Stop services and understand cleanup guarantees | [Service shutdown](shutdown.md) and [agent shutdown](agent-shutdown.md) |
 | Understand workspace claims, storage, and protocol details | [Workspace reference](workspace-deployment.md) |
-| Install plugins, AI skills, and rclone files | [Operator-managed assets](operator-assets.md) |
+| Install plugins and rclone files; preserve legacy skill assets | [Operator-managed assets](operator-assets.md) |
 | Install and operate Cloudflared or another connector | [RMM-Profiles](rmm-profiles.md) |
 | Use the API, CLI, WebUI, and MCP surfaces | [Root README](../README.md) and [operator parity](mcp-parity.md) |
 | Check what is implemented and what remains | [Progress log](progress.md) |
@@ -46,7 +46,7 @@ historical notes in `progress.md`.
 | Runtime topology, channels, storage, privileges, and rebuild rules | [Architecture overview](architecture.md) |
 | Separate administration and agent beacon listeners | [RMM-Profiles](rmm-profiles.md) |
 | Dynamic plugin volume and plugin-owned commands | [Plugin architecture](plugin-architecture.md) |
-| URL-installed plugins, AI skills, and rclone files | [Operator-managed assets](operator-assets.md) |
+| URL-installed plugins, legacy skill assets, and rclone files | [Operator-managed assets](operator-assets.md) |
 | External repository for plugin source and releases | [External plugin repository](plugin-repository.md) |
 | Install compiled private releases from CLI, WebUI, or MCP | [Plugin releases](plugin-releases.md) |
 | Go agent PE loader and plugin ABI | [Go agent plugins](go-agent-plugins.md) |
@@ -95,12 +95,12 @@ historical notes in `progress.md`.
 | Full result retrieval after WebSocket truncation | [Live full results](web-live-full-results.md) |
 | Provider validation and request format | [AI providers](ai-providers.md) |
 | Model selection | [AI model selection](web-ai-models.md) |
-| Server-side AI skills | [AI skills](web-ai-skills.md) |
+| Single playbook, downloadable template, context limits, and troubleshooting | [AI playbooks](web-ai-skills.md) |
 | BloodHound CE collection, ingestion, and candidate paths | [BloodHound workflow](bloodhound-workflow.md) |
 | BloodHound technical validation and operator parity | [Audit findings](bloodhound-technical-audit.md) |
 | Validate a live Exegol MCP endpoint (deployment/dev diagnostic) | [Exegol MCP verification](exegol-mcp-verification.md) |
 | Move legacy standalone storage into a workspace | [Migration guide](workspace-migration.md) |
-| Workspace and URL-installed AI skills | [Operator-managed assets](operator-assets.md) |
+| Legacy skill asset API (no automatic chat loading) | [Operator-managed assets](operator-assets.md) |
 | Per-session chat persistence | [AI chat memory](web-ai-chat-memory.md) |
 | Light and dark theme | [WebUI theme](web-ui-theme.md) |
 | Server-side logging of operator WebUI connections | [WebUI connection logging](webui-connection-logging.md) |

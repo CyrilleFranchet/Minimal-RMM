@@ -1700,16 +1700,15 @@ class WorkspaceService:
             return self._proxy("POST", path, {})
         if parts in (["ai", "chat"], ["ai", "jobs"]):
             from rmm_exegol_runtime import get_runtime
-            from rmm_ai_skills import resolve_ai_skill_snapshot
-            from rmm_ai_skill_context import backend_enabled
-            skill_ids = body.get("skill_ids")
-            if skill_ids is not None and not isinstance(skill_ids, list):
-                return 400, {"error": "invalid_skill_ids"}, "application/json"
-            documents, policy = resolve_ai_skill_snapshot(skill_ids, self.store.skill_directories(), self.store.skill_overrides())
-            if backend_enabled('external', documents, policy):
-                runtime = get_runtime(self.store.data_dir / "bloodhound").status()
-                if runtime.get("exegol_status") != "ready":
-                    return 503, {"error": "exegol_workspace_not_ready", "runtime": runtime}, "application/json"
+            from rmm_ai_skills import playbook_documents
+            try:
+                documents = playbook_documents(body.get("skill_documents"))
+            except ValueError as error:
+                return 400, {"error": str(error)}, "application/json"
+            policy = []
+            runtime = get_runtime(self.store.data_dir / "bloodhound").status()
+            if runtime.get("exegol_status") != "ready":
+                return 503, {"error": "exegol_workspace_not_ready", "runtime": runtime}, "application/json"
             forwarded = dict(body)
             if forwarded.get("provider", "openai") == "openai" and not (forwarded.get("api_key") or forwarded.get("openai_api_key")):
                 forwarded["api_key"] = settings_getenv("OPENAI_API_KEY", "")
@@ -1719,6 +1718,7 @@ class WorkspaceService:
             skill_ids = forwarded.get("skill_ids")
             if skill_ids is not None and not isinstance(skill_ids, list):
                 return 400, {"error": "invalid_skill_ids"}, "application/json"
+            forwarded["exegol_mcp_enabled"] = True
             forwarded["skill_documents"] = documents
             forwarded["skill_policy"] = policy
             status, payload, content_type = self._proxy("POST", path, forwarded, timeout=30 if parts == ["ai", "jobs"] else 300)

@@ -44,9 +44,11 @@ The file lives next to `meta.json` and `events.jsonl` for the same session. Up t
 
 When no RMM session is selected in the sidebar, chat stays **in-memory only** in the browser (welcome message only after reload).
 
-AI provider API keys, validation state, model choice, Exegol MCP settings, and
-skill checkboxes are synchronized to the authenticated server/workspace
-SQLite UI state. The API token remains tab-scoped because it is needed to
+AI provider API keys, validation state, and model choice are synchronized to
+the authenticated server/workspace SQLite UI state. The playbook editor is not
+persisted and must be filled again after a reload. Legacy skill selections and
+browser Exegol preferences may remain in exported state but do not control AI
+execution; connection settings belong to the service. The API token remains tab-scoped because it is needed to
 authenticate the state request. Keep the selected SQLite database owner-only.
 
 ### Workspace mode
@@ -160,13 +162,17 @@ adds the job ID, last recorded round/activity, and bounded server diagnostics
 Raw exception messages, URLs, and credentials are excluded. The last recorded
 round is a progress checkpoint, not proof that the round completed.
 
-## Per-step skills and bounded working context
+## Playbook and bounded working context
 
-Assistant messages may also retain `step_state`: active skill IDs, content
-versions, a public step summary, and an execution checkpoint. This is historical
-evidence; each new task reselects from currently enabled skills. Full active
-instructions are pinned during execution, while large outputs and old complete
+Each submission carries zero or one explicit playbook in `skill_documents`.
+Accepted jobs retain that snapshot; the editor itself is not part of saved
+chat history. Older assistant messages may contain `step_state` from the
+retired skill runtime. It is historical data, not an instruction to load skills
+or resume a phase automatically.
+
+The current playbook is pinned during execution. Large outputs and old complete
 conversation groups can be archived outside the prompt. Scoped evidence IDs
 remain retrievable across tasks with the same credentials and selected session.
-See [Web AI skills](web-ai-skills.md) for preparation gates, budgets, retention,
-and the difference between declarative guards and model instruction compliance.
+A failed or interrupted job does not automatically reconstruct or replay its
+execution. Inspect retained evidence before submitting another task.
+See [Playbook execution](web-ai-skills.md) for context budgets and limitations.

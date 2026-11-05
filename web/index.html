@@ -419,15 +419,15 @@
             <p class="ai-hint">Server runs RMM tools via <code>mcp_rmm_server.py</code> (requires <code>pip install -r requirements.txt</code>, Python 3.10+).</p>
           </details>
           <details class="ai-settings" open>
-            <summary>Skills</summary>
-            <p class="ai-hint">Built-in defaults and uploaded Markdown skills are listed here. Checked skills are available for selection at each step. Active skill instructions load before execution.</p>
-            <div id="ai-skills-list" class="ai-skills-list">
-              <p class="ai-skills-empty">Connect to load skills.</p>
-            </div>
+            <summary>Playbook</summary>
+            <p class="ai-hint">Paste one Markdown skill, then send your task below. Files in ai-skills are not loaded automatically.</p>
+            <p class="ai-hint"><a href="playbook-template.md" download="rmm-playbook-template.md">Download playbook template</a>. Fill in the placeholders, then paste the Markdown below. The full playbook must fit in the model context; phases run in order within the same conversation.</p>
+            <label for="ai-playbook">Playbook instructions</label>
+            <textarea id="ai-playbook" rows="10" placeholder="Paste your playbook here"></textarea>
           </details>
           <details class="ai-settings">
             <summary>Exegol MCP connection</summary>
-            <p class="ai-hint">Required for enabled workflows that use Exegol. Disable the relevant skill to keep it unavailable to the AI; RMM-only chat can continue.</p>
+            <p class="ai-hint">Exegol tools are available in every AI run through the configured MCP connection.</p>
             <p class="ai-hint">Configure the MCP endpoint, credentials, and container in <strong>Config → Service settings</strong> on the owning workspace or standalone service. AI chat uses those saved settings; browser overrides are disabled.</p>
           </details>
         </div>
@@ -501,11 +501,10 @@
       </details>
       <details class="asset-manager" id="assets-section">
         <summary>Installed assets and manual uploads</summary>
-        <p class="ai-hint">Install plugins and AI skills from an HTTP(S) URL or a local file. Upload an rclone <code>.json</code> profile file directly; it is stored in the current operator workspace or server.</p>
+        <p class="ai-hint">Install plugins from an HTTP(S) URL or a local file. Upload an rclone <code>.json</code> profile file directly; it is stored in the current operator workspace or server.</p>
         <div class="asset-form-row">
-          <select id="asset-kind" aria-label="Asset kind" title="Choose whether the file is an agent plugin, an AI skill, or an rclone profile configuration." aria-description="Choose whether the file is an agent plugin, an AI skill, or an rclone profile configuration.">
+          <select id="asset-kind" aria-label="Asset kind" title="Choose an agent plugin or an rclone profile configuration." aria-description="Choose an agent plugin or an rclone profile configuration.">
             <option value="plugins">Agent plugin</option>
-            <option value="skills">AI skill</option>
             <option value="rclone">rclone profiles</option>
           </select>
           <input type="url" id="asset-url" placeholder="https://example.invalid/release.dll" autocomplete="off" title="HTTP or HTTPS download address fetched by the connected server or workspace." aria-description="HTTP or HTTPS download address fetched by the connected server or workspace.">

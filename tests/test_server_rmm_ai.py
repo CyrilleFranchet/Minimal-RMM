@@ -106,16 +106,35 @@ class AiProviderRouteTests(unittest.TestCase):
         )
         self.assertEqual((status, body), (400, {"error": "missing_api_key"}))
 
-    def test_rmm_only_chat_skips_external_runtime_readiness(self):
-        self.runtime.status.return_value = {'exegol_status': 'failed'}
-        with patch('rmm_ai.run_ai_chat', return_value={'ok': True, 'message': 'Ready'}) as run:
+    def test_chat_rejects_multiple_playbooks_before_starting_worker(self):
+        with patch('rmm_ai.run_ai_chat') as run:
+            status, body = self.call(f'{API_PREFIX}/ai/chat', {
+                'api_key': 'key', 'messages': [{'role': 'user', 'content': 'Run'}],
+                'skill_documents': [{'body': 'First'}, {'body': 'Second'}]})
+        self.assertEqual((status, body), (400, {'error': 'expected_single_playbook'}))
+        run.assert_not_called()
+
+    def test_chat_forwards_only_explicit_playbook_without_directory_reads(self):
+        with patch('rmm_ai_skills.resolve_ai_skill_snapshot', side_effect=AssertionError('directory read')), patch(
+                'rmm_ai.run_ai_chat', return_value={'ok': True, 'message': 'Verified'}) as run:
             status, _ = self.call(f'{API_PREFIX}/ai/chat', {
-                'provider': 'openai', 'api_key': 'key', 'skill_ids': [],
-                'messages': [{'role': 'user', 'content': 'Inspect the agent'}]})
+                'api_key': 'key', 'messages': [{'role': 'user', 'content': 'Run'}],
+                'skill_ids': ['lateral-movement'], 'skill_documents': [{'body': 'Inspect, act, verify.'}]})
         self.assertEqual(status, 200)
-        self.runtime.status.assert_not_called()
-        self.assertIn('skill_policy', run.call_args.kwargs)
-        self.assertNotIn('exegol-rmm-pivot', {s['id'] for s in run.call_args.kwargs['skill_documents']})
+        self.assertEqual(run.call_args.kwargs['skill_documents'], [{'id': 'playbook', 'body': 'Inspect, act, verify.'}])
+        self.assertEqual(run.call_args.kwargs['skill_policy'], [])
+
+    def test_ai_requires_external_runtime_even_without_playbook(self):
+        self.runtime.status.return_value = {'exegol_status': 'failed'}
+        with patch('rmm_ai.run_ai_chat') as run:
+            status, result = self.call(f'{API_PREFIX}/ai/chat', {
+                'provider': 'openai', 'api_key': 'key', 'skill_ids': [],
+                'exegol_mcp_enabled': False,
+                'messages': [{'role': 'user', 'content': 'Inspect the agent'}]})
+        self.assertEqual(status, 503)
+        self.assertEqual(result['error'], 'exegol_workspace_not_ready')
+        self.runtime.status.assert_called_once()
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

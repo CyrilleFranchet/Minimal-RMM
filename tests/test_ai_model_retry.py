@@ -66,7 +66,7 @@ class ExecutionContextTests(unittest.TestCase):
             progress({'phase': 'model', 'round': 3})
             progress({'phase': 'tool', 'tool': 'inspect', 'status': 'running'})
             return {'ok': True, 'message': 'Done'}
-        with patch('rmm_mcp_client.use_mcp_for_ai', return_value=False), patch('rmm_ai._run_ai_chat_direct', side_effect=direct):
+        with patch('rmm_mcp_client.use_mcp_for_ai', return_value=True), patch('rmm_mcp_client.mcp_available', return_value=True), patch('rmm_ai._run_ai_chat_mcp', side_effect=direct):
             result = rmm_ai.run_ai_chat(rmm_base_url='http://local', rmm_token='test', api_key='test', messages=[],
                 exegol_mcp_enabled=False, skill_documents=[], skill_policy=[], progress=events.append)
         self.assertTrue(result['ok'])
@@ -75,11 +75,11 @@ class ExecutionContextTests(unittest.TestCase):
             self.assertEqual(event['active_skills'], ['review'])
             self.assertEqual(event['step_checkpoint'], 'One read completed')
 
-    def test_unchecked_exegol_does_not_connect_saved_backend(self):
+    def test_legacy_disable_cannot_remove_exegol(self):
         with patch('rmm_mcp_client.use_mcp_for_ai', return_value=True), patch('rmm_mcp_client.mcp_available', return_value=True), patch('rmm_ai._run_ai_chat_mcp', return_value={'ok': True, 'message': 'Done'}) as chat:
-            result = rmm_ai.run_ai_chat(rmm_base_url='http://local', rmm_token='test', api_key='test', messages=[], exegol_mcp_enabled=True, skill_documents=[])
+            result = rmm_ai.run_ai_chat(rmm_base_url='http://local', rmm_token='test', api_key='test', messages=[], exegol_mcp_enabled=False, skill_documents=[])
             self.assertTrue(result['ok'])
-            self.assertFalse(chat.call_args.kwargs['exegol_mcp_enabled'])
+            self.assertTrue(chat.call_args.kwargs['exegol_mcp_enabled'])
 
     def test_exegol_cannot_silently_use_direct_tools(self):
         for selected, installed in ((False, True), (True, False)):
@@ -90,13 +90,13 @@ class ExecutionContextTests(unittest.TestCase):
                 direct.assert_not_called()
                 self.assertEqual(events[0]['exegol_status'], 'requested')
 
-    def test_exegol_disable_allows_rmm_only_mode(self):
+    def test_legacy_disable_does_not_allow_direct_fallback(self):
         events = []
         with patch('rmm_mcp_client.use_mcp_for_ai', return_value=False), patch('rmm_ai._run_ai_chat_direct', return_value={'ok': True, 'message': 'Done'}) as direct:
             result = rmm_ai.run_ai_chat(rmm_base_url='http://local', rmm_token='test', api_key='test', messages=[], exegol_mcp_enabled=False, skill_documents=[{'id': 'example', 'title': 'Example', 'body': 'Instructions'}], progress=events.append)
-            self.assertTrue(result['ok'])
-            direct.assert_called_once()
-        self.assertEqual(events[-1]['skills'], [])
+            self.assertEqual(result['error'], 'exegol_requires_mcp')
+            direct.assert_not_called()
+        self.assertEqual(events[-1]['skills'], ['playbook'])
         self.assertEqual(events[-1]['mcp_status'], 'disabled')
         from rmm_ai_jobs import _safe_progress
-        self.assertEqual(_safe_progress(events[-1])['skills'], [])
+        self.assertEqual(_safe_progress(events[-1])['skills'], ['playbook'])

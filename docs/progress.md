@@ -7,7 +7,23 @@ implementation log.
 > Living document — update at the end of every work session.  
 > Claude reads this via `/catchup` (`/.claude/commands/catchup.md`).
 
+Current AI behavior is documented in [Playbook execution](web-ai-skills.md).
+Older entries about automatic skill selection, preparation gates, optional
+Exegol, or a direct AI fallback are historical and superseded by the explicit
+playbook runtime. They are retained as implementation history, not setup advice.
+
 ## Current Status
+
+### 2026-11-05 — Validate playbook changes for commit
+
+- Updated security regressions to require Exegol even when a legacy request
+  asks to disable it. Provider endpoint overrides remain stripped.
+- Installed declared project requirements in the configured virtual environment.
+  Full `make check` passed on an isolated snapshot of the intended tracked
+  changes plus the new playbook template/tests: syntax, 124 AI tests with no
+  skips, 15 CLI tests, parity, WebUI regressions, Markdown lint, and YAML lint.
+- Kept untracked runtime logs and the custom Northwind skill out of the
+  validation snapshot and commit. No live provider or target action was run.
 
 ### 2026-11-05 — Stabilize inline screenshot layout
 
@@ -16,6 +32,33 @@ implementation log.
   vertically. Preserve screenshot proportions within the bounded thumbnail.
 - Existing WebUI contract checks pass. Live visual inspection was unavailable
   because browser access and local computer-use permissions were unavailable.
+
+### 2026-11-05 — Reconcile AI documentation with the playbook runtime
+
+- Updated the README, architecture, background jobs, chat memory, workspace
+  reference, service-setting descriptions, and documentation index. Removed
+  current-use instructions for skill activation and optional Exegol fallback.
+- Reframed legacy skill assets and adaptations as retained reference content.
+  Documented the template, API payload, context budgeting, error handling,
+  validation boundaries, and absence of incremental phase loading or restart.
+- Preserved historical progress entries and marked superseded AI behavior.
+
+### 2026-11-05 — Audit uncommitted AI/playbook changes
+
+- Reviewed AI loop, explicit playbook injection, mandatory Exegol resolution,
+  workspace forwarding, hidden legacy skill controls, and template download.
+  Left concurrent deployment/rclone work and existing skill files untouched.
+- Fixed Markdown template placeholders interpreted as HTML and corrected stale
+  fallback documentation. Updated the empty-response regression to exercise
+  the production playbook path; added cancellation and real-schema/template
+  context-budget regressions across providers.
+- AI checks: 124 tests run, one MCP SDK test skipped. Workspace/broker checks:
+  29 tests passed. WebUI checks, parity, changed-document Markdown lint, YAML
+  lint, and diff whitespace checks passed. Full `make check` remains blocked by
+  missing `prompt_toolkit`; full Markdown lint also reports errors in the
+  unrelated untracked `ai-skills/northwind-financial-exfil.md` file.
+- No commit, live provider request, or target operation was performed. Actual
+  Exegol schema size and live MCP connectivity remain deployment checks.
 
 ### 2026-11-05 — Consolidate deployment ownership and configuration
 
@@ -42,6 +85,57 @@ implementation log.
 - Validation excludes concurrent AI/playbook edits and unrelated untracked demo
   Markdown. Those working-tree changes remain uncommitted; their previously
   reported broader-suite failures are outside this deployment change.
+
+### 2026-11-05 — Downloadable AI playbook template
+
+- Added a Markdown template download to the Playbook panel using the existing
+  static WebUI routes. It defines scope, ordered phases, evidence, checkpoints,
+  and completion reporting without loading legacy skills or starting a task.
+- Documented that phase headings do not enable incremental loading: the full
+  playbook still needs to fit in context. Existing skill files are unchanged.
+
+### 2026-11-05 — Hide remaining legacy skill controls
+
+- Removed AI skill selection from managed uploads and filtered legacy skill
+  rows out of the asset list. Removed obsolete refresh hooks and skill-loading
+  labels from AI job status. The AI interface exposes one playbook editor.
+- Preserved skill files and backend asset APIs. Verified asset rendering and
+  AI job UI behavior with the executable UI regressions.
+
+### 2026-11-05 — Make Exegol mandatory for AI execution
+
+- Removed the per-run Exegol toggle. Central and workspace AI routes always
+  check Exegol readiness and resolve owner-controlled connection settings.
+- AI execution always requests Exegol MCP, ignoring legacy disable flags.
+  Missing MCP or unavailable Exegol fails explicitly without direct fallback.
+- Updated AI, route, workspace, and WebUI regressions. Skill files remain
+  untouched and are not automatically loaded.
+
+### 2026-11-05 — Simplify v2 chat to explicit playbook execution
+
+- Replaced production step selection and skill-policy snapshots with one inline
+  Markdown playbook, pinned alongside the operator prompt and tool results.
+  No default/core skill injection or ai-skills directory reads occur in chat.
+  Existing skill files remain unchanged; legacy IDs no longer activate them.
+- Both direct and MCP transports expose operational schemas without preparation
+  tools. Workspace and central routes validate zero or one explicit document.
+- Replaced WebUI skill checkboxes with a playbook editor and explicit Exegol
+  connection toggle. Kept authentication, scope, cancellation, evidence,
+  context limits, and bounded empty/truncated-response recovery.
+- Added direct/MCP injection, API validation, workspace forwarding, and WebUI
+  submission regressions. No live target operation was run.
+
+### 2026-11-05 — Reject empty AI completion after prerequisite checks
+
+- Identified that a provider reply containing neither visible text nor tool
+  calls was accepted as success, allowing a timing-only completed response.
+- Retry empty generations at most twice within the task round ceiling,
+  retaining evidence and preparation rules. Exhaustion reports
+  `empty_provider_response` and unfinished work explicitly. Nonempty reports
+  remain model judgments; this is not a semantic task-completion validator.
+- Added mocked all-provider regressions for continuation from relay checks
+  through startup, exhaustion, last-round behavior, and blocker reports.
+  No live relay or target command was started.
 
 ### 2026-11-05 — Hide agent workspace tabs without a selection
 

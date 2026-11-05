@@ -14,8 +14,7 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
-from rmm_ai_skills import compose_system_prompt, resolve_ai_skills, resolve_ai_skill_policy, resolve_ai_skill_snapshot
-from rmm_ai_skill_context import CORE_SKILLS, prepare_skill_context, backend_enabled
+from rmm_ai_skills import playbook_documents, playbook_system
 from rmm_tools import OPENAI_TOOLS, SYSTEM_PROMPT, execute_tool, make_client, _resolve_session_id
 from rmm_ai_concurrency import CONCURRENCY_GUIDANCE, run_tool_batch
 
@@ -221,9 +220,11 @@ def _chat_completion_message(provider: str, response: dict) -> dict:
 
 
 def _final_response_error(text: str, truncated: bool) -> str | None:
-    """Reject output-limit stops and tool-call markup returned as plain text."""
+    """Reject incomplete, empty, and malformed final provider responses."""
     if truncated:
         return "provider_output_truncated"
+    if not text.strip():
+        return "empty_provider_response"
     if re.search(r"<\s*/?\s*(?:tool_call|arg_key|arg_value)\b", text, re.IGNORECASE):
         return "malformed_tool_call_text"
     return None
@@ -349,6 +350,24 @@ async def _run_provider_conversation(
     total_rounds = max_rounds * (MAX_TOOL_CONTINUATIONS + 1)
     malformed_retries = 0
     truncation_retries = 0
+    empty_retries = 0
+
+    def retry_empty(convo, round_index):
+        """Request a substantive continuation without replaying prior operations."""
+        nonlocal empty_retries
+        if empty_retries >= 2 or round_index + 1 >= total_rounds:
+            return False
+        empty_retries += 1
+        if progress:
+            progress({'phase': 'model', 'round': round_index + 1, 'status': 'empty_response_retry'})
+        convo.append({'role': 'user', 'content': (
+            'Your last response contained neither visible text nor tool calls. The task is not complete. '
+            'Use the existing evidence to continue the next unfinished authorized step. '
+            'Do not repeat completed or uncertain operations. '
+            'If blocked or finished, provide a factual report with evidence and unfinished work. '
+            'All existing authorization and consent boundaries still apply.'
+        )})
+        return True
 
     async def request(url, headers, body, **options):
         """Pin active instructions and budget every request before contacting a provider."""
@@ -435,6 +454,11 @@ async def _run_provider_conversation(
                 truncated = response["choices"][0].get("finish_reason") == "length"
                 text = _message_text(message.get("content"))
                 error = _final_response_error(text, truncated)
+                if error == "empty_provider_response":
+                    if retry_empty(convo, round_index):
+                        continue
+                    text = ("The provider returned no text or tool calls after bounded recovery. "
+                            "The requested task is incomplete; inspect retained tool results before retrying.")
                 if error == "malformed_tool_call_text" and malformed_retries < 2 and round_index + 1 < total_rounds:
                     malformed_retries += 1
                     convo.append({"role": "assistant", "content": text})
@@ -526,6 +550,11 @@ async def _run_provider_conversation(
                     if block.get("type") == "text"
                 )
                 error = _final_response_error(text, truncated)
+                if error == "empty_provider_response":
+                    if retry_empty(convo, round_index):
+                        continue
+                    text = ("The provider returned no text or tool calls after bounded recovery. "
+                            "The requested task is incomplete; inspect retained tool results before retrying.")
                 if error == "malformed_tool_call_text" and malformed_retries < 2 and round_index + 1 < total_rounds:
                     malformed_retries += 1
                     convo.append({"role": "assistant", "content": text})
@@ -620,18 +649,11 @@ def _run_ai_chat_mcp(
     async def chat(mcp) -> dict:
         nonlocal connected
         connected = True
-        core, catalog, tools, call_tool = prepare_skill_context(
-            skill_documents, mcp.openai_tools, mcp.call_tool, progress,
-            external_tool_names=getattr(mcp, 'external_tool_names', ()), policy=skill_policy,
-        )
+        tools, call_tool = mcp.openai_tools, mcp.call_tool
         if progress:
             progress({"phase": "ready", "mcp_status": "connected", "tool_count": len(tools)})
-        system = compose_system_prompt(
-            mcp.server_instructions or SYSTEM_PROMPT,
-            skill_ids=skill_ids,
-            session_context=_selected_session_context(selected_session_id),
-            skill_documents=core,
-        ) + catalog
+        system = playbook_system(mcp.server_instructions or SYSTEM_PROMPT,
+                                 skill_documents, _selected_session_context(selected_session_id))
         return await _run_provider_loop(
             provider=provider,
             api_key=api_key,
@@ -699,15 +721,9 @@ def _run_ai_chat_direct(
         """Resolve visible session aliases without blocking concurrent tools."""
         return await asyncio.to_thread(_resolve_session_id, client, ref)
 
-    core, catalog, tools, call_tool = prepare_skill_context(
-        skill_documents, OPENAI_TOOLS, execute, progress, policy=skill_policy,
-    )
-    system = compose_system_prompt(
-        SYSTEM_PROMPT,
-        skill_ids=skill_ids,
-        session_context=_selected_session_context(selected_session_id),
-        skill_documents=core,
-    ) + catalog
+    tools, call_tool = OPENAI_TOOLS, execute
+    system = playbook_system(SYSTEM_PROMPT, skill_documents,
+                             _selected_session_context(selected_session_id))
 
     return asyncio.run(
         _run_provider_loop(
@@ -769,24 +785,18 @@ def run_ai_chat(
     from rmm_mcp_client import mcp_available, use_mcp_for_ai, resolve_exegol_mcp_config
 
     exegol_enabled, _, _ = resolve_exegol_mcp_config(
-        enabled=exegol_mcp_enabled, url=exegol_mcp_url, token=exegol_mcp_token,
+        enabled=True, url=exegol_mcp_url, token=exegol_mcp_token,
     )
     mcp_selected = use_mcp_for_ai()
     mcp_installed = mcp_available()
     use_mcp = mcp_selected and mcp_installed
-    if skill_documents is None:
-        skill_documents, snapshot_policy = resolve_ai_skill_snapshot(skill_ids)
-        if skill_policy is None:
-            skill_policy = snapshot_policy
-    if skill_policy is None:
-        skill_policy = resolve_ai_skill_policy()
-    wants_exegol = backend_enabled('external', skill_documents, skill_policy)
-    exegol_enabled = exegol_enabled and wants_exegol
+    skill_documents = playbook_documents(skill_documents)
+    skill_policy = []
     execution = {
         "tool_path": "mcp" if use_mcp else "direct",
         "mcp_status": "connecting" if use_mcp else ("unavailable" if mcp_selected else "disabled"),
         "exegol_status": "requested" if exegol_enabled else "disabled",
-        "skills": [s.get("id", "") for s in skill_documents if isinstance(s, dict) and s.get("id") in CORE_SKILLS and str(s.get("body") or "").strip()],
+        "skills": [s.get("id", "") for s in skill_documents if isinstance(s, dict) and str(s.get("body") or "").strip()],
     }
     original_progress = progress
 
@@ -801,9 +811,6 @@ def run_ai_chat(
 
     progress = report_execution
     progress({"phase": "initializing"})
-    if wants_exegol and not exegol_enabled:
-        return {"ok": False, "error": "exegol_required",
-                "message": "The enabled Exegol workflow requires its configured MCP connection. Configure the owner service or disable the Exegol skill."}
     if exegol_enabled and not use_mcp:
         return {"ok": False, "error": "exegol_requires_mcp",
                 "message": "Exegol requires MCP. Enable RMM_AI_USE_MCP and install MCP support in the server environment."}

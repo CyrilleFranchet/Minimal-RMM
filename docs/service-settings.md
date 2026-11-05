@@ -230,11 +230,11 @@ locations are supplied by the wrapper, regardless of the schema's empty default.
 
 | Key | Scope | Type | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `RMM_AI_MAX_TOOL_ROUNDS` | S | integer | `32` | Maximum AI tool rounds |
-| `RMM_AI_USE_MCP` | S | boolean | `true` | Use MCP tools |
+| `RMM_AI_MAX_TOOL_ROUNDS` | S | integer | `32` | Provider requests per checkpoint; five checkpoints give a default ceiling of 160 |
+| `RMM_AI_USE_MCP` | S | boolean | `true` | Required for AI; false produces `exegol_requires_mcp` |
 | `RMM_AI_CONTEXT_BUDGET` | S | integer | `65536` | AI context budget (conservative tokens) |
 | `RMM_AI_OUTPUT_RESERVE` | S | integer | `4096` | AI output token reserve |
-| `RMM_AI_SKILLS_DIR` | S/W | string | `unset` | Additional AI skills directory |
+| `RMM_AI_SKILLS_DIR` | S/W | string | `unset` | Legacy skill discovery directory; not read by AI chat |
 | `OPENAI_API_KEY` | S/W | string | `unset; secret` | Default OpenAI API key |
 | `RMM_EXEGOL_MCP_URL` | S/W | string | `unset` | Exegol MCP URL |
 | `RMM_EXEGOL_MCP_TOKEN` | S/W | string | `unset; secret` | Exegol MCP token |
