@@ -14,6 +14,17 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-05 — Update retained skill references and metadata
+
+- Updated default metadata for deployment, BloodHound, pivot, lateral movement,
+  NetExec, and Windows reconnaissance/profile references. Added NetExec share
+  enumeration guidance and an rclone transfer reference.
+- Aligned the legacy catalog regression with NetExec's changed default flag.
+  These are reference/catalog changes: production AI still loads only the
+  explicitly supplied playbook, regardless of these default flags.
+- Markdown validation covers all changed skill files. No target action or
+  transfer was executed as part of this update.
+
 ### 2026-11-05 — Review MCP embedding projections and copy evidence
 
 - Reviewed shared serialization, event/command/result paths, plugin copy-failure

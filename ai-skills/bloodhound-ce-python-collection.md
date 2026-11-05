@@ -2,7 +2,7 @@
 id: bloodhound-ce-python-collection
 title: BloodHound CE Python collector (bloodhound-ce-python) collection
 description: Collect AD data with the official BloodHound CE Python collector (bloodhound-ce-python) in Exegol using DCOnly, import it into local BloodHound CE, and verify the dataset. Use for acquisition or refresh; use bloodhound-analysis for questions about existing graph data. Not the legacy bloodhound-python tool.
-default: false
+default: true
 tool_rules: [{"tool":"bloodhound","requires_any":["bloodhound-analysis","bloodhound-ce-python-collection"]},{"tool":"bloodhound","actions":["create","collect","import","verify"],"requires":["bloodhound-ce-python-collection"]},{"tool":"bloodhound","actions":["collect"],"requires":["exegol-rmm-pivot"]}]
 priority: 30
 ---

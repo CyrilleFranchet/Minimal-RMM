@@ -2,7 +2,7 @@
 id: windows-ad-recon-stealth
 title: AD recon — RPC noise vs LDAP/ADWS
 description: Prefer ADWS (Get-AD*) over direct LDAP and net.exe RPC recon; net user is loud on EDR
-default: true
+default: false
 ---
 
 # AD reconnaissance method selection

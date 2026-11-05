@@ -2,7 +2,7 @@
 id: windows-user-profile-path
 title: Windows user profile path
 description: Resolve the real profile folder on the agent; never assume C:\Users\<username>
-default: true
+default: false
 ---
 
 # Windows user profile path

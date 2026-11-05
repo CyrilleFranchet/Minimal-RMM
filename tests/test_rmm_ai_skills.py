@@ -53,7 +53,7 @@ class AiSkillsTests(unittest.TestCase):
         for row in documents:
             if row['id'] in expected:
                 self.assertFalse(row['always'])
-                self.assertFalse(row['default'])
+                self.assertEqual(row['default'], row['id'] == 'offensive-netexec')
                 self.assertIn(row['id'], catalog)
                 self.assertNotIn(row['body'], catalog)
 

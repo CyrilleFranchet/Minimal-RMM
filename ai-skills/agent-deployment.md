@@ -2,7 +2,7 @@
 id: agent-deployment
 title: Deploy an agent on another machine
 description: Deploy an RMM agent on another authorized machine end to end: render or build the artifact with server config, stage it through an existing agent, execute laterally, and verify the new session registers.
-default: false
+default: true
 ---
 
 # Deploy an agent on another machine

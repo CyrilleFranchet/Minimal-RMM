@@ -2,7 +2,7 @@
 id: offensive-netexec
 title: NetExec protocol investigation and access validation
 description: Use installed NetExec in Exegol for targeted protocol enumeration, authentication diagnosis, and validation of an authorized remote-access path. Not a replacement for the Python BloodHound collection workflow.
-default: false
+default: true
 ---
 
 # NetExec protocol investigation and access validation
@@ -78,6 +78,22 @@ Limit target count, concurrency, and wait budget from the actual question.
 For an explicitly requested authentication campaign, account for attempts across
 hosts and protocols; inspect local option semantics before supplying user and
 password lists. A pacing option does not make lockout impossible.
+
+## SMB share enumeration
+
+To enumerate shares on a target and confirm access rights under a given identity:
+
+```sh
+nxc smb <target> -u <user> -p <pass> --shares
+```
+
+Inspect the output for share name, read/write access, and remarks. A hidden
+administrative share ends in `$` and does not appear in `net view` output on the
+target — enumerating with `--shares` is the correct discovery method. Record each
+share name, access level, and whether it is a hidden share before attempting to mount.
+
+For multiple targets, run one command per host; do not replace the target with a
+subnet unless the task explicitly requests a subnet sweep.
 
 ## Evidence and detection handoff
 

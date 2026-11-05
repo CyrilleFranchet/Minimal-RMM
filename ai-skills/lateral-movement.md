@@ -2,7 +2,7 @@
 id: lateral-movement
 title: Lateral movement technique selection
 description: Evaluate authorized remote-access attempts against the operator's objective, diagnose failures, and verify completion before retrying or changing methods.
-default: false
+default: true
 ---
 
 # Lateral movement technique selection
