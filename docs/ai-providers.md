@@ -56,6 +56,9 @@ for every supported provider. Budget controls belong to the central AI worker:
 guards, evidence retrieval, and the limits of semantic adherence are documented
 in [Web AI skills](web-ai-skills.md). A round continuation is not context
 compaction; the context budget is enforced separately on every request.
+Selection exposes internal tools and a compact operation catalog; full
+operational schemas are sent only for the prepared batch, then removed again.
+Context failures include content-free size measurements for diagnosis.
 
 Provider/tool failures after execution retain a credential-safe diagnostic
 classification, the latest step state, and scoped evidence references. Raw

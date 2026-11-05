@@ -324,6 +324,7 @@ async def _run_provider_loop(**kwargs):
                                                    for call in dispatcher.operations]}
     result['context_artifacts'] = window.manifest()
     result['context_compactions'] = window.compactions
+    result['context_budget'] = window.diagnostics
     return result
 
 
@@ -351,6 +352,7 @@ async def _run_provider_conversation(
     async def request(url, headers, body, **options):
         """Pin active instructions and budget every request before contacting a provider."""
         if context_window:
+            body['tools'] = call_tool.request_tools(body.get('tools', []))
             body = context_window.prepare(body, call_tool.instructions())
             body['max_completion_tokens' if provider == 'openai' else 'max_tokens'] = context_window.reserve
         return await _model_request(url, headers, body, **options)

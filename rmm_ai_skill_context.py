@@ -138,6 +138,12 @@ class StepSkills:
                     return False
         return True
 
+    def request_tools(self, tools):
+        """Expose preparation tools or the prepared operation schemas, never the whole registry."""
+        allowed = INTERNAL_TOOLS | (self.prepared or set())
+        return [tool for tool in tools
+                if tool.get('function', {}).get('name', tool.get('name')) in allowed]
+
     async def __call__(self, name, arguments):
         """Load instructions, prepare a single step, or dispatch guarded operations."""
         args = arguments if isinstance(arguments, dict) else {}
@@ -169,6 +175,8 @@ class StepSkills:
                     or not isinstance(summary, str) or not summary.strip() or len(summary) > 500
                     or not isinstance(checkpoint, str) or len(checkpoint) > 2000):
                 return json.dumps({'ok': False, 'error': 'invalid_step'})
+            if any(not self.available(name) for name in names):
+                return json.dumps({'ok': False, 'error': 'required_skill_disabled'})
             try:
                 resolved = self._resolve([*(s['id'] for s in self.core), *ids, *self.required])
                 active = [sid for sid in resolved if sid not in CORE_SKILLS]
@@ -224,4 +232,10 @@ def prepare_skill_context(documents, tools, call_tool, progress=None, external_t
                             'required_tools': s.get('required_tools', []),
                             'priority': s.get('priority', 0)} for s in optional])
     visible = [tool for tool in tools if runtime.available(tool['function']['name'])]
+    catalog += ('\n\n## Operational tool catalog\n'
+                'Choose intended tool names in prepare_step. Full schemas become available in the next request '
+                'for that prepared batch. Inspect those schemas before choosing arguments.\n')
+    catalog += json.dumps([{'name': tool['function']['name'],
+                            'description': str(tool['function'].get('description', ''))[:160]}
+                           for tool in visible])
     return runtime.core, catalog, [*visible, LOAD_SKILL_TOOL, PREPARE_STEP_TOOL], runtime

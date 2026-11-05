@@ -480,6 +480,14 @@
   function formatAiFailureDetails(job) {
     const label = value => typeof value === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(value) ? value : "";
     const details = [];
+    const budget = job.result?.context_budget;
+    const counter = value => Number.isSafeInteger(value) && value >= 0;
+    if (job.result?.error === "context_budget_exceeded" && budget &&
+        counter(budget.estimated_input_upper_bound) && counter(budget.effective_input_limit)) {
+      details.push(`Context estimate: ${budget.estimated_input_upper_bound} / ${budget.effective_input_limit} (conservative UTF-8 byte bound)`);
+      if (counter(budget.tool_schema_bytes)) details.push("Tool schema bytes: " + budget.tool_schema_bytes);
+      if (counter(budget.system_bytes)) details.push("System bytes: " + budget.system_bytes);
+    }
     if (label(job.id)) details.push("Job: " + job.id);
     const progress = job.progress || {};
     if (Number.isInteger(progress.round) && progress.round >= 0) details.push("Last recorded round: " + progress.round);

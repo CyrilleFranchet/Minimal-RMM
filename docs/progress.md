@@ -9,6 +9,26 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-05 — Fix context rejection immediately after realistic preparation
+
+- Reproduced the reported failure with real shipped recon/pivot bodies and
+  RMM schemas. Pinning both skills while resending all operational schemas
+  exhausted the default conservative byte-based admission budget immediately
+  after `prepare_step`; this was not a provider-reported context overflow.
+- Selection now exposes internal preparation tools and a compact operational
+  catalog. Execution exposes only prepared operation schemas plus internal
+  tools. The complete registry remains server-side for guards and prerequisite
+  checks; consuming preparation restores preparation-only schema exposure.
+- Added content-free size measurements to results and context-failure details
+  in the WebUI. The configured budget and complete skill bodies are unchanged.
+- Added real-body regression coverage for all three provider protocols, large
+  unrelated schemas, both phase transitions, and error diagnostic rendering.
+  No target commands or network scans run in these tests.
+- Validation: `make check` passes (75 AI tests with one MCP-dependent skip,
+  26 skill/provider tests, six route tests, 15 CLI tests, UI recovery, syntax,
+  parity, WebUI contracts, and lint). All 57 workspace tests pass. Independent
+  schema/barrier review found no blocker. No live remote scan was performed.
+
 ### 2026-11-05 — Documentation consistency and failure handoff review
 
 - Reconciled README, deployment, provider, background-job, settings, and skill

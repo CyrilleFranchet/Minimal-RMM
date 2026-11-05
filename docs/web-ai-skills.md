@@ -30,8 +30,13 @@ Before every batch of operational tools, the model must call `prepare_step`
 - `checkpoint`: completed work, pending or uncertain operations, and evidence IDs.
   Include no secrets and never claim a queued command has completed.
 
-The runtime resolves enabled dependencies, returns complete instructions, and
-requires a later provider round before execution. Preparation is consumed by
+The selection request exposes internal preparation tools plus a compact catalog
+of operational tool names and bounded descriptions. Complete operational schemas
+stay server-side until needed. The runtime resolves enabled dependencies, returns
+complete instructions, and requires a later provider round before execution.
+That request exposes only the prepared operation schemas plus internal tools;
+after the operational batch, the next request returns to preparation-only
+schemas. Required-tool validation still checks the complete registry. Preparation is consumed by
 one operational batch. Another batch requires another selection. A mixed
 preparation/execution batch is rejected. Read-only tools are operational too;
 `load_skill` and `read_context` can be used during preparation.
@@ -128,7 +133,12 @@ It is a conservative estimate, not an exact provider tokenizer.
 Complete active skill instructions and the latest checkpoint are attached to
 every provider request independently of conversation history. They are never
 silently truncated. If mandatory content cannot fit, execution stops with
-`context_budget_exceeded`; it does not replay completed operations.
+`context_budget_exceeded`; it does not replay completed operations. The final
+`context_budget` object records content-free measurements: configured budget,
+output reserve, effective input limit, serialized request size, system and
+conversation sizes, exposed schema size and tool count. These are conservative
+byte-based admission measurements, not a provider-reported context overflow.
+The WebUI failure details show the estimate, limit, system and schema sizes.
 
 Large tool results become previews with opaque artifact IDs. Under pressure,
 older complete conversation groups are archived while preserving original
@@ -163,12 +173,12 @@ its adapter and skill; it is not a skill selector or a context registry.
 | `prepare_skill_context`, `_tool` | Build the catalog, internal schemas and dispatcher. |
 | `StepSkills.__init__`, `require_from_messages`, `activate_explicit` | Snapshot enabled files, versions, guards and explicit invocation. |
 | `StepSkills.begin_batch`, `__call__` | Enforce preparation barriers and dispatch declared operations. |
-| `StepSkills._resolve`, `available`, `instructions` | Resolve dependencies, filter tools and rebuild active instructions. |
+| `StepSkills._resolve`, `available`, `instructions`, `request_tools` | Resolve dependencies, filter tools and rebuild active instructions. |
 | `backend_enabled` | Evaluate declarative backend connection requirements. |
 | `resolve_ai_skill_snapshot`, `resolve_ai_skill_policy` | Read a consistent instruction/policy snapshot, or standalone body-free policy for legacy supplied documents. |
 | `ContextWindow.__init__`, `archive`, `read`, `read_page`, `manifest` | Own the budget and scoped persistent evidence store. |
-| `ContextWindow.bounded_result`, `prepare` | Bound results and archive complete older history groups. |
-| `ContextDispatcher.__init__`, `begin_batch`, `instructions`, `__call__` | Preserve step gates while paging evidence and bounding output. |
+| `ContextWindow.bounded_result`, `prepare`, `measure` | Bound results and archive complete older history groups. |
+| `ContextDispatcher.__init__`, `begin_batch`, `instructions`, `request_tools`, `__call__` | Preserve step gates while paging evidence and bounding output. |
 | `_run_provider_loop`, `_run_provider_conversation` | Share budgeting around each provider's native tool protocol. |
 | `_message_with_checkpoint` | Carry prior checkpoints as evidence, never as active policy. |
 

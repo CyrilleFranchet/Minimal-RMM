@@ -28,6 +28,7 @@ class ContextWindow:
         self.artifacts = {}
         self.progress = progress
         self.compactions = 0
+        self.diagnostics = {}
         self.anchor = None
         self.operator_requests = []
         self.path = None
@@ -111,6 +112,20 @@ class ContextWindow:
         return json.dumps({'archived': True, 'artifact_id': key, 'characters': len(result),
                            'preview': result[:500], 'next': 'Use read_context for evidence; do not replay the operation.'})
 
+    def measure(self, body, input_limit):
+        """Record content-free request costs for diagnosing the conservative admission check."""
+        def byte_size(value):
+            return len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
+        messages = body.get('messages', [])
+        system = body.get('system') or next((m.get('content', '') for m in messages if m.get('role') == 'system'), '')
+        return {'estimator': 'utf8_bytes_upper_bound', 'configured_budget': self.budget,
+                'output_reserve': self.reserve, 'effective_input_limit': input_limit,
+                'estimated_input_upper_bound': byte_size(body) + 1024,
+                'serialized_request_bytes': byte_size(body), 'system_bytes': byte_size(system),
+                'tool_schema_bytes': byte_size(body.get('tools', [])),
+                'conversation_bytes': byte_size([m for m in messages if m.get('role') != 'system']),
+                'exposed_tool_count': len(body.get('tools', []))}
+
     def prepare(self, body, active_instructions):
         """Bound input, preserving tool pairs, active instructions, and latest user text."""
         source = body['messages']
@@ -159,6 +174,7 @@ class ContextWindow:
             if self.progress:
                 self.progress({'phase': 'context', 'status': 'compacted', 'context_compactions': self.compactions})
         if size() > limit:
+            self.diagnostics = self.measure(body, limit)
             raise ContextBudgetExceeded('AI context budget exceeded; reduce active skills or split the task')
         if self.artifacts:
             # Keep a bounded index; complete artifacts remain retrievable by ID.
@@ -170,7 +186,9 @@ class ContextWindow:
             else:
                 messages[0]['content'] += '\n' + note
             if size() > limit + 1024:
+                self.diagnostics = self.measure(body, limit + 1024)
                 raise ContextBudgetExceeded('AI context budget exceeded after evidence index')
+        self.diagnostics = self.measure(body, limit + 1024 if self.artifacts else limit)
         source[:] = ([original_system] + messages[1:]) if original_system else messages
         return body
 
@@ -194,6 +212,12 @@ class ContextDispatcher:
             text += '\nRecent returned calls (a returned result does not establish success; inspect evidence before retrying):\n'
             text += json.dumps([{'tool': call['name'], 'evidence_id': call['artifact_id']} for call in self.operations[-8:]])
         return text
+
+    def request_tools(self, tools):
+        """Use the underlying step's schema selection for either provider protocol."""
+        if getattr(type(self.delegate), 'request_tools', None):
+            return self.delegate.request_tools(tools)
+        return tools
 
     async def __call__(self, name, args):
         """Page archived evidence or delegate a guarded call without replay."""

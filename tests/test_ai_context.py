@@ -133,7 +133,61 @@ class ContextTests(unittest.TestCase):
         with patch('rmm_ai_context.getenv', side_effect=lambda key, default=None: {'RMM_AI_CONTEXT_BUDGET': '8192', 'RMM_AI_OUTPUT_RESERVE': '1024'}.get(key, default)), patch('rmm_ai._json_request') as request:
             result = asyncio.run(rmm_ai._run_provider_loop(provider='openai', api_key='test', messages=[{'role':'user','content':'Task'}], model='test', system='M' * 9000, tools=[], call_tool=tool, max_rounds=1, via='test'))
             self.assertEqual(result['error'], 'context_budget_exceeded')
+            self.assertEqual(result['context_budget']['estimator'], 'utf8_bytes_upper_bound')
+            self.assertGreater(result['context_budget']['estimated_input_upper_bound'],
+                               result['context_budget']['effective_input_limit'])
             request.assert_not_called()
+
+    def test_real_recon_and_pivot_skills_fit_default_budget_with_staged_schemas(self):
+        import rmm_ai
+        from rmm_ai_skills import resolve_ai_skill_snapshot, compose_system_prompt
+        from rmm_tools import OPENAI_TOOLS, SYSTEM_PROMPT
+        for provider in ('openai', 'mistral', 'anthropic'):
+            requests = []
+            remote = AsyncMock(return_value='{"sessions": []}')
+            external = [{'type': 'function', 'function': {'name': 'list_exegol_containers',
+                         'description': 'List Exegol containers', 'parameters': {'type': 'object'}}}]
+            external += [{'type': 'function', 'function': {'name': f'unrelated_tool_{index}',
+                          'description': 'Unrelated operational capability. ' * 100,
+                          'parameters': {'type': 'object', 'properties': {'option': {'type': 'string'}}}}}
+                         for index in range(12)]
+            documents, policy = resolve_ai_skill_snapshot(None)
+            core, catalog, tools, runtime = prepare_skill_context(documents, [*OPENAI_TOOLS, *external], remote,
+                external_tool_names={tool['function']['name'] for tool in external}, policy=policy)
+            system = compose_system_prompt(SYSTEM_PROMPT, skill_ids=None, skill_documents=core) + catalog
+            planned = ['list_sessions', 'get_session', 'exec_command', 'list_exegol_containers']
+            def request(url, headers, body):
+                requests.append(copy.deepcopy(body))
+                if len(requests) == 1:
+                    name, args = 'prepare_step', {'skill_ids': ['local-recon-before-network', 'exegol-rmm-pivot'],
+                        'tools': planned, 'summary': 'Establish the selected agent context before an authorized network inventory',
+                        'checkpoint': 'No operations performed. Establish identity and network context, then reuse or establish the required Exegol relay.'}
+                elif len(requests) == 2:
+                    name, args = 'list_sessions', {}
+                else:
+                    if provider == 'anthropic':
+                        return {'content': [{'type': 'text', 'text': 'No sessions are available.'}], 'stop_reason': 'end_turn'}
+                    return {'choices': [{'message': {'content': 'No sessions are available.'}, 'finish_reason': 'stop'}]}
+                if provider == 'anthropic':
+                    return {'content': [{'type': 'tool_use', 'id': str(len(requests)), 'name': name, 'input': args}]}
+                return {'choices': [{'message': {'tool_calls': [{'id': str(len(requests)), 'type': 'function',
+                        'function': {'name': name, 'arguments': json.dumps(args)}}]}}]}
+            with self.subTest(provider=provider), patch('rmm_ai._json_request', side_effect=request), patch('rmm_ai_context.getenv', side_effect=lambda key, default=None: default):
+                result = asyncio.run(rmm_ai._run_provider_loop(provider=provider, api_key='test', model='test',
+                    messages=[{'role': 'user', 'content': 'Perform an authorized network inventory'}],
+                    system=system, tools=tools, call_tool=runtime, max_rounds=4, via='test'))
+            self.assertTrue(result['ok'], result)
+            self.assertEqual(len(requests), 3)
+            def names(body):
+                return {tool.get('name') or tool['function']['name'] for tool in body['tools']}
+            internal = {'load_skill', 'prepare_step', 'read_context'}
+            self.assertEqual(names(requests[0]), internal)
+            self.assertEqual(names(requests[1]), internal | set(planned))
+            self.assertEqual(names(requests[2]), internal)
+            self.assertIn('Operational tool catalog', json.dumps(requests[0]))
+            remote.assert_awaited_once_with('list_sessions', {})
+            self.assertLess(result['context_budget']['estimated_input_upper_bound'],
+                            result['context_budget']['effective_input_limit'])
 
     def test_history_eviction_preserves_prior_operator_scope_and_consent(self):
         window = self.window()

@@ -47,6 +47,15 @@ function setup(api) {
   assert.match(details, /HTTP 429/);
   assert.match(details, /Last recorded round: 7/);
   assert.ok(!details.includes('secret-token'));
+  const budgetDetails = diagnosticUi.test.formatAiFailureDetails({ result: {
+    error: 'context_budget_exceeded', context_budget: {
+      estimated_input_upper_bound: 70000, effective_input_limit: 59392,
+      tool_schema_bytes: 23000, system_bytes: 35000, provider_text: 'private-token'
+    }
+  } });
+  assert.match(budgetDetails, /70000 \/ 59392/);
+  assert.match(budgetDetails, /Tool schema bytes: 23000/);
+  assert.ok(!budgetDetails.includes('private-token'));
   diagnosticUi.test.displayAiJob(failed, 'a', diagnosticUi.test.state().token);
   assert.equal(diagnosticUi.test.state().history.filter(m => m.content === 'Partial report').length, 1);
   diagnosticUi.test.displayAiJob({ id: 'step-job', status: 'running', progress: {
