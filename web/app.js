@@ -501,6 +501,8 @@ function setWorkspaceTab(tab) {
     hide($("#empty-state"));
   } else {
     show($("#empty-state"));
+    hide($("#console-header"));
+    return;
   }
 
   if (normalized === "files") {
@@ -2464,6 +2466,7 @@ function initSidebarResize() {
 }
 
 function showApp() {
+  setWorkspaceTab(state.workspaceTab);
   hide($("#login"));
   show($("#app"));
 }
@@ -2542,6 +2545,10 @@ function disconnect() {
   sessionStorage.removeItem(STORAGE_KEY);
   state.token = "";
   state.selectedId = null;
+  state.selectedHistoryId = null;
+  state.viewMode = "live";
+  state.selectionGeneration += 1;
+  setWorkspaceTab("shell");
   state.socksRelays = [];
   state.socksBusy = false;
   state.tunRelays = [];

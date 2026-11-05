@@ -126,3 +126,62 @@ test('responses from a previous login never expose old payloads or disconnect a 
   assert.equal(result.status, 0);
   assert.equal(result.data.sessions, undefined);
 });
+
+test('agent workspace tabs follow selection and do not restore an archive after reconnect', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+  function element(dataset = {}) {
+    const classes = new Set();
+    return { dataset, textContent: '', classes, classList: {
+      add: name => classes.add(name), remove: name => classes.delete(name),
+      toggle(name, enabled) { if (enabled) classes.add(name); else classes.delete(name); },
+    }, setAttribute() {} };
+  }
+  const tabs = element();
+  const buttons = ['shell', 'files', 'pivots'].map(name => element({ workspaceTab: name }));
+  const panels = ['shell', 'files', 'pivots'].map(name => element({ workspacePanel: name }));
+  const nodes = new Map(['#empty-state', '#files-selected-session', '#console-header', '#login', '#app'].map(id => [id, element()]));
+  const refreshes = [];
+  const noop = () => {};
+  const context = {
+    state: { workspaceTab: 'pivots', selectedId: null, selectedHistoryId: null, sessions: [],
+      selectionGeneration: 5, authGeneration: 1, token: 'old-token', echoedCommands: new Set() },
+    document: { querySelector: () => tabs, querySelectorAll: selector => selector === '.workspace-tab' ? buttons : panels },
+    $: id => nodes.get(id), show: node => node.classList.remove('hidden'), hide: node => node.classList.add('hidden'),
+    refreshExfilStatus: async () => refreshes.push('files'), refreshSocksRelays: async () => refreshes.push('socks'),
+    refreshTunRelays: async () => refreshes.push('tun'), prepareTunControls: noop, updateSocksUi: noop, updateTunUi: noop,
+    window: {}, sessionStorage: { removeItem: noop }, STORAGE_KEY: 'token', hideServerUnreachableDialog: noop,
+    disconnectWebSocket: noop, stopEventPolling: noop, stopSessionPolling: noop, stopStatusTick: noop,
+    stopConnectivityProbe: noop, showLogin: noop,
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function setWorkspaceTab('), source.indexOf('\nfunction selectedSocksRelay(')) +
+    source.slice(source.indexOf('function showApp('), source.indexOf('\nfunction configureWorkspaceAccess(')) +
+    source.slice(source.indexOf('function disconnect()'), source.indexOf('\nasync function refreshSessions()', source.indexOf('function disconnect()'))), context);
+  context.showApp();
+  assert(tabs.classes.has('hidden'));
+  assert(panels.every(panel => panel.classes.has('hidden')));
+  assert.deepEqual(refreshes, [], 'hidden pivot panel must not refresh');
+  context.setWorkspaceTab('files');
+  assert.deepEqual(refreshes, [], 'hidden file panel must not refresh');
+  context.state.selectedId = 'agent-a';
+  context.state.sessions = [{ id: 'agent-a', username: 'user', hostname: 'host' }];
+  context.setWorkspaceTab('shell');
+  assert(!tabs.classes.has('hidden'));
+  assert(!panels[0].classes.has('hidden'));
+  context.state.selectedId = null;
+  context.state.selectedHistoryId = 'archive-a';
+  context.state.viewMode = 'history';
+  context.setWorkspaceTab('shell');
+  assert(!tabs.classes.has('hidden'), 'selected archived transcript remains accessible');
+  context.disconnect();
+  assert.equal(context.state.selectedId, null);
+  assert.equal(context.state.selectedHistoryId, null);
+  assert.equal(context.state.selectionGeneration, 6, 'pending transcript loads must be invalidated');
+  context.state.token = 'new-token';
+  context.showApp();
+  assert(tabs.classes.has('hidden'));
+  assert(panels.every(panel => panel.classes.has('hidden')));
+  assert(nodes.get('#console-header').classes.has('hidden'));
+  assert(!nodes.get('#empty-state').classes.has('hidden'));
+  assert.deepEqual(refreshes, []);
+});

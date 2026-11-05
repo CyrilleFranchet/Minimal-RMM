@@ -104,6 +104,14 @@ available for automation and compatibility. Artifact files continue to use
 `GET /api/v1/artifacts/{kind}/{filename}`.
 
 The agent workspace tabs are controlled by `setWorkspaceTab()` in `web/app.js`.
+The tab bar and panels start hidden and are synchronized with selection before
+the app is displayed. With no live or archived agent selected, only the empty
+workspace prompt appears. Selecting an agent reveals its tabs; closing the
+session view hides them again.
+Disconnecting clears both live and archived selections and invalidates pending
+transcript loads. Reconnecting therefore starts with the empty workspace.
+Hidden Files and Pivots panels do not initiate panel-specific refreshes without
+a selection.
 `openGlobalArtifactsDialog()` opens the global artifact dialog, and
 `setGlobalArtifactTab()` switches its Downloads or Screenshots collection while
 the selected live session remains available in the sidebar.

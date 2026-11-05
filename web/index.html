@@ -234,13 +234,13 @@
             <p id="console-readonly-banner" class="console-readonly hidden">Archived session — read-only transcript</p>
           </div>
 
-          <div class="workspace-tabs" role="tablist" aria-label="Agent workspace views">
+          <div class="workspace-tabs hidden" role="tablist" aria-label="Agent workspace views">
             <button type="button" class="workspace-tab active" data-workspace-tab="shell" role="tab" aria-selected="true" aria-controls="workspace-panel-shell">Shell</button>
             <button type="button" class="workspace-tab" data-workspace-tab="files" role="tab" aria-selected="false" aria-controls="workspace-panel-files">Files &amp; Screenshots</button>
             <button type="button" class="workspace-tab" data-workspace-tab="pivots" role="tab" aria-selected="false" aria-controls="workspace-panel-pivots">Pivots</button>
           </div>
 
-          <section id="workspace-panel-shell" class="workspace-tab-panel" data-workspace-panel="shell" role="tabpanel">
+          <section id="workspace-panel-shell" class="workspace-tab-panel hidden" data-workspace-panel="shell" role="tabpanel">
             <div class="shell-wrap">
               <div id="shell-output" class="shell-output" aria-live="polite"></div>
               <form id="shell-form" class="shell-input-line" autocomplete="off">

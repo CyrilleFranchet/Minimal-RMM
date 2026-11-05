@@ -9,6 +9,41 @@ implementation log.
 
 ## Current Status
 
+### 2026-11-05 — Hide agent workspace tabs without a selection
+
+- Hide the Shell, Files & Screenshots, and Pivots tab bar and initial shell
+  panel in HTML. Reapply selection-driven visibility before showing the app,
+  covering first login and reconnect without a selected agent. Existing live
+  and archived selection and close-view behavior use the same visibility logic.
+- Follow-up verification fixed stale archived selection after disconnect,
+  invalidated pending transcript loads, and prevented hidden panels refreshing
+  without a selection. A reconnect regression covers both selection types and
+  verifies the previous archive and header do not reappear under a new login.
+
+### 2026-11-05 — Recover truncated provider output on v2
+
+- Investigated the reported four-round failure after recon preparation. The
+  error denotes a provider output-limit stop, independently of task rounds
+  and local input-context admission. The live provider usage was unavailable.
+- Provider loops now discard the whole truncated generation before dispatch,
+  including complete-looking calls in an incomplete batch, and retry at most
+  twice within the existing round ceiling. Active preparation and prior
+  returned results remain intact; no partial text or tool arguments are reused.
+- Retained operator control of the per-response output allowance. Exhaustion
+  reports numeric output/reasoning counters and the configured limit in the UI,
+  with guidance to adjust the central worker's output reserve when appropriate.
+- Added all-provider regressions for retained preparation/evidence, discarded
+  batches, successful recovery, bounded exhaustion, last-round handling, and
+  safe diagnostics. Updated protocol documentation. No target command,
+  credential search, or PCAP capture was run during this fix.
+- Follow-up review added cancellation, nondefault output reserve, and
+  nonconsecutive truncation tests proving the recovery budget is global across
+  the task. Moved the output-limit field before context measurement so size
+  diagnostics include the complete request. Seven recovery tests cover all
+  three providers; UI checks cover the allowlisted counters. Independent review
+  found no blocking defect. Recovery deliberately retains the configured output
+  cap and does not guarantee success for an undersized allowance.
+
 ### 2026-11-05 — Fix context rejection immediately after realistic preparation
 
 - Reproduced the reported failure with real shipped recon/pivot bodies and
