@@ -14,6 +14,36 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-05 — Review MCP embedding projections and copy evidence
+
+- Reviewed shared serialization, event/command/result paths, plugin copy-failure
+  output, source-data preservation, and raw export compatibility. No live target
+  or provider request was used.
+- Fixed a regression-gate gap: `make check-ai` now includes embeddings API and
+  projection tests, so `make check` exercises them. Added all-error and
+  all-provider follow-up request regressions.
+- Documented that counts describe result rows and reported copy paths, not
+  independent acceptance checks. Unknown/invalid schemas and historical raw
+  context remain outside the projection; stored/wire sizes are unchanged.
+- Hardened the projection fallback for invalid Unicode and excessive JSON
+  nesting so malformed output does not abort tool serialization.
+- Final review: no remaining blocking finding. Full `make check` passed on an
+  isolated snapshot excluding untracked logs/custom skill: 148 AI/embeddings
+  tests, 15 CLI tests, WebUI checks, parity, syntax, Markdown and YAML lint.
+  Live Windows copying and live-provider execution remain untested. No commit
+  or deployed-service change was made during this review.
+
+### 2026-11-05 — Keep embedding vectors out of AI/MCP context
+
+- Confirmed saved-profile local-copy fields pass through MCP to the plugin's
+  raw Run export. Copy paths refer to the agent filesystem, not the workspace.
+- Shared tool serialization projects validated embeddings output to labels,
+  scores, paths, copy destinations, errors, dimensions, and counts. Vectors are
+  omitted for copy and no-copy runs, including event and saved-result reads.
+- Original session output and saved collections remain intact for REST/CLI/UI
+  export. Added projection, batch-size, and MCP copy-profile integration tests.
+  No live plugin execution or file copy was performed.
+
 ### 2026-11-05 — Explain plugin installation and synchronization limits
 
 - Release size errors now include the raw size and active workspace asset

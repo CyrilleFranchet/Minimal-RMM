@@ -39,7 +39,8 @@ def make_client(
 
 
 def _json_result(payload: Any) -> str:
-    return json.dumps(payload, indent=2, default=str)
+    from rmm_embeddings import compact_embedding_payload
+    return json.dumps(compact_embedding_payload(payload), indent=2, default=str)
 
 
 def _resolve_session_id(client: RmmApiClient, session_ref: str) -> tuple[str | None, dict]:
@@ -934,7 +935,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_events",
-            "description": "Fetch result/operator events for a session transcript.",
+            "description": "Fetch result/operator events. Embedding output omits vectors while retaining classification scores, copy paths, errors, and dimensions. Full vectors remain in workspace evidence/export.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1539,7 +1540,8 @@ OPENAI_TOOLS.extend(
  {'type': 'function',
   'function': {'name': 'embedding_results',
                'description': 'List/get/save/delete saved embedding results. Save requires exact '
-                              'session_ref and output event_id; get returns exportable JSON.',
+                              'session_ref and output event_id. Results omit vectors for context efficiency but retain '
+                              'classification scores, copy paths, errors, and dimensions. Full vectors remain in workspace exports.',
                'parameters': {'type': 'object',
                               'properties': {'action': {'type': 'string',
                                                         'enum': ['list', 'get', 'save', 'delete']},

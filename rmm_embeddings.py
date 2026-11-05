@@ -175,6 +175,40 @@ def result_payload(event):
     return value
 
 
+def compact_embedding_payload(value):
+    """Project recognized embedding output for AI tools without changing stored evidence."""
+    if isinstance(value, str):
+        if not value.lstrip().startswith("{") or '"results"' not in value or '"embedding"' not in value:
+            return value
+        try:
+            result = result_payload({"type": "output", "body": value})
+        except (EmbeddingError, UnicodeError, RecursionError):
+            return value
+        return encode(compact_embedding_payload(result))
+    if isinstance(value, dict):
+        if {"model", "revision", "results"}.issubset(value):
+            try:
+                result = result_payload({"type": "output", "body": encode(value)})
+            except (EmbeddingError, ValueError, TypeError, UnicodeError, RecursionError):
+                pass
+            else:
+                rows = []
+                for row in result["results"]:
+                    projected = {key: item for key, item in row.items() if key != "embedding"}
+                    vector = row.get("embedding")
+                    if isinstance(vector, list):
+                        projected["embedding_dimensions"] = len(vector)
+                    rows.append(projected)
+                return {**result, "results": rows, "vectors_omitted": True,
+                        "document_count": len(rows),
+                        "error_count": sum(bool(row.get("error")) for row in rows),
+                        "copied_count": sum(bool(row.get("copied_to")) for row in rows)}
+        return {key: compact_embedding_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [compact_embedding_payload(item) for item in value]
+    return value
+
+
 class EmbeddingStore:
     """Own profile and result tables in a server or workspace SQLite database."""
 

@@ -287,11 +287,68 @@ python rmm_cli.py embeddings profiles delete strategy
 ```
 
 Repeated saving of the same session/event is idempotent. Result listings omit
-vectors; `get` returns the full exportable collection. Saved collections remain
+vectors; REST/CLI `get` returns the full exportable collection, while MCP
+returns the vector-free projection described below. Saved collections remain
 until explicitly deleted, independently of transcript/history deletion.
 Deleting a saved collection does not delete its original transcript event.
 There is no automatic result retention limit or vector search index.
 Classification scores are cosine similarity, not calibrated probabilities.
+
+## MCP results and agent-local copies
+
+MCP supports the same saved-profile copy options as the UI and CLI. Read the
+profile with `embedding_profiles(action="get", name="strategy")`, keep its
+model/label configuration, and save it with the intended `copy_documents`,
+`copy_labels`, and `copy_threshold` values. Then call `run_embeddings` with
+that profile and the explicit document or directory paths. Copying runs on
+the agent host; `copy_directory` and each successful `copied_to` identify its
+local destinations. This does not download files into the operator workspace.
+An accepted queue request proves neither classification nor successful copying;
+inspect the matching session output and per-document errors.
+
+AI/MCP output now omits embedding vectors whether copying is enabled or not.
+`compact_embedding_payload` recognizes validated plugin output and produces
+a separate tool-facing projection. It retains model/revision, document paths,
+classification labels and cosine scores, copy paths, and errors. Successful
+rows include `embedding_dimensions`; the result includes `vectors_omitted`,
+`document_count`, `error_count`, and `copied_count`.
+`document_count` counts returned result rows, including enumeration/error rows;
+it is not a count of successfully classified files. `copied_count` counts
+reported `copied_to` paths; it is not an independent filesystem verification.
+
+This applies to session events, synchronous command output, historical event
+reads, and saved-result save/get responses through the shared AI/MCP tool
+serializer. It does not add another API call or ask the model to read vectors.
+Unrelated JSON and unrecognized/malformed plugin output are left unchanged.
+Summaries can still be paged by the AI context archive when paths/error text
+are long; this removes vector growth, not every source of context pressure.
+
+The original session event and saved workspace collection remain intact.
+REST/CLI result retrieval and the UI JSON export retain complete vectors.
+Context archives of new AI tool responses hold the summary, not a second raw
+vector copy. Older chat/evidence already containing vectors is not rewritten.
+
+`tests/test_embedding_tool_projection.py` covers copy/no-copy projection,
+event/command/saved-result reads, preservation of source data and unrelated
+JSON, and a full 32-document vector batch. The workspace integration regression
+also verifies saved MCP copy filters, raw export dispatch, and unchanged REST
+retrieval. These use fixtures and mocked plugin execution, not live copying.
+
+The review also checked the plugin's source contract: a copy failure clears
+its vector and classification and returns a document error, which remains
+visible in the MCP projection. An all-error response retains its errors and
+reports zero copied paths. The standard `make check-ai` (and therefore
+`make check`) includes both the embeddings API and projection suites. A
+provider-loop regression checks OpenAI, Anthropic, and Mistral follow-up
+requests for retained classifications/copy paths and absence of vector values.
+
+Scope: this is an AI response projection, not a change to the DLL wire format,
+network transfer size, stored result size, or classification/copy behavior.
+Unknown schemas and malformed output remain unmodified for diagnosis and can
+still use the normal context archive. New plugin result fields require a
+corresponding validator update before they receive the compact projection.
+Invalid Unicode or excessive JSON nesting also falls back to the original
+output rather than turning a diagnostic event into a tool-serialization failure.
 
 ## REST and MCP
 
@@ -334,6 +391,7 @@ a workspace-local error; there is no shared server-owned profile fallback.
 | `RmmApiClient.embedding_profiles`, `run_embeddings`, `embedding_results` | CLI/MCP HTTP operations |
 | `cmd_embeddings` | CLI JSON import/export and command dispatch |
 | `tool_embedding_profiles`, `tool_run_embeddings`, `tool_embedding_results` | Shared AI/MCP tool handlers |
+| `compact_embedding_payload` | Vector-free AI/MCP projection; leaves persisted results unchanged |
 | MCP `embedding_profiles`, `run_embeddings`, `embedding_results` | Typed FastMCP wrappers |
 | JS `message`, `request`, `perform` | Status messages, authenticated API calls, busy/error handling |
 | JS `readForm`, `fillForm`, `download` | Edit/import/export configuration and result JSON |

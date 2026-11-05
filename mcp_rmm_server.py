@@ -161,7 +161,7 @@ def run_embeddings(session_ref: str, profile: str, documents: list[str]) -> str:
 
 @mcp.tool()
 def embedding_results(action: str = "list", name: str = "", session_ref: str = "", event_id: int = 0) -> str:
-    """List/get/save/delete collections; save selects an exact session output event."""
+    """List/get/save/delete collections using an exact session output event. Vector-free results retain classifications, copy paths, errors, and dimensions; full vectors remain in workspace exports."""
     return tool_embedding_results(_client(), action, name, session_ref, event_id)
 
 
@@ -212,7 +212,7 @@ def patch_config(
 @mcp.tool()
 @_offload_tool
 def get_events(session_ref: str, since: int = 0, limit: int = 50, forward: bool = False) -> str:
-    """Fetch session event transcript (outputs, operator actions)."""
+    """Fetch session events. Recognized embedding output omits vectors but retains classifications, copy paths, errors, and dimensions; full evidence remains in workspace storage."""
     return tool_get_events(_client(), session_ref, since=since, limit=limit, forward=forward)
 
 

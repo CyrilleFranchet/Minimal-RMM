@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from http.server import ThreadingHTTPServer
 
 from rmm_embeddings import EmbeddingError, EmbeddingStore, default_profile, embedding_api, profile_config, plugin_request, result_payload
-from rmm_tools import tool_embedding_profiles, OPENAI_TOOLS
+from rmm_tools import tool_embedding_profiles, tool_run_embeddings, tool_embedding_results, OPENAI_TOOLS
 from rmm_cli import RmmApiClient, build_parser
 from server_rmm import RMMHandler
 from workspace_service import WorkspaceService, WorkspaceRequestHandler
@@ -188,6 +188,37 @@ class EmbeddingWorkspaceTests(unittest.TestCase):
     def tearDown(self):
         self.http.shutdown(); self.http.server_close(); self.thread.join()
         self.service.pivots.stop_all(); self.service.store.close(); self.temp.cleanup()
+
+    def test_mcp_copy_profile_dispatch_and_saved_result_projection(self):
+        config = copy.deepcopy(CONFIG)
+        config.update(copy_documents=True, copy_labels=[config['labels'][0]['name']], copy_threshold=0.4)
+        saved = json.loads(tool_embedding_profiles(self.client, 'save', 'copy-profile', config))
+        self.assertTrue(saved['ok'])
+        with patch.object(self.service, '_proxy', side_effect=[
+                (200, {'plugins': [{'name': 'document-embeddings-autonomous.dll'}]}, 'application/json'),
+                (200, {'session_id': 'alice-session', 'ok': True}, 'application/json')]) as proxy:
+            queued = json.loads(tool_run_embeddings(self.client, 'alice-session', 'copy-profile', [r'C:\Lab']))
+            self.assertTrue(queued['ok'])
+            request = proxy.call_args.args[2]
+            self.assertEqual(request['export'], 'Run')
+            self.assertNotIn('command', request)
+            dispatched = json.loads(request['input'])
+            self.assertTrue(dispatched['copy_documents'])
+            self.assertEqual(dispatched['copy_labels'], config['copy_labels'])
+            self.assertEqual(dispatched['copy_threshold'], 0.4)
+        event = output_event(8)
+        result = json.loads(event['body'])
+        result['copy_directory'] = r'C:\Temp\embedding-copy'
+        result['results'][0]['copied_to'] = r'C:\Temp\embedding-copy\a.txt'
+        event['body'] = json.dumps(result)
+        self.service.store.apply_event('alice-session', event)
+        response = json.loads(tool_embedding_results(self.client, 'save', session_ref='alice-session', event_id=8))
+        self.assertTrue(response['ok'])
+        record = response['data']['record']
+        self.assertEqual(record['result']['copied_count'], 1)
+        self.assertNotIn('embedding', record['result']['results'][0])
+        raw = self.client.embedding_results('get', record['name'])[1]['record']['result']
+        self.assertEqual(raw, result, 'REST/export retains complete vectors and copy evidence')
 
     def test_local_http_crud_run_save_export_and_isolation(self):
         def upstream(method, path, body=None):

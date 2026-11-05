@@ -84,6 +84,7 @@ check-cli:
 check-ai:
 	@$(PYTHON) -m unittest discover -s tests -p 'test_ai*.py'
 	@$(PYTHON) -m unittest discover -s tests -p 'test_rmm_ai*.py'
+	@$(PYTHON) -m unittest discover -s tests -p 'test_*embedding*.py'
 	@$(PYTHON) -m unittest discover -s tests -p 'test_server_rmm_ai.py'
 	@node tests/test_ai_jobs_ui.cjs
 
