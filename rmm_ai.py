@@ -348,14 +348,50 @@ async def _run_provider_conversation(
     tool_log: list[dict] = []
     total_rounds = max_rounds * (MAX_TOOL_CONTINUATIONS + 1)
     malformed_retries = 0
+    truncation_retries = 0
 
     async def request(url, headers, body, **options):
         """Pin active instructions and budget every request before contacting a provider."""
+        body['max_completion_tokens' if provider == 'openai' else 'max_tokens'] = context_window.reserve if context_window else 4096
         if context_window:
             body['tools'] = call_tool.request_tools(body.get('tools', []))
             body = context_window.prepare(body, call_tool.instructions())
-            body['max_completion_tokens' if provider == 'openai' else 'max_tokens'] = context_window.reserve
         return await _model_request(url, headers, body, **options)
+
+    def retry_truncated(convo, round_index):
+        """Discard an incomplete generation without consuming preparation or dispatching tools."""
+        nonlocal truncation_retries
+        if truncation_retries >= 2 or round_index + 1 >= total_rounds:
+            return False
+        truncation_retries += 1
+        if progress:
+            progress({'phase': 'model', 'round': round_index + 1, 'status': 'output_truncated_retry'})
+        convo.append({'role': 'user', 'content': (
+            'The last provider generation reached its output limit and was discarded. '
+            'None of its tool calls ran. Keep the current prepared tools and instructions; '
+            'use native structured calls for one concise immediate step, without restating the full plan. '
+            'Preserve prior returned results and do not repeat completed operations. '
+            'All existing scope, authorization, and operator-consent boundaries still apply.'
+        )})
+        return True
+
+    def truncated_failure(response, stop_reason, round_index):
+        """Report exhausted output recovery using content-free provider usage counters."""
+        usage = response.get('usage')
+        usage = usage if isinstance(usage, dict) else {}
+        output = {'limit': context_window.reserve if context_window else 4096,
+                  'stop_reason': stop_reason, 'retries': truncation_retries}
+        for name in ('prompt_tokens', 'completion_tokens', 'total_tokens', 'input_tokens', 'output_tokens'):
+            if type(usage.get(name)) is int and usage[name] >= 0:
+                output[name] = usage[name]
+        details = usage.get('completion_tokens_details')
+        if isinstance(details, dict) and type(details.get('reasoning_tokens')) is int and details['reasoning_tokens'] >= 0:
+            output['reasoning_tokens'] = details['reasoning_tokens']
+        return {'ok': False, 'error': 'provider_output_truncated',
+                'message': 'The provider reached its per-response output limit. Incomplete generations were discarded and their tool calls were not executed. Earlier returned results were preserved. Increase RMM_AI_OUTPUT_RESERVE in the central worker settings within the selected model limits, or request smaller immediate steps. Inspect session events before restarting the task.',
+                'rounds_used': round_index + 1, 'max_tool_rounds': total_rounds,
+                'malformed_response_retries': malformed_retries, 'output_truncation_retries': truncation_retries,
+                'tool_calls_made': tool_log, 'diagnostics': {'provider_output': output}, 'via': via, 'provider': provider}
 
     def add_continuation_prompt(convo: list[dict]) -> None:
         """Tell the provider to continue a long task after an internal checkpoint."""
@@ -390,6 +426,10 @@ async def _run_provider_conversation(
                 progress=progress, round_number=round_index + 1,
             )
             message = _chat_completion_message(provider, response)
+            if response['choices'][0].get('finish_reason') == 'length':
+                if retry_truncated(convo, round_index):
+                    continue
+                return truncated_failure(response, 'length', round_index)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 truncated = response["choices"][0].get("finish_reason") == "length"
@@ -411,6 +451,7 @@ async def _run_provider_conversation(
                     **({"error": error} if error else {}),
                     "rounds_used": round_index + 1,
                     "malformed_response_retries": malformed_retries,
+                    "output_truncation_retries": truncation_retries,
                     "max_tool_rounds": total_rounds,
                     "message": text,
                     "tool_calls_made": tool_log,
@@ -472,6 +513,10 @@ async def _run_provider_conversation(
                 progress=progress, round_number=round_index + 1,
             )
             blocks = response.get("content") or []
+            if response.get('stop_reason') == 'max_tokens':
+                if retry_truncated(convo, round_index):
+                    continue
+                return truncated_failure(response, 'max_tokens', round_index)
             calls = [block for block in blocks if block.get("type") == "tool_use"]
             if not calls:
                 truncated = response.get("stop_reason") == "max_tokens"
@@ -497,6 +542,7 @@ async def _run_provider_conversation(
                     **({"error": error} if error else {}),
                     "rounds_used": round_index + 1,
                     "malformed_response_retries": malformed_retries,
+                    "output_truncation_retries": truncation_retries,
                     "max_tool_rounds": total_rounds,
                     "message": text,
                     "tool_calls_made": tool_log,
@@ -527,6 +573,7 @@ async def _run_provider_conversation(
         "error": "max_tool_rounds_exceeded",
         "rounds_used": total_rounds,
         "malformed_response_retries": malformed_retries,
+        "output_truncation_retries": truncation_retries,
         "message": (
             "## Task report\n\n"
             f"- Work completed: {len(tool_log)} tool calls returned results.\n"

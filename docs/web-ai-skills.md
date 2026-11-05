@@ -130,6 +130,12 @@ estimate counts UTF-8 bytes of serialized messages and tool schemas, plus an
 overhead allowance, deliberately overestimating ordinary text token counts.
 It is a conservative estimate, not an exact provider tokenizer.
 
+The output reserve applies to each provider response, independently of the
+160-round task ceiling. Provider output-limit stops trigger up to two bounded
+generation retries; the incomplete tool batch is never dispatched and current
+preparation remains active. See [output-limit recovery](ai-providers.md#output-limit-recovery)
+for reasoning-token accounting, diagnostics, and configuration guidance.
+
 Complete active skill instructions and the latest checkpoint are attached to
 every provider request independently of conversation history. They are never
 silently truncated. If mandatory content cannot fit, execution stops with

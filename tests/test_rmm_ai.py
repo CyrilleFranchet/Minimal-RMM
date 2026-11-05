@@ -11,7 +11,7 @@ import rmm_ai
 class AiProviderTests(unittest.TestCase):
     """Validate provider-specific HTTP shapes without live provider credentials."""
 
-    def test_truncated_responses_preserve_text_and_count_rounds(self):
+    def test_truncated_responses_stop_after_bounded_recovery_and_count_rounds(self):
         async def call_tool(name, arguments):
             self.fail("No tools should run")
 
@@ -27,12 +27,13 @@ class AiProviderTests(unittest.TestCase):
                 ))
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["error"], "provider_output_truncated")
-                self.assertEqual(result["message"], "Partial")
-                self.assertEqual(result["rounds_used"], 1)
+                self.assertIn("per-response output limit", result["message"])
+                self.assertEqual(result["rounds_used"], 3)
+                self.assertEqual(result["output_truncation_retries"], 2)
                 now = datetime.now(timezone.utc)
                 report = rmm_ai._append_task_timing(result, now, now)
-                self.assertIn("Rounds consumed: 1 /", report["message"])
-                self.assertIn("Partial", report["message"])
+                self.assertIn("Rounds consumed: 3 /", report["message"])
+                self.assertIn("RMM_AI_OUTPUT_RESERVE", report["message"])
 
     def test_malformed_tool_text_is_rejected_without_execution(self):
         async def call_tool(name, arguments):

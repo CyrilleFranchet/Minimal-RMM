@@ -56,6 +56,15 @@ function setup(api) {
   assert.match(budgetDetails, /70000 \/ 59392/);
   assert.match(budgetDetails, /Tool schema bytes: 23000/);
   assert.ok(!budgetDetails.includes('private-token'));
+  const outputDetails = diagnosticUi.test.formatAiFailureDetails({ result: {
+    error: 'provider_output_truncated', diagnostics: { provider_output: {
+      limit: 4096, completion_tokens: 4096, reasoning_tokens: 4000, retries: 2, private: 'private-token'
+    } }
+  } });
+  assert.match(outputDetails, /Per-response output limit: 4096 tokens/);
+  assert.match(outputDetails, /Reasoning tokens: 4000/);
+  assert.match(outputDetails, /Output recovery retries: 2/);
+  assert.ok(!outputDetails.includes('private-token'));
   diagnosticUi.test.displayAiJob(failed, 'a', diagnosticUi.test.state().token);
   assert.equal(diagnosticUi.test.state().history.filter(m => m.content === 'Partial report').length, 1);
   diagnosticUi.test.displayAiJob({ id: 'step-job', status: 'running', progress: {

@@ -65,3 +65,59 @@ classification, the latest step state, and scoped evidence references. Raw
 exception messages are not used as this failure response. Returned-call records
 mean output was received, not that the remote operation succeeded. Cancellation
 still stops at cooperative checkpoints and does not replay work.
+
+## Output-limit recovery
+
+`provider_output_truncated` means the provider reported `finish_reason=length`
+or `stop_reason=max_tokens`. This is different from the local
+`context_budget_exceeded` input-admission error. The number of task rounds
+remaining does not increase the output allowance for one provider response.
+
+`RMM_AI_OUTPUT_RESERVE` sets that allowance on the central AI worker, with a
+default of 4,096 tokens. For OpenAI reasoning models, the allowance includes
+reasoning as well as visible output, so a small budget can be exhausted before
+a complete tool call appears. See the official
+[Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+The reported task trace alone does not establish which tokens exhausted it.
+
+V2 discards the entire incomplete generation, including complete-looking tool
+calls in an incomplete batch. It retries generation at most twice across the
+entire submitted task, within the existing total round ceiling, with a concise
+current-step instruction. A successful intervening step does not reset that
+recovery allowance. Cancellation is checked at the recovery progress checkpoint
+before another provider request. It does
+not append partial text, JSON, or reasoning blocks to subsequent requests.
+Preparation, full active method bodies, and prior returned results remain in
+place. Recovery neither dispatches the discarded batch nor resubmits prior tool
+calls. This does not guarantee that a model will never independently propose
+a duplicate operation later.
+
+The output limit remains operator-configured; retries do not silently raise it.
+For a reasoning-heavy task, consider 16,384 tokens if the selected model supports
+it and the configured context budget can still fit the prompt, schemas, and
+instructions. A larger reserve reduces available input space and can increase
+latency and cost. Submit a new job after changing the worker setting; a failed
+job is not automatically restarted. Inspect session events before resubmitting
+operations whose outcome is uncertain.
+
+On exhaustion, the response retains `provider_output_truncated`, the correct
+round count, evidence references, and numeric `diagnostics.provider_output`
+fields: configured limit, retries, and available input/output/reasoning counters.
+The UI shows the limit, output/reasoning counts, and recovery attempts without
+rendering provider text or arbitrary diagnostic fields. A truncated response
+with no visible text is never treated as successful task completion.
+
+Implementation: `_run_provider_conversation.request` applies the configured
+limit to all protocols before context admission, so the request-size measurement
+includes that field. Its `retry_truncated` helper preserves preparation and
+discards incomplete output, and `truncated_failure` extracts safe counters.
+`formatAiFailureDetails` renders only the permitted numeric diagnostics.
+
+Verification uses mocked provider responses and local fixture tools. Across
+OpenAI, Anthropic, and Mistral it checks successful recovery, discarded tool
+batches, preservation of preparation and earlier evidence, global exhaustion,
+the last permitted round, cancellation, a nondefault configured reserve, and
+exact request-size accounting. UI checks verify numeric diagnostics and exclusion
+of arbitrary provider text. No provider credentials, live target commands, or
+PCAP capture are used in these tests. A sufficient output allowance for the
+operator's particular live model/task still needs to be configured separately.

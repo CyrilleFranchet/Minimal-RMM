@@ -482,6 +482,14 @@
     const details = [];
     const budget = job.result?.context_budget;
     const counter = value => Number.isSafeInteger(value) && value >= 0;
+    const output = job.result?.diagnostics?.provider_output;
+    if (job.result?.error === "provider_output_truncated" && output) {
+      if (counter(output.limit)) details.push("Per-response output limit: " + output.limit + " tokens");
+      const used = output.completion_tokens ?? output.output_tokens;
+      if (counter(used)) details.push("Provider output tokens: " + used);
+      if (counter(output.reasoning_tokens)) details.push("Reasoning tokens: " + output.reasoning_tokens);
+      if (counter(output.retries)) details.push("Output recovery retries: " + output.retries);
+    }
     if (job.result?.error === "context_budget_exceeded" && budget &&
         counter(budget.estimated_input_upper_bound) && counter(budget.effective_input_limit)) {
       details.push(`Context estimate: ${budget.estimated_input_upper_bound} / ${budget.effective_input_limit} (conservative UTF-8 byte bound)`);
