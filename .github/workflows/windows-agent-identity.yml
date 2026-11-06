@@ -1,0 +1,36 @@
+---
+name: Windows agent identity
+
+"on":
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'agent-go/**'
+      - '.github/workflows/windows-agent-identity.yml'
+  push:
+    branches: [main, v2]
+    paths:
+      - 'agent-go/**'
+      - '.github/workflows/windows-agent-identity.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent-go/go.mod
+          cache: false
+      - name: Test callback isolation, token revocation, and spawn dispatch
+        working-directory: agent-go
+        shell: pwsh
+        run: |
+          $tests = 'Test(Callback|ExplicitRev2self|IdentityBoundary'
+          $tests += '|ServerRequest|SpawnFallback|SpawnWithoutToken'
+          $tests += '|WindowsDetachedSpawn)'
+          go test -buildvcs=false -count=1 -v -run $tests .

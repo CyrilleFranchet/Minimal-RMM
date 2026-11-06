@@ -11,9 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 )
 
@@ -30,23 +32,23 @@ var (
 )
 
 const (
-	logon32LogonInteractive   = 2
-	logon32ProviderDefault    = 0
-	logonWithProfile          = 0x00000001
-	createUnicodeEnv          = 0x00000400
-	detachedProcessFlag       = 0x00000008
-	startfUseStdHandles       = 0x00000100
-	handleFlagInherit         = 0x00000001
-	waitInfinite              = 0xFFFFFFFF
-	errorPrivilegeNotHeld     = syscall.Errno(1314)
-	normalPriorityClassFlag   = 0x00000020
+	logon32LogonInteractive = 2
+	logon32ProviderDefault  = 0
+	logonWithProfile        = 0x00000001
+	createUnicodeEnv        = 0x00000400
+	detachedProcessFlag     = 0x00000008
+	startfUseStdHandles     = 0x00000100
+	handleFlagInherit       = 0x00000001
+	waitInfinite            = 0xFFFFFFFF
+	errorPrivilegeNotHeld   = syscall.Errno(1314)
+	normalPriorityClassFlag = 0x00000020
 )
 
 // spawnasStartupInfoW mirrors STARTUPINFOW (104 bytes on 64-bit Windows).
 // The Go alignment rules produce the correct layout:
 //   - Cb (uint32, 4 bytes) + 4 bytes padding → offset 0
 //   - _reserved (uintptr, 8 bytes) → offset 8
-//   etc.
+//     etc.
 type spawnasStartupInfoW struct {
 	Cb            uint32
 	_reserved     uintptr
@@ -242,14 +244,17 @@ func buildWindowsCmdLine(args []string) string {
 
 // buildEnvBlock converts []string env entries into a UTF-16 double-null-terminated block.
 func buildEnvBlock(env []string) []uint16 {
+	env = append([]string(nil), env...)
+	sort.SliceStable(env, func(i, j int) bool { return strings.ToUpper(env[i]) < strings.ToUpper(env[j]) })
 	var buf []uint16
 	for _, kv := range env {
-		for _, r := range kv {
-			buf = append(buf, uint16(r))
-		}
+		buf = append(buf, utf16.Encode([]rune(kv))...)
 		buf = append(buf, 0)
 	}
 	buf = append(buf, 0)
+	if len(buf) == 1 {
+		buf = append(buf, 0)
+	}
 	return buf
 }
 
@@ -340,7 +345,7 @@ func cascadeSpawnDetached(user, domain, password, executable string, args []stri
 		child1.Stdin = nil
 		child1.Stdout = nil
 		child1.Stderr = nil
-		detachSpawnCommand(child1) // Sets HideWindow=true, CreationFlags=CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS
+		detachSpawnCommand(child1)              // Sets HideWindow=true, CreationFlags=CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS
 		child1.SysProcAttr.Token = primaryToken // Add Token without losing the other flags
 		if startErr := child1.Start(); startErr == nil {
 			pid := uint32(child1.Process.Pid)
@@ -639,4 +644,129 @@ func runasCommand(command string) (string, error) {
 		return fmt.Sprintf("runas error: %v\noutput: %s", err, out), nil
 	}
 	return out, nil
+}
+
+// startDetachedAgent uses the active netonly token, then progressively falls
+// back to APIs with fewer privilege requirements. It never logs credentials.
+func startDetachedAgent(command *exec.Cmd) (int, string, bool, error) {
+	tokenMu.Lock()
+	token, active, credentials := activeToken, tokenActive, spawnCredentials
+	tokenMu.Unlock()
+	active = active && token != 0
+	if active {
+		defer reestablishThreadToken()
+	}
+	executable, err := syscall.UTF16PtrFromString(command.Path)
+	if err != nil {
+		return 0, "", false, err
+	}
+	line := buildWindowsCmdLine(command.Args)
+	for _, entry := range command.Env {
+		if strings.ContainsRune(entry, 0) {
+			return 0, "", false, errors.New("invalid spawn environment")
+		}
+	}
+	env := buildEnvBlock(command.Env)
+	flags := uint32(createUnicodeEnv | detachedProcessFlag | syscall.CREATE_NEW_PROCESS_GROUP)
+	// Each API receives a fresh mutable command line and process information.
+	startWide := func(withToken bool) (int, error) {
+		cmdLine, encodeErr := syscall.UTF16PtrFromString(line)
+		if encodeErr != nil {
+			return 0, encodeErr
+		}
+		si := spawnasStartupInfoW{Cb: uint32(unsafe.Sizeof(spawnasStartupInfoW{})), Flags: 1}
+		var pi spawnasProcessInformation
+		var ok uintptr
+		var callErr error
+		if withToken {
+			ok, _, callErr = procCreateProcessWithTokenW.Call(uintptr(token), 0,
+				uintptr(unsafe.Pointer(executable)), uintptr(unsafe.Pointer(cmdLine)), uintptr(flags),
+				uintptr(unsafe.Pointer(&env[0])), 0, uintptr(unsafe.Pointer(&si)), uintptr(unsafe.Pointer(&pi)))
+		} else {
+			if credentials.user == "" {
+				return 0, errors.New("active logon credentials unavailable")
+			}
+			user, _ := syscall.UTF16PtrFromString(credentials.user)
+			domain, _ := syscall.UTF16PtrFromString(credentials.domain)
+			password, _ := syscall.UTF16PtrFromString(credentials.password)
+			// LOGON_NETCREDENTIALS_ONLY preserves make_token's network-only semantics.
+			ok, _, callErr = procCreateProcessWithLogonW.Call(uintptr(unsafe.Pointer(user)),
+				uintptr(unsafe.Pointer(domain)), uintptr(unsafe.Pointer(password)), 2,
+				uintptr(unsafe.Pointer(executable)), uintptr(unsafe.Pointer(cmdLine)), uintptr(flags),
+				uintptr(unsafe.Pointer(&env[0])), 0, uintptr(unsafe.Pointer(&si)), uintptr(unsafe.Pointer(&pi)))
+		}
+		if ok == 0 {
+			return 0, callErr
+		}
+		_ = syscall.CloseHandle(pi.Thread)
+		_ = syscall.CloseHandle(pi.Process)
+		return int(pi.ProcessId), nil
+	}
+	methods := spawnMethods{}
+	if active {
+		methods.asUser = func() (int, error) {
+			command.SysProcAttr.Token = token
+			if startErr := command.Start(); startErr != nil {
+				return 0, startErr
+			}
+			pid := command.Process.Pid
+			go func() { _ = command.Wait() }()
+			return pid, nil
+		}
+		methods.withToken = func() (int, error) { return startWide(true) }
+		methods.withLogon = func() (int, error) { return startWide(false) }
+	}
+	methods.original = func() (int, error) {
+		app, encodeErr := spawnANSI(command.Path)
+		if encodeErr != nil {
+			return 0, encodeErr
+		}
+		cmdLine, encodeErr := spawnANSI(line)
+		if encodeErr != nil {
+			return 0, encodeErr
+		}
+		si := spawnasStartupInfoW{Cb: uint32(unsafe.Sizeof(spawnasStartupInfoW{})), Flags: 1}
+		var pi spawnasProcessInformation
+		ok, _, callErr := spawnasKernel32.NewProc("CreateProcessA").Call(
+			uintptr(unsafe.Pointer(&app[0])), uintptr(unsafe.Pointer(&cmdLine[0])), 0, 0, 0,
+			uintptr(flags), uintptr(unsafe.Pointer(&env[0])), 0,
+			uintptr(unsafe.Pointer(&si)), uintptr(unsafe.Pointer(&pi)))
+		if ok == 0 {
+			return 0, callErr
+		}
+		_ = syscall.CloseHandle(pi.Thread)
+		_ = syscall.CloseHandle(pi.Process)
+		return int(pi.ProcessId), nil
+	}
+	return dispatchSpawn(active, methods)
+}
+
+// spawnANSI converts paths and arguments to the system ANSI code page without
+// silently substituting characters. The CreateProcessA fallback uses this encoding.
+func spawnANSI(value string) ([]byte, error) {
+	page, _, _ := spawnasKernel32.NewProc("GetACP").Call()
+	if page == 65001 {
+		return syscall.ByteSliceFromString(value)
+	}
+	wide, err := syscall.UTF16FromString(value)
+	if err != nil {
+		return nil, err
+	}
+	convert := spawnasKernel32.NewProc("WideCharToMultiByte")
+	var substituted int32
+	size, _, callErr := convert.Call(0, 0x400, uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)),
+		0, 0, 0, uintptr(unsafe.Pointer(&substituted)))
+	if size == 0 {
+		return nil, callErr
+	}
+	buffer := make([]byte, int(size))
+	written, _, callErr := convert.Call(0, 0x400, uintptr(unsafe.Pointer(&wide[0])), uintptr(len(wide)),
+		uintptr(unsafe.Pointer(&buffer[0])), size, 0, uintptr(unsafe.Pointer(&substituted)))
+	if written == 0 {
+		return nil, callErr
+	}
+	if substituted != 0 {
+		return nil, errors.New("executable path cannot be represented by CreateProcessA")
+	}
+	return buffer, nil
 }

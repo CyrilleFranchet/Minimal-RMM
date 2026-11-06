@@ -28,3 +28,11 @@ test('pending and missing registration never claim success', () => {
   assert.match(context.renderSpawnResult({ registered: false }), /Spawn unconfirmed/);
   assert.match(context.renderSpawnResult({ registered: true, verified: true }), /Verification: confirmed/);
 });
+
+test('spawn summary exposes identity downgrade separately from registration', () => {
+  const html = context.renderSpawnResult({registered:true, verified:true, spawn_method:'CreateProcessA', identity_degraded:true});
+  assert.match(html, /Method: CreateProcessA/);
+  assert.match(html, /WARNING: spawned with the original process identity/);
+  assert.match(html, /Verification: confirmed/);
+  assert.doesNotMatch(context.renderSpawnResult({identity_degraded:false}), /WARNING:/);
+});

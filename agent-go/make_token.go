@@ -4,7 +4,35 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 )
+
+var errIdentityUnsafe = errors.New("agent identity state is unsafe")
+var identityBoundaryFault atomic.Bool
+
+// identityBoundaryFailure makes token-boundary failures terminal for this agent.
+func identityBoundaryFailure(err error) error {
+	identityBoundaryFault.Store(true)
+	return errors.Join(errIdentityUnsafe, err)
+}
+
+// runServerRequest restores the captured thread identity on every exit path.
+// A failure to suspend impersonation prevents the network operation entirely.
+func runServerRequest(operation func() ([]byte, error), suspend func() (func() error, error)) (data []byte, err error) {
+	if identityBoundaryFault.Load() {
+		return nil, errIdentityUnsafe
+	}
+	restore, err := suspend()
+	if err != nil {
+		return nil, identityBoundaryFailure(err)
+	}
+	defer func() {
+		if restoreErr := restore(); restoreErr != nil {
+			err = errors.Join(err, identityBoundaryFailure(restoreErr))
+		}
+	}()
+	return operation()
+}
 
 // makeTokenPayload carries the alternate network identity. It travels as a
 // JSON body on the __MAKE_TOKEN__ beacon command, mirroring __EXFIL__, so a

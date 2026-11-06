@@ -3047,6 +3047,10 @@ class RMMServer:
                    "spawn_pid": int(match.group("pid")) if acknowledged else None,
                    "spawn_output": output, "launch_status": "acknowledged" if acknowledged else "inconclusive",
                    "submission_status": status}
+        context = re.search(r"^spawn method=(CreateProcessAsUser|CreateProcessWithTokenW|CreateProcessWithLogonW|CreateProcessA) identity_degraded=(true|false)$", output, re.MULTILINE)
+        if acknowledged and context:
+            payload["spawn_method"] = context.group(1)
+            payload["identity_degraded"] = context.group(2) == "true"
         return self._verify_deployment(session, spawned_id, payload, verify, register_timeout,
                                        verify_timeout, "parent_responsive", "spawned_responsive")
 

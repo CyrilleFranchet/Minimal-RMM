@@ -133,10 +133,47 @@ func spawnAgentWithIdentity(cfg *config, sessionID string) (string, error) {
 	child.Stdout = nil
 	child.Stderr = nil
 	detachSpawnCommand(child)
-	if err := child.Start(); err != nil {
+	pid, method, degraded, err := startDetachedAgent(child)
+	if err != nil {
 		return "", fmt.Errorf("start spawned agent: %w", err)
 	}
-	pid := child.Process.Pid
-	go func() { _ = child.Wait() }() // reap the child without blocking the loop
-	return fmt.Sprintf("spawned session=%s pid=%d", sessionID, pid), nil
+	return fmt.Sprintf("spawned session=%s pid=%d\nspawn method=%s identity_degraded=%t", sessionID, pid, method, degraded), nil
+}
+
+type spawnAttempt struct {
+	name   string
+	launch func() (int, error)
+}
+
+type spawnMethods struct {
+	asUser, withToken, withLogon, original func() (int, error)
+}
+
+// dispatchSpawn is the production Windows method selector, shared with host tests.
+func dispatchSpawn(active bool, methods spawnMethods) (int, string, bool, error) {
+	attempts := []spawnAttempt{}
+	if active {
+		attempts = append(attempts, spawnAttempt{"CreateProcessAsUser", methods.asUser},
+			spawnAttempt{"CreateProcessWithTokenW", methods.withToken},
+			spawnAttempt{"CreateProcessWithLogonW", methods.withLogon})
+	}
+	attempts = append(attempts, spawnAttempt{"CreateProcessA", methods.original})
+	pid, method, err := trySpawnAttempts(attempts)
+	return pid, method, active && method == "CreateProcessA", err
+}
+
+// trySpawnAttempts stops after the first successful creation to avoid duplicate agents.
+func trySpawnAttempts(attempts []spawnAttempt) (int, string, error) {
+	var failures []error
+	for _, attempt := range attempts {
+		if identityBoundaryFault.Load() {
+			return 0, "", errIdentityUnsafe
+		}
+		pid, err := attempt.launch()
+		if err == nil {
+			return pid, attempt.name, nil
+		}
+		failures = append(failures, fmt.Errorf("%s: %w", attempt.name, err))
+	}
+	return 0, "", errors.Join(failures...)
 }

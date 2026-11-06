@@ -1,10 +1,65 @@
 package main
 
 import (
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestServerRequestRestoresIdentityOnSuccessAndFailure(t *testing.T) {
+	for _, requestErr := range []error{nil, errors.New("transport failed")} {
+		identity := "alternate"
+		data, err := runServerRequest(func() ([]byte, error) {
+			if identity != "process" {
+				t.Fatal("request ran while impersonating")
+			}
+			return []byte("response"), requestErr
+		}, func() (func() error, error) {
+			before := identity
+			identity = "process"
+			return func() error { identity = before; return nil }, nil
+		})
+		if identity != "alternate" || string(data) != "response" || !errors.Is(err, requestErr) {
+			t.Fatalf("identity or result lost: %s %q %v", identity, data, err)
+		}
+	}
+}
+
+func TestServerRequestFailsClosedAndReportsRestoreFailure(t *testing.T) {
+	t.Cleanup(func() { identityBoundaryFault.Store(false) })
+	denied := errors.New("revert denied")
+	_, err := runServerRequest(func() ([]byte, error) { t.Fatal("request must not run"); return nil, nil },
+		func() (func() error, error) { return nil, denied })
+	if !errors.Is(err, denied) {
+		t.Fatal("suspension failure lost")
+	}
+	if !errors.Is(err, errIdentityUnsafe) {
+		t.Fatal("identity failure must be terminal")
+	}
+	identityBoundaryFault.Store(false)
+	transportErr, restoreErr := errors.New("transport"), errors.New("restore")
+	_, err = runServerRequest(func() ([]byte, error) { return nil, transportErr },
+		func() (func() error, error) { return func() error { return restoreErr }, nil })
+	if !errors.Is(err, transportErr) || !errors.Is(err, restoreErr) {
+		t.Fatal("combined failures lost")
+	}
+}
+
+func TestIdentityBoundaryFailureBlocksFurtherRequestsAndCommands(t *testing.T) {
+	t.Cleanup(func() { identityBoundaryFault.Store(false) })
+	identityBoundaryFailure(errors.New("fixture restoration failure"))
+	_, err := runServerRequest(func() ([]byte, error) { t.Fatal("network operation ran"); return nil, nil },
+		func() (func() error, error) { t.Fatal("unsafe agent attempted another boundary"); return nil, nil })
+	if !errors.Is(err, errIdentityUnsafe) {
+		t.Fatal("missing terminal error")
+	}
+	cfg := &config{SleepSeconds: 60}
+	output, _ := execute("__CONFIG__ 5", cfg, nil)
+	if cfg.SleepSeconds != 60 || !strings.Contains(output, errIdentityUnsafe.Error()) {
+		t.Fatal("unsafe agent executed command")
+	}
+}
 
 func TestParseMakeTokenPayloadRequiresJSONBody(t *testing.T) {
 	for _, command := range []string{

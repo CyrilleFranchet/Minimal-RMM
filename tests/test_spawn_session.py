@@ -67,6 +67,14 @@ class SpawnSessionFlowTests(unittest.TestCase):
         self.assertEqual(len(probes), 2)
         self.assertNotEqual(probes[0], probes[1])
 
+    def test_spawn_method_and_identity_downgrade_are_reported(self):
+        self.ack_output = self.handshake() + "\nspawn method=CreateProcessA identity_degraded=true"
+        result, status = self.call()
+        self.assertEqual(status, "ok")
+        self.assertEqual(result["spawn_method"], "CreateProcessA")
+        self.assertTrue(result["identity_degraded"])
+        self.assertTrue(result["verified"])
+
     def test_launch_acknowledgement_without_new_agent_is_not_success(self):
         self.server._await_session_registration.return_value = False
         result, _ = self.call()

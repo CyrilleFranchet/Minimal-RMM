@@ -14,6 +14,61 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Fix identity review findings
+
+- Explicit rev2self now checks the OS result, closes and clears the operator
+  token, and cannot be undone by later restoration helpers. Token replacement
+  reuses the original thread lock. Worker impersonation is cleared on exit.
+- Callback capture/revert/restore failures are terminal: block later network
+  requests, operator commands, and spawn attempts; exit the main loop. Keep
+  threads with uncertain impersonation pinned until their goroutine exits.
+- Test the production spawn selector, permanent Windows revocation, logon-session
+  restoration, and a local proxy Negotiate challenge. Add Windows identity CI.
+  Native Windows runtime and successful integrated-proxy validation remain
+  pending; netonly process credentials remain a separate documented boundary.
+- Host Go tests, Windows cross-builds, project regression checks, and lint pass.
+  Windows identity test binaries compile for amd64 and arm64. The new native
+  suite also launches a short-lived detached fixture; it never starts a beacon.
+
+### 2026-11-06 — Guard all Go server requests against thread impersonation
+
+- Replace the result-only global-state guard with actual calling-thread token
+  capture and checked RevertToSelf at the shared request boundary. Pin the
+  goroutine to its OS thread until response-body close and token restoration.
+- Block requests when capture/revert fails, return restoration failures, and
+  preserve explicit rev2self without reactivating a retained token.
+- Add success/failure isolation tests and a native Windows thread-token smoke
+  test. Document inherited process-token and native plugin boundaries; neither
+  is removed by reverting the calling thread.
+- Validation: `make go-test` passes; the Windows test binaries compile for
+  amd64 and arm64. The native thread-token smoke test and real proxy handshake
+  have not been executed on Windows.
+
+### 2026-11-06 — Ordered detached spawn fallback
+
+- Try CreateProcessAsUser, CreateProcessWithTokenW, CreateProcessWithLogonW
+  (netonly), then CreateProcessA. Stop after the first successful launch.
+- Retain successful make_token credentials in memory for the logon fallback and
+  clear references on explicit rev2self. Never include them in child arguments,
+  environment, logs, or method diagnostics.
+- Report the successful method and identity downgrade through the API and WebUI.
+  Registration verification remains separate from network identity fidelity.
+- Add ordering, early-stop, failure, API metadata, and warning regressions.
+  `make go-test check` passes, including both Windows cross-builds. Native
+  Windows execution remains outstanding.
+
+### 2026-11-06 — Apply active network token to detached spawn
+
+- Apply the active make_token token after detached process configuration when
+  spawning a second Go agent. Restore parent thread impersonation after process
+  creation on success or failure. Keep netonly semantics and report creation
+  failures. The newer ordered-fallback behavior is documented above.
+- Document the distinction from spawnas, inherited-token display limitations,
+  and the need to rebuild deployed agents. Native Windows validation remains
+  outstanding.
+- Validation: `make go-test` passes host Go tests, Windows amd64/arm64
+  cross-builds, TUN tests, and the C stage1 compile check.
+
 ### 2026-11-06 — Complete credential command audit
 
 - Parse interactive CLI credential arguments once, preserving spaces, literal

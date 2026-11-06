@@ -3004,6 +3004,8 @@ function renderSpawnResult(data) {
     `Parent: ${data.parent_session_id || "unknown"}`,
   ];
   if (data.spawn_pid != null) lines.push(`PID: ${data.spawn_pid}`);
+  if (data.spawn_method) lines.push(`Method: ${data.spawn_method}`);
+  if (data.identity_degraded) lines.push("WARNING: spawned with the original process identity; make_token credentials were not carried into the child.");
   if (data.registered_hostname) lines.push(`Host: ${data.registered_hostname}`);
   lines.push(`Registration: ${status(data.registered)}`,
     `Parent response: ${status(data.parent_responsive)}`,

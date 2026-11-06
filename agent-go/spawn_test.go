@@ -138,3 +138,47 @@ func TestSpawnCommandRejectsInvalidOrReusedIdentityBeforeLaunching(t *testing.T)
 		t.Fatalf("legacy spawn must generate a fresh identity with the current owner: %#v %q %v", child, sessionID, err)
 	}
 }
+
+func TestSpawnFallbackStopsAtFirstSuccess(t *testing.T) {
+	names := []string{"CreateProcessAsUser", "CreateProcessWithTokenW", "CreateProcessWithLogonW", "CreateProcessA"}
+	for success := range names {
+		calls := []string{}
+		launch := func(index int) func() (int, error) {
+			return func() (int, error) {
+				calls = append(calls, names[index])
+				if index == success {
+					return 42, nil
+				}
+				return 0, os.ErrPermission
+			}
+		}
+		pid, method, degraded, err := dispatchSpawn(true, spawnMethods{launch(0), launch(1), launch(2), launch(3)})
+		if err != nil || pid != 42 || method != names[success] || len(calls) != success+1 || degraded != (success == 3) {
+			t.Fatalf("wrong fallback behavior: pid=%d method=%s calls=%v degraded=%t err=%v", pid, method, calls, degraded, err)
+		}
+		for i := range calls {
+			if calls[i] != names[i] {
+				t.Fatalf("wrong attempt order: %v", calls)
+			}
+		}
+	}
+}
+
+func TestSpawnWithoutTokenSkipsIdentityMethods(t *testing.T) {
+	forbidden := func() (int, error) { t.Fatal("identity method ran without a token"); return 0, nil }
+	pid, method, degraded, err := dispatchSpawn(false, spawnMethods{forbidden, forbidden, forbidden, func() (int, error) { return 42, nil }})
+	if err != nil || pid != 42 || method != "CreateProcessA" || degraded {
+		t.Fatalf("unexpected default spawn: %d %s %t %v", pid, method, degraded, err)
+	}
+}
+
+func TestSpawnFallbackReportsEveryFailure(t *testing.T) {
+	attempts := []spawnAttempt{
+		{"CreateProcessAsUser", func() (int, error) { return 0, os.ErrPermission }},
+		{"CreateProcessA", func() (int, error) { return 0, os.ErrNotExist }},
+	}
+	pid, method, err := trySpawnAttempts(attempts)
+	if pid != 0 || method != "" || err == nil || !strings.Contains(err.Error(), "CreateProcessAsUser") || !strings.Contains(err.Error(), "CreateProcessA") {
+		t.Fatalf("missing failure details: pid=%d method=%s err=%v", pid, method, err)
+	}
+}

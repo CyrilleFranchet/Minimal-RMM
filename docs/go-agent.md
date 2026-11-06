@@ -142,6 +142,33 @@ with the requested ID and owner. `spawnEnvironment` replaces inherited runtime
 connection settings and workspace binding. Bare `__SPAWN__` remains supported
 for legacy direct commands and generates a new identity locally.
 
+On Windows, `startDetachedAgent` tries CreateProcessAsUser, then
+CreateProcessWithTokenW, then CreateProcessWithLogonW with
+LOGON_NETCREDENTIALS_ONLY, then CreateProcessA. The first two use the active
+make_token token. The third uses its credentials retained in agent memory;
+explicit rev2self clears those credential references. Clearing Go strings does
+not guarantee memory zeroization. Credentials never enter child arguments,
+environment, or logs. Without an active token, only CreateProcessA is used.
+
+`trySpawnAttempts` stops after the first successful launch and aggregates errors
+if every method fails. The last fallback uses the original process identity:
+the API exposes `spawn_method` and `identity_degraded`, and WebUI warns when
+alternate network credentials were lost. Registration and response checks do
+not verify network identity. Parent thread impersonation is restored after the
+cascade when initially active. `/spawnas` changes the local process account.
+`spawnANSI` converts fallback arguments to the system ANSI code page (including
+UTF-8 systems) and rejects unrepresentable characters. `buildEnvBlock` sorts
+entries and preserves UTF-16 surrogate pairs.
+
+This changes the Go agent binary and requires rebuilding and
+deploying the agent; updating only the server does not update running agents.
+
+The child's inherited process token is independent of the parent's subsequent
+`rev2self`. It does not populate the child's in-memory `make_token` label, so
+`/uid`'s active network-identity line is not proof of inherited credentials.
+Confirm outbound authentication against an authorized network service. Native
+Windows validation of token inheritance remains required.
+
 The agent acknowledgment (`spawned session=<id> pid=<pid>`) proves process
 creation only. The server's `_new_deployment_id` and `_verify_deployment` require
 the expected new session to register under the source workspace before returning
@@ -165,6 +192,49 @@ WebUI `/spawn`, MCP/AI `spawn_session`. The request budgets are `spawn_timeout`,
 `register_timeout`, and `verify_timeout` for each probe.
 
 ### Alternate network identity (`__MAKE_TOKEN__` / `__REV2SELF__`)
+
+All Go-managed server requests enter `requestContext` and `runServerRequest`.
+On Windows, `suspendServerIdentity` locks the calling goroutine to its OS thread,
+opens that thread's actual impersonation token with OpenAsSelf, and checks
+RevertToSelf before allowing any request work. It retains the clean thread
+through request construction, transport, response-body reads, and body close.
+The captured token is restored and closed on success, cancellation, or error.
+Capture/revert failures block the request; restore failures are returned.
+
+Capture, revert, or restore failure sets a terminal identity fault. Further
+requests, operator commands, and spawn attempts are rejected, and the agent loop
+exits rather than continuing with uncertain identity state. An uncertain thread
+is kept pinned so it cannot return to the scheduler's reusable thread pool.
+
+The guard does not reactivate revoked tokens when the thread was not
+impersonating. Explicit rev2self checks RevertToSelf, closes and clears the
+operator token and credentials, and cannot be undone by restoration helpers.
+Token replacement reuses the existing thread lock. Worker goroutines apply the
+enabled token on their own pinned thread and clear it before releasing that
+thread; they do not change the global enabled-state flag.
+
+The guard covers registration, polling, results,
+file transfer, rclone bootstrap, and plugin artifact downloads through the common
+request path. The former result-only guard left other paths uncovered.
+Non-Windows host tests use a no-op suspension adapter. `requestAsProcess`
+contains the guarded HTTP implementation.
+
+This isolates thread credentials, not inherited process credentials. An agent
+started with a netonly process token still carries those network credentials
+after RevertToSelf. Native plugin callback implementations are separate from
+the Go request guard and require their own validation. The standard Go HTTP
+transport here does not implement automatic Windows integrated proxy login.
+Native Windows proxy authentication must be tested before claiming end-to-end
+credential isolation.
+
+The Windows identity workflow (`.github/workflows/windows-agent-identity.yml`)
+runs the real thread-token, permanent revocation, proxy-407 challenge, and
+production spawn-dispatch tests on Windows Server 2022. The proxy test checks
+that the standard Go transport does not send ambient credentials in response to
+Negotiate; it does not test an SSPI-enabled proxy transport. `dispatchSpawn`
+selects the actual production API order from `spawnMethods`, allowing host tests
+to exercise early success, fallback, and no-token selection without launching
+agents. `identityBoundaryFailure` records the terminal identity fault.
 
 The Go agent can adopt another identity for outbound network
 authentication, with the same semantics as `runas /netonly`: spawned

