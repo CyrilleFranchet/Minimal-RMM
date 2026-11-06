@@ -147,6 +147,38 @@ function setup(api, blocked = false) {
   await resolved.window.startBloodHoundHealth();
   assert.equal(resolved.resetButton.classList.contains('hidden'), true);
 
+  // Pending and failed ensure responses still carry authoritative runtime snapshots.
+  for (const [status, runtime] of [
+    [202, { state: 'checking', mcp_status: 'connecting' }],
+    [202, { state: 'starting', mcp_status: 'verified', container: 'lab' }],
+    [503, { state: 'failed', mcp_status: 'error', error: 'exegol_mcp_authentication_failed' }],
+    [503, { state: 'failed', mcp_status: 'error', error: 'exegol_mcp_connection_failed' }],
+  ]) {
+    for (const relayed of [false, true]) {
+      let requests = 0;
+      const health = setup(async (_route, options) => {
+        const body = JSON.parse(options.body);
+        requests += 1;
+        if (relayed && requests === 1) {
+          return { status: 202, data: { workspace_request_id: 'c'.repeat(32) } };
+        }
+        assert.equal(body.action, relayed ? 'result' : 'ensure');
+        return { status, data: { runtime, ...(runtime.error ? { error: runtime.error } : {}) } };
+      });
+      await health.window.startBloodHoundHealth();
+      assert.equal(requests, relayed ? 2 : 1);
+      assert.match(health.mcpStatus.textContent, new RegExp(`Exegol MCP: ${runtime.mcp_status}`));
+      assert.ok(!health.readiness.textContent.includes('workspace did not respond'));
+      if (runtime.error) assert.ok(health.readiness.textContent.includes(runtime.error));
+      assert.equal(health.mcpLabel.dataset.state,
+        runtime.error ? 'error' : runtime.mcp_status === 'verified' ? 'ready' : 'checking');
+    }
+  }
+
+  const missingRuntime = setup(async () => ({ status: 202, data: {} }));
+  await missingRuntime.window.startBloodHoundHealth();
+  assert.match(missingRuntime.readiness.textContent, /workspace did not respond/);
+
   // Clicking retry clears the stuck dispatch and immediately re-attempts the open flow.
   const retryActions = [];
   const retry = setup(async (route, options) => {

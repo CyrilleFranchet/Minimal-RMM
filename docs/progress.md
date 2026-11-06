@@ -14,6 +14,14 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Preserve pending MCP connection status
+
+- Fixed the WebUI connection monitor discarding valid HTTP 202 runtime
+  snapshots and reporting that the workspace did not respond. HTTP 503
+  snapshots now retain the runtime's MCP status and diagnostic error.
+- Added UI regressions for checking, starting, failed, and missing snapshots.
+  Live endpoint connectivity remains unverified.
+
 ### 2026-11-05 — Update retained skill references and metadata
 
 - Updated default metadata for deployment, BloodHound, pivot, lateral movement,
