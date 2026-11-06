@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -648,7 +649,7 @@ func runasCommand(command string) (string, error) {
 
 // startDetachedAgent uses the active netonly token, then progressively falls
 // back to APIs with fewer privilege requirements. It never logs credentials.
-func startDetachedAgent(command *exec.Cmd) (int, string, bool, error) {
+func startDetachedAgent(command *exec.Cmd, diagnostics ...*spawnDiagnostics) (int, string, bool, error) {
 	tokenMu.Lock()
 	token, active, credentials := activeToken, tokenActive, spawnCredentials
 	tokenMu.Unlock()
@@ -668,6 +669,20 @@ func startDetachedAgent(command *exec.Cmd) (int, string, bool, error) {
 	}
 	env := buildEnvBlock(command.Env)
 	flags := uint32(createUnicodeEnv | detachedProcessFlag | syscall.CREATE_NEW_PROCESS_GROUP)
+	if len(diagnostics) > 0 && diagnostics[0] != nil {
+		detail := diagnostics[0]
+		detail.ProcessIdentity = processUserIdentity()
+		detail.ActiveToken, detail.CredentialsAvailable = active, active && credentials.user != ""
+		detail.CreationFlags, detail.TokenType = flags, "none"
+		if processToken, openErr := syscall.OpenCurrentProcessToken(); openErr == nil {
+			detail.ProcessPrivileges = spawnTokenPrivileges(processToken)
+			_ = processToken.Close()
+		}
+		if active {
+			detail.TokenType = spawnTokenType(token)
+			detail.TokenPrivileges = spawnTokenPrivileges(token)
+		}
+	}
 	// Each API receives a fresh mutable command line and process information.
 	startWide := func(withToken bool) (int, error) {
 		cmdLine, encodeErr := syscall.UTF16PtrFromString(line)
@@ -684,7 +699,7 @@ func startDetachedAgent(command *exec.Cmd) (int, string, bool, error) {
 				uintptr(unsafe.Pointer(&env[0])), 0, uintptr(unsafe.Pointer(&si)), uintptr(unsafe.Pointer(&pi)))
 		} else {
 			if credentials.user == "" {
-				return 0, errors.New("active logon credentials unavailable")
+				return 0, errSpawnCredentialsUnavailable
 			}
 			user, _ := syscall.UTF16PtrFromString(credentials.user)
 			domain, _ := syscall.UTF16PtrFromString(credentials.domain)
@@ -738,7 +753,7 @@ func startDetachedAgent(command *exec.Cmd) (int, string, bool, error) {
 		_ = syscall.CloseHandle(pi.Process)
 		return int(pi.ProcessId), nil
 	}
-	return dispatchSpawn(active, methods)
+	return dispatchSpawn(active, methods, diagnostics...)
 }
 
 // spawnANSI converts paths and arguments to the system ANSI code page without
@@ -769,4 +784,72 @@ func spawnANSI(value string) ([]byte, error) {
 		return nil, errors.New("executable path cannot be represented by CreateProcessA")
 	}
 	return buffer, nil
+}
+
+// spawnTokenType reports the supplied handle's token kind without exposing it.
+func spawnTokenType(token syscall.Token) string {
+	var kind, size uint32
+	ok, _, _ := advapi32.NewProc("GetTokenInformation").Call(uintptr(token), 8,
+		uintptr(unsafe.Pointer(&kind)), 4, uintptr(unsafe.Pointer(&size)))
+	if ok == 0 {
+		return "unknown"
+	}
+	switch kind {
+	case 1:
+		return "primary"
+	case 2:
+		return "impersonation"
+	}
+	return "unknown"
+}
+
+// spawnTokenPrivileges captures only process-creation privilege names and state.
+// It never enables privileges or includes token handles or credential material.
+func spawnTokenPrivileges(token syscall.Token) map[string]string {
+	names := []string{"SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege", "SeImpersonatePrivilege"}
+	states := map[string]string{}
+	for _, name := range names {
+		states[name] = "unknown"
+	}
+	query := advapi32.NewProc("GetTokenInformation")
+	var size uint32
+	query.Call(uintptr(token), 3, 0, 0, uintptr(unsafe.Pointer(&size)))
+	if size < 4 || size > 1<<20 {
+		return states
+	}
+	buffer := make([]byte, int(size))
+	ok, _, _ := query.Call(uintptr(token), 3, uintptr(unsafe.Pointer(&buffer[0])), uintptr(size), uintptr(unsafe.Pointer(&size)))
+	if ok == 0 {
+		return states
+	}
+	count := binary.LittleEndian.Uint32(buffer[:4])
+	if uint64(count)*12+4 > uint64(len(buffer)) {
+		return states
+	}
+	for _, name := range names {
+		text, _ := syscall.UTF16PtrFromString(name)
+		var luid [2]uint32
+		ok, _, _ := advapi32.NewProc("LookupPrivilegeValueW").Call(0,
+			uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(&luid[0])))
+		if ok == 0 {
+			continue
+		}
+		states[name] = "absent"
+		for i := uint32(0); i < count; i++ {
+			offset := 4 + int(i)*12
+			if binary.LittleEndian.Uint32(buffer[offset:]) != luid[0] || binary.LittleEndian.Uint32(buffer[offset+4:]) != luid[1] {
+				continue
+			}
+			attributes := binary.LittleEndian.Uint32(buffer[offset+8:])
+			states[name] = "disabled"
+			if attributes&2 != 0 {
+				states[name] = "enabled"
+			}
+			if attributes&4 != 0 {
+				states[name] = "removed"
+			}
+			break
+		}
+	}
+	return states
 }

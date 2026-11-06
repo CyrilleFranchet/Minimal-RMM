@@ -170,6 +170,9 @@ are excluded from history-based completion suggestions.
 
 `/spawn` shows the new session ID, parent ID, optional PID and hostname,
 and registration status, plus the creation method and identity-downgrade warning.
+When available, it also lists each attempted process-creation method and its
+numeric Windows failure code and message, including failures before a successful
+fallback. Token type and privilege snapshots are in Response details (JSON).
 `renderSpawnResult` escapes response values and keeps the full API response in
 a collapsed **Response details (JSON)** section for troubleshooting. No additional
 verification command is executed on either session.

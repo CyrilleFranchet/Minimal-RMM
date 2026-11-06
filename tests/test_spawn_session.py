@@ -1,5 +1,6 @@
 """Verify the spawn_session server flow and REST routing without live agents."""
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -71,6 +72,27 @@ class SpawnSessionFlowTests(unittest.TestCase):
         self.assertEqual(result["spawn_method"], "CreateProcessA")
         self.assertTrue(result["identity_degraded"])
         self.assertTrue(result["verified"])
+
+    def test_spawn_failure_diagnostics_survive_a_successful_fallback(self):
+        detail = {"active_token": True, "credentials_available": True, "token_type": "primary",
+                  "process_identity": "LAB\\operator", "password": "must-not-be-projected",
+                  "process_privileges": {"SeImpersonatePrivilege": "absent", "unknown": "enabled"},
+                  "attempts": [{"method": "CreateProcessAsUser", "success": False, "error_code": 1314, "error": "privilege not held"},
+                               {"method": "CreateProcessA", "success": True}]}
+        self.ack_output = self.handshake() + "\nspawn diagnostics=" + json.dumps(detail)
+        result, _ = self.call()
+        self.assertEqual(result["spawn_diagnostics"]["attempts"][0]["error_code"], 1314)
+        self.assertTrue(result["spawn_diagnostics"]["attempts"][1]["success"])
+        self.assertNotIn("password", result["spawn_diagnostics"])
+        self.assertEqual(result["spawn_diagnostics"]["process_privileges"], {"SeImpersonatePrivilege": "absent"})
+
+    def test_malformed_spawn_diagnostics_do_not_break_registration(self):
+        for detail in ([], {"attempts": [{}]}, {"attempts": [{"method": [], "success": False}]},
+                       {"attempts": [{"method": "CreateProcessA", "success": True, "error_code": True}]}):
+            self.ack_output = self.handshake() + "\nspawn diagnostics=" + json.dumps(detail)
+            result, _ = self.call()
+            self.assertTrue(result["registered"])
+            self.assertNotIn("spawn_diagnostics", result)
 
     def test_launch_acknowledgement_without_new_agent_is_not_success(self):
         self.server._await_session_registration.return_value = False

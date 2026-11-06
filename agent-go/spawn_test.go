@@ -1,12 +1,41 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 )
+
+func TestSpawnDiagnosticsRetainFailuresAfterSuccessfulFallback(t *testing.T) {
+	detail := &spawnDiagnostics{}
+	methods := spawnMethods{
+		asUser: func() (int, error) {
+			return 0, &os.PathError{Op: "fork/exec", Path: "private-path", Err: syscall.Errno(1314)}
+		},
+		withToken: func() (int, error) { return 0, errors.New("private-error-content") },
+		withLogon: func() (int, error) { return 0, errSpawnCredentialsUnavailable },
+		original:  func() (int, error) { return 42, nil },
+	}
+	pid, method, degraded, err := dispatchSpawn(true, methods, detail)
+	if err != nil || pid != 42 || method != "CreateProcessA" || !degraded || len(detail.Attempts) != 4 {
+		t.Fatalf("lost attempt diagnostics: %#v %v", detail, err)
+	}
+	if detail.Attempts[0].ErrorCode != 1314 || detail.Attempts[0].Success {
+		t.Fatal("lost Windows privilege error")
+	}
+	if detail.Attempts[2].Error != errSpawnCredentialsUnavailable.Error() || !detail.Attempts[3].Success {
+		t.Fatal("lost credential availability or success result")
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil || strings.Contains(string(encoded), "private-") {
+		t.Fatal("diagnostics exposed raw error context")
+	}
+}
 
 // The server accepts only these beacon session identifiers.
 var tokenSafeSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)

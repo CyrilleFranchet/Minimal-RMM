@@ -3034,6 +3034,43 @@ class RMMServer:
         if acknowledged and context:
             payload["spawn_method"] = context.group(1)
             payload["identity_degraded"] = context.group(2) == "true"
+        for line in output.splitlines():
+            if not line.startswith("spawn diagnostics=") or len(line) > 16384:
+                continue
+            try:
+                diagnostics = json.loads(line.removeprefix("spawn diagnostics="))
+            except (ValueError, TypeError):
+                continue
+            methods = {"CreateProcessAsUser", "CreateProcessWithTokenW", "CreateProcessWithLogonW", "CreateProcessA"}
+            if not isinstance(diagnostics, dict):
+                continue
+            attempts = diagnostics.get("attempts")
+            if not isinstance(attempts, list) or not 1 <= len(attempts) <= 4:
+                continue
+            if any(not isinstance(item, dict) or not isinstance(item.get("method"), str) or item.get("method") not in methods
+                   or type(item.get("success")) is not bool
+                   or type(item.get("error_code", 0)) is not int
+                   or not 0 <= item.get("error_code", 0) <= 0xffffffff
+                   or not isinstance(item.get("error", ""), str) for item in attempts):
+                continue
+            detail = {"attempts": [{key: item[key] for key in ("method", "success", "error_code", "error") if key in item}
+                                   for item in attempts]}
+            for key in ("active_token", "credentials_available"):
+                if type(diagnostics.get(key)) is bool:
+                    detail[key] = diagnostics[key]
+            for key in ("process_identity", "token_type"):
+                if isinstance(diagnostics.get(key), str):
+                    detail[key] = diagnostics[key][:256]
+            if type(diagnostics.get("creation_flags")) is int and 0 <= diagnostics["creation_flags"] <= 0xffffffff:
+                detail["creation_flags"] = diagnostics["creation_flags"]
+            for key in ("process_privileges", "token_privileges"):
+                values = diagnostics.get(key)
+                if isinstance(values, dict):
+                    detail[key] = {name: state for name, state in values.items()
+                                   if name in {"SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege", "SeImpersonatePrivilege"}
+                                   and isinstance(state, str) and state in {"enabled", "disabled", "absent", "removed", "unknown"}}
+            payload["spawn_diagnostics"] = detail
+            break
         return self._verify_deployment(session, spawned_id, payload, verify, register_timeout)
 
     @staticmethod

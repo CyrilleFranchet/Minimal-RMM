@@ -160,6 +160,24 @@ cascade when initially active. `/spawnas` changes the local process account.
 UTF-8 systems) and rejects unrepresentable characters. `buildEnvBlock` sorts
 entries and preserves UTF-16 surrogate pairs.
 
+The acknowledgment also carries a `spawn diagnostics=` JSON line. The
+`spawnDiagnostics` record contains ordered `spawnAttemptDiagnostic` entries,
+including successful fallback and preceding failures. Numeric Windows errors
+are extracted through wrapped errors; messages come from the Windows error
+code rather than raw command/path errors. Credential-unavailable failures have
+an explicit message. Passwords and token handles are never included or logged.
+
+The server exposes validated fields under `spawn_diagnostics`. WebUI lists each
+attempt and its error code; the full response includes process identity,
+credential availability, creation flags, token kind (`spawnTokenType`), and
+read-only process/active-token privilege snapshots (`spawnTokenPrivileges`).
+Only SeAssignPrimaryTokenPrivilege, SeIncreaseQuotaPrivilege, and
+SeImpersonatePrivilege are queried. States are enabled, disabled, absent,
+removed, or unknown. Disabled is not equivalent to absent: Windows APIs may
+temporarily enable privileges already held by the caller. Diagnostics do not
+enable privileges or change process creation behavior. A rebuilt agent is
+required; errors discarded by an older run cannot be recovered afterward.
+
 This changes the Go agent binary and requires rebuilding and
 deploying the agent; updating only the server does not update running agents.
 

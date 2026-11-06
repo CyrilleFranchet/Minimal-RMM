@@ -35,3 +35,13 @@ test('spawn summary exposes identity downgrade separately from registration', ()
   assert.match(html, /Registration: confirmed/);
   assert.doesNotMatch(context.renderSpawnResult({identity_degraded:false}), /WARNING:/);
 });
+
+test('spawn summary includes failures before successful fallback with escaped errors', () => {
+  const html = context.renderSpawnResult({spawn_diagnostics:{attempts:[
+    {method:'CreateProcessAsUser',success:false,error_code:1314,error:'<privilege error>'},
+    {method:'CreateProcessA',success:true}
+  ]}});
+  assert.match(html, /CreateProcessAsUser: failed \(Windows 1314\): &lt;privilege error&gt;/);
+  assert.match(html, /CreateProcessA: started/);
+  assert.doesNotMatch(html, /<privilege error>/);
+});

@@ -14,6 +14,20 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Preserve spawn fallback diagnostics
+
+- Return every attempted method's success or numeric Windows error and message,
+  even when a later fallback succeeds. Add process identity, active token type,
+  credential availability, creation flags, and read-only privilege snapshots.
+- Send diagnostics only in the normal command result, not the agent log. Do not
+  include passwords, alternate credential values, token handles, or raw errors.
+  The API validates and projects known fields; WebUI escapes failure details.
+- Regression checks cover wrapped Windows errors, successful fallback, malformed
+  diagnostic payloads, and HTML escaping. `make go-test check` passes; native
+  Windows tests compile for amd64 and arm64 but have not been executed here.
+- The original run's discarded errors cannot be recovered. A fresh spawn with a
+  rebuilt agent is needed to identify the failures on the affected host.
+
 ### 2026-11-06 — Remove deployment response probes
 
 - Confirm spawn, spawnas, and lateral deployment through the expected session's

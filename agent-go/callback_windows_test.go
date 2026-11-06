@@ -194,3 +194,20 @@ func TestWindowsDetachedSpawn(t *testing.T) {
 		}
 	}
 }
+
+func TestCallbackSpawnDiagnosticsReadOnly(t *testing.T) {
+	token, err := syscall.OpenCurrentProcessToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer token.Close()
+	if kind := spawnTokenType(token); kind != "primary" {
+		t.Fatalf("unexpected process token type: %s", kind)
+	}
+	states := spawnTokenPrivileges(token)
+	for _, name := range []string{"SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege", "SeImpersonatePrivilege"} {
+		if states[name] != "enabled" && states[name] != "disabled" && states[name] != "absent" && states[name] != "removed" {
+			t.Fatalf("privilege query failed for %s", name)
+		}
+	}
+}

@@ -24,7 +24,7 @@ func detachSpawnCommand(command *exec.Cmd) {
 }
 
 // startDetachedAgent supports host-side tests; managed agents remain Windows-only.
-func startDetachedAgent(command *exec.Cmd) (int, string, bool, error) {
+func startDetachedAgent(command *exec.Cmd, diagnostics ...*spawnDiagnostics) (int, string, bool, error) {
 	if err := command.Start(); err != nil {
 		return 0, "", false, err
 	}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -133,12 +134,34 @@ func spawnAgentWithIdentity(cfg *config, sessionID string) (string, error) {
 	child.Stdout = nil
 	child.Stderr = nil
 	detachSpawnCommand(child)
-	pid, method, degraded, err := startDetachedAgent(child)
+	diagnostics := &spawnDiagnostics{}
+	pid, method, degraded, err := startDetachedAgent(child, diagnostics)
+	detail, _ := json.Marshal(diagnostics)
 	if err != nil {
-		return "", fmt.Errorf("start spawned agent: %w", err)
+		return "", fmt.Errorf("start spawned agent: %w\nspawn diagnostics=%s", err, detail)
 	}
-	return fmt.Sprintf("spawned session=%s pid=%d\nspawn method=%s identity_degraded=%t", sessionID, pid, method, degraded), nil
+	return fmt.Sprintf("spawned session=%s pid=%d\nspawn method=%s identity_degraded=%t\nspawn diagnostics=%s", sessionID, pid, method, degraded, detail), nil
 }
+
+type spawnAttemptDiagnostic struct {
+	Method    string `json:"method"`
+	Success   bool   `json:"success"`
+	ErrorCode uint32 `json:"error_code,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type spawnDiagnostics struct {
+	ProcessIdentity      string                   `json:"process_identity,omitempty"`
+	ActiveToken          bool                     `json:"active_token"`
+	TokenType            string                   `json:"token_type,omitempty"`
+	CredentialsAvailable bool                     `json:"credentials_available"`
+	CreationFlags        uint32                   `json:"creation_flags,omitempty"`
+	ProcessPrivileges    map[string]string        `json:"process_privileges,omitempty"`
+	TokenPrivileges      map[string]string        `json:"token_privileges,omitempty"`
+	Attempts             []spawnAttemptDiagnostic `json:"attempts"`
+}
+
+var errSpawnCredentialsUnavailable = errors.New("active logon credentials unavailable")
 
 type spawnAttempt struct {
 	name   string
@@ -150,7 +173,7 @@ type spawnMethods struct {
 }
 
 // dispatchSpawn is the production Windows method selector, shared with host tests.
-func dispatchSpawn(active bool, methods spawnMethods) (int, string, bool, error) {
+func dispatchSpawn(active bool, methods spawnMethods, diagnostics ...*spawnDiagnostics) (int, string, bool, error) {
 	attempts := []spawnAttempt{}
 	if active {
 		attempts = append(attempts, spawnAttempt{"CreateProcessAsUser", methods.asUser},
@@ -158,18 +181,36 @@ func dispatchSpawn(active bool, methods spawnMethods) (int, string, bool, error)
 			spawnAttempt{"CreateProcessWithLogonW", methods.withLogon})
 	}
 	attempts = append(attempts, spawnAttempt{"CreateProcessA", methods.original})
-	pid, method, err := trySpawnAttempts(attempts)
+	pid, method, err := trySpawnAttempts(attempts, diagnostics...)
 	return pid, method, active && method == "CreateProcessA", err
 }
 
 // trySpawnAttempts stops after the first successful creation to avoid duplicate agents.
-func trySpawnAttempts(attempts []spawnAttempt) (int, string, error) {
+func trySpawnAttempts(attempts []spawnAttempt, diagnostics ...*spawnDiagnostics) (int, string, error) {
 	var failures []error
 	for _, attempt := range attempts {
 		if identityBoundaryFault.Load() {
 			return 0, "", errIdentityUnsafe
 		}
 		pid, err := attempt.launch()
+		if len(diagnostics) > 0 && diagnostics[0] != nil {
+			result := spawnAttemptDiagnostic{Method: attempt.name, Success: err == nil}
+			if err != nil {
+				var code syscall.Errno
+				switch {
+				case errors.As(err, &code):
+					result.ErrorCode, result.Error = uint32(code), code.Error()
+					if code == 0 {
+						result.Error = "process creation failed without a Windows error code"
+					}
+				case errors.Is(err, errSpawnCredentialsUnavailable):
+					result.Error = errSpawnCredentialsUnavailable.Error()
+				default:
+					result.Error = "process creation failed"
+				}
+			}
+			diagnostics[0].Attempts = append(diagnostics[0].Attempts, result)
+		}
 		if err == nil {
 			return pid, attempt.name, nil
 		}
