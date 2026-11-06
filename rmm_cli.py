@@ -2941,7 +2941,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_agent_go.add_argument("--goos", default="windows", choices=["windows"])
     sp_agent_go.add_argument("--goarch", default="amd64", choices=["amd64", "arm64"])
     sp_agent_go.add_argument("--no-server-config", action="store_true", help="Build a generic agent without embedded connection settings")
-    sp_agent_go.add_argument("--stageless", action="store_true", help="Skip building the psexec stage1 launcher (smaller binary, no lateral movement support)")
+    sp_agent_go.add_argument("--stageless", action="store_true", help="Embed the Go agent directly in the ZIP instead of staging it. Default: return a small stage1 launcher (~20 KB) that fetches the agent from the server at runtime.")
     sp_agent_go.add_argument("--workspace-id", help="Administrator-selected owner; workspace authentication binds this automatically")
     sp_agent_go.set_defaults(func=cmd_agent)
 

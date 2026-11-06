@@ -198,8 +198,8 @@
                   <option value="amd64">amd64</option>
                   <option value="arm64">arm64</option>
               </select>
-              <label for="agent-go-stageless" title="Skip building the psexec stage1 launcher. Use when lateral movement is not needed or the target environment lacks ADMIN$ write access.">
-                <input type="checkbox" id="agent-go-stageless"> Stageless (no stage1)
+              <label for="agent-go-stageless" title="Unchecked (default): return a small stage1 launcher (~20 KB) that fetches the Go agent from the server at runtime. Checked: embed the full Go agent in the ZIP directly (no staging server required).">
+                <input type="checkbox" id="agent-go-stageless"> Stageless (full agent in ZIP)
               </label>
             </div>
             <div class="agent-gen-actions">

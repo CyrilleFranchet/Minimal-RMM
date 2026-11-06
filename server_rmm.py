@@ -596,8 +596,17 @@ def render_configured_client_script(
     return rendered
 
 
-def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None, stageless: bool = False) -> dict:
-    """Build a fixed repository Go agent for one allowlisted OS and architecture."""
+def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None, stageless: bool = False, staging_fn=None) -> dict:
+    """Build a fixed repository Go agent for one allowlisted OS and architecture.
+
+    Staged build (default, stageless=False, staging_fn provided):
+      Compiles the Go agent as stage2, stores it in the staging endpoint, compiles
+      the minimal C stage1 launcher, and returns a ZIP containing stage1.exe and a
+      PowerShell launcher with the staging ID and session ID pre-filled.
+
+    Stageless build (stageless=True or staging_fn not provided):
+      Returns the full Go agent binary directly in the ZIP (current behaviour).
+    """
     goos = str(goos or "").strip().lower()
     goarch = str(goarch or "").strip().lower()
     if (goos, goarch) not in GO_AGENT_TARGETS:
@@ -617,6 +626,11 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
         config_values[key] = value[:4096]
     if config_values["session_id"] and not validate_beacon_session_id(config_values["session_id"]):
         raise ValueError("invalid session id")
+    # Staged builds (not stageless) need a fixed session ID so the launcher
+    # script can pass it to stage1.  Generate one now if the caller did not.
+    is_staged = goos == "windows" and not stageless and staging_fn is not None
+    if is_staged and not config_values["session_id"]:
+        config_values["session_id"] = secrets.token_hex(16)
     if config_values["workspace_id"] and not valid_workspace_id(config_values["workspace_id"]):
         raise ValueError("invalid workspace id")
     try:
@@ -767,6 +781,70 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "build failed").strip()
         raise RuntimeError(detail[-4000:])
+    if is_staged:
+        # --- Staged build: C stage1 launcher + Go agent stored as stage2 ---
+        # Register the Go agent binary in the staging endpoint so stage1 can
+        # fetch it at runtime.  staging_fn returns the staging_id (32-char hex).
+        with open(binary_path, "rb") as handle:
+            agent_binary = handle.read()
+        staging_id = staging_fn(agent_binary)
+
+        # Reuse the stage1 binary already compiled above (the goos==windows and
+        # not stageless block ran before the Go agent build, producing stage1_path).
+        stage1_exe_path = stage1_path
+
+        # PowerShell launcher with staging ID and session ID pre-filled.
+        session_id = config_values["session_id"]
+        launcher = (
+            "$ErrorActionPreference = 'Stop'\n"
+            "$stage1 = Join-Path $PSScriptRoot 'stage1.exe'\n"
+            f"& $stage1 --stage {staging_id} --session {session_id}\n"
+        )
+        readme = f"""Minimal-RMM stage1 launcher (Windows amd64)
+
+Files:
+- stage1.exe:      compact (~20 KB) WinHTTP launcher
+- run-stage1.ps1:  PowerShell wrapper with staging ID and session ID pre-filled
+
+Deployment:
+  Copy stage1.exe and run-stage1.ps1 to the target host, then run:
+    .\\run-stage1.ps1
+
+stage1 fetches the full agent from the RMM server over HTTPS ({config_values["base_url"] or "<base_url>"}),
+uses the system/IE proxy if configured, and launches it.  The staging entry
+expires on the server after 24 hours or on first successful fetch.
+
+The session ID ({session_id}) is fixed for this build — the agent will
+register with that ID on its first beacon.
+
+Authorized lab use only.
+"""
+        staged_filename = f"minimal-rmm-stage1-windows-amd64-{build_id}.zip"
+        staged_output = safe_join_under(GO_AGENT_BUILD_DIR, staged_filename)
+        with zipfile.ZipFile(staged_output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(stage1_exe_path, arcname="stage1.exe")
+            archive.writestr("run-stage1.ps1", launcher)
+            archive.writestr("README.txt", readme)
+        digest = hashlib.sha256()
+        with open(staged_output, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {
+            "filename": staged_filename,
+            "binary_filename": "stage1.exe",
+            "staging_id": staging_id,
+            "session_id": session_id,
+            "workspace_id": config_values["workspace_id"] or None,
+            "goos": goos,
+            "goarch": goarch,
+            "sha256": digest.hexdigest(),
+            "size": os.path.getsize(staged_output),
+            "path": staged_output,
+            "artifact_ref": f"artifact:agent-builds/{staged_filename}",
+            "download_url": f"{API_PREFIX}/artifacts/agent-builds/{staged_filename}",
+        }
+
+    # --- Stageless build: return the full Go agent ZIP directly ---
     launcher_name = "run-agent.ps1" if goos == "windows" else "run-agent.sh"
     configured = {
         "RMM_BASE_URL": config_values["base_url"],
@@ -4951,6 +5029,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     agent_config=config,
                     process_owner=srv.builds,
                     stageless=bool(body.get("stageless", False)),
+                    staging_fn=srv.create_staging,
                 )
             except ValueError as exc:
                 self._json(400, {"error": "invalid_target", "detail": str(exc)})

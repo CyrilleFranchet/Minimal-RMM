@@ -143,7 +143,8 @@ class GoBuildServerConfigTests(unittest.TestCase):
         handler._api_authorized = Mock(return_value=True)
         handler._workspace_scope = Mock(return_value=None)
         handler.server_instance = SimpleNamespace(
-            beacon_public_url="https://current.example.com", builds=Mock()
+            beacon_public_url="https://current.example.com", builds=Mock(),
+            create_staging=Mock(return_value="a" * 32),
         )
         handler._json = Mock()
         return handler

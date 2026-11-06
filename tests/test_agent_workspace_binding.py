@@ -74,6 +74,7 @@ class AgentWorkspaceBindingTests(unittest.TestCase):
         handler.server_instance = self.registry_server()
         handler.server_instance.beacon_public_url = 'https://beacon.example.test'
         handler.server_instance.builds = Mock()
+        handler.server_instance.create_staging = Mock(return_value="a" * 32)
         return handler
 
     def test_go_build_api_injects_authenticated_owner(self):

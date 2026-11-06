@@ -1705,7 +1705,7 @@ OPENAI_TOOLS: list[dict] = [
                 "sleep_seconds": {"type": "integer", "description": "Beacon sleep in seconds (default 60)"},
                 "jitter_percent": {"type": "integer", "description": "Beacon jitter percent (default 30)"},
                 "http_proxy": {"type": "string", "description": "Optional HTTP proxy URL used by the deployed agent"},
-                "stageless": {"type": "boolean", "description": "Skip building the psexec stage1 launcher. Use when lateral movement is not needed or the target lacks ADMIN$ write access (default false)."},
+                "stageless": {"type": "boolean", "description": "false (default): return a small stage1 ZIP (~20 KB C launcher) that fetches the Go agent from the server at runtime. true: return a ZIP with the full Go agent binary embedded directly (no staging server required, larger file on target)."},
             }},
         },
     },
