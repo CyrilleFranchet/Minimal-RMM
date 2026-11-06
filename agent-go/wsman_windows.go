@@ -211,9 +211,20 @@ func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, 
 	}
 	defer procWSManCloseCommand.Call(command, 0, 0, 0)
 	// Receive until the command reports the Done state so closing the shell
-	// cannot kill a still-running detach.
+	// cannot kill a still-running detach. Each individual WSManReceive call
+	// waits at most wsmanCompletionTimeout or the remaining deadline time,
+	// whichever is shorter, so a slow target (AV scan, service start delay)
+	// never causes an early exit before the 60s budget is exhausted.
 	deadline := time.Now().Add(60 * time.Second)
 	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errors.New("WinRM detach completion not confirmed within 60s")
+		}
+		wait := wsmanCompletionTimeout
+		if remaining < wait {
+			wait = remaining
+		}
 		receiveResult := &wsmanResult{done: make(chan struct{})}
 		streamID, err := syscall.UTF16PtrFromString("stdout")
 		if err != nil {
@@ -224,8 +235,8 @@ func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, 
 			receiveContext, receiveCallback); hr != 0 {
 			return fmt.Errorf("WSManReceive failed: 0x%08x", hr)
 		}
-		if !receiveResult.wait(wsmanCompletionTimeout) {
-			return errors.New("WinRM receive timed out; detach completion unconfirmed")
+		if !receiveResult.wait(wait) {
+			return errors.New("WinRM detach completion not confirmed within 60s")
 		}
 		if err := wsmanError(receiveResult.err); err != nil {
 			return fmt.Errorf("WinRM receive on %s: %w", host, err)
@@ -235,9 +246,6 @@ func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, 
 				return fmt.Errorf("WinRM detach command exited with %d", exitCode)
 			}
 			return nil
-		}
-		if time.Now().After(deadline) {
-			return errors.New("WinRM detach completion not confirmed within 60s")
 		}
 	}
 }

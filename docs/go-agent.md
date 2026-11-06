@@ -494,6 +494,22 @@ The host regression suite exercises cancellation with simulated beacons.
 Windows cross-builds check compilation; native Windows service and process
 lifetime behavior still require a Windows lab.
 
+### Deployment identity and local workers
+
+The server reserves IDs for new Go deployments before dispatch:
+`go-spawn-<32 hex characters>` and `go-lateral-<32 hex characters>`. This keeps
+the Go prefix while allowing registration to prove deployment independently
+of a lost launch acknowledgment. Existing sessions keep their original IDs.
+
+The lateral command starts a local bounded worker process, not a Unix fork.
+The Go `fork/exec` error label can also appear on Windows. The worker isolates
+blocking remote calls and receives the active command token. Attaching that
+token uses Go's `CreateProcessAsUser` path; Windows error 1314 means the local
+caller lacks a required process-creation privilege. This failure occurs before
+the worker contacts the remote host and does not establish whether remote
+authentication would succeed. The current worker/token implementation is
+unchanged by the shell feedback fixes.
+
 ### Cleanup ownership and outcomes
 
 `rememberLateralCleanup` records the exact host, service name, and launcher

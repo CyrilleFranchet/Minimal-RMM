@@ -61,6 +61,9 @@ func rev2selfAction() (string, error) {
 
 func applyCommandToken(*exec.Cmd) {}
 
+func reestablishThreadToken()       {}
+func temporarilyRevertForCallback() {}
+
 func processUserIdentity() string { return username() }
 
 func activeNetworkIdentity() string { return "" }
@@ -69,6 +72,10 @@ func runAsWindowsService() bool { return false }
 
 func runLateralChild([]string) error {
 	return errors.New("lateral movement requires the Windows agent build")
+}
+
+func lateralPsexecGoroutine(ctx context.Context, payload lateralPayload) (string, error) {
+	return "", errors.New("lateral movement requires the Windows agent build")
 }
 
 func runLateralCleanupChild([]string) error {

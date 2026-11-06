@@ -22,7 +22,9 @@ The slash menu lists matching internal commands. Ordinary shell input retains it
 
 ## History sources
 
-1. Commands echoed in the console (`appendShellEcho`) — includes tool actions like `/download …`
+1. Submitted shell input (`runCommand`) is saved before validation or network
+   requests, so failed commands remain recallable and editable. Panel actions
+   use `appendShellEcho` — includes tool actions like `/download …`.
 2. Events reloaded from `GET /api/v1/sessions/{id}/events` — operator `queued:` / `exec:` actions and `output` events with `command`. Structured command fields take precedence over legacy body text. Tool, configuration, and pivot audit labels are excluded because they are not replayable shell input.
 3. SQLite UI state key `rmm_shell_history` — last 100 commands per session id;
    browser storage remains a short-lived cache.
@@ -43,7 +45,7 @@ profile or execution semantics when a session is reloaded.
 
 - Session command history (most recent first in candidate list)
 - Static agent dispatch prefixes: `cmd:`, `PS:`, `powershell:`, `pwsh:`; Tab completion inserts the trailing space
-- Slash command suggestions: `/help`, `/?`, `/exfil`, `/download`, `/screenshot`, `/pe`, `/spawn`, `/make_token`, `/rev2self`, `/lateral`, `/uid`, `/embeddings`, `/bloodhound`
+- Slash command suggestions: `/help`, `/?`, `/exfil`, `/download`, `/screenshot`, `/pe`, `/spawn`, `/make_token`, `/rev2self`, `/lateral`, `/uid`, `/embeddings`, `/bloodhound`, `/creds`, `/spawnas`, `/runas`
 
 Agent-side path completion is out of scope (tech plan §4 v2).
 
@@ -66,6 +68,9 @@ These commands are handled in the browser instead of being sent to the agent she
 | `/uid` | `POST …/uid` | Shows the identity used by the selected Go agent (process user + active network identity) |
 | `/lateral <psexec\|wmiexec\|winrm> <host>` | `POST …/lateral` | Starts a Go agent on another host through the requested method; the request waits for registration and verifies both sessions (see `docs/go-agent.md`) |
 | `/bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
+| `/creds <add \| del \| list> [domain\user] [password]` | `GET/POST/DELETE …/creds` | Manage the workspace credential store; `add` returns a `cred_id`; `del` takes a `cred_id`; `list` shows all stored credentials by ID |
+| `/spawnas <cred_id>` | `POST …/spawnas` | Spawn a new agent copy under a different process identity using the cascade (`CreateProcessAsUser → CreateProcessWithTokenW → CreateProcessWithLogonW → CreateProcessA`); accepts a credential store ID or inline `domain\user password` |
+| `/runas <cred_id> <command>` | `POST …/runas` | Run a shell command on the selected Go session under a different process identity using the same cascade; accepts a credential store ID or inline `domain\user password` |
 
 BloodHound shell output includes the HTTP status and response data. The shell
 remains inside a selected session view; use CLI or MCP for advanced actions
@@ -74,6 +79,13 @@ without selecting an agent. The main page retains **Open BloodHound**.
 The REST, CLI, and MCP surfaces also support plugin-owned command dispatch by
 passing `command`. Those commands remain in the plugin and are not added to
 the browser shell parser.
+
+Identity commands (`/uid`, `/make_token`, and `/rev2self`) render their agent
+output exclusively through session events. Their API responses trigger event
+recovery and supply success/failure metadata; the response output is not printed
+a second time. Event IDs prevent a WebSocket notification and recovered HTTP
+event from duplicating the same result. Existing session-switch guards still
+discard stale responses.
 
 Example: `/exfil C:\Users\…\file.iso mega-lab` queues rclone upload; it is not passed to `cmd.exe`.
 

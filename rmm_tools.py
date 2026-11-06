@@ -819,6 +819,107 @@ def tool_session_uid(client: RmmApiClient, session_ref: str, timeout: float = 12
     return _json_result({"ok": True, "session_id": sid, "output": data.get("output")})
 
 
+# ── Credential store tools ────────────────────────────────────────────────────
+
+def tool_creds_add(client: RmmApiClient, domain: str = "", user: str = "", password: str = "") -> str:
+    """Add a credential entry to the workspace store; returns a cred_id."""
+    if not (user or "").strip():
+        return _json_result({"ok": False, "error": "user is required"})
+    code, data = client.creds_add(domain, user, password)
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    return _json_result(data)
+
+
+def tool_creds_del(client: RmmApiClient, cred_id: str) -> str:
+    """Remove a credential entry from the workspace store by cred_id."""
+    if not (cred_id or "").strip():
+        return _json_result({"ok": False, "error": "cred_id is required"})
+    code, data = client.creds_del(cred_id)
+    if code not in (200, 404):
+        return _json_result({"ok": False, "status": code, "data": data})
+    return _json_result(data)
+
+
+def tool_creds_list(client: RmmApiClient) -> str:
+    """List stored workspace credentials (labels only, no passwords)."""
+    code, data = client.creds_list()
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    return _json_result(data)
+
+
+# ── Spawnas / runas tools ─────────────────────────────────────────────────────
+
+def tool_spawnas(
+    client: RmmApiClient,
+    session_ref: str,
+    cred_id: str = "",
+    user: str = "",
+    domain: str = "",
+    password: str = "",
+    verify: bool = True,
+    spawn_timeout: float = 120,
+    register_timeout: float = 60,
+    verify_timeout: float = 120,
+) -> str:
+    """Spawn a new agent copy under a different process identity using the cascade."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    if not cred_id and not (user or "").strip():
+        return _json_result({"ok": False, "error": "cred_id or user is required"})
+    code, data = client.spawnas(
+        sid, cred_id=cred_id, domain=domain, user=user, password=password,
+        verify=verify, spawn_timeout=spawn_timeout,
+        register_timeout=register_timeout, verify_timeout=verify_timeout,
+    )
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__SPAWNAS__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    return _json_result({
+        "ok": bool(data.get("ok") if isinstance(data, dict) else data),
+        "session_id": sid,
+        "spawned_session_id": data.get("spawned_session_id") if isinstance(data, dict) else None,
+        "identity": data.get("identity") if isinstance(data, dict) else None,
+        "verified": data.get("verified") if isinstance(data, dict) else None,
+        "data": data,
+    })
+
+
+def tool_runas(
+    client: RmmApiClient,
+    session_ref: str,
+    command: str,
+    cred_id: str = "",
+    user: str = "",
+    domain: str = "",
+    password: str = "",
+    timeout: float = 120,
+) -> str:
+    """Run a shell command on a Go agent under a different process identity."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    if not cred_id and not (user or "").strip():
+        return _json_result({"ok": False, "error": "cred_id or user is required"})
+    if not (command or "").strip():
+        return _json_result({"ok": False, "error": "command is required"})
+    code, data = client.runas(sid, command, cred_id=cred_id, domain=domain,
+                              user=user, password=password, timeout=timeout)
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__RUNAS__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    return _json_result({
+        "ok": bool(data.get("ok")),
+        "session_id": sid,
+        "identity": data.get("identity"),
+        "output": data.get("output"),
+    })
+
+
 TOOL_HANDLERS = {
     "bloodhound": lambda c, a: tool_bloodhound(c, a.get("action", "preflight"), a.get("run_id", ""), a.get("options")),
     "list_ai_jobs": lambda c, a: tool_list_ai_jobs(c, a.get("session_id", "")),
@@ -971,6 +1072,36 @@ TOOL_HANDLERS = {
         c,
         a["session_ref"],
         float(a.get("timeout", 120)),
+    ),
+    "creds_add": lambda c, a: tool_creds_add(
+        c,
+        domain=a.get("domain", ""),
+        user=a.get("user", ""),
+        password=a.get("password", ""),
+    ),
+    "creds_del": lambda c, a: tool_creds_del(c, a["cred_id"]),
+    "creds_list": lambda c, a: tool_creds_list(c),
+    "spawnas": lambda c, a: tool_spawnas(
+        c,
+        a["session_ref"],
+        cred_id=a.get("cred_id", ""),
+        user=a.get("user", ""),
+        domain=a.get("domain", ""),
+        password=a.get("password", ""),
+        verify=bool(a.get("verify", True)),
+        spawn_timeout=float(a.get("spawn_timeout", 120)),
+        register_timeout=float(a.get("register_timeout", 60)),
+        verify_timeout=float(a.get("verify_timeout", 120)),
+    ),
+    "runas": lambda c, a: tool_runas(
+        c,
+        a["session_ref"],
+        a["command"],
+        cred_id=a.get("cred_id", ""),
+        user=a.get("user", ""),
+        domain=a.get("domain", ""),
+        password=a.get("password", ""),
+        timeout=float(a.get("timeout", 120)),
     ),
 }
 
@@ -1737,6 +1868,84 @@ OPENAI_TOOLS: list[dict] = [
                     "timeout": {"type": "number", "default": 120},
                 },
                 "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "creds_add",
+            "description": "Add credentials to the workspace store. Returns a cred_id to pass to make_token, spawnas, or runas. Passwords are stored server-side only and never returned. NEVER log passwords in responses.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user": {"type": "string", "description": "Username, optionally as DOMAIN\\user"},
+                    "domain": {"type": "string", "default": ""},
+                    "password": {"type": "string", "description": "Plaintext password; never echo"},
+                },
+                "required": ["user", "password"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "creds_del",
+            "description": "Remove a credential entry from the workspace store by cred_id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"cred_id": {"type": "string"}},
+                "required": ["cred_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "creds_list",
+            "description": "List stored workspace credentials (identity labels and cred_ids only, no passwords).",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spawnas",
+            "description": "Spawn a new agent copy on the same host under a different process identity using the cascade: CreateProcessAsUser → CreateProcessWithTokenW → CreateProcessWithLogonW → CreateProcessA. Pass cred_id from creds_add, or domain/user/password directly. NEVER repeat credentials in responses.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "cred_id": {"type": "string", "description": "Preferred: cred_id from creds_add"},
+                    "user": {"type": "string", "default": ""},
+                    "domain": {"type": "string", "default": ""},
+                    "password": {"type": "string", "default": ""},
+                    "verify": {"type": "boolean", "default": True},
+                    "spawn_timeout": {"type": "number", "default": 120},
+                    "register_timeout": {"type": "number", "default": 60},
+                    "verify_timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "runas",
+            "description": "Run a shell command on a Go agent under a different process identity using the cascade. Returns the command output. Pass cred_id from creds_add, or domain/user/password directly. NEVER repeat credentials in responses.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "command": {"type": "string"},
+                    "cred_id": {"type": "string", "default": ""},
+                    "user": {"type": "string", "default": ""},
+                    "domain": {"type": "string", "default": ""},
+                    "password": {"type": "string", "default": ""},
+                    "timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref", "command"],
             },
         },
     },

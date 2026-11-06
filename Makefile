@@ -35,9 +35,22 @@ help:
 	@printf "  make docker-up     Start the central control plane with Compose\n"
 
 go-test:
+	@cd agent-go && go test -buildvcs=false ./...
 	@cd agent-go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false ./...
 	@cd agent-go && GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -buildvcs=false ./...
 	@cd server-tun && go test -buildvcs=false ./...
+	@if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then \
+		printf "stage1 C compile check (MinGW x86_64)...\n"; \
+		x86_64-w64-mingw32-gcc -Os -s -mwindows \
+			-DBASE_URL=L\"https://127.0.0.1:8443\" \
+			-DSTAGE1_INSECURE \
+			-o /tmp/stage1-check.exe \
+			agent-go/stage1/stage1.c \
+			-lwinhttp -lbcrypt -lshell32 && \
+		printf "stage1 C compile: OK\n"; \
+	else \
+		printf "stage1 C compile: SKIP (x86_64-w64-mingw32-gcc not found; install mingw-w64 to enable)\n"; \
+	fi
 
 tun-build:
 	@mkdir -p tools

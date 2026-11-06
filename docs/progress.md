@@ -14,6 +14,18 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Shell feedback, failed-command recall, and Go session labels
+
+- Render identity results only through session events to avoid duplicate API
+  response output for uid, make_token, and rev2self. Save submitted shell input
+  before validation and requests so failed attempts can be recalled and edited.
+- Keep server-reserved deployment IDs and registration correlation while using
+  the Go prefix for newly spawned and laterally deployed Go agents.
+- Add browser regressions for duplicate identity output and failure history,
+  and server regressions for Go ID format, uniqueness, and collision rejection.
+- Explain local Windows worker creation and privilege-error semantics in
+  `docs/go-agent.md`; no token or remote-execution changes are included.
+
 ### 2026-11-06 — Restrict cleanup ownership and report failures
 
 - Require an exact in-memory record of acknowledged deployment artifacts before

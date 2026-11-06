@@ -29,6 +29,8 @@ class GoAgentTests(unittest.TestCase):
                 "uid.go",
                 "wmi_windows.go",
                 "wsman_windows.go",
+                "spawnas_windows.go",
+                "spawnas_other.go",
                 "stage1/main.go",
                 "stage1/service_windows.go",
                 "stage1/service_other.go",

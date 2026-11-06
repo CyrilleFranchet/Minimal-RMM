@@ -11,7 +11,7 @@ const SHELL_HISTORY_MAX = 100;
 const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
-const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "make_token", "rev2self", "lateral", "uid", "embeddings", "bloodhound"];
+const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "spawnas", "runas", "creds", "make_token", "rev2self", "lateral", "uid", "embeddings", "bloodhound"];
 
 const BLOODHOUND_ACTIONS = ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "auth", "reset_ce", "library_search", "library_get"];
 window.rmmBloodHoundActions = BLOODHOUND_ACTIONS;
@@ -3063,7 +3063,10 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /embeddings run &lt;profile&gt; --document &lt;path&gt; [--document &lt;path&gt; ...]
                                    Run a saved embedding profile on this session
   /pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
-  /spawn                           Spawn a detached second Go agent from the selected Go session
+  /spawn                           Spawn a detached second Go agent (same identity)
+  /spawnas &lt;cred_id&gt;               Spawn a Go agent copy under a different process identity (cascade)
+  /runas &lt;cred_id&gt; &lt;command&gt;      Run a command under a different process identity (cascade)
+  /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del &lt;cred_id&gt;   Manage workspace credentials
   /make_token &lt;domain\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
@@ -3213,9 +3216,9 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         appendShellError(data?.error || `HTTP ${status}`);
         return true;
       }
-      appendShellLine("output", `<pre>${escapeHtml(data.output || "")}</pre>`);
+      pollSessionEvents().catch(() => {});
       if (!data.ok) {
-        appendShellError("make_token failed — inspect the agent output above.");
+        appendShellError("make_token failed — inspect the session transcript.");
       }
     } catch (error) {
       if (target.isCurrent()) appendShellError(error.message || "make_token request failed.");
@@ -3242,8 +3245,8 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         appendShellError(data?.error || `HTTP ${status}`);
         return true;
       }
-      appendShellLine("output", `<pre>${escapeHtml(data.output || "")}</pre>`);
-      if (!data.ok) appendShellError("rev2self failed — inspect the agent output above.");
+      pollSessionEvents().catch(() => {});
+      if (!data.ok) appendShellError("rev2self failed — inspect the session transcript.");
     } catch (error) {
       if (target.isCurrent()) appendShellError(error.message || "rev2self request failed.");
     }
@@ -3311,9 +3314,89 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         appendShellError(data?.error || `HTTP ${status}`);
         return true;
       }
-      appendShellLine("output", `<pre>${escapeHtml(data.output || "")}</pre>`);
+      pollSessionEvents().catch(() => {});
     } catch (error) {
       if (target.isCurrent()) appendShellError(error.message || "uid request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "creds") {
+    appendShellEcho(cmd);
+    const sub = args[0]?.toLowerCase();
+    try {
+      if (!sub || sub === "list") {
+        const { status, data } = await api("/creds");
+        if (!target.isCurrent()) return true;
+        if (status !== 200) { appendShellError(`creds list failed (${status})`); return true; }
+        const creds = data?.credentials ?? [];
+        if (!creds.length) { appendShellOutput("no credentials stored"); return true; }
+        for (const c of creds) {
+          const identity = c.domain ? `${c.domain}\\${c.user}` : (c.user ?? "?");
+          appendShellOutput(`  ${c.cred_id ?? c.id}  ${identity}`);
+        }
+      } else if (sub === "add") {
+        if (args.length < 3) { appendShellError("Usage: /creds add &lt;domain\\user | user&gt; &lt;password&gt;"); return true; }
+        const { status, data } = await api("/creds", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user: args[1], password: args[2] }) });
+        if (!target.isCurrent()) return true;
+        if (status !== 200) { appendShellError(`creds add failed (${status}): ${data?.error ?? ""}`); return true; }
+        appendShellOutput(`stored ${data?.cred_id} (${args[1]})`);
+      } else if (sub === "del") {
+        if (args.length < 2) { appendShellError("Usage: /creds del &lt;cred_id&gt;"); return true; }
+        const { status, data } = await api(`/creds/${encodeURIComponent(args[1])}`, { method: "DELETE" });
+        if (!target.isCurrent()) return true;
+        if (status !== 200 && status !== 404) { appendShellError(`creds del failed (${status})`); return true; }
+        appendShellOutput(data?.message ?? (status === 200 ? "deleted" : "not found"));
+      } else {
+        appendShellError("Usage: /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del &lt;cred_id&gt;");
+      }
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(error.message || "creds request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "spawnas") {
+    if (!args[0]) { appendShellError("Usage: /spawnas &lt;cred_id&gt;"); return true; }
+    if (!target.sessionId) { appendShellError("Select a Go agent session before spawnas."); return true; }
+    appendShellEcho(cmd);
+    appendShellOutput("Spawning agent under new identity…");
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/spawnas`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cred_id: args[0], verify: true }),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) { appendShellError(`spawnas failed (${status}): ${data?.error ?? ""}`); return true; }
+      appendShellOutput(`spawned session=${data?.spawned_session_id} pid=${data?.spawn_pid} identity=${data?.identity}`);
+      if (data?.verify) {
+        appendShellOutput(`registered: ${data?.registered ? "yes" : "no"}; parent responsive: ${data?.parent_responsive ? "yes" : "no"}; spawned responsive: ${data?.spawned_responsive ? "yes" : "no"}`);
+        if (!data?.verified) appendShellError("spawnas verification did not pass — inspect both sessions.");
+      }
+      pollSessionEvents().catch(() => {});
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(error.message || "spawnas request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "runas") {
+    if (args.length < 2) { appendShellError("Usage: /runas &lt;cred_id&gt; &lt;command...&gt;"); return true; }
+    if (!target.sessionId) { appendShellError("Select a Go agent session before runas."); return true; }
+    appendShellEcho(cmd);
+    const runasCred = args[0];
+    const runasCommand = args.slice(1).join(" ");
+    appendShellOutput("Running command under new identity…");
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/runas`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cred_id: runasCred, command: runasCommand }),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) { appendShellError(`runas failed (${status}): ${data?.error ?? ""}`); return true; }
+      for (const ln of (data?.output ?? "(no output)").split("\n")) appendShellOutput(ln);
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(error.message || "runas request failed.");
     }
     return true;
   }
@@ -3327,6 +3410,8 @@ async function runCommand(wait) {
   if (!cmd || !state.selectedId) return;
 
   const target = captureShellTarget();
+  // Keep failed validation and request attempts available for editing/retry.
+  rememberShellCommand(cmd, target.sessionId);
   if (await dispatchShellMetaCommand(cmd, target)) {
     if (!target.isCurrent()) return;
     clearShellInput();

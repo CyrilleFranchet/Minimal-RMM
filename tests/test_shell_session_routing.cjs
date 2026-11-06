@@ -14,6 +14,7 @@ function fixture() {
     $: key => nodes.get(key),
     api: async (path, options) => { calls.push({path, body:JSON.parse(options.body)}); return pending.promise; },
     clearShellInput: () => { input.value = ''; }, appendShellEcho: (...args) => rendered.push(args),
+    rememberShellCommand() {},
     appendEvent: ev => rendered.push(ev), appendShellError: error => errors.push(error),
     pollSessionEvents: async () => { polls.push(state.selectedId); }, parseShellWords: cmd => cmd.split(' '),
   });

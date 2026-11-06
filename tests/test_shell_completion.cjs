@@ -21,7 +21,9 @@ function fixture() {
     getShellHistoryList: () => ['whoami', '/screenshot'], resetShellHistoryNav() {}, resetShellTabCycle() {},
     navigateShellHistory: () => { throw new Error('History must not handle menu navigation'); },
     api: async (...args) => { calls.push(args); return { status: 200, data: {} }; },
-    appendShellError: text => errors.push(text), rememberShellCommand: cmd => history.push(cmd),
+    appendShellError: text => errors.push(text), rememberShellCommand: cmd => {
+      if (history.at(-1) !== cmd) history.push(cmd);
+    },
     appendShellLine: () => { lastShellLine = element(); return lastShellLine; }, escapeHtml: text => text,
     createCommandBlock() {}, setTimeout() {}, pollSessionEvents: async () => {},
   };
@@ -44,10 +46,10 @@ function fixture() {
 }
 test('slash immediately displays commands; typing and backspacing filter live', () => {
   const f = fixture(); f.type('/');
-  assert.equal(f.menu.children.length, 13); assert.equal(f.input.attrs['aria-expanded'], 'true');
-  f.type('/s'); assert.deepEqual(f.menu.children.map(x => x.textContent), ['/screenshot', '/spawn']);
+  assert.equal(f.menu.children.length, 16); assert.equal(f.input.attrs['aria-expanded'], 'true');
+  f.type('/s'); assert.deepEqual(f.menu.children.map(x => x.textContent), ['/screenshot', '/spawn', '/spawnas']);
   f.type('/sc'); assert.equal(f.menu.children.length, 1);
-  f.type('/'); assert.equal(f.menu.children.length, 13);
+  f.type('/'); assert.equal(f.menu.children.length, 16);
   f.type('/unknown'); assert.equal(f.input.attrs['aria-expanded'], 'false');
   f.type('who'); assert.equal(f.input.attrs['aria-expanded'], 'false');
 });
@@ -150,6 +152,45 @@ test('uid posts directly without arguments', async () => {
   assert.equal(rejected.calls.length, 0);
   assert.match(rejected.errors[0], /Usage: \/uid/);
 });
+test('identity results render only through session events, including failed operations', async () => {
+  for (const command of ['/uid', '/make_token LAB\\alice test-password', '/rev2self']) {
+    for (const ok of [true, false]) {
+      const f = fixture();
+      const outputs = [];
+      let polls = 0;
+      f.context.api = async () => ({status: 200, data: {ok, output: 'agent result'}});
+      f.context.appendShellLine = (type, html) => { if (type === 'output') outputs.push(html); };
+      f.context.pollSessionEvents = async () => {
+        polls++;
+        f.context.appendShellLine('output', 'agent result');
+      };
+      f.type(command);
+      await f.context.runCommand(false);
+      assert.equal(polls, 1);
+      assert.deepEqual(outputs, ['agent result']);
+    }
+  }
+});
+
+test('failed validation and HTTP requests remain recallable as original input', async () => {
+  for (const command of ['/unknown', '/uid extra', '/make_token', '/lateral psexec', '/embeddings run']) {
+    const f = fixture();
+    f.type(command);
+    await f.context.runCommand(false);
+    assert.deepEqual(f.history, [command]);
+    assert.equal(f.calls.length, 0);
+    assert.ok(f.errors.length);
+  }
+  for (const command of ['/uid', 'whoami']) {
+    const f = fixture();
+    f.context.api = async () => ({status: 403, data: {error: 'denied'}});
+    f.type(command);
+    await f.context.runCommand(false);
+    assert.deepEqual(f.history, [command]);
+    assert.deepEqual(f.errors, ['denied']);
+  }
+});
+
 test('panel screenshot/download history is replayable; exfil mode labels are excluded', async () => {
   const f = fixture();
   f.nodes['#download-remote'] = element(); f.nodes['#download-remote'].value = 'C:\\Lab Docs\\file.txt';

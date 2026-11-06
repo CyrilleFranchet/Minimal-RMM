@@ -77,6 +77,11 @@ REQUIRED_MCP_TOOLS = frozenset({
     "rev2self",
     "lateral_move",
     "session_uid",
+    "creds_add",
+    "creds_del",
+    "creds_list",
+    "spawnas",
+    "runas",
 })
 
 # MCP tool -> RmmApiClient method (wrappers may share queue_command).
@@ -141,6 +146,11 @@ TOOL_CLIENT_METHOD: dict[str, str] = {
     "rev2self": "rev2self",
     "lateral_move": "lateral_move",
     "session_uid": "session_uid",
+    "creds_add": "creds_add",
+    "creds_del": "creds_del",
+    "creds_list": "creds_list",
+    "spawnas": "spawnas",
+    "runas": "runas",
 }
 
 # Web shell meta verbs -> MCP tool (web/app.js dispatchShellMetaCommand).
@@ -156,6 +166,9 @@ WEB_SHELL_META: dict[str, str] = {
     "lateral": "lateral_move",
     "uid": "session_uid",
     "embeddings": "run_embeddings",
+    "creds": "creds_list",
+    "spawnas": "spawnas",
+    "runas": "runas",
 }
 
 # Browser-local shell commands do not have an operator API or MCP equivalent.

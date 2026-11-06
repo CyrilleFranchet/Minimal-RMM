@@ -108,6 +108,11 @@ from rmm_tools import (
     tool_stop_persistent,
     tool_stop_socks,
     tool_stop_tun,
+    tool_creds_add,
+    tool_creds_del,
+    tool_creds_list,
+    tool_spawnas,
+    tool_runas,
 )
 
 mcp = FastMCP(
@@ -597,6 +602,69 @@ def lateral_move(
 def session_uid(session_ref: str, timeout: float = 120) -> str:
     """Show the identity a Go agent runs under, plus any active make_token network identity."""
     return tool_session_uid(_client(), session_ref, timeout=timeout)
+
+
+# ── Credential store (workspace-scoped, passwords never logged or returned) ───
+
+@mcp.tool()
+def creds_add(user: str, domain: str = "", password: str = "") -> str:
+    """Add credentials to the workspace store. Returns a cred_id to pass to make_token, spawnas, or runas. Passwords are stored server-side only."""
+    return tool_creds_add(_client(), domain=domain, user=user, password=password)
+
+
+@mcp.tool()
+def creds_del(cred_id: str) -> str:
+    """Remove a credential entry from the workspace store by cred_id."""
+    return tool_creds_del(_client(), cred_id)
+
+
+@mcp.tool()
+def creds_list() -> str:
+    """List stored workspace credentials (identity labels only, no passwords)."""
+    return tool_creds_list(_client())
+
+
+# ── Identity-aware process creation ───────────────────────────────────────────
+
+@mcp.tool()
+@_offload_tool
+def spawnas(
+    session_ref: str,
+    cred_id: str = "",
+    user: str = "",
+    domain: str = "",
+    password: str = "",
+    verify: bool = True,
+    spawn_timeout: float = 120,
+    register_timeout: float = 60,
+    verify_timeout: float = 120,
+) -> str:
+    """Spawn a new agent copy under a different process identity using the cascade (CreateProcessAsUser → CreateProcessWithTokenW → CreateProcessWithLogonW → CreateProcessA). Pass cred_id from creds_add, or domain/user/password directly. Never repeat credentials in responses."""
+    return tool_spawnas(
+        _client(), session_ref,
+        cred_id=cred_id, user=user, domain=domain, password=password,
+        verify=verify, spawn_timeout=spawn_timeout,
+        register_timeout=register_timeout, verify_timeout=verify_timeout,
+    )
+
+
+@mcp.tool()
+@_offload_tool
+def runas(
+    session_ref: str,
+    command: str,
+    cred_id: str = "",
+    user: str = "",
+    domain: str = "",
+    password: str = "",
+    timeout: float = 120,
+) -> str:
+    """Run a shell command on a Go agent under a different process identity using the cascade. Pass cred_id from creds_add, or domain/user/password directly. Never repeat credentials in responses."""
+    return tool_runas(
+        _client(), session_ref, command,
+        cred_id=cred_id, user=user, domain=domain, password=password,
+        timeout=timeout,
+    )
 
 
 if __name__ == "__main__":

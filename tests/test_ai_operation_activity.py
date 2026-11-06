@@ -2,12 +2,15 @@
 import asyncio
 import json
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+_PY311 = sys.version_info >= (3, 11)
 
 from rmm_ai_context import ContextDispatcher, ContextWindow
 from rmm_ai_concurrency import run_tool_batch
@@ -74,6 +77,7 @@ class OperationActivityTests(unittest.TestCase):
         finally:
             reopened.close()
 
+    @unittest.skipUnless(_PY311, "ExceptionGroup is a Python 3.11+ builtin")
     def test_exception_group_records_unknown_outcome_without_exception_messages(self):
         async def execute(name, args):
             raise ExceptionGroup('secret-group', [OSError('secret-output')])
@@ -151,6 +155,7 @@ class OperationActivityTests(unittest.TestCase):
         self.assertEqual(final['activity'][0]['round'], 5)
         self.assertNotIn('secret', json.dumps(final['activity']))
 
+    @unittest.skipUnless(_PY311, "ExceptionGroup is a Python 3.11+ builtin")
     def test_evidence_page_validation_and_group_cycles_are_bounded(self):
         self.assertIsNone(self.manager.read_evidence('missing', 'operator', '../escape'))
         error = ExceptionGroup('private', [ValueError('private') for _ in range(50)])

