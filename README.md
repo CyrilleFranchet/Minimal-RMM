@@ -301,7 +301,8 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `POST` | `/profile` | `{"name":"cloudflared"}` or `{"stop":true}` | Start or stop the selected profile |
 | `GET` | `/transport` | — | Administration URL, beacon URL, ports, and profile status |
 | `POST` | `/agent/deploy/script` | `{"session_id":"…","sleep_seconds":60,"jitter_percent":30,"http_proxy":"…"}` (all optional) | Render a configured `client_rmm.ps1` server-side with the active beacon URL and secret; returns the artifact path, size, and SHA-256 (never the secret) |
-| `POST` | `/agent/go/build` | `{"goos":"windows","goarch":"amd64","config":{},"use_server_config":true}` | Build the Go agent; `use_server_config` embeds the active beacon URL and secret when not supplied |
+| `POST` | `/agent/go/build` | `{"goos":"windows","goarch":"amd64","config":{},"use_server_config":true,"stageless":false}` | Build the Go agent; `use_server_config` embeds the active beacon URL and secret when not supplied. Default (staged): returns a stage1 ZIP and stores the masked agent at `/tools/stage/{staging_id}` for 24 hours |
+| `GET` | `/agent/go/stage/{staging_id}` | — | Stage1 launcher status for a staged build: last status line, fetch state, and expiry (CLI `agent go-stage`, MCP `stage_status`) |
 | `GET` | `/assets` or `/assets/{kind}` | — | List URL-managed plugins, skills, and rclone files |
 | `POST` | `/assets/{kind}` | `{"url":"https://…","name":"optional.ext"}` | Download and store an operator asset |
 | `PATCH` | `/assets/{kind}/{name}` | `{"enabled":false}` | Enable or disable an asset |

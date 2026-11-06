@@ -121,11 +121,10 @@ func runStage(cfg stageConfig) error {
 	if !bytes.HasPrefix(payload, []byte("MZ")) {
 		return errors.New("stage2 payload failed the integrity check")
 	}
-	systemRoot := os.Getenv("SystemRoot")
-	if systemRoot == "" {
-		systemRoot = `C:\Windows`
-	}
-	agentPath := filepath.Join(systemRoot, "System32", "minimal-rmm-agent.exe")
+	// Write the agent to the temp directory instead of System32: a manual
+	// launcher run then needs no administrator rights, and the psexec path
+	// runs as SYSTEM, whose temp directory is writable as well.
+	agentPath := filepath.Join(os.TempDir(), "minimal-rmm-agent.exe")
 	if err := os.WriteFile(agentPath, payload, 0700); err != nil {
 		return fmt.Errorf("install stage2: %w", err)
 	}

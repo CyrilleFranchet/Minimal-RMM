@@ -348,7 +348,9 @@ Stage1 (`agent-go/stage1/`, embedded via `go:embed stage1.bin`):
   its command line is its only capability. It fetches the masked stage2
   payload, decodes it in memory (the payload never exists as a
   downloaded executable file), verifies the `MZ` header, writes the
-  agent to `%SystemRoot%\System32\minimal-rmm-agent.exe`, starts it with
+  agent to the temp directory of the service account
+  (`%TEMP%\minimal-rmm-agent.exe` — `C:\Windows\Temp` under SYSTEM, the
+  user's temp directory for a manual launcher run), starts it with
   `--lateral-session`, reports one status line, and stops.
 
 Listener staging (`server_rmm.py`):
@@ -357,8 +359,12 @@ Listener staging (`server_rmm.py`):
   build (`latest_go_agent_binary`, produced by `build_go_agent`) and
   passes the staging reference in the `__LATERAL__` command. Without a
   staged build the call fails with `agent_payload_unavailable`.
-- Staging entries are in-memory, single-use, and expire after 600
-  seconds. `GET /tools/stage/<id>` serves the payload masked with a
+- Staging entries are in-memory and single-use. Lateral-move staging
+  expires after 600 seconds; staged ZIP builds
+  (`build_go_agent`, see `docs/staged-deployment.md`) use the 24-hour
+  build TTL (`STAGING_BUILD_TTL_SECONDS`) because manual deployment
+  takes longer than the psexec flow. `GET /tools/stage/<id>` serves the
+  payload masked with a
   SHA-256 counter keystream keyed by the staging identifier
   (`staging_mask`), so the listener never serves an executable file.
   `POST /tools/stage/<id>` records one stage1 status line, surfaced as

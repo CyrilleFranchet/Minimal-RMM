@@ -628,6 +628,10 @@ class RmmApiClient:
             timeout=180,
         )
 
+    def stage_status(self, staging_id):
+        """Read the stage1 launcher status recorded on the server for a staged build."""
+        return self.request("GET", f"/api/v1/agent/go/stage/{staging_id}")
+
 
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
@@ -1441,6 +1445,15 @@ def cmd_agent(client: RmmApiClient, state: dict, args):
             use_server_config=not getattr(args, "no_server_config", False),
             stageless=getattr(args, "stageless", False),
         )
+    elif action == "go-stage":
+        code, data = client.stage_status(args.staging_id)
+        if code == 200:
+            print(json.dumps(data, indent=2))
+        elif code == 404:
+            die("staging entry not found, already purged, or expired")
+        else:
+            die(f"agent {action} failed ({code}): {data}")
+        return
     else:
         die(f"unknown agent action: {action}")
         return
@@ -2944,6 +2957,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp_agent_go.add_argument("--stageless", action="store_true", help="Embed the Go agent directly in the ZIP instead of staging it. Default: return a small stage1 launcher (~20 KB) that fetches the agent from the server at runtime.")
     sp_agent_go.add_argument("--workspace-id", help="Administrator-selected owner; workspace authentication binds this automatically")
     sp_agent_go.set_defaults(func=cmd_agent)
+    sp_agent_stage = sp_agent_sub.add_parser(
+        "go-stage", parents=[shared],
+        help="Show the stage1 launcher status recorded on the server for a staged build",
+    )
+    sp_agent_stage.add_argument("staging_id", help="Staging ID returned by the staged go-build")
+    sp_agent_stage.set_defaults(func=cmd_agent)
 
     sp_profile = sub.add_parser("profile", help="Manage the dynamic RMM-Profile connector")
     sp_profile_sub = sp_profile.add_subparsers(dest="profile_cmd", required=True)

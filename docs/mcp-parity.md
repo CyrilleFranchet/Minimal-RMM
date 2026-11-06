@@ -221,6 +221,7 @@ Unknown slash commands never reach the remote shell.
 | `GET /agent/script` | `get_agent_script` | Full `client_rmm.ps1` text |
 | `POST /agent/deploy/script` | `deploy_agent_script` | Render a configured `client_rmm.ps1` server-side; returns the artifact path, never the secret |
 | `POST /agent/go/build` | `build_go_agent` | Build the Go agent with the active connection embedded (`use_server_config`) |
+| `GET /agent/go/stage/{staging_id}` | `stage_status` | Stage1 launcher status for a staged build (last status line, fetch state, expiry) |
 | Agent `__KEYLOG__` | `queue_keylog` | Wrapper over `queue_command` |
 | Agent `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | `install_persistence`, `remove_persistence` | Lab only |
 | Agent `__SPAWN__` (`POST …/spawn`) | `spawn_session` | Detached second Go agent with a fresh session ID; registration and responsiveness verification, Go sessions only |

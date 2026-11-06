@@ -143,6 +143,10 @@ SPAWNAS_COMMAND = "__SPAWNAS__"
 SPAWNAS_RESULT_RE = re.compile(r"session=(?P<session_id>[A-Za-z0-9_-]{8,128})\s+pid=(?P<pid>\d+)")
 RUNAS_COMMAND = "__RUNAS__"
 STAGING_TTL_SECONDS = 600
+# Staged agent builds are deployed by hand (copy the ZIP to the target, run the
+# launcher), which routinely takes longer than the psexec flow; the staged ZIP
+# README promises 24 hours, so the build staging entry honors that window.
+STAGING_BUILD_TTL_SECONDS = 24 * 3600
 STAGING_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
 
@@ -811,8 +815,12 @@ Deployment:
     .\\run-stage1.ps1
 
 stage1 fetches the full agent from the RMM server over HTTPS ({config_values["base_url"] or "<base_url>"}),
-uses the system/IE proxy if configured, and launches it.  The staging entry
-expires on the server after 24 hours or on first successful fetch.
+uses the system/IE proxy if configured, writes the agent to the current
+user's temp directory (no administrator rights required), and launches it.
+The staging entry expires on the server after 24 hours or on first successful
+fetch; check the launcher status from the operator API with:
+  GET {API_PREFIX}/agent/go/stage/{staging_id}
+  (CLI: agent go-stage {staging_id}; MCP: stage_status)
 
 The session ID ({session_id}) is fixed for this build — the agent will
 register with that ID on its first beacon.
@@ -3257,7 +3265,7 @@ class RMMServer:
         return {"status": "ok" if output.startswith("lateral cleanup: ") else "failed",
                 "output": output}
 
-    def create_staging(self, payload: bytes) -> str:
+    def create_staging(self, payload: bytes, ttl_seconds: int = STAGING_TTL_SECONDS) -> str:
         """Register a masked stage2 payload; the id is the only capability."""
         staging_id = secrets.token_hex(16)
         now = time.time()
@@ -3266,7 +3274,7 @@ class RMMServer:
             self.staging_entries[staging_id] = {
                 "payload": payload,
                 "created": now,
-                "expires": now + STAGING_TTL_SECONDS,
+                "expires": now + max(60, int(ttl_seconds)),
                 "fetched": False,
                 "status": None,
             }
@@ -3299,6 +3307,27 @@ class RMMServer:
         with self.staging_lock:
             entry = self.staging_entries.get(staging_id)
             return entry["status"] if entry else None
+
+    def staging_info(self, staging_id: str) -> dict | None:
+        """Operator-readable view of one staging entry (status endpoint).
+
+        Excludes the payload itself: the unguessable staging id is the fetch
+        credential, so it must never be echoed back over the operator API.
+        """
+        if not STAGING_ID_RE.match(staging_id or ""):
+            return None
+        with self.staging_lock:
+            entry = self.staging_entries.get(staging_id)
+            if not entry:
+                return None
+            return {
+                "staging_id": staging_id,
+                "status": entry["status"],
+                "fetched": entry["fetched"],
+                "created_at": datetime.fromtimestamp(entry["created"]).isoformat(),
+                "expires_at": datetime.fromtimestamp(entry["expires"]).isoformat(),
+                "expired": time.time() > entry["expires"],
+            }
 
     def _purge_staging_locked(self, now: float) -> None:
         for staging_id in [sid for sid, entry in self.staging_entries.items()
@@ -4379,6 +4408,17 @@ class RMMHandler(BaseHTTPRequestHandler):
         srv = self.server_instance
         workspace_id = getattr(self, "_workspace_scope", lambda: None)()
 
+        if len(parts) == 4 and parts[:3] == ["agent", "go", "stage"]:
+            # GET /api/v1/agent/go/stage/<staging_id> — stage1 launcher status
+            # for a staged build (why a manual run never launched the agent).
+            info = srv.staging_info(parts[3])
+            if info is None:
+                self._json(404, {"error": "staging_entry_not_found",
+                                 "detail": "Unknown, purged, or expired staging entry."})
+            else:
+                self._json(200, info)
+            return True
+
         if parts in (["settings"], ["ui", "config"]) and workspace_id:
             self._json(403, {"error": "administrator_required"})
             return True
@@ -5029,7 +5069,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     agent_config=config,
                     process_owner=srv.builds,
                     stageless=bool(body.get("stageless", False)),
-                    staging_fn=srv.create_staging,
+                    staging_fn=lambda payload: srv.create_staging(payload, ttl_seconds=STAGING_BUILD_TTL_SECONDS),
                 )
             except ValueError as exc:
                 self._json(400, {"error": "invalid_target", "detail": str(exc)})

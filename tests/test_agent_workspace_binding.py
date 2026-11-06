@@ -18,6 +18,16 @@ class AgentWorkspaceBindingTests(unittest.TestCase):
         return SimpleNamespace(workspace_registry=WorkspaceRegistry(
             owners if owners is not None else {'alice': 'alice-secret', 'bob': 'bob-secret'}))
 
+    def _isolated_agent_root(self, directory):
+        """Minimal agent-go skeleton so build tests never rewrite the
+        repository's embedded stage1.bin placeholder."""
+        root = Path(directory) / "agent-go"
+        (root / "stage1" / "c").mkdir(parents=True, exist_ok=True)
+        (root / "go.mod").write_text("module minimal-rmm-agent\n")
+        source = Path(server_rmm.__file__).parent / "agent-go" / "stage1" / "c" / "stage1.c"
+        (root / "stage1" / "c" / "stage1.c").write_text(source.read_text())
+        return str(root)
+
     def test_artifact_owner_uses_authenticated_scope(self):
         server = self.registry_server()
         self.assertEqual(server_rmm.deployment_workspace_id(server, scope='alice'), 'alice')
@@ -51,6 +61,7 @@ class AgentWorkspaceBindingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(server_rmm, 'GO_AGENT_BUILD_DIR', directory), \
                 patch.object(server_rmm, 'LOG_DIR', directory), \
+                patch.object(server_rmm, 'GO_AGENT_DIR', self._isolated_agent_root(directory)), \
                 patch.object(server_rmm.shutil, 'which', return_value='go'):
             result = server_rmm.build_go_agent('windows', 'amd64',
                 agent_config={'workspace_id': 'alice', 'base_url': 'https://beacon.example.test',

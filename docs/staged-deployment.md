@@ -24,7 +24,25 @@ Copy `stage1.exe` and `run-stage1.ps1` to the target, then run:
 .\run-stage1.ps1
 ```
 
-stage1 connects back to the RMM server over HTTPS, fetches the masked Go agent, decodes it, writes it to a temp path, and executes it. The session ID is fixed at build time so the agent registers with a known ID on first beacon.
+stage1 connects back to the RMM server over HTTPS, fetches the masked Go agent, decodes it, writes it to the current user's temp directory (`%TEMP%\minimal-rmm-agent.exe` — no administrator rights required), and executes it. The session ID is fixed at build time so the agent registers with a known ID on first beacon.
+
+### Checking the launcher status
+
+stage1 posts one status line to the staging entry (`stage1 ok: agent installed and started` on success, `stage1 failed: ...` on failure). Read it from the operator API:
+
+```bash
+# REST
+curl -H "Authorization: Bearer $RMM_API_TOKEN" \
+  "$RMM_URL/api/v1/agent/go/stage/<staging_id>"
+
+# CLI
+rmm_cli agent go-stage <staging_id>
+
+# MCP
+stage_status(staging_id="<staging_id>")
+```
+
+The response includes the last status line, whether the payload was fetched, and the expiry time. A 404 means the entry is unknown, purged, or expired.
 
 ### Why staged?
 
@@ -74,17 +92,18 @@ seed = staging_id_bytes (16) || block_index_big_endian (8)
 keystream_block = SHA-256(seed)   # 32 bytes
 ```
 
-Applied in 32-byte blocks over the entire binary. Implemented in both `server_rmm.py` (`_mask_staging_payload`) and `stage1.c` (`stageMask`).
+Applied in 32-byte blocks over the entire binary. Implemented in both `server_rmm.py` (`staging_mask`) and `stage1.c` (`stageMask`).
 
 ## Implementation files
 
 | File | Change |
 |---|---|
-| `server_rmm.py` | `build_go_agent()`: `is_staged` branch returns stage1 ZIP; HTTP handler passes `staging_fn=srv.create_staging` |
-| `agent-go/stage1/c/stage1.c` | C launcher: WinHTTP fetch, staging mask decode, write + exec |
-| `mcp_rmm_server.py` | `build_go_agent()`: `stageless` parameter, corrected docstring |
-| `rmm_tools.py` | OPENAI_TOOLS schema: `stageless` description corrected |
-| `rmm_cli.py` | `--stageless` argparse help corrected |
+| `server_rmm.py` | `build_go_agent()`: `is_staged` branch returns stage1 ZIP; build handler passes `staging_fn` with the 24-hour build TTL (`STAGING_BUILD_TTL_SECONDS`); `create_staging(payload, ttl_seconds)`; `staging_info()` + `GET /api/v1/agent/go/stage/{id}` status endpoint |
+| `agent-go/stage1/c/stage1.c` | C launcher: WinHTTP fetch with HTTP status check, staging mask decode, write to `%TEMP%` (no elevation), launch, `stage1 ok:/stage1 failed:` status lines |
+| `agent-go/stage1/main.go` | Go stage1 (fallback): same temp-directory write path and status lines |
+| `mcp_rmm_server.py` | `build_go_agent()`: `stageless` parameter; `stage_status()` tool |
+| `rmm_tools.py` | OPENAI_TOOLS schemas: `stageless`, `stage_status`; `build_go_agent` handler forwards `stageless` |
+| `rmm_cli.py` | `--stageless` argparse help; `agent go-stage <staging_id>` status command |
 | `web/index.html` | Stageless checkbox: tooltip corrected, label updated |
 | `web/go-agent.js` | Reads and POSTs `stageless` flag |
 
@@ -92,3 +111,4 @@ Applied in 32-byte blocks over the entire binary. Implemented in both `server_rm
 
 - `x86_64-w64-mingw32-gcc` (package: `mingw-w64`) for the compact C stage1. Falls back to Go stage1 if not available.
 - The RMM server must be reachable from the target at the time stage1 runs (the `BASE_URL` is baked into stage1 at build time).
+- The staging entry lives in server memory: restart the RMM server and staged builds must be rebuilt. The entry expires 24 hours after the build or on first successful fetch.

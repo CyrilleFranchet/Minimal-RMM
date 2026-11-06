@@ -14,6 +14,47 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Fix staged (stage1) manual deployment flow
+
+The staged ZIP delivery (`build_go_agent` default) only worked when the
+launcher ran elevated within 10 minutes of the build — both constraints were
+undocumented, so a manual `run-stage1.ps1` on a target silently never
+launched the Go agent. Fixed end to end:
+
+- **Staging TTL**: staged builds now register their staging entry with a
+  dedicated 24-hour TTL (`STAGING_BUILD_TTL_SECONDS`), matching what the
+  ZIP README and `docs/staged-deployment.md` always promised. The psexec
+  lateral flow keeps the short 600-second TTL. `create_staging` takes a
+  `ttl_seconds` parameter.
+- **No elevation required**: the C stage1 and the Go stage1 fallback write
+  the decoded agent to the account's temp directory
+  (`%TEMP%\minimal-rmm-agent.exe`) instead of
+  `%SystemRoot%\System32`, so a manual launcher run works from a
+  non-administrator PowerShell. The psexec path (SYSTEM) is unaffected.
+- **HTTP status check in the C stage1**: a 404 from an unknown, consumed,
+  or expired staging entry is now reported as
+  `stage1 failed: stage2 download failed: HTTP 404 …` instead of being
+  decoded as the payload and failing the MZ check with a misleading error.
+- **Operator visibility**: new `GET /api/v1/agent/go/stage/{staging_id}`
+  endpoint backed by `RMMServer.staging_info()` surfaces the launcher
+  status line, fetch state, and expiry for staged builds (previously only
+  the lateral-move flow could read it). Exposed consistently as CLI
+  `agent go-stage <staging_id>` and MCP/web-AI tool `stage_status`;
+  `scripts/check_operator_parity.py` updated (66 tools).
+- **Test hygiene**: build tests (`test_deployment_artifacts`,
+  `test_agent_workspace_binding`) ran against the real `agent-go` tree and
+  overwrote the repository's embedded `stage1.bin` placeholder with stub
+  bytes — any agent built afterwards would embed a garbage launcher for
+  psexec. They now build against an isolated minimal agent-go skeleton.
+- Status lines from the C stage1 now carry the `stage1 ok:` /
+  `stage1 failed:` prefixes, matching the Go stage1 and server tests.
+- Docs updated: `docs/staged-deployment.md` (status endpoint, temp path,
+  in-memory caveat), `docs/go-agent.md`, `docs/mcp-parity.md`, `README.md`
+  API table. Validation: full Python suite (709 tests; one pre-existing
+  unrelated `test_rmm_settings` redaction failure also present on HEAD),
+  host Go tests, `make check-parity`, C stage1 compile-checked by
+  `make check` when MinGW is available.
+
 ### 2026-11-06 — Shell feedback, failed-command recall, and Go session labels
 
 - Render identity results only through session events to avoid duplicate API

@@ -247,6 +247,40 @@ class StagingStoreTests(unittest.TestCase):
         self.assertTrue(self.server.staging_record_status(staging_id, "stage1 ok: agent installed"))
         self.assertEqual(self.server.staging_status(staging_id), "stage1 ok: agent installed")
 
+    def test_staged_build_ttl_and_operator_status_view(self):
+        # Staged ZIP builds are deployed by hand: the staging entry must live
+        # for the 24 hours the ZIP README promises, not the psexec TTL.
+        staging_id = self.server.create_staging(b"MZpayload", ttl_seconds=server_rmm.STAGING_BUILD_TTL_SECONDS)
+        entry = self.server.staging_entries[staging_id]
+        self.assertAlmostEqual(entry["expires"] - entry["created"],
+                               server_rmm.STAGING_BUILD_TTL_SECONDS, delta=2)
+        self.assertTrue(self.server.staging_record_status(staging_id, "stage1 ok: agent installed and started"))
+        info = self.server.staging_info(staging_id)
+        self.assertEqual(info["staging_id"], staging_id)
+        self.assertEqual(info["status"], "stage1 ok: agent installed and started")
+        self.assertFalse(info["fetched"])
+        self.assertFalse(info["expired"])
+        self.assertNotIn("payload", info)
+        self.assertIsNone(self.server.staging_info("unknown00000000"))
+
+    def test_operator_stage_status_endpoint(self):
+        staging_id = self.server.create_staging(b"MZpayload", ttl_seconds=server_rmm.STAGING_BUILD_TTL_SECONDS)
+        self.server.staging_record_status(staging_id, "stage1 failed: stage2 download failed: HTTP 404")
+        handler = object.__new__(server_rmm.RMMHandler)
+        handler._api_authorized = Mock(return_value=True)
+        handler._api_path_parts = Mock(return_value=["agent", "go", "stage", staging_id])
+        handler._workspace_scope = Mock(return_value=None)
+        handler._json = Mock()
+        handler.server_instance = self.server
+        handler._handle_api_get(f"/api/v1/agent/go/stage/{staging_id}", {})
+        code, payload = handler._json.call_args.args
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["status"], "stage1 failed: stage2 download failed: HTTP 404")
+        self.assertFalse(payload["fetched"])
+        handler._api_path_parts = Mock(return_value=["agent", "go", "stage", "unknown00000000"])
+        handler._handle_api_get("/api/v1/agent/go/stage/unknown00000000", {})
+        self.assertEqual(handler._json.call_args.args[0], 404)
+
     def test_unknown_and_expired_entries_are_rejected(self):
         self.assertIsNone(self.server.staging_payload("unknown00000000"))
         self.assertFalse(self.server.staging_record_status("unknown00000000", "x"))

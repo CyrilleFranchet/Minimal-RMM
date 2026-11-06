@@ -61,6 +61,7 @@ from rmm_tools import (
     tool_get_agent_script,
     tool_deploy_agent_script,
     tool_build_go_agent,
+    tool_stage_status,
     tool_get_events,
     tool_get_history_events,
     tool_get_history_session,
@@ -520,6 +521,12 @@ def build_go_agent(
 ) -> str:
     """Build the repository Go agent. Default (stageless=False): compiles the Go agent as stage2, stores it on the server, and returns a small ZIP with stage1.exe (~20 KB C launcher) and a PowerShell wrapper — drop both on the target, run run-stage1.ps1, stage1 fetches the agent over HTTPS. stageless=True: returns a ZIP with the full Go agent binary directly (no staging, larger download to target)."""
     return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy, workspace_id, stageless)
+
+
+@mcp.tool()
+def stage_status(staging_id: str) -> str:
+    """Read the stage1 launcher status recorded on the server for a staged Go agent build: fetch state, expiry, and the last status line posted by stage1 (for example 'stage1 ok: agent installed and started' or 'stage1 failed: ...')."""
+    return tool_stage_status(_client(), staging_id)
 
 
 @mcp.tool()

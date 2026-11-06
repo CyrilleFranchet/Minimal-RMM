@@ -14,6 +14,16 @@ from workspace_service import WorkspaceService
 
 
 class DeploymentArtifactTests(unittest.TestCase):
+    def _isolated_agent_root(self, directory):
+        """Minimal agent-go skeleton so build tests never rewrite the
+        repository's embedded stage1.bin placeholder."""
+        root = Path(directory) / "agent-go"
+        (root / "stage1" / "c").mkdir(parents=True, exist_ok=True)
+        (root / "go.mod").write_text("module minimal-rmm-agent\n")
+        source = Path(server_rmm.__file__).parent / "agent-go" / "stage1" / "c" / "stage1.c"
+        (root / "stage1" / "c" / "stage1.c").write_text(source.read_text())
+        return str(root)
+
     def test_workspace_routes_only_deployment_artifacts_upstream(self):
         service = object.__new__(WorkspaceService)
         service.store = Mock()
@@ -51,7 +61,7 @@ class DeploymentArtifactTests(unittest.TestCase):
             return SimpleNamespace(returncode=0)
 
         with tempfile.TemporaryDirectory() as directory:
-            with patch.object(server_rmm, "GO_AGENT_BUILD_DIR", directory), patch.object(server_rmm, "LOG_DIR", directory), patch.object(server_rmm.shutil, "which", return_value="go"):
+            with patch.object(server_rmm, "GO_AGENT_BUILD_DIR", directory), patch.object(server_rmm, "LOG_DIR", directory), patch.object(server_rmm, "GO_AGENT_DIR", self._isolated_agent_root(directory)), patch.object(server_rmm.shutil, "which", return_value="go"):
                 owner = Mock()
                 owner.run.side_effect = compile_stub
                 with ThreadPoolExecutor(max_workers=2) as pool:
