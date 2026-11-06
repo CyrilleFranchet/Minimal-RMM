@@ -54,6 +54,7 @@ def _json_request(
     timeout: float = 180,
 ) -> dict:
     """Send a JSON HTTP request and turn provider failures into RuntimeError values."""
+    import time
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request_headers = {"Accept": "application/json", **headers}
     if data is not None:
@@ -64,22 +65,29 @@ def _json_request(
         headers=request_headers,
         method="POST" if data else "GET",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode(errors="replace")
+    _429_max_retries = 4
+    for _attempt in range(_429_max_retries + 1):
         try:
-            error = json.loads(raw)
-        except json.JSONDecodeError:
-            error = raw or str(e)
-        if isinstance(error, dict):
-            error = error.get("error", error)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and _attempt < _429_max_retries:
+                retry_after = int(e.headers.get("Retry-After", 0))
+                wait = retry_after if retry_after > 0 else min(2 ** (_attempt + 2), 60)
+                time.sleep(wait)
+                continue
+            raw = e.read().decode(errors="replace")
+            try:
+                error = json.loads(raw)
+            except json.JSONDecodeError:
+                error = raw or str(e)
             if isinstance(error, dict):
-                error = error.get("message") or error.get("type") or raw
-        raise RuntimeError(str(error or e)) from e
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        raise RuntimeError(str(e)) from e
+                error = error.get("error", error)
+                if isinstance(error, dict):
+                    error = error.get("message") or error.get("type") or raw
+            raise RuntimeError(str(error or e)) from e
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+            raise RuntimeError(str(e)) from e
 
 
 def _provider_headers(provider: str, api_key: str) -> dict[str, str]:
