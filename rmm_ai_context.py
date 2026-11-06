@@ -4,6 +4,7 @@ import os
 import re
 import sqlite3
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from rmm_settings import getenv
 from rmm_ai_skill_context import _tool
@@ -199,6 +200,19 @@ class ContextDispatcher:
     def __init__(self, delegate, window):
         self.delegate, self.window = delegate, window
         self.operations = []
+        self._activity_evidence = ContextVar('ai_tool_evidence', default=None)
+        self._pending_activity = ContextVar('ai_tool_pending', default=False)
+
+    def prepare_activity(self, args):
+        """Archive arguments before reporting a call or dispatching its work."""
+        arguments_id = self.window.archive(json.dumps(args, ensure_ascii=True), 'tool_arguments')
+        self._activity_evidence.set({'arguments_artifact_id': arguments_id})
+        self._pending_activity.set(True)
+        return self.activity_evidence()
+
+    def activity_evidence(self):
+        """Return this asynchronous call's protected evidence references."""
+        return dict(self._activity_evidence.get() or {})
 
     def begin_batch(self, calls):
         """Forward batch boundaries to the step policy before any operations run."""
@@ -221,6 +235,10 @@ class ContextDispatcher:
 
     async def __call__(self, name, args):
         """Page archived evidence or delegate a guarded call without replay."""
+        if not self._pending_activity.get():
+            self.prepare_activity(args)
+        self._pending_activity.set(False)
+        arguments_id = self.activity_evidence()['arguments_artifact_id']
         if name == 'read_context':
             if not isinstance(args, dict) or not isinstance(args.get('artifact_id'), str):
                 return json.dumps({'ok': False, 'error': 'invalid_context_reference'})
@@ -234,6 +252,9 @@ class ContextDispatcher:
                                'content': item['content'], 'next_offset': offset + limit if offset + limit < item['characters'] else None})
         raw = await self.delegate(name, args)
         result = self.window.bounded_result(raw)
+        self._activity_evidence.set({'arguments_artifact_id': arguments_id,
+                                     'artifact_id': self.window.last_result_id,
+                                     'output_bytes': len(raw.encode('utf-8', errors='replace'))})
         self.operations.append({'name': name, 'arguments': args, 'result_preview': raw[:500],
                                 'artifact_id': self.window.last_result_id})
         return result

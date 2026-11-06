@@ -270,3 +270,82 @@ Job polling returns evidence manifests rather than full archived output.
 Context admission, bounded recovery for empty/truncated replies, checkpoint
 limitations, and template authoring are documented in
 [Playbook execution](web-ai-skills.md) and [AI providers](ai-providers.md).
+
+## Operation activity and protected evidence
+
+Each job exposes a chronological `activity` array through its existing,
+owner-scoped job API. `AIJobManager._progress` persists a timestamped safe
+checkpoint before a tool invocation. It retains the latest 500 events and
+reports the removed count as `activity_omitted`. Existing databases migrate on
+startup; historical calls cannot be reconstructed. Activity survives terminal
+failure and restart independently of the last `progress` checkpoint.
+
+`run_tool_batch` assigns a distinct `call_id` to each invocation, with matching
+start and response/error events, elapsed milliseconds, argument field names,
+and response byte count. MCP activity identifies the resolved `rmm`, `exegol`,
+or internal backend. A completed call means a response was received, not that
+the command succeeded. An exception marks `outcome_unknown`: a remote command
+may still have executed. A job that stops or restarts with only a running event
+also has an unresolved outcome; nothing is automatically replayed.
+
+Canceling a job does not discard a later response from an already-started call.
+`AIJobManager._progress` retains a matching call's terminal observation and
+evidence references even after interruption, then stops the worker at that
+checkpoint. The job remains interrupted, its original stop time is retained,
+and no subsequent call is admitted. Unmatched or repeated observations cannot
+revive stopped work.
+
+`ContextDispatcher.prepare_activity` archives command arguments before the
+call begins, and `activity_evidence` supplies asynchronous task-local references
+to arguments and returned output. No raw arguments, command, output, credential,
+or exception message is included in the activity metadata. Context archives
+remain protected operational evidence and may contain secrets. Their existing
+owner-local file permissions and retention requirements still apply.
+
+The operation details dialog can explicitly retrieve a bounded evidence page
+using the authenticated UI endpoint
+`GET /api/v1/ai/jobs/JOB_ID/evidence/ARTIFACT_ID?offset=0&limit=4096`.
+`AIJobManager.read_evidence` requires both the authenticated job owner and an
+artifact reference recorded on that job. A private persisted evidence scope is
+never returned in job metadata. Pages report `content`, `characters`, and
+`next_offset`; offsets count Python Unicode characters. Evidence is not included
+in diagnostic exports automatically. Inspect it locally before sharing.
+
+Failure diagnostics traverse bounded `ExceptionGroup` children as well as
+causes and contexts. Only exception types, HTTP status, and traceback line
+numbers are exposed; nested exception messages remain excluded.
+
+## Operation details dialog
+
+Each displayed AI job has an **Operation details** button. The modal dialog
+shows its identity, state, timestamps, elapsed time at the last update, and the
+last progress checkpoint. The operation selector includes recent jobs discovered
+for the current chat. Existing polling refreshes the selected running job's
+recorded activity without resubmitting work; completed and failed jobs remain
+inspectable after reconnect through the existing job discovery endpoint.
+While the dialog is open, it also refreshes the selected job every two seconds,
+including stopped jobs whose dispatched calls may still return observations.
+Closing the dialog stops these read-only requests. Refresh failures leave the
+last data visible with a reconnecting notice; no command is repeated.
+
+The activity timeline retains expandable event metadata and failure diagnostics.
+A call start is not proof of remote execution, and a received response is not
+proof that the operator's goal succeeded. A terminal job with an unfinished call
+is labeled **Outcome unknown**. Older jobs without activity show an explicit
+missing-history state. The dialog reports omitted older event counts.
+
+Operators can explicitly load protected command arguments or tool output from
+owner-scoped evidence references. These reads are paginated and capped to a
+65,536-character browser preview. Evidence can contain secrets and is rendered as plain
+text. It is never loaded automatically or included in **Copy diagnostics**,
+which exports only allowlisted job, activity, and exception metadata. Failed
+reads remain retryable; unavailable historical evidence cannot be reconstructed.
+
+`web/ai-operation-details.js` owns the dialog lifecycle, safe metadata projection,
+operation selection, lazy evidence reads, copy behavior, and scope reset. Native
+modal behavior provides Escape dismissal and keyboard focus containment. The
+Close button is always available. Expanded events and summary focus survive
+polling updates. Switching chats or resetting them clears the cached details.
+`tests/test_ai_operation_details.cjs` covers metadata filtering, explicit evidence
+loading, final-page handling, failures, retained expansion, unknown outcomes,
+copy exclusions, and account-generation cache invalidation.

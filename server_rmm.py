@@ -3708,6 +3708,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             elif len(parts) == 3:
                 job = srv.ai_jobs().get(parts[2], owner=owner)
                 self._json(200 if job else 404, {"job": job} if job else {"error": "job_not_found"})
+            elif len(parts) == 5 and parts[3] == "evidence":
+                try:
+                    offset = int(qs.get("offset", ["0"])[0])
+                    limit = int(qs.get("limit", ["4096"])[0])
+                    if not 0 <= offset <= 2**31 - 1 or not 1 <= limit <= 4096:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    self._json(400, {"error": "invalid_evidence_page"})
+                    return True
+                evidence = srv.ai_jobs().read_evidence(parts[2], owner, parts[4], offset, limit)
+                self._json(200 if evidence is not None else 404,
+                           {"evidence": evidence} if evidence is not None else {"error": "evidence_not_found"})
             else:
                 self._json(404, {"error": "not_found"})
             return True

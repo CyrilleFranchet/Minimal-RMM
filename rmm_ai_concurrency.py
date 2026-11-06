@@ -1,6 +1,8 @@
 """Bounded, conservative scheduling of one model round's tool calls."""
 
 import asyncio
+import time
+import uuid
 
 from rmm_settings import getenv
 
@@ -36,11 +38,27 @@ async def run_tool_batch(calls, call_tool, *, resolve_session=None, progress=Non
     async def invoke(index, arguments):
         """Report and execute one call without altering transcript order."""
         name = calls[index]["name"]
+        call_id = uuid.uuid4().hex
+        started = time.monotonic()
+        event = {"phase": "tool", "round": round_number, "tool": name, "call_id": call_id}
+        evidence = call_tool.prepare_activity(arguments) if getattr(type(call_tool), 'prepare_activity', None) else {}
         if progress:
-            progress({"phase": "tool", "round": round_number, "tool": name, "status": "running"})
-        result = await call_tool(name, arguments)
+            progress({**event, **evidence, "status": "running", "arguments_keys": list(arguments) if isinstance(arguments, dict) else []})
+        try:
+            result = await call_tool(name, arguments)
+        except BaseException as error:
+            if progress:
+                from rmm_ai_jobs import _failure_diagnostics
+                evidence = call_tool.activity_evidence() if getattr(type(call_tool), 'activity_evidence', None) else {}
+                progress({**event, **evidence, "status": "outcome_unknown",
+                          "duration_ms": int((time.monotonic() - started) * 1000),
+                          "diagnostics": _failure_diagnostics(error)})
+            raise
         if progress:
-            progress({"phase": "tool", "round": round_number, "tool": name, "status": "completed"})
+            evidence = call_tool.activity_evidence() if getattr(type(call_tool), 'activity_evidence', None) else {}
+            progress({**event, **evidence, "status": "completed",
+                      "duration_ms": int((time.monotonic() - started) * 1000),
+                      "output_bytes": evidence.get("output_bytes", len(result.encode("utf-8", errors="replace")) if isinstance(result, str) else 0)})
         results[index] = result
 
     async def drain(segment):

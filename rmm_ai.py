@@ -658,6 +658,16 @@ def _run_ai_chat_mcp(
         nonlocal connected
         connected = True
         tools, call_tool = mcp.openai_tools, mcp.call_tool
+        external = getattr(mcp, 'external_tool_names', set())
+        external = external if isinstance(external, (set, frozenset, list, tuple)) else set()
+        registered = {tool['function']['name'] for tool in tools}
+
+        def report_mcp(event):
+            """Label tool activity with the resolved backend before persistence."""
+            if progress:
+                name = event.get('tool')
+                backend = 'exegol' if name in external else ('rmm' if name in registered else 'internal')
+                progress({**event, **({'backend': backend} if name else {})})
         if progress:
             progress({"phase": "ready", "mcp_status": "connected", "tool_count": len(tools)})
         system = playbook_system(mcp.server_instructions or SYSTEM_PROMPT,
@@ -674,7 +684,7 @@ def _run_ai_chat_mcp(
             via="mcp",
             context_scope=context_scope,
             resolve_session=resolve_session,
-            progress=progress,
+            progress=report_mcp,
         )
 
     try:
@@ -827,6 +837,7 @@ def run_ai_chat(
     # accept an operator-supplied archive path or another workspace's scope.
     context_scope = hashlib.sha256(json.dumps([rmm_base_url, rmm_token,
         rmm_headers or {}, selected_session_id], sort_keys=True).encode()).hexdigest()
+    progress({"phase": "context_ready", "context_scope": context_scope})
     common = {
         "rmm_base_url": rmm_base_url,
         "rmm_token": rmm_token,

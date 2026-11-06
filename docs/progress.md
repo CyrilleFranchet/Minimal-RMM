@@ -22,6 +22,29 @@ playbook runtime. They are retained as implementation history, not setup advice.
 - Added UI regressions for checking, starting, failed, and missing snapshots.
   Live endpoint connectivity remains unverified.
 
+### 2026-11-06 — Inspect AI operations from the WebUI
+
+- Added an Operation details dialog for AI jobs with a persisted activity
+  timeline, progress, timing, and bounded exception diagnostics, including
+  nested exception groups.
+- Tool arguments and returned output are available through explicit, paged
+  evidence reads scoped to the authenticated job owner. Metadata exports
+  exclude raw operational evidence. Historical jobs display only retained data.
+- A received tool response does not establish remote command success. Missing
+  responses remain uncertain; inspecting details never retries an operation.
+- See [Background AI jobs](ai-background-jobs.md) for retention, evidence
+  access, and the distinction between job status and execution outcome.
+- Validation: full `make check` passed, including Python regressions, UI
+  workflow tests, operator parity, syntax, and Markdown/YAML lint. Dialog,
+  reconnect, and authentication-reset UI regressions passed after final edits.
+  Live browser visual QA and deployed Exegol execution were not performed.
+
+Follow-up review reproduced two activity-inspection defects: tool responses
+arriving after Stop could lose their evidence references, and live polling
+could replace pending evidence-load controls. The fixes retain late observations
+without restarting stopped work and preserve evidence loading/error state across
+refreshes, with deterministic regression coverage.
+
 ### 2026-11-05 — Update retained skill references and metadata
 
 - Updated default metadata for deployment, BloodHound, pivot, lateral movement,

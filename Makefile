@@ -87,6 +87,7 @@ check-ai:
 	@$(PYTHON) -m unittest discover -s tests -p 'test_*embedding*.py'
 	@$(PYTHON) -m unittest discover -s tests -p 'test_server_rmm_ai.py'
 	@node tests/test_ai_jobs_ui.cjs
+	@node tests/test_ai_operation_details.cjs
 
 check-web-contracts:
 	@$(PYTHON) scripts/check_web_contracts.py

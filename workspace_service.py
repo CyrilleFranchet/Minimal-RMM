@@ -1467,6 +1467,10 @@ class WorkspaceService:
             upstream_path = path
             if len(parts) == 2 and "session_id" in qs:
                 upstream_path += "?" + urllib.parse.urlencode({"session_id": qs["session_id"][0]})
+            elif len(parts) == 5 and parts[3] == "evidence":
+                page = {key: qs[key][0] for key in ("offset", "limit") if key in qs}
+                if page:
+                    upstream_path += "?" + urllib.parse.urlencode(page)
             return self._proxy("GET", upstream_path)
         if parts == ["settings"]:
             status, payload = settings_api(self.settings, "GET")

@@ -2480,6 +2480,7 @@ function configureWorkspaceAccess(health) {
 }
 
 async function connect() {
+  window.rmmAiOperationDetails?.reset();
   const authGeneration = state.authGeneration = (state.authGeneration || 0) + 1;
   const token = $("#token-input").value.trim();
   state.token = token;
@@ -2527,6 +2528,7 @@ async function connect() {
 }
 
 function disconnect() {
+  window.rmmAiOperationDetails?.reset();
   state.authGeneration = (state.authGeneration || 0) + 1;
   window.stopBloodHoundHealth?.();
   window.renderRmmDeploymentMode?.();

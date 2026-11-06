@@ -418,6 +418,7 @@
 
   function displayAiJob(job, sessionId, token) {
     if (!currentChat(sessionId, token)) return;
+    window.rmmAiOperationDetails?.remember(job);
     let execution = $("#ai-job-execution");
     if (!execution) {
       execution = document.createElement("div");
@@ -429,6 +430,19 @@
     execution.textContent = context.tool_path
       ? `Tools: ${context.tool_path} · MCP: ${context.mcp_status} · Exegol: ${context.exegol_status}.`
       : "Execution details are not available for this job.";
+    const detailsButton = () => {
+      if (!window.rmmAiOperationDetails) return;
+      let button = $("#ai-operation-button");
+      if (!button) {
+        button = document.createElement("button");
+        button.id = "ai-operation-button";
+        button.type = "button";
+        button.className = "ai-operation-button";
+        button.textContent = "Operation details";
+        $("#ai-job-status")?.appendChild(button);
+      }
+      button.onclick = () => window.rmmAiOperationDetails.show(job);
+    };
     const saved = jobState(sessionId);
     if (pendingSubmission?.body.request_id === job.request_id) pendingSubmission = null;
     saveJobState(sessionId, { ...saved, job_id: job.id, request_id: job.request_id });
@@ -444,6 +458,7 @@
         "Task " + job.status + (progress ? ": " + progress : ".") +
         " You can close this browser; execution continues on the server."
       );
+      detailsButton();
       const stop = $("#ai-stop-btn");
       if (stop) {
         stop.classList.remove("hidden");
@@ -491,6 +506,7 @@
         ? "Task stopped. No further work will start after the next cancellation checkpoint. Already dispatched actions may continue; stopping does not undo them. The task was not automatically replayed."
         : "Task failed. " + (typeof job.error === "string" ? job.error : job.result?.error || "Inspect the task and agent history before retrying.") + formatAiFailureDetails(job));
     }
+    detailsButton();
   }
 
   async function refreshAiJob(sessionId, token, jobId = null) {
@@ -504,6 +520,7 @@
       const saved = jobState(sessionId);
       const jobs = (jobId ? [data.job] : (data.jobs || [])).filter((job) => job && !job.dismissed &&
         (job.session_id || null) === sessionId);
+      for (const item of jobs) window.rmmAiOperationDetails?.remember(item);
       jobs.sort((a, b) => jobCreatedAt(b) - jobCreatedAt(a));
       const unresolvedRequest = saved.request_id && !saved.job_id;
       const job = jobs.find((item) => ["queued", "running"].includes(item.status))
@@ -545,6 +562,7 @@
       return;
     }
     clearTimeout(jobPollTimer);
+    window.rmmAiOperationDetails?.reset();
     loadedChatSessionId = sessionId;
     const token = ++chatLoadToken;
     setJobBusy(true);
@@ -595,12 +613,14 @@
 
     saveJobState(sessionId, { reset_at: Date.now() });
     if (!currentChat(sessionId, token)) return;
+    window.rmmAiOperationDetails?.reset();
     chatHistory = [];
     renderChatLog();
   }
 
   function clearAiChatMemory(sessionId) {
     if (!sessionId || loadedChatSessionId !== sessionId) return;
+    window.rmmAiOperationDetails?.reset();
     chatHistory = [];
     renderChatLog();
   }
@@ -608,6 +628,7 @@
   function purgeAiChatsForSessions(sessionIds) {
     if (!sessionIds?.length || !loadedChatSessionId) return;
     if (sessionIds.includes(loadedChatSessionId)) {
+      window.rmmAiOperationDetails?.reset();
       chatHistory = [];
       renderChatLog();
     }

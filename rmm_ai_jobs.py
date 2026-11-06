@@ -1,6 +1,7 @@
 """Persist AI job status while execution remains owned by the server process."""
 
 import json
+import builtins
 import os
 import re
 import sqlite3
@@ -36,7 +37,11 @@ def _failure_diagnostics(error):
     """Extract bounded exception metadata without messages, locals, or URLs."""
     chain = []
     seen = set()
-    while error is not None and id(error) not in seen and len(chain) < 8:
+    pending = [error]
+    while pending and len(chain) < 8:
+        error = pending.pop(0)
+        if error is None or id(error) in seen:
+            continue
         seen.add(id(error))
         name = type(error).__name__
         item = {"type": name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else "Exception"}
@@ -52,7 +57,11 @@ def _failure_diagnostics(error):
             frame = frame.tb_next
         item["traceback_lines"] = frames[-12:]
         chain.append(item)
-        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        cause = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        if isinstance(error, getattr(builtins, "BaseExceptionGroup", ())):
+            pending.extend(error.exceptions[:8])
+        if cause is not None:
+            pending.append(cause)
     return {"exception_chain": chain}
 
 
@@ -105,13 +114,14 @@ def _safe_progress(event):
     if not isinstance(event, dict):
         return {}
     clean = {}
-    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status"):
+    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status", "backend", "call_id", "artifact_id", "arguments_artifact_id"):
         value = event.get(key)
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", value):
             clean[key] = value
-    for key in ("round", "tool_count", "step", "context_compactions"):
+    for key in ("round", "tool_count", "step", "context_compactions", "duration_ms", "output_bytes"):
         value = event.get(key)
-        if type(value) is int and 0 <= value <= 1000000:
+        ceiling = 2**53 - 1 if key in ("duration_ms", "output_bytes") else 1000000
+        if type(value) is int and 0 <= value <= ceiling:
             clean[key] = value
     for key in ('skills', 'active_skills'):
         if isinstance(event.get(key), list):
@@ -121,6 +131,33 @@ def _safe_progress(event):
         clean['step_summary'] = ''.join(c for c in event['step_summary'][:500] if c.isprintable())
     if isinstance(event.get('step_checkpoint'), str):
         clean['step_checkpoint'] = ''.join(c for c in event['step_checkpoint'][:2000] if c.isprintable())
+    return clean
+
+
+def _safe_activity(event):
+    """Keep bounded operational metadata without command text or tool output."""
+    clean = _safe_progress(event)
+    # Human-authored model summaries are not a credential filtering boundary.
+    for key in ("step_summary", "step_checkpoint"):
+        clean.pop(key, None)
+    keys = event.get("arguments_keys")
+    if isinstance(keys, list):
+        clean["arguments_keys"] = [key for key in keys[:50] if isinstance(key, str)
+                                  and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", key)]
+    diagnostics = event.get("diagnostics")
+    if isinstance(diagnostics, dict):
+        entries = []
+        for item in diagnostics.get("exception_chain", [])[:8]:
+            if not isinstance(item, dict) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", str(item.get("type", ""))):
+                continue
+            entry = {"type": item["type"]}
+            if type(item.get("http_status")) is int and 100 <= item["http_status"] <= 599:
+                entry["http_status"] = item["http_status"]
+            lines = item.get("traceback_lines", [])
+            if isinstance(lines, list):
+                entry["traceback_lines"] = [line for line in lines[-12:] if type(line) is int and 0 < line < 10000000]
+            entries.append(entry)
+        clean["diagnostics"] = {"exception_chain": entries}
     return clean
 
 
@@ -161,6 +198,12 @@ class AIJobManager:
             columns = {row[1] for row in self._db.execute("PRAGMA table_info(ai_jobs)")}
             if "dismissed" not in columns:
                 self._db.execute("ALTER TABLE ai_jobs ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0")
+            if "activity" not in columns:
+                self._db.execute("ALTER TABLE ai_jobs ADD COLUMN activity TEXT NOT NULL DEFAULT '[]'")
+            if "activity_total" not in columns:
+                self._db.execute("ALTER TABLE ai_jobs ADD COLUMN activity_total INTEGER NOT NULL DEFAULT 0")
+            if "evidence_scope" not in columns:
+                self._db.execute("ALTER TABLE ai_jobs ADD COLUMN evidence_scope TEXT")
             self._db.execute(
                 "UPDATE ai_jobs SET state='interrupted', updated_at=?, completed_at=?, error=? "
                 "WHERE state IN ('queued','running')",
@@ -173,10 +216,13 @@ class AIJobManager:
             return None
         job = dict(row)
         job.pop("owner", None)
+        job.pop("evidence_scope", None)
         job["status"] = job.pop("state")
         job["dismissed"] = bool(job["dismissed"])
         job["progress"] = json.loads(job["progress"])
         job["result"] = json.loads(job["result"]) if job["result"] else None
+        job["activity"] = json.loads(job["activity"])
+        job["activity_omitted"] = max(0, job.pop("activity_total") - len(job["activity"]))
         return job
 
     def get(self, job_id, owner):
@@ -201,6 +247,32 @@ class AIJobManager:
                     (owner, session_id or None, limit),
                 ).fetchall()
             return [self._public(row) for row in rows]
+
+    def read_evidence(self, job_id, owner, artifact_id, offset=0, limit=4096):
+        """Read one protected evidence page referenced by this owner's job."""
+        if (not isinstance(artifact_id, str) or not re.fullmatch(r"context-[a-f0-9]{32}", artifact_id)
+                or type(offset) is not int or not 0 <= offset <= 2**31 - 1
+                or type(limit) is not int or not 1 <= limit <= 4096):
+            return None
+        with self._lock:
+            row = self._db.execute("SELECT * FROM ai_jobs WHERE id=? AND owner=?", (job_id, owner)).fetchone()
+            if row is None or not row["evidence_scope"]:
+                return None
+            job = self._public(row)
+            references = {event.get(key) for event in job["activity"]
+                          for key in ("artifact_id", "arguments_artifact_id")}
+            manifest = (job.get("result") or {}).get("context_artifacts", {})
+            if isinstance(manifest, dict):
+                references.update(manifest)
+            if artifact_id not in references:
+                return None
+            from rmm_ai_context import ContextWindow
+            window = ContextWindow(scope=row["evidence_scope"])
+            page = window.read_page(artifact_id, offset, limit)
+            if page is None:
+                return None
+            return {"artifact_id": artifact_id, **page,
+                    "offset": offset, "next_offset": offset + limit if offset + limit < page["characters"] else None}
 
     def dismiss(self, owner, session_id):
         """Hide completed session jobs after chat reset while retaining history."""
@@ -297,14 +369,32 @@ class AIJobManager:
             return self.get(job_id, owner), True
 
     def _progress(self, job_id, event):
-        """Persist safe progress and stop a worker after server shutdown."""
+        """Persist observations, including a canceled call's late response, then stop."""
         with self._lock:
-            self._check_active(job_id)
+            row = self._db.execute("SELECT state,activity FROM ai_jobs WHERE id=?", (job_id,)).fetchone()
+            activity = json.loads(row["activity"]) if row is not None else []
+            call_id = event.get("call_id")
+            prior = [item for item in activity if call_id and item.get("call_id") == call_id]
+            late_observation = (row is not None and row["state"] == "interrupted"
+                                and event.get("phase") == "tool"
+                                and event.get("status") in ("completed", "outcome_unknown")
+                                and prior and prior[-1].get("status") == "running"
+                                and prior[-1].get("tool") == event.get("tool"))
+            if not late_observation:
+                self._check_active(job_id)
+            timestamp = _now()
+            scope = event.get("context_scope")
+            if isinstance(scope, str) and re.fullmatch(r"[a-f0-9]{64}", scope):
+                with self._db:
+                    self._db.execute("UPDATE ai_jobs SET evidence_scope=? WHERE id=?", (scope, job_id))
+            activity.append({**_safe_activity(event), "timestamp": timestamp})
             with self._db:
                 self._db.execute(
-                    "UPDATE ai_jobs SET progress=?, updated_at=? WHERE id=? AND state='running'",
-                    (json.dumps(_safe_progress(event)), _now(), job_id),
+                    "UPDATE ai_jobs SET progress=?, activity=?, activity_total=activity_total+1, updated_at=? WHERE id=? AND state=?",
+                    (json.dumps(_safe_progress(event)), json.dumps(activity[-500:]), timestamp, job_id, row["state"]),
                 )
+            if late_observation:
+                raise JobInterrupted("Job was interrupted; the dispatched call's final observation was retained.")
 
     def _finish(self, job_id, state, result=None, error=None):
         """Record terminal state without overwriting an interrupted job."""
