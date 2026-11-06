@@ -619,12 +619,12 @@ class RmmApiClient:
             timeout=60,
         )
 
-    def build_go_agent(self, goos="windows", goarch="amd64", config=None, use_server_config=True):
+    def build_go_agent(self, goos="windows", goarch="amd64", config=None, use_server_config=True, stageless=False):
         """Build the repository Go agent; use_server_config embeds the active URL and secret."""
         return self.request(
             "POST",
             "/api/v1/agent/go/build",
-            {"goos": goos, "goarch": goarch, "config": config or {}, "use_server_config": use_server_config},
+            {"goos": goos, "goarch": goarch, "config": config or {}, "use_server_config": use_server_config, "stageless": bool(stageless)},
             timeout=180,
         )
 
@@ -1439,6 +1439,7 @@ def cmd_agent(client: RmmApiClient, state: dict, args):
             goarch=getattr(args, "goarch", "amd64"),
             **({"config": {"workspace_id": args.workspace_id}} if getattr(args, "workspace_id", None) else {}),
             use_server_config=not getattr(args, "no_server_config", False),
+            stageless=getattr(args, "stageless", False),
         )
     else:
         die(f"unknown agent action: {action}")
@@ -2940,6 +2941,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_agent_go.add_argument("--goos", default="windows", choices=["windows"])
     sp_agent_go.add_argument("--goarch", default="amd64", choices=["amd64", "arm64"])
     sp_agent_go.add_argument("--no-server-config", action="store_true", help="Build a generic agent without embedded connection settings")
+    sp_agent_go.add_argument("--stageless", action="store_true", help="Skip building the psexec stage1 launcher (smaller binary, no lateral movement support)")
     sp_agent_go.add_argument("--workspace-id", help="Administrator-selected owner; workspace authentication binds this automatically")
     sp_agent_go.set_defaults(func=cmd_agent)
 

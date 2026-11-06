@@ -654,6 +654,7 @@ def tool_build_go_agent(
     jitter_percent: int = 30,
     http_proxy: str = "",
     workspace_id: str = "",
+    stageless: bool = False,
 ) -> str:
     """Build the repository Go agent with the server's active connection settings embedded."""
     config = {
@@ -669,6 +670,7 @@ def tool_build_go_agent(
         goarch=goarch,
         config=config,
         use_server_config=True,
+        stageless=stageless,
     )
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
@@ -1703,6 +1705,7 @@ OPENAI_TOOLS: list[dict] = [
                 "sleep_seconds": {"type": "integer", "description": "Beacon sleep in seconds (default 60)"},
                 "jitter_percent": {"type": "integer", "description": "Beacon jitter percent (default 30)"},
                 "http_proxy": {"type": "string", "description": "Optional HTTP proxy URL used by the deployed agent"},
+                "stageless": {"type": "boolean", "description": "Skip building the psexec stage1 launcher. Use when lateral movement is not needed or the target lacks ADMIN$ write access (default false)."},
             }},
         },
     },

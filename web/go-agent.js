@@ -48,6 +48,7 @@
       httpProxy: $("#agent-go-proxy")?.value.trim() || "",
       goos: $("#agent-goos")?.value || "windows",
       goarch: $("#agent-goarch")?.value || "amd64",
+      stageless: $("#agent-go-stageless")?.checked || false,
     };
   }
 
@@ -77,6 +78,8 @@
       const input = $(selector);
       if (input && value !== undefined && value !== null) input.value = value;
     }
+    const stagelessEl = $("#agent-go-stageless");
+    if (stagelessEl) stagelessEl.checked = prefs.stageless || false;
   }
 
   function status(message, error = false) {
@@ -158,6 +161,7 @@
     }
     const goos = $("#agent-goos")?.value || "windows";
     const goarch = $("#agent-goarch")?.value || "amd64";
+    const stageless = $("#agent-go-stageless")?.checked || false;
     const serverUrl =
       $("#agent-go-server-url")?.value.trim() || $("#agent-server-url")?.value.trim() || "";
     const beaconSecret =
@@ -196,6 +200,7 @@
         body: JSON.stringify({
           goos,
           goarch,
+          stageless,
           config: {
             base_url: serverUrl.replace(/\/$/, ""),
             beacon_secret: beaconSecret,
@@ -248,7 +253,8 @@
     ].forEach((selector) => $(selector)?.addEventListener("input", savePrefs));
     ["#agent-goos", "#agent-goarch"].forEach((selector) =>
       $(selector)?.addEventListener("change", savePrefs),
-    );    $("#agent-go-download")?.addEventListener("click", async (event) => {
+    );
+    $("#agent-go-stageless")?.addEventListener("change", savePrefs);    $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
       const url = event.currentTarget.dataset.downloadUrl;
       if (!url || !downloadContext || !isCurrent(downloadContext)) return;

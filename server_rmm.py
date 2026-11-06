@@ -596,7 +596,7 @@ def render_configured_client_script(
     return rendered
 
 
-def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None) -> dict:
+def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None, stageless: bool = False) -> dict:
     """Build a fixed repository Go agent for one allowlisted OS and architecture."""
     goos = str(goos or "").strip().lower()
     goarch = str(goarch or "").strip().lower()
@@ -653,9 +653,9 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
     # for the Go version, which matters for ADMIN$ write speed and reduces
     # the on-disk footprint on the target.  Falls back to the Go build when
     # MinGW is not available so CI/CD environments without MinGW still work.
-    if goos == "windows":
+    if goos == "windows" and not stageless:
         stage1_path = safe_join_under(GO_AGENT_BUILD_DIR, f"{build_id}-stage1.exe")
-        stage1_c_src = os.path.join(root, "stage1", "stage1.c")
+        stage1_c_src = os.path.join(root, "stage1", "c", "stage1.c")
         mingw_cc = shutil.which("x86_64-w64-mingw32-gcc")
 
         if mingw_cc and os.path.isfile(stage1_c_src):
@@ -4950,6 +4950,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     body.get("goarch"),
                     agent_config=config,
                     process_owner=srv.builds,
+                    stageless=bool(body.get("stageless", False)),
                 )
             except ValueError as exc:
                 self._json(400, {"error": "invalid_target", "detail": str(exc)})

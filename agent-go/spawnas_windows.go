@@ -332,7 +332,7 @@ func cascadeSpawnDetached(user, domain, password, executable string, args []stri
 
 	primaryToken, tokenErr := logonUserInteractive(domain, user, password)
 	if tokenErr == nil {
-		defer syscall.CloseHandle(primaryToken)
+		defer syscall.CloseHandle(syscall.Handle(primaryToken))
 
 		// Step 1: exec.Cmd with SysProcAttr.Token → Go calls CreateProcessAsUserW.
 		child1 := exec.Command(executable) // exec.Command, not newCommand — detached lifetime
@@ -408,7 +408,7 @@ func cascadeSpawnDetached(user, domain, password, executable string, args []stri
 	if impErr != nil {
 		return 0, fmt.Errorf("all process creation methods failed; last error: %w", ce3)
 	}
-	defer syscall.CloseHandle(impToken)
+	defer syscall.CloseHandle(syscall.Handle(impToken))
 	if r4, _, iErr := procImpersonateLoggedOnUser.Call(uintptr(impToken)); r4 == 0 {
 		return 0, fmt.Errorf("ImpersonateLoggedOnUser for step 4: %w", iErr)
 	}
@@ -440,7 +440,7 @@ func cascadeRunWithOutput(ctx context.Context, user, domain, password string, sh
 	// Step 1: exec.Cmd with SysProcAttr.Token.
 	primaryToken, tokenErr := logonUserInteractive(domain, user, password)
 	if tokenErr == nil {
-		defer syscall.CloseHandle(primaryToken)
+		defer syscall.CloseHandle(syscall.Handle(primaryToken))
 
 		child1 := newBoundedCommand(ctx, shellArgs[0], shellArgs[1:]...)
 		child1.SysProcAttr = &syscall.SysProcAttr{
@@ -476,7 +476,7 @@ func cascadeRunWithOutput(ctx context.Context, user, domain, password string, sh
 	if impErr != nil {
 		return "", fmt.Errorf("all runas methods failed; last: %w", err3)
 	}
-	defer syscall.CloseHandle(impToken)
+	defer syscall.CloseHandle(syscall.Handle(impToken))
 	if r, _, iErr := procImpersonateLoggedOnUser.Call(uintptr(impToken)); r == 0 {
 		return "", fmt.Errorf("ImpersonateLoggedOnUser for step 4: %w", iErr)
 	}

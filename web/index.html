@@ -198,6 +198,9 @@
                   <option value="amd64">amd64</option>
                   <option value="arm64">arm64</option>
               </select>
+              <label for="agent-go-stageless" title="Skip building the psexec stage1 launcher. Use when lateral movement is not needed or the target environment lacks ADMIN$ write access.">
+                <input type="checkbox" id="agent-go-stageless"> Stageless (no stage1)
+              </label>
             </div>
             <div class="agent-gen-actions">
               <button type="button" id="agent-go-build">Compile on server</button>

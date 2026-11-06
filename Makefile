@@ -45,7 +45,7 @@ go-test:
 			-DBASE_URL=L\"https://127.0.0.1:8443\" \
 			-DSTAGE1_INSECURE \
 			-o /tmp/stage1-check.exe \
-			agent-go/stage1/stage1.c \
+			agent-go/stage1/c/stage1.c \
 			-lwinhttp -lbcrypt -lshell32 && \
 		printf "stage1 C compile: OK\n"; \
 	else \

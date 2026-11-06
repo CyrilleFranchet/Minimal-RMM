@@ -516,9 +516,10 @@ def build_go_agent(
     jitter_percent: int = 30,
     http_proxy: str = "",
     workspace_id: str = "",
+    stageless: bool = False,
 ) -> str:
-    """Build the repository Go agent with the active connection settings embedded; returns the ZIP artifact_ref for queue_upload."""
-    return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy, workspace_id)
+    """Build the repository Go agent with the active connection settings embedded; returns the ZIP artifact_ref for queue_upload. Set stageless=True to skip the psexec stage1 launcher (smaller binary, no lateral movement support)."""
+    return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy, workspace_id, stageless)
 
 
 @mcp.tool()
