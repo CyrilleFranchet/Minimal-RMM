@@ -176,6 +176,11 @@ Unknown slash commands never reach the remote shell.
 | `/exfil` | `queue_exfil` | `POST …/exfil` |
 | `/screenshot` | `queue_screenshot` | `POST …/screenshot` |
 | `/pe` | `queue_pe_load` | `POST …/pe` |
+| `/spawn` | `spawn_session` | `POST …/spawn` |
+| `/make_token` | `make_token` | `POST …/make_token` |
+| `/rev2self` | `rev2self` | `POST …/rev2self` |
+| `/lateral` | `lateral_move` | `POST …/lateral` |
+| `/uid` | `session_uid` | `POST …/uid` |
 | `/embeddings` | `run_embeddings` | `POST /embeddings/run` |
 | `/bloodhound` | `bloodhound` | `POST /bloodhound` |
 
@@ -218,6 +223,10 @@ Unknown slash commands never reach the remote shell.
 | `POST /agent/go/build` | `build_go_agent` | Build the Go agent with the active connection embedded (`use_server_config`) |
 | Agent `__KEYLOG__` | `queue_keylog` | Wrapper over `queue_command` |
 | Agent `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | `install_persistence`, `remove_persistence` | Lab only |
+| Agent `__SPAWN__` (`POST …/spawn`) | `spawn_session` | Detached second Go agent with a fresh session ID; registration and responsiveness verification, Go sessions only |
+| Agent `__MAKE_TOKEN__` / `__REV2SELF__` (`POST …/make_token`, `…/rev2self`) | `make_token`, `rev2self` | `runas /netonly` style network identity for spawned commands, Go (Windows) sessions only; operator events record the identity label, never the password |
+| Agent `__LATERAL__` (`POST …/lateral`) | `lateral_move` | Start a Go agent on another host (psexec/wmiexec/winrm) with a fresh session ID; registration and responsiveness verification, Go (Windows) sessions only |
+| Agent `__UID__` (`POST …/uid`) | `session_uid` | Identity report for make_token / rev2self verification, Go sessions only |
 | Agent `__STOP__` | `stop_persistent` | |
 
 ## Intentional exceptions
@@ -286,3 +295,16 @@ central-server workspace access sends only workspace headers, even when an
 operator token is inherited. Incomplete or rejected workspace credentials never
 fall back to the operator token. For a workspace-local URL protected by a local
 bearer token, pass that token explicitly with `--token`.
+
+### Deployment confirmation and enrollment
+
+Configured Windows agents inherit the authenticated workspace on every surface.
+Administrator CLI builds can pass `--workspace-id`; MCP/AI deployment tools accept
+`workspace_id`; WebUI generators expose an owner field. The API rejects workspace
+scope mismatches. Only Windows build targets are supported.
+
+Spawn/lateral responses reserve the expected session ID before dispatch and
+report `ok: true` only after that agent registers under the source workspace.
+`verified: true` also requires exact fresh command-probe outputs. Skipping checks
+reports request acceptance with `pending: true`, `ok: false`, and `registered:
+null`; HTTP 200 or a process acknowledgment is not successful deployment.

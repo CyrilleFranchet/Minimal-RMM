@@ -584,3 +584,15 @@ CLI and standalone MCP must point at the local workspace API. The autonomous
 DLL requires larger body limits for base64 upload/synchronization; see
 [document embeddings](document-embeddings.md) for installation, commands,
 authentication preferences, and retention.
+
+## Agent enrollment ownership
+
+New configured Windows agents carry `RMM_AGENT_WORKSPACE_ID` (Go build/launcher)
+or `$workspaceId` (PowerShell script) and send `workspace_id` on `/register`.
+Generated artifacts use the authenticated workspace; cross-workspace owner
+overrides are rejected. Registration requires a configured ID and preserves
+existing live or persisted ownership. Legacy agents without an ID still use
+persisted ownership, sole-workspace assignment, or an explicit claim. Rebuild
+legacy deployment artifacts to include enrollment routing. No workspace operator
+token is embedded in agents. The workspace ID is routing metadata under the
+existing beacon authentication, not a separate agent credential.

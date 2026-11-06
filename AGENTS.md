@@ -2,6 +2,15 @@
 
 **Minimal-RMM** is a minimal remote monitoring and management (RMM) proof of concept for **authorized lab use only**. A Python HTTP server coordinates Windows PowerShell agents over a beacon protocol; operators control hosts via REST API, CLI, web UI, or MCP tools.
 
+## Supported agent platform
+
+Managed agents are **Windows-only**. Go build APIs, CLI/MCP/AI contracts, and
+WebUI generators must offer Windows targets only. Linux/macOS adapters exist
+solely for host-side development tests; they are not supported agent deployment
+targets. The Python control plane and Exegol workspaces may run on non-Windows
+hosts. Do not interpret a successful host Go test or cross-build as native
+Windows runtime validation.
+
 ## Architecture
 
 ```text

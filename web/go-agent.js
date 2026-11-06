@@ -10,11 +10,11 @@
   }
 
   function connectionContext() {
-    return { token: token(), generation: window.rmmState?.authGeneration || 0 };
+    return { token: token(), generation: window.rmmState?.authGeneration || 0, connection: window.rmmState?.connectionGeneration || 0 };
   }
 
   function isCurrent(context) {
-    return context.token === token() && context.generation === (window.rmmState?.authGeneration || 0);
+    return context.token === token() && context.generation === (window.rmmState?.authGeneration || 0) && context.connection === (window.rmmState?.connectionGeneration || 0);
   }
 
   function jitterValue() {
@@ -42,6 +42,7 @@
       serverUrl: $("#agent-go-server-url")?.value.trim() || "",
       beaconSecret: $("#agent-go-beacon-secret")?.value || "",
       sessionId: $("#agent-go-session-id")?.value.trim() || "",
+      workspaceId: $("#agent-go-workspace-id")?.value.trim() || "",
       sleepSeconds: Math.min(3600, Math.max(1, Number($("#agent-go-sleep")?.value) || 60)),
       jitterPercent: jitterValue(),
       httpProxy: $("#agent-go-proxy")?.value.trim() || "",
@@ -65,10 +66,11 @@
       "#agent-go-server-url": prefs.serverUrl,
       "#agent-go-beacon-secret": prefs.beaconSecret,
       "#agent-go-session-id": prefs.sessionId,
+      "#agent-go-workspace-id": prefs.workspaceId,
       "#agent-go-sleep": prefs.sleepSeconds,
       "#agent-go-jitter": prefs.jitterPercent,
       "#agent-go-proxy": prefs.httpProxy,
-      "#agent-goos": prefs.goos,
+      "#agent-goos": "windows",
       "#agent-goarch": prefs.goarch,
     };
     for (const [selector, value] of Object.entries(values)) {
@@ -82,6 +84,21 @@
     if (!node) return;
     node.textContent = message;
     node.classList.toggle("error", error);
+  }
+
+  async function currentWorkspaceId(context) {
+    let health;
+    if (window.rmmApi) {
+      const response = await window.rmmApi("/health");
+      if (response.status !== 200) throw new Error("Unable to resolve the workspace owner.");
+      health = response.data;
+    } else {
+      const response = await fetch("/api/v1/health", { headers: headers(false, context) });
+      if (!response.ok) throw new Error("Unable to resolve the workspace owner.");
+      health = await response.json();
+    }
+    if (!isCurrent(context)) throw new Error("Connection changed");
+    return health?.workspace_id || $("#agent-go-workspace-id")?.value.trim() || "";
   }
 
   async function currentBeaconUrl(context = connectionContext()) {
@@ -161,6 +178,10 @@
     $("#agent-go-download")?.classList.add("hidden");
     status("Checking beacon transport…");
     try {
+      const workspaceId = await currentWorkspaceId(context);
+      if (!isCurrent(context)) return;
+      if ($("#agent-go-workspace-id")) $("#agent-go-workspace-id").value = workspaceId;
+      savePrefs();
       const currentUrl = await currentBeaconUrl(context);
       if (!isCurrent(context)) return;
       const selectedQuick = quickTunnelOrigin(serverUrl);
@@ -179,6 +200,7 @@
             base_url: serverUrl.replace(/\/$/, ""),
             beacon_secret: beaconSecret,
             session_id: $("#agent-go-session-id")?.value.trim() || "",
+            workspace_id: workspaceId,
             sleep_seconds: Math.min(3600, Math.max(1, Number($("#agent-go-sleep")?.value) || 60)),
             jitter_percent: jitterValue(),
             http_proxy: $("#agent-go-proxy")?.value.trim() || "",
@@ -194,7 +216,7 @@
       link.textContent = `Download ZIP ${data.filename} (${data.size} bytes, SHA-256 ${data.sha256})`;
       link.dataset.downloadUrl = data.download_url;
       link.classList.remove("hidden");
-      status("Build complete. The URL and beacon secret are embedded. Use the ZIP launcher to override stale environment settings; launching the executable directly keeps environment overrides.");
+      status(`Build complete. Workspace: ${data.workspace_id || "unassigned"}. The URL and beacon secret are embedded. Use the ZIP launcher to override stale environment settings; launching the executable directly keeps environment overrides.`);
     } catch (error) {
       if (isCurrent(context)) status(error.message, true);
     } finally {

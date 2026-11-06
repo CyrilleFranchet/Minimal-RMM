@@ -1,0 +1,5 @@
+This placeholder is replaced by the real stage1 launcher binary when the
+server builds the Go agent (see build_go_agent in server_rmm.py). The agent
+embeds this file with go:embed and pushes it through ADMIN$ for the psexec
+lateral module. A placeholder that does not start with "MZ" makes the agent
+report that the stage1 launcher is not embedded.

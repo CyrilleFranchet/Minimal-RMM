@@ -3,6 +3,12 @@
 A deployment/development diagnostic for a live Exegol MCP endpoint,
 independent of BloodHound or any other feature that happens to use it.
 
+The WebUI connection monitor displays runtime snapshots returned with HTTP
+200, 202 (checking or starting), and 503 (runtime failure). A pending check
+does not mean the workspace failed to respond. Failure snapshots retain their
+MCP status and error code; responses without a runtime snapshot or failed
+requests show the unavailable status.
+
 ## Why a separate script, not a CLI/MCP operator command
 
 Operator features follow REST API → `rmm_cli.py` → MCP

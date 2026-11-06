@@ -83,3 +83,24 @@ Download failures stop the upload without returning artifact content.
 
 The Go build endpoint requires `config` to be a JSON object when supplied;
 null, arrays, strings, numbers, and booleans return HTTP 400.
+
+## Windows agents and workspace binding
+
+Managed agents are Windows-only. The PowerShell generator resolves `/health`
+before producing a script, config block, or environment block. The authenticated
+`workspace_id` overrides stale saved form values. Administrator-selected IDs are
+validated locally and are checked against configured owners at registration.
+`$workspaceId` and `RMM_AGENT_WORKSPACE_ID` carry routing metadata, not an operator
+token. The Go generator resolves `/health` before sending the optional owner through the authenticated build
+API; workspace scope is authoritative there.
+
+`connectionContext`, `sameContext`, and `isCurrent` isolate generator work by
+login and connection generation. `authenticatedData` uses that context for
+health/template requests; `resolveWorkspace` selects the owner. Cached templates,
+pending renders, copy, and download actions cannot reuse output from an earlier
+connection. The generators expose a workspace field for administrator use.
+
+`currentWorkspaceId` in `web/go-agent.js` selects the authenticated owner before
+building and overrides stale saved preferences. Its connection checks cover both
+login and connection generation. Both generators require an explicit configured
+owner for administrator operations when multiple workspaces exist.

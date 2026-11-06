@@ -185,3 +185,26 @@ test('agent workspace tabs follow selection and do not restore an archive after 
   assert(!nodes.get('#empty-state').classes.has('hidden'));
   assert.deepEqual(refreshes, []);
 });
+
+test('authentication transitions clear protected AI operation previews before network work', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../web/app.js'), 'utf8');
+  let clears = 0;
+  const noop = () => {};
+  const context = {
+    state: { authGeneration: 1, selectionGeneration: 0, echoedCommands: new Set() },
+    window: { rmmAiOperationDetails: { reset: () => clears++ } },
+    $: () => ({ value: 'token' }),
+    api: async () => { assert.equal(clears, 1); return { status: 401, data: {} }; },
+    showLogin: noop, hideServerUnreachableDialog: noop, disconnectWebSocket: noop,
+    stopEventPolling: noop, stopSessionPolling: noop, stopStatusTick: noop,
+    stopConnectivityProbe: noop, setWorkspaceTab: noop,
+    sessionStorage: { removeItem: noop }, STORAGE_KEY: 'token',
+  };
+  vm.createContext(context);
+  const start = source.indexOf('async function connect()');
+  vm.runInContext(source.slice(start, source.indexOf('\nasync function refreshSessions()', start)), context);
+  await context.connect();
+  assert.equal(clears, 1);
+  context.disconnect();
+  assert.equal(clears, 2);
+});

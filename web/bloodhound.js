@@ -109,7 +109,7 @@
         // or replay an uncertain launch. See docs/bloodhound-workflow.md.
         const result = await operation({ action: "ensure" }, controller, { remaining: 30 });
         if (generation !== healthGeneration) return;
-        if (result.status === 200 && result.data?.runtime) showRuntime(result.data.runtime);
+        if ([200, 202, 503].includes(result.status) && result.data?.runtime) showRuntime(result.data.runtime);
         else {
           resetMcpStatus("Unavailable");
           if (readiness) readiness.textContent = `BloodHound status unavailable: ${result.data?.error || "workspace did not respond"}`;

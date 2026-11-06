@@ -14,6 +14,307 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Restrict cleanup ownership and report failures
+
+- Require an exact in-memory record of acknowledged deployment artifacts before
+  the source agent accepts cleanup. Match the request's host, session, basename,
+  and shared deployment suffix; reject arbitrary names and fail closed after
+  source restarts or lost acknowledgments.
+- Preserve service lookup errors except service-not-found, and return partial
+  deletion failures instead of reporting success. Source and server reject
+  empty, failed, or unexpected cleanup responses. Keep ownership on failure
+  for retries; release it after success.
+- Add Go ownership/error regression tests and server response regressions.
+  Host Go tests and 32 lateral server tests pass. Native Windows lifecycle
+  validation remains outstanding.
+- Pre-commit validation: full `make check`, `make go-test` (Windows amd64/arm64
+  cross-builds and TUN tests), and host `go test -buildvcs=false ./...` pass.
+  Update deployment verification fixtures to initialize staging without local
+  build dependencies, and account for both compiler outputs per staged build
+  in artifact isolation assertions.
+
+### 2026-11-06 — Public status request body limits
+
+- Reject missing, malformed, zero, negative, and oversized status body lengths
+  before reading the public request stream. In particular, negative lengths
+  must never reach an unbounded `read(-1)` call.
+- `tests/test_public_status_body_limits.py` covers rejection without reading
+  the stream or recording a status. Its test class and test method exercise
+  the existing HTTP handler; no deployment actions are performed.
+
+### 2026-11-06 — Two-stage psexec launcher, listener staging, native WMI/WinRM
+
+- Replaced the naïve psexec module with a RemCom-faithful two-stage flow: the
+  agent embeds a compact **stage1 launcher** (`agent-go/stage1/`, `go:embed
+  stage1.bin`, built by `build_go_agent` before the agent compile) and extracts
+  it at runtime — the way RemCom extracts its service from itself. stage1 is a
+  proper Windows service that carries no beacon secret: its only capability is
+  the staging identifier on its command line.
+- Added **staging management on the listener**: `lateral_move(psexec)` stages
+  the newest Windows agent build in a single-use, TTL-bounded (600 s) entry;
+  `GET /tools/stage/<id>` serves the payload masked with a SHA-256 counter
+  keystream keyed by the id, so no executable file is ever downloaded from the
+  server; `POST /tools/stage/<id>` records stage1's one status line, surfaced
+  as `stage_status`. Routes are capability-authenticated on the beacon listener
+  without a beacon token. Missing builds answer
+  `agent_payload_unavailable` (503).
+- stage1 decodes the payload in memory, verifies the `MZ` header, installs the
+  agent as a plain visible process with `--lateral-session`, reports, and
+  stops. After the target registers, the server sends
+  **`__LATERAL_CLEANUP__`** with the deployment names from the handshake
+  (`service=… binary=…`); the first agent removes the stage1 service and the
+  launcher binary from `ADMIN$` under the active `make_token` identity,
+  reporting each outcome honestly.
+- Replaced `wmic.exe`/PowerShell in **wmiexec** with a native COM/DCOM chain
+  (`wmi_windows.go`): WbemLocator → remote `ConnectServer` →
+  `CoSetProxyBlanket` (packet privacy) → `Win32_Process.Create` via
+  `GetObject`/`GetMethod`/`SpawnInstance`/`Put`/`ExecMethod` with provider
+  `ReturnValue` validation. Removed the dead PowerShell helpers.
+- Replaced `winrs.exe`/`wmic.exe` in **winrm** with the native `WsmSvc.dll`
+  WSMan client (`wsman_windows.go`): `WSManInitialize` → `CreateSession` →
+  `CreateShell` → `RunShellCommand` → receive until the command Done state →
+  close. The remote command runs the agent with the new `--lateral-detach`
+  mode, which re-registers itself as a local SCM service and exits so the
+  agent escapes the WinRM shell job object.
+- Docs updated: `docs/go-agent.md` (stage1/staging/cleanup architecture,
+  native module table), README (REST, staging routes, beacon tokens).
+- Validation: `go test ./...` + Windows/Linux cross-builds pass; stage1 mask
+  round-trip and argument tests pass; 35 server tests (staging store,
+  single-use fetch, status lifecycle, cleanup ordering, handshake regexes,
+  `agent_payload_unavailable`) pass; `make test`, `check-parity`,
+  `check-cli`, `check-web-contracts`, and Markdown lint pass. Per the
+  supported-platform policy, none of this is native Windows runtime
+  validation: the COM/DCOM chain, WSMan calls, SCM flow, and stage1 service
+  lifecycle remain to be exercised on real hosts.
+
+### 2026-11-06 — Remove the redundant SMB command-wrapper method
+
+- Remove `smbexec` from the Go agent, API validation, CLI/MCP/AI contracts,
+  WebUI help/completion, and current operator documentation. Earlier progress
+  entries describing that method are historical and superseded by this removal.
+- Delete the command-wrapper service branch and its special SCM timeout handling.
+  Keep the native SCM service lifecycle required by `psexec`; failed service
+  starts remain errors. Registration is still required for deployment success.
+- Add rejection regressions so removed methods cannot reach command dispatch.
+
+### 2026-11-06 — Unique lateral deployment resource names
+
+- Add a shared 128-bit cryptographic random suffix to the service name and
+  staged executable basename for every deployment. Preserve identifiable
+  prefixes and abort before staging if random generation fails.
+- Carry the generated service name to the target through validated startup
+  arguments and use it for both service registration calls. Preserve workspace
+  inheritance and compatibility with existing startup arguments.
+- Add tests for associated names, uniqueness, entropy failure, startup round
+  trips, invalid service names, and duplicate flags. Windows amd64/arm64 builds
+  and Windows test compilation pass; native Windows execution remains untested.
+
+### 2026-11-06 — PsExec/RemCom implementation audit
+
+- Correct the RemCom terminology: the Go `psexec` method is native SMB/SCM
+  deployment of the agent itself as a demand-start service, not a RemCom port.
+  Document source locations, HTTP beacon behavior, LocalSystem target identity,
+  delayed service deletion, retained executable, and native-test coverage limits.
+- Remaining review findings: fixed service/binary name collisions, hardcoded
+  remote Windows directory, ignored DeleteService errors, and dispatcher errors
+  collapsed into the interactive-start fallback. No runtime fixes in this audit.
+
+### 2026-11-06 — Windows enrollment and authoritative deployment verification
+
+- Declare managed agents Windows-only in repository instructions and public docs;
+  restrict build API, CLI, MCP/AI, and WebUI targets to Windows amd64/arm64.
+- Embed workspace ownership in configured Go/PowerShell artifacts and registration.
+  Authenticated workspace scope wins; unknown IDs and ownership changes are rejected.
+  Spawn and lateral deployment carry the source owner and a server-selected ID.
+- Require the expected new registration for deployment success. Lost launch
+  acknowledgments remain inconclusive until registration is checked. Unique probes
+  with exact output matching establish command responsiveness; unrelated output
+  cannot set `verified: true`. Skipped checks report acceptance only.
+- Classify SMB command-wrapper handshake timeouts as inconclusive. Validate CIM
+  provider ReturnValue and process ID independently of the shell exit status.
+- Make Go tests safe on Windows without live lateral or credential operations;
+  add queue/registration/result integration tests with simulated beacons.
+- Bind all PowerShell WebUI output modes and isolate pending output by connection.
+  Native Windows service/SCM/WMI/WinRM runtime validation remains outstanding.
+- Validation: `make check` passes, including 88 deployment/enrollment Python
+  regressions, 29 CLI tests, and the WebUI suites. Full host Go tests, Windows
+  amd64/arm64 builds, Windows test compilation, and PowerShell syntax pass.
+  Full Python discovery: 691/692 pass; the settings restart/reset test fails
+  identically using unchanged HEAD files in a temporary baseline directory.
+  Independent code/security and frontend/test review findings were resolved.
+
+### 2026-11-06 — Operator review corrections
+
+- Preserve visible plaintext password commands and CLI/WebUI history per operator
+  preference. Align interactive quoting, literal backslashes, and empty passwords
+  across CLI and WebUI; malformed quotes never reach the agent.
+- Add session-ID completion for CLI `/spawn` and method completion for `/lateral`
+  in both CLI completers and the WebUI.
+- Size workspace proxy waits from requested execution and verification budgets.
+  Forward fractional lateral execution timeouts to the agent worker.
+- Preserve `rev2self` agent failure results across REST, MCP, CLI, and WebUI.
+- Fix Windows service status calls to use the registered status handle and
+  synchronize stop callback access. Windows runtime validation remains required.
+- Add regression tests for parsing/history, completion, real workspace HTTP
+  dispatch budgets, timeout forwarding, and failure propagation.
+- Validation: `make check` passed using the configured Python interpreter;
+  all Go agent tests passed with a temporary build cache. Windows amd64 and
+  Linux amd64 cross-builds and Windows test compilation passed. The 39 focused
+  identity, lateral, spawn, and workspace-timeout Python tests passed. Local
+  HTTP socket tests required execution outside the default sandbox.
+
+### 2026-11-06 — Add `__LATERAL__` and `__UID__`; make_token credentials as parameters
+
+- Implemented `/lateral` for the Go agent: `__LATERAL__` stages the agent's
+  own binary on `\\host\ADMIN$\System32` and starts it through psexec
+  (RemCom/PsExec SCM technique — the agent is now service-aware via
+  `StartServiceCtrlDispatcher`), smbexec (`cmd.exe /Q /c` service wrapper),
+  wmiexec (`wmic process call create` with PowerShell CIM fallback), or
+  winrm (`winrs` wrapping a remote `wmic process call create` so the agent
+  escapes the WinRM job object). The move runs in a bounded
+  `--lateral-child` process inheriting the active `make_token` identity, so
+  the command loop is never blocked and alternate credentials govern SMB,
+  SCM, WMI, and WinRM authentication. The target copy registers under a
+  fresh `<parent>-lateral-<unix-nano>` session ID passed as
+  `--lateral-session`; it needs an agent binary built with embedded
+  connection settings.
+- Implemented `/uid`: `__UID__` reports `agent user:` (process token
+  account) and `network identity:` (active make_token identity or none) so
+  operators can verify make_token and rev2self.
+- `make_token` credentials are now passed as explicit parameters on every
+  surface (CLI `make-token <identity> <password>` and
+  `/make_token <identity> <password>`, WebUI `/make_token <identity>
+  <password>`, MCP `make_token(password=…)`); the masked `getpass` prompt,
+  `--password-file`, and the WebUI inline password form were removed per
+  operator decision. The server still records only the identity label in
+  operator events.
+- Operator parity for both commands: `POST /api/v1/sessions/{id}/lateral`
+  and `…/uid`, CLI subcommands + interactive commands, WebUI shell
+  commands, MCP `lateral_move` and `session_uid` tools, parity registry
+  (60 tools, 11 shell verbs).
+- Docs updated: README (REST/beacon/CLI/MCP tables), `docs/go-agent.md`
+  (lateral execution model, module table, requirements; uid contract),
+  `docs/mcp-parity.md`, `docs/web-shell-completion.md`, and the dispatch AI
+  skill.
+- Validation: `go test ./...` plus Windows/Linux cross-builds pass; new
+  `tests/test_lateral_move.py` (flow, routing, handshake regex) and
+  `agent-go/lateral_test.go` (payload validation, session ID tags, uid
+  contract, Windows-only enforcement) pass; CLI dispatch tests for
+  `/make_token` (parameters), `/lateral`, and `/uid` pass; WebUI fixture
+  tests for the three commands pass (completion count 13); `make test`,
+  `check-parity`, and Markdown lint pass. Live Windows behavior of every
+  lateral module, the service dispatcher, and `CreateProcessAsUser`
+  privileges remain unverified on real hosts.
+
+### 2026-11-06 — Add `__MAKE_TOKEN__` / `__REV2SELF__` network identity commands
+
+- Implemented `runas /netonly` style identity switching for the Go agent:
+  `__MAKE_TOKEN__` calls `LogonUserW` with `LOGON32_LOGON_NEW_CREDENTIALS`
+  (the logon type behind `runas /netonly`), stores the cloned token, and
+  applies it to subsequent operator command children via Go's
+  `SysProcAttr.Token` (`CreateProcessAsUser`). `__REV2SELF__` closes the
+  token; both are idempotent/replacing. No injection into host processes.
+- Credentials travel as a JSON body on the beacon command (like `__EXFIL__`);
+  the agent never logs them and the server records only the `DOMAIN\user`
+  label in operator events. Documented that this logon type does not
+  validate credentials, so success does not prove the password is correct.
+- Operator parity: `POST /api/v1/sessions/{id}/make_token` and `…/rev2self`,
+  CLI `make-token` / `rev2self` subcommands plus interactive `/make_token`
+  and `/rev2self`, WebUI `/make_token` and `/rev2self` shell commands, MCP
+  `make_token` / `rev2self` tools, parity registry. Credentials are passed
+  as explicit parameters on every surface (see the lateral/uid entry above:
+  the interactive prompts were removed per operator decision).
+- Docs updated: README (REST/beacon/CLI/MCP tables), `docs/go-agent.md`
+  (identity contract, result prefixes, privilege caveat),
+  `docs/mcp-parity.md`, `docs/web-shell-completion.md`, and the dispatch AI
+  skill.
+- Validation: `go test ./...` plus Windows/Linux cross-builds pass; new
+  `tests/test_make_token.py` (flow, routing, secret redaction) and
+  `agent-go/make_token_test.go` pass; CLI interactive dispatch tests
+  (getpass mocked) and WebUI fixture tests (masked form, history exclusion,
+  completion count 11) pass; `make test`, `check-parity`, and Markdown lint
+  pass. Live Windows behavior of the token and `CreateProcessAsUser`
+  privileges remain unverified on a real host.
+
+### 2026-11-06 — Add `__SPAWN__` detached second-agent command
+
+- Rejected the injection design: the Go agent is never hidden inside another
+  process such as `notepad.exe`. `__SPAWN__` starts a separate, visible agent
+  process that is easier to audit and debug.
+- Agent side (`agent-go/spawn.go`): `__SPAWN__` re-executes the agent's own
+  binary with `exec.Command` (not `newCommand`, so the child is not bound to
+  the parent context), detached standard streams (null device), a fresh
+  beacon-token-safe `RMM_SESSION_ID` that overrides any inherited identity,
+  pinned connection settings, its own log file, and Windows
+  `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` / Unix `Setsid` detachment.
+  The command returns `spawned session=<id> pid=<pid>` immediately; a
+  background goroutine reaps the child.
+- Server side: `RMMServer.spawn_session` sends `__SPAWN__`, waits for the new
+  session to register, then runs `echo rmm-spawn-verify` on both sessions and
+  reports `registered`, `parent_responsive`, `spawned_responsive`, and
+  `verified`. PowerShell sessions are rejected with
+  `agent_type_unsupported`. New endpoint
+  `POST /api/v1/sessions/{id}/spawn`.
+- Operator parity: CLI `spawn` subcommand + interactive `/spawn`, WebUI
+  `/spawn` shell command, MCP `spawn_session` tool, shared AI tool schema,
+  and `scripts/check_operator_parity.py` registry updated.
+- Docs updated: README (REST/CLI/MCP tables, beacon command table),
+  `docs/go-agent.md` (spawn contract), `docs/mcp-parity.md`,
+  `docs/web-shell-completion.md`, and the deployment/dispatch AI skills now
+  point to `spawn_session` as the established in-band launch mechanism.
+- Validation: `go test ./...` plus Windows/Linux cross-builds pass; new
+  `tests/test_spawn_session.py` (flow + routing) and spawn CLI dispatch tests
+  pass; `make test`, `check-parity`, `check-cli`, `check-web-contracts`
+  (completion count updated to 9), and Markdown lint all pass. Live Windows
+  coexistence of the detached child remains unverified on a real host.
+
+### 2026-11-06 — Review foreground agent deployment
+
+- Confirmed synchronous command execution in both agents and foreground
+  generated launchers. Starting a second agent through this path can block
+  polling indefinitely; this does not prove termination of the first process.
+- Identified inherited `RMM_SESSION_ID` reuse when generated launchers omit
+  an empty configured identity. Runtime behavior remains unchanged.
+- Added deployment and dispatch reference constraints for independent process
+  lifetime, standard streams, fresh identity, and verification of both sessions.
+  Production AI requires the reference in its explicit playbook.
+- No target processes were started. Live Windows reproduction and a runtime
+  fix remain outstanding.
+- Validation: 24 existing deployment/artifact/Go configuration tests passed;
+  Markdown lint passed for the four changed documents. These checks do not
+  exercise process coexistence or foreground blocking on Windows.
+
+### 2026-11-06 — Preserve pending MCP connection status
+
+- Fixed the WebUI connection monitor discarding valid HTTP 202 runtime
+  snapshots and reporting that the workspace did not respond. HTTP 503
+  snapshots now retain the runtime's MCP status and diagnostic error.
+- Added UI regressions for checking, starting, failed, and missing snapshots.
+  Live endpoint connectivity remains unverified.
+
+### 2026-11-06 — Inspect AI operations from the WebUI
+
+- Added an Operation details dialog for AI jobs with a persisted activity
+  timeline, progress, timing, and bounded exception diagnostics, including
+  nested exception groups.
+- Tool arguments and returned output are available through explicit, paged
+  evidence reads scoped to the authenticated job owner. Metadata exports
+  exclude raw operational evidence. Historical jobs display only retained data.
+- A received tool response does not establish remote command success. Missing
+  responses remain uncertain; inspecting details never retries an operation.
+- See [Background AI jobs](ai-background-jobs.md) for retention, evidence
+  access, and the distinction between job status and execution outcome.
+- Validation: full `make check` passed, including Python regressions, UI
+  workflow tests, operator parity, syntax, and Markdown/YAML lint. Dialog,
+  reconnect, and authentication-reset UI regressions passed after final edits.
+  Live browser visual QA and deployed Exegol execution were not performed.
+
+Follow-up review reproduced two activity-inspection defects: tool responses
+arriving after Stop could lose their evidence references, and live polling
+could replace pending evidence-load controls. The fixes retain late observations
+without restarting stopped work and preserve evidence loading/error state across
+refreshes, with deterministic regression coverage.
+
 ### 2026-11-05 — Update retained skill references and metadata
 
 - Updated default metadata for deployment, BloodHound, pivot, lateral movement,

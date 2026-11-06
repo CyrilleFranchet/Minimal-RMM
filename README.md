@@ -1,5 +1,9 @@
 # minimal_rmm
 
+Managed agents are **Windows-only** (PowerShell and Go). Linux/macOS agent
+adapters are development test scaffolding, not supported deployment targets.
+The control plane and Exegol workspaces can run on non-Windows hosts.
+
 A minimal **remote monitoring and management (RMM)** proof of concept: a Python HTTP server with a **REST operator API**, a **CLI client** for automation, and a Windows PowerShell beacon client.
 
 **Use only on systems you own or are explicitly authorized to manage.** Misuse may violate law and policy.
@@ -196,6 +200,11 @@ Interactive commands require `/`; the mapping below uses unprefixed command name
 | `screenshot` | `queue_screenshot` |
 | `pe list` | `list_plugins` |
 | `pe load <plugin>` / `pe <plugin>` | `queue_pe_load` |
+| `spawn` | `spawn_session` |
+| `make-token` / `make_token` | `make_token` |
+| `rev2self` | `rev2self` |
+| `lateral` | `lateral_move` |
+| `uid` | `session_uid` |
 | `socks list` | `list_socks` |
 | `socks` / `socks stop` | `start_socks` / `stop_socks` |
 | `tun list` | `list_tun` |
@@ -278,6 +287,11 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `PATCH` | `/sessions/{id}/config` | `{"sleep_seconds":60,"jitter_percent":30}` | Beacon tuning |
 | `POST` | `/sessions/{id}/commands` | `{"command":"…","type":"oneshot\|persistent"}` | Queue command |
 | `POST` | `/sessions/{id}/exec` | `{"command":"…","timeout":120}` | Queue and **wait** for next result event |
+| `POST` | `/sessions/{id}/spawn` | `{"verify":true,"spawn_timeout":120,"register_timeout":60,"verify_timeout":120}` (all optional) | Start a detached second Go agent with a fresh session ID, wait for registration, and verify both sessions respond (Go agent sessions only) |
+| `POST` | `/sessions/{id}/make_token` | `{"user":"alice","domain":"LAB","password":"…","timeout":120}` | Create a `runas /netonly` style network identity on a Go agent session; spawned commands authenticate as `DOMAIN\user` on the network. The password is never recorded in operator events |
+| `POST` | `/sessions/{id}/rev2self` | `{"timeout":120}` | Revert a Go agent session to its own network identity |
+| `POST` | `/sessions/{id}/lateral` | `{"method":"psexec\|wmiexec\|winrm","host":"…","verify":true,"exec_timeout":300,"register_timeout":60,"verify_timeout":120}` (only `method` and `host` required) | Start a Go agent on another host through native Windows APIs (SMB/SCM, COM/DCOM, WSMan). For psexec the server stages the current agent build and the embedded stage1 launcher fetches it masked; after registration the stage1 service and binary are removed. The server waits for registration and verifies both sessions (Go agent, Windows build only) |
+| `POST` | `/sessions/{id}/uid` | `{"timeout":120}` | Report the identity a Go agent runs under, plus the active `make_token` network identity |
 | `POST` | `/sessions/{id}/upload` | `{"remote_path":"…","content_b64":"…"}` | Queue `__UPLOAD__` |
 | `POST` | `/sessions/{id}/download` | `{"remote_path":"…"}` | Queue `__DOWNLOAD__` |
 | `POST` | `/sessions/{id}/exfil` | `{"remote_path":"…","profile":"mega-lab","dest":"…"}` | Queue `__EXFIL__` (agent rclone upload of file or folder; link in events for files) |
@@ -342,6 +356,8 @@ Unchanged — used by `client_rmm.ps1`.
 | `GET` | `/cmd` | `id` | JSON `{"command":"…","type":"…"}` |
 | `GET` | `/ping` | `id` | `PONG` |
 | `GET` | `/tools/rclone.exe` | `id` | Beacon auth — agent bootstrap binary |
+| `GET` | `/tools/stage/<id>` | — | Capability-authenticated staging fetch: single-use, TTL-bounded, masked stage2 payload for the psexec stage1 launcher (no beacon token; the unguessable staging id is the credential) |
+| `POST` | `/tools/stage/<id>` | — | Record one stage1 status line for a live staging entry |
 | `POST` | `/result` | `id`, `type` | Body: output, file JSON, screenshot base64, … |
 
 See sections below for command tokens and result types.
@@ -372,6 +388,12 @@ See sections below for command tokens and result types.
 | `__SCREENSHOT__` | Screenshot PNG |
 | `__KEYLOG__ start\|stop\|dump` | Keylogger |
 | `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | Client persistence hooks |
+| `__SPAWN__` + optional newline JSON `{"session_id","workspace_id"}` | Go agent only: start a detached copy of itself with a fresh session ID; answers `spawned session=<id> pid=<pid>` immediately |
+| `__MAKE_TOKEN__` + newline + JSON `{"domain","user","password"}` | Go agent (Windows) only: create a `runas /netonly` style token; subsequent spawned commands authenticate as that identity on the network |
+| `__REV2SELF__` | Go agent (Windows) only: drop the active token and return spawned commands to the agent identity |
+| `__LATERAL__` + newline + JSON `{"method","host","session_id","workspace_id","remote_name","stage","timeout_seconds"}` | Go agent (Windows) only: start an agent on `host` through psexec (embedded stage1 launcher + listener staging), wmiexec (COM/DCOM `Win32_Process.Create`), or winrm (`WsmSvc.dll` WSMan client); answers `lateral started: method=… host=… target session=<id>` |
+| `__LATERAL_CLEANUP__` + newline + JSON `{"host","service_name","binary_name"}` | Go agent (Windows) only: remove the psexec stage1 service and launcher binary from the target once the deployed agent registered |
+| `__UID__` | Go agent only: report `agent user:` and `network identity:` lines for make_token / rev2self verification |
 
 Other strings are user commands (`PS:`, `powershell:`, `pwsh:`, `cmd:` prefixes on the client).
 
@@ -477,6 +499,11 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `session kill` | Kill session |
 | `run <command>` | Queue command (`--type oneshot\|persistent`) |
 | `exec <command>` | Run and wait (`--wait` seconds, `-f` command file) |
+| `spawn [--session ID] [--no-verify]` | Start a detached second Go agent with a fresh session ID and verify both sessions respond (Go agent sessions only) |
+| `make-token <DOMAIN\|user> <password>` | Create a `runas /netonly` style network identity on a Go agent session; the password is passed as an argument |
+| `rev2self [--session ID]` | Revert a Go agent session to its own network identity |
+| `lateral <psexec\|wmiexec\|winrm> <host> [--session ID] [--no-verify]` | Start a Go agent on another host and verify both sessions respond |
+| `uid [--session ID]` | Show the identity used by a Go agent session (process user + active network identity) |
 | `config set-sleep <n>` | 1–3600 |
 | `config set-jitter <n>` | 0–100 |
 | `download <remote_path>` | Queue `__DOWNLOAD__` |

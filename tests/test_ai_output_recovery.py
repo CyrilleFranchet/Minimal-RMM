@@ -80,7 +80,8 @@ class OutputRecoveryTests(unittest.TestCase):
             self.assertEqual(result['diagnostics']['provider_output']['retries'], 2)
             self.assertEqual([call['name'] for call in result['tool_calls_made']], ['inspect'])
             self.assertIn('FIRST_EVIDENCE', json.dumps(bodies[-1]))
-            self.assertEqual(len(result['context_artifacts']), 1)
+            self.assertEqual(sum(item['kind'] == 'tool_result' for item in result['context_artifacts'].values()), 1)
+            self.assertEqual(sum(item['kind'] == 'tool_arguments' for item in result['context_artifacts'].values()), 1)
             remote.assert_awaited_once_with('inspect', {})
 
     def test_text_truncation_can_recover_without_preserving_partial_text(self):

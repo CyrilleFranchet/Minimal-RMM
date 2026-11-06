@@ -14,13 +14,15 @@ function element() {
 }
 function fixture() {
   const input = element(), menu = element(), hint = element(), errors = [], calls = [], history = [];
-  const nodes = { '#shell-input': input, '#shell-command-menu': menu, '#shell-completion-hint': hint };
+  const nodes = { '#shell-input': input, '#shell-command-menu': menu, '#shell-completion-hint': hint, '#shell-prompt': element() };
+  let lastShellLine = null;
   const context = { document: { createElement: element }, $: key => nodes[key],
     state: { echoedCommands: new Set(), viewMode: 'live', selectedId: 'agent', selectionGeneration: 1, shellTabCycle: { anchor: null, candidates: [], index: -1 } },
     getShellHistoryList: () => ['whoami', '/screenshot'], resetShellHistoryNav() {}, resetShellTabCycle() {},
     navigateShellHistory: () => { throw new Error('History must not handle menu navigation'); },
     api: async (...args) => { calls.push(args); return { status: 200, data: {} }; },
     appendShellError: text => errors.push(text), rememberShellCommand: cmd => history.push(cmd),
+    appendShellLine: () => { lastShellLine = element(); return lastShellLine; }, escapeHtml: text => text,
     createCommandBlock() {}, setTimeout() {}, pollSessionEvents: async () => {},
   };
   vm.createContext(context);
@@ -37,14 +39,15 @@ function fixture() {
   context.bindShellInputCompletion();
   const type = value => { input.value = value; input.listeners.input(); };
   const key = value => { let prevented = false; input.listeners.keydown({ key: value, preventDefault() { prevented = true; } }); return prevented; };
-  return { context, input, menu, hint, errors, calls, history, nodes, type, key };
+  return { context, input, menu, hint, errors, calls, history, nodes, type, key,
+    get lastShellLine() { return lastShellLine; } };
 }
 test('slash immediately displays commands; typing and backspacing filter live', () => {
   const f = fixture(); f.type('/');
-  assert.equal(f.menu.children.length, 8); assert.equal(f.input.attrs['aria-expanded'], 'true');
-  f.type('/s'); assert.deepEqual(f.menu.children.map(x => x.textContent), ['/screenshot']);
+  assert.equal(f.menu.children.length, 13); assert.equal(f.input.attrs['aria-expanded'], 'true');
+  f.type('/s'); assert.deepEqual(f.menu.children.map(x => x.textContent), ['/screenshot', '/spawn']);
   f.type('/sc'); assert.equal(f.menu.children.length, 1);
-  f.type('/'); assert.equal(f.menu.children.length, 8);
+  f.type('/'); assert.equal(f.menu.children.length, 13);
   f.type('/unknown'); assert.equal(f.input.attrs['aria-expanded'], 'false');
   f.type('who'); assert.equal(f.input.attrs['aria-expanded'], 'false');
 });
@@ -93,6 +96,60 @@ test('download, exfil and plugin actions preserve slash history and literal path
     if (!command.startsWith('/pe')) assert.match(JSON.parse(f.calls[0][1].body).remote_path, /^C:\\Lab Docs/);
   }
 });
+
+test('make_token posts identity and password as parameters', async () => {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const f = fixture(); f.type('/make_token LAB\\alice s3cret-pw'); await f.context.runCommand(false); await settle();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0][0], '/sessions/agent/make_token');
+  const body = JSON.parse(f.calls[0][1].body);
+  assert.equal(body.user, 'LAB\\alice');
+  assert.equal(body.password, 's3cret-pw');
+  assert.deepEqual(f.history, ['/make_token LAB\\alice s3cret-pw']);
+});
+
+test('make_token rejects missing or extra parameters', async () => {
+  const f1 = fixture(); f1.type('/make_token'); await f1.context.runCommand(false);
+  assert.equal(f1.calls.length, 0);
+  assert.match(f1.errors[0], /Usage: \/make_token/);
+  const f2 = fixture(); f2.type('/make_token LAB\\alice'); await f2.context.runCommand(false);
+  assert.equal(f2.calls.length, 0);
+  assert.match(f2.errors[0], /Usage: \/make_token/);
+});
+
+test('rev2self posts directly', async () => {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const f = fixture(); f.type('/rev2self'); await f.context.runCommand(false); await settle();
+  assert.equal(f.calls[0][0], '/sessions/agent/rev2self');
+  assert.deepEqual(f.history, ['/rev2self']);
+});
+
+test('lateral validates method and posts method and host', async () => {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const rejected = fixture(); rejected.type('/lateral ssh ws01'); await rejected.context.runCommand(false);
+  assert.equal(rejected.calls.length, 0);
+  assert.match(rejected.errors[0], /Method must be psexec, wmiexec, or winrm/);
+  const arity = fixture(); arity.type('/lateral psexec'); await arity.context.runCommand(false);
+  assert.equal(arity.calls.length, 0);
+  assert.match(arity.errors[0], /Usage: \/lateral/);
+  const f = fixture(); f.type('/lateral psexec ws01.lab.local'); await f.context.runCommand(false); await settle();
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0][0], '/sessions/agent/lateral');
+  const body = JSON.parse(f.calls[0][1].body);
+  assert.equal(body.method, 'psexec');
+  assert.equal(body.host, 'ws01.lab.local');
+  assert.deepEqual(f.history, ['/lateral psexec ws01.lab.local']);
+});
+
+test('uid posts directly without arguments', async () => {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const f = fixture(); f.type('/uid'); await f.context.runCommand(false); await settle();
+  assert.equal(f.calls[0][0], '/sessions/agent/uid');
+  assert.deepEqual(f.history, ['/uid']);
+  const rejected = fixture(); rejected.type('/uid extra'); await rejected.context.runCommand(false);
+  assert.equal(rejected.calls.length, 0);
+  assert.match(rejected.errors[0], /Usage: \/uid/);
+});
 test('panel screenshot/download history is replayable; exfil mode labels are excluded', async () => {
   const f = fixture();
   f.nodes['#download-remote'] = element(); f.nodes['#download-remote'].value = 'C:\\Lab Docs\\file.txt';
@@ -140,4 +197,41 @@ test('history seeding retains original slash action instead of appending incompl
     { type: 'output', command: '__SCREENSHOT__' },
   ]);
   assert.deepEqual(Array.from(c.state.shellHistoryBySession.agent), stored.agent);
+});
+
+test('quoted passwords preserve spaces, backslashes and empty values in requests and history', async () => {
+  for (const [command, password] of [
+    [String.raw`/make_token LAB\alice 'two words\path#1'`, String.raw`two words\path#1`],
+    [String.raw`/make_token LAB\alice ""`, ''],
+    [String.raw`/make_token LAB\alice "it's a password"`, "it's a password"],
+  ]) {
+    const f = fixture(); f.type(command); await f.context.runCommand(false);
+    assert.equal(f.calls.length, 1);
+    assert.equal(JSON.parse(f.calls[0][1].body).password, password);
+    assert.deepEqual(f.history, [command]);
+  }
+  const f = fixture(); f.type('/make_token alice "unfinished'); await f.context.runCommand(false);
+  assert.equal(f.calls.length, 0);
+});
+
+test('lateral method completion filters without completing the target host', () => {
+  const f = fixture();
+  assert.deepEqual(Array.from(f.context.getShellCompletionCandidates('/lateral w')), ['/lateral wmiexec ', '/lateral winrm ']);
+  assert.equal(f.context.getShellCompletionCandidates('/lateral ').length, 3);
+  assert.equal(f.context.getShellCompletionCandidates('/lateral winrm ').length, 0);
+});
+
+test('removed lateral method is rejected locally and excluded from completion', async () => {
+  const f = fixture();
+  f.type('/lateral smbexec ws01'); await f.context.runCommand(false);
+  assert.equal(f.calls.length, 0);
+  assert.match(f.errors[0], /Method must be psexec, wmiexec, or winrm/);
+  assert.equal(f.context.getShellCompletionCandidates('/lateral s').length, 0);
+});
+
+test('rev2self failure is shown as an error', async () => {
+  const f = fixture();
+  f.context.api = async () => ({status: 200, data: {ok: false, output: 'Rev2self failed: requires Windows'}});
+  f.type('/rev2self'); await f.context.runCommand(false);
+  assert.match(f.errors[0], /rev2self failed/);
 });

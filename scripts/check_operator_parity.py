@@ -72,6 +72,11 @@ REQUIRED_MCP_TOOLS = frozenset({
     "queue_keylog",
     "install_persistence",
     "remove_persistence",
+    "spawn_session",
+    "make_token",
+    "rev2self",
+    "lateral_move",
+    "session_uid",
 })
 
 # MCP tool -> RmmApiClient method (wrappers may share queue_command).
@@ -131,6 +136,11 @@ TOOL_CLIENT_METHOD: dict[str, str] = {
     "queue_keylog": "queue_command",
     "install_persistence": "queue_command",
     "remove_persistence": "queue_command",
+    "spawn_session": "spawn_session",
+    "make_token": "make_token",
+    "rev2self": "rev2self",
+    "lateral_move": "lateral_move",
+    "session_uid": "session_uid",
 }
 
 # Web shell meta verbs -> MCP tool (web/app.js dispatchShellMetaCommand).
@@ -140,6 +150,11 @@ WEB_SHELL_META: dict[str, str] = {
     "exfil": "queue_exfil",
     "screenshot": "queue_screenshot",
     "pe": "queue_pe_load",
+    "spawn": "spawn_session",
+    "make_token": "make_token",
+    "rev2self": "rev2self",
+    "lateral": "lateral_move",
+    "uid": "session_uid",
     "embeddings": "run_embeddings",
 }
 

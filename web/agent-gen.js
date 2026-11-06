@@ -8,6 +8,21 @@
 
   let scriptTemplate = null;
   let scriptTemplatePromise = null;
+  let renderGeneration = 0;
+  let outputContext = null;
+
+  function connectionContext() {
+    return { token: apiToken(), auth: window.rmmState?.authGeneration || 0,
+      connection: window.rmmState?.connectionGeneration || 0 };
+  }
+
+  function sameContext(left, right) {
+    return Boolean(left && right && left.token === right.token && left.auth === right.auth && left.connection === right.connection);
+  }
+
+  function isCurrent(context) {
+    return sameContext(context, connectionContext());
+  }
 
   function psQuote(value) {
     return `'${String(value ?? "").replace(/'/g, "''")}'`;
@@ -55,6 +70,7 @@
       beaconSecret: ($("#agent-beacon-secret")?.value || "").trim(),
       sessionMode,
       sessionId: ($("#agent-session-id")?.value || "").trim(),
+      workspaceId: ($("#agent-workspace-id")?.value || "").trim(),
       sleepSeconds: Math.min(3600, Math.max(1, parseInt($("#agent-sleep")?.value, 10) || 60)),
       jitterPercent: Math.min(100, Math.max(0, parseInt($("#agent-jitter")?.value, 10) || 30)),
       maxRetries: Math.max(1, parseInt($("#agent-max-retries")?.value, 10) || 3),
@@ -78,6 +94,7 @@
       `$u = ${psQuote(opts.serverUrl || "https://your-server.example.com")}`,
       `$beaconSecret = ${psQuote(opts.beaconSecret)}`,
       sessionIdLine(opts),
+      `$workspaceId = ${psQuote(opts.workspaceId)}`,
       "",
       `$baseSleepSeconds = ${opts.sleepSeconds}`,
       `$jitterPercent = ${opts.jitterPercent}`,
@@ -104,6 +121,7 @@
       "# Minimal-RMM agent — environment overrides (lab use only)",
       "",
       `$env:RMM_BASE_URL = ${psQuote(opts.serverUrl || "https://your-server.example.com")}`,
+      `$env:RMM_AGENT_WORKSPACE_ID = ${psQuote(opts.workspaceId)}`,
     ];
     if (opts.beaconSecret) {
       lines.push(`$env:RMM_BEACON_SECRET = ${psQuote(opts.beaconSecret)}`);
@@ -148,41 +166,65 @@
     return patched.join("\r\n");
   }
 
-  async function fetchScriptTemplate() {
-    const token = apiToken();
-    if (!token) {
+  async function authenticatedData(path, context) {
+    if (!context.token && !window.rmmApi) {
       throw new Error("Connect with your API token to load client_rmm.ps1.");
     }
-    const res = await fetch("/api/v1/agent/script", {
+    if (window.rmmApi) {
+      const response = await window.rmmApi(path);
+      if (!isCurrent(context)) throw new Error("Connection changed; generate output again.");
+      if (response.status !== 200) throw new Error(response.data?.detail || response.data?.error || `Request failed (${response.status})`);
+      return response.data;
+    }
+    const res = await fetch(`/api/v1${path}`, {
       headers: {
         Accept: "application/json",
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${context.token}`,
       },
     });
     const data = await res.json().catch(() => ({}));
+    if (!isCurrent(context)) throw new Error("Connection changed; generate output again.");
     if (!res.ok) {
       throw new Error(data.detail || data.error || `Failed to load script (${res.status})`);
     }
+    return data;
+  }
+
+  async function resolveWorkspace(opts, context) {
+    const health = await authenticatedData("/health", context);
+    const owner = String(health.workspace_id || "").trim();
+    const selected = owner || opts.workspaceId;
+    if (selected && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(selected)) {
+      throw new Error("Workspace ID must contain only letters, numbers, dots, underscores, or hyphens (up to 64 characters).");
+    }
+    return selected;
+  }
+
+  async function fetchScriptTemplate(context) {
+    const data = await authenticatedData("/agent/script", context);
     if (!data.content) {
       throw new Error("Script response missing content.");
     }
     return data.content;
   }
 
-  async function ensureScriptTemplate() {
-    if (scriptTemplate) return scriptTemplate;
-    if (!scriptTemplatePromise) {
-      scriptTemplatePromise = fetchScriptTemplate()
+  async function ensureScriptTemplate(context) {
+    if (scriptTemplate && sameContext(scriptTemplate.context, context)) return scriptTemplate.content;
+    if (!scriptTemplatePromise || !sameContext(scriptTemplatePromise.context, context)) {
+      const pending = { context, promise: null };
+      pending.promise = fetchScriptTemplate(context)
         .then((content) => {
-          scriptTemplate = content;
+          if (!isCurrent(context) || scriptTemplatePromise !== pending) throw new Error("Connection changed; generate output again.");
+          scriptTemplate = { context, content };
           return content;
         })
         .catch((err) => {
-          scriptTemplatePromise = null;
+          if (scriptTemplatePromise === pending) scriptTemplatePromise = null;
           throw err;
         });
+      scriptTemplatePromise = pending;
     }
-    return scriptTemplatePromise;
+    return scriptTemplatePromise.promise;
   }
 
   function buildRunCommand() {
@@ -213,7 +255,7 @@
       hint.textContent =
         "Copy the env block, save client_rmm.ps1 on the target, set variables, then run the command below.";
     } else if (opts.outputMode === "config") {
-      hint.textContent = "Replace lines 45–57 in client_rmm.ps1, then run the command below on the target host.";
+      hint.textContent = "Replace the configuration block in client_rmm.ps1, then run the command below on the Windows target host.";
     } else {
       hint.textContent =
         "Save as client_rmm.ps1 on the Windows lab host, then run the command below. Script is loaded from this server.";
@@ -238,10 +280,15 @@
 
   async function renderOutput() {
     const opts = readForm();
-    savePrefs(opts);
+    const context = connectionContext();
+    const generation = ++renderGeneration;
+    outputContext = null;
+    const current = () => generation === renderGeneration && isCurrent(context);
     const out = $("#agent-gen-output");
     const run = $("#agent-gen-run");
     if (!out) return;
+    out.value = "Loading workspace configuration…";
+    if (run) run.value = "";
 
     updateOutputLabels(opts);
 
@@ -251,24 +298,22 @@
       return;
     }
 
-    if (opts.outputMode === "env") {
-      out.value = buildEnvBlock(opts);
-      if (run) run.value = buildRunCommand();
-      setOutputHint(opts);
-      return;
-    }
-
-    if (opts.outputMode === "config") {
-      out.value = buildConfigBlock(opts);
-      if (run) run.value = buildRunCommand();
-      setOutputHint(opts);
-      return;
-    }
-
-    out.value = "Loading client_rmm.ps1…";
-    setOutputHint(opts, "Fetching agent script from server…");
     try {
-      const template = await ensureScriptTemplate();
+      opts.workspaceId = await resolveWorkspace(opts, context);
+      if (!current()) return;
+      if ($("#agent-workspace-id")) $("#agent-workspace-id").value = opts.workspaceId;
+      savePrefs(opts);
+      if (opts.outputMode === "env" || opts.outputMode === "config") {
+        out.value = opts.outputMode === "env" ? buildEnvBlock(opts) : buildConfigBlock(opts);
+        outputContext = context;
+        if (run) run.value = buildRunCommand();
+        setOutputHint(opts);
+        return;
+      }
+      out.value = "Loading client_rmm.ps1…";
+      setOutputHint(opts, "Fetching agent script from server…");
+      const template = await ensureScriptTemplate(context);
+      if (!current()) return;
       const patched = patchScriptTemplate(template, opts);
       if (!patched) {
         out.value = "# Failed to patch client_rmm.ps1 template (config block not found).";
@@ -276,9 +321,11 @@
         return;
       }
       out.value = patched;
+      outputContext = context;
       if (run) run.value = buildRunCommand();
       setOutputHint(opts);
     } catch (err) {
+      if (!current()) return;
       out.value = `# ${err.message || String(err)}`;
       setOutputHint(opts, err.message || String(err));
     }
@@ -306,7 +353,7 @@
   }
 
   function downloadScript(content) {
-    if (!content || content.startsWith("# ") || content.startsWith("Loading")) return;
+    if (!content || !isCurrent(outputContext)) return;
     const blob = new Blob([content], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -334,6 +381,7 @@
     if ($("#agent-session-id") && prefs.sessionId) {
       $("#agent-session-id").value = prefs.sessionId;
     }
+    if ($("#agent-workspace-id") && prefs.workspaceId) $("#agent-workspace-id").value = prefs.workspaceId;
     if ($("#agent-sleep") && prefs.sleepSeconds) $("#agent-sleep").value = prefs.sleepSeconds;
     if ($("#agent-jitter") && prefs.jitterPercent != null) {
       $("#agent-jitter").value = prefs.jitterPercent;
@@ -381,9 +429,7 @@
 
     panel.addEventListener("toggle", () => {
       if (panel.open && apiToken()) {
-        ensureScriptTemplate()
-          .then(() => renderOutput())
-          .catch(() => renderOutput());
+        renderOutput();
       }
     });
 
@@ -403,14 +449,17 @@
     });
 
     $("#agent-gen-copy-script")?.addEventListener("click", () => {
+      if (!isCurrent(outputContext)) return renderOutput();
       copyText($("#agent-gen-output")?.value, $("#agent-gen-copy-script"));
     });
 
     $("#agent-gen-download-script")?.addEventListener("click", () => {
+      if (!isCurrent(outputContext)) return renderOutput();
       downloadScript($("#agent-gen-output")?.value);
     });
 
     $("#agent-gen-copy-run")?.addEventListener("click", () => {
+      if (!isCurrent(outputContext)) return renderOutput();
       copyText($("#agent-gen-run")?.value, $("#agent-gen-copy-run"));
     });
 
@@ -434,6 +483,10 @@
   window.refreshAgentScriptTemplate = function refreshAgentScriptTemplate() {
     scriptTemplate = null;
     scriptTemplatePromise = null;
+    renderGeneration += 1;
+    outputContext = null;
+    if ($("#agent-gen-output")) $("#agent-gen-output").value = "";
+    if ($("#agent-gen-run")) $("#agent-gen-run").value = "";
     if ($("#agent-gen-panel")?.open) {
       renderOutput();
     }

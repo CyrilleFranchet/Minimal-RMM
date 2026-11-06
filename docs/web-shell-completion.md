@@ -43,7 +43,7 @@ profile or execution semantics when a session is reloaded.
 
 - Session command history (most recent first in candidate list)
 - Static agent dispatch prefixes: `cmd:`, `PS:`, `powershell:`, `pwsh:`; Tab completion inserts the trailing space
-- Slash command suggestions: `/help`, `/?`, `/exfil`, `/download`, `/screenshot`, `/pe`, `/embeddings`, `/bloodhound`
+- Slash command suggestions: `/help`, `/?`, `/exfil`, `/download`, `/screenshot`, `/pe`, `/spawn`, `/make_token`, `/rev2self`, `/lateral`, `/uid`, `/embeddings`, `/bloodhound`
 
 Agent-side path completion is out of scope (tech plan §4 v2).
 
@@ -60,6 +60,11 @@ These commands are handled in the browser instead of being sent to the agent she
 | `/screenshot` | `POST …/screenshot` | No arguments |
 | `/embeddings run <profile> --document <path>` | `POST /api/v1/embeddings/run` | Uses the selected session and a saved profile; repeat `--document` for up to 32 paths; quoted Windows and UNC backslashes are preserved |
 | `/pe <plugin> [export] [input]` | `POST …/pe` | Loads a Go PE plugin through the selected agent; export defaults to `Run` |
+| `/spawn` | `POST …/spawn` | Starts a detached second Go agent from the selected Go session with a fresh session ID; the request waits for registration and verifies both sessions (see `docs/go-agent.md`) |
+| `/make_token <domain\user \| user> <password>` | `POST …/make_token` | Creates a `runas /netonly` style network identity on the selected Go session; identity and password are passed as parameters |
+| `/rev2self` | `POST …/rev2self` | Reverts the selected Go session to its own network identity |
+| `/uid` | `POST …/uid` | Shows the identity used by the selected Go agent (process user + active network identity) |
+| `/lateral <psexec\|wmiexec\|winrm> <host>` | `POST …/lateral` | Starts a Go agent on another host through the requested method; the request waits for registration and verifies both sessions (see `docs/go-agent.md`) |
 | `/bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
 
 BloodHound shell output includes the HTTP status and response data. The shell
@@ -83,7 +88,7 @@ Example: `/exfil C:\Users\…\file.iso mega-lab` queues rclone upload; it is not
 ## CLI behavior
 
 The standalone interactive console uses `prompt_toolkit` (required by `requirements.txt`).
-Type `/help` for its complete internal command list. `/use` and `/kill` retain session-prefix completion, and `/upload` retains local-path completion. The WebUI lists only commands supported by its shell; other operations remain available through its panels. Existing history entries using bare internal commands must be edited to add `/` before reuse.
+Type `/help` for its complete internal command list. `/use`, `/kill`, and `/spawn` offer session-prefix completion; `/lateral` offers `psexec`, `wmiexec`, and `winrm` in both CLI completers. The WebUI also completes `/lateral` methods. `/upload` retains local-path completion. The WebUI lists only commands supported by its shell; other operations remain available through its panels. Existing history entries using bare internal commands must be edited to add `/` before reuse.
 
 ## Validation
 
@@ -93,3 +98,13 @@ the Node DOM fixture. `make check-parity` checks existing API/MCP mappings and
 shared interactive commands (the WebUI `/embeddings` command uses `/pe` in the
 CLI REPL). All three are included in `make check`. These checks do not replace
 a live browser and connected-agent acceptance test.
+
+### Password arguments
+
+`parse_identity_arguments` parses interactive CLI `/make_token` arguments using
+single or double quotes and literal backslashes, matching WebUI `parseShellWords`.
+Quote passwords containing spaces; `""` passes an empty password. An unclosed
+quote is rejected locally. For example, `/make_token LAB\alice 'two words\path'`
+passes the literal password `two words\path`. Commands remain visible and are
+saved verbatim in CLI and WebUI history, including passwords. Server identity
+audit events record the identity label without the password.
