@@ -744,18 +744,20 @@ def tool_spawn_session(
 def tool_make_token(
     client: RmmApiClient,
     session_ref: str,
-    user: str,
+    user: str = "",
     domain: str = "",
     password: str = "",
     timeout: float = 120,
+    cred_id: str = "",
 ) -> str:
     """Create a runas /netonly style network identity on a Go agent session."""
     sid, info = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, **info})
-    if not (user or "").strip():
+    if not (user or "").strip() and not cred_id:
         return _json_result({"ok": False, "error": "invalid_credentials", "detail": "user is required"})
-    code, data = client.make_token(sid, domain, user, password, timeout=timeout)
+    options = {"cred_id": cred_id} if cred_id else {}
+    code, data = client.make_token(sid, domain, user, password, timeout=timeout, **options)
     if code == 408:
         return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__MAKE_TOKEN__"})
     if code != 200:
@@ -1073,10 +1075,11 @@ TOOL_HANDLERS = {
     "make_token": lambda c, a: tool_make_token(
         c,
         a["session_ref"],
-        a["user"],
+        a.get("user", ""),
         a.get("domain", ""),
         a.get("password", ""),
         float(a.get("timeout", 120)),
+        cred_id=a.get("cred_id", ""),
     ),
     "rev2self": lambda c, a: tool_rev2self(
         c,
@@ -1850,12 +1853,14 @@ OPENAI_TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "session_ref": {"type": "string"},
+                    "cred_id": {"type": "string", "description": "Workspace credential ID; alternative to user/password"},
                     "user": {"type": "string", "description": "Identity as DOMAIN\\user or plain user"},
                     "domain": {"type": "string", "default": ""},
                     "password": {"type": "string", "description": "Plaintext password; never echo it back"},
                     "timeout": {"type": "number", "default": 120},
                 },
-                "required": ["session_ref", "user", "password"],
+                "required": ["session_ref"],
+                "anyOf": [{"required": ["cred_id"]}, {"required": ["user", "password"]}],
             },
         },
     },

@@ -137,6 +137,29 @@ class IdentityHttpRoutingTests(unittest.TestCase):
         self.assertEqual(call.args[3], "pw")
         self.assertNotIn("pw", payload)
 
+    def test_make_token_resolves_only_workspace_credentials(self):
+        handler = self._handler("make_token", {"ok": True})
+        handler._workspace_scope.return_value = "alice"
+        credential = {"domain": "LAB", "user": "alice", "password": "stored-secret"}
+        with patch.object(server_rmm, "plugin_directory", return_value="/workspace/alice"), \
+                patch.object(server_rmm._rmm_creds, "creds_resolve", return_value=credential) as resolve:
+            self._run(handler, {"cred_id": "cred-123"})
+        resolve.assert_called_once_with("/workspace/alice", "cred-123")
+        self.assertEqual(handler.server_instance.make_token.call_args.args,
+                         ("full-session-id", "LAB", "alice", "stored-secret"))
+        self.assertNotIn("stored-secret", str(handler._json.call_args))
+
+    def test_make_token_credential_id_requires_workspace_and_existing_entry(self):
+        handler = self._handler("make_token", {"ok": True})
+        self._run(handler, {"cred_id": "cred-123"})
+        self.assertEqual(handler._json.call_args.args[0], 403)
+        handler.server_instance.make_token.assert_not_called()
+        handler._workspace_scope.return_value = "alice"
+        with patch.object(server_rmm, "plugin_directory", return_value="/workspace/alice"), \
+                patch.object(server_rmm._rmm_creds, "creds_resolve", return_value=None):
+            self._run(handler, {"cred_id": "missing"})
+        self.assertEqual(handler._json.call_args.args[0], 404)
+        handler.server_instance.make_token.assert_not_called()
     def test_make_token_status_codes(self):
         cases = [
             ("agent_type_unsupported", 409),

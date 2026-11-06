@@ -569,9 +569,9 @@ def spawn_session(
 
 @mcp.tool()
 @_offload_tool
-def make_token(session_ref: str, user: str, domain: str = "", password: str = "", timeout: float = 120) -> str:
+def make_token(session_ref: str, user: str = "", domain: str = "", password: str = "", timeout: float = 120, cred_id: str = "") -> str:
     """Create a runas /netonly style network identity on a Go agent session; never repeat the password in responses."""
-    return tool_make_token(_client(), session_ref, user, domain=domain, password=password, timeout=timeout)
+    return tool_make_token(_client(), session_ref, user, domain=domain, password=password, timeout=timeout, cred_id=cred_id)
 
 
 @mcp.tool()

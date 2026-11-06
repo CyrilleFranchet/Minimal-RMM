@@ -309,3 +309,11 @@ report `ok: true` only after that agent registers under the source workspace.
 `verified: true` also requires exact fresh command-probe outputs. Skipping checks
 reports request acceptance with `pending: true`, `ok: false`, and `registered:
 null`; HTTP 200 or a process acknowledgment is not successful deployment.
+
+## Identity credential inputs
+
+`make_token` accepts a workspace `cred_id` as an alternative to `user`, `domain`,
+and `password`, matching `spawnas` and `runas`. The API resolves the ID inside the
+authenticated workspace and returns `cred_not_found` for an unknown ID.
+`RmmApiClient.make_token`, `tool_make_token`, the MCP wrapper, and the web AI
+schema expose this option. Direct credentials retain the existing behavior.

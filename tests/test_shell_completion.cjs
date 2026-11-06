@@ -257,7 +257,7 @@ test('quoted passwords preserve spaces, backslashes and empty values in requests
 
 test('lateral method completion filters without completing the target host', () => {
   const f = fixture();
-  assert.deepEqual(Array.from(f.context.getShellCompletionCandidates('/lateral w')), ['/lateral wmiexec ', '/lateral winrm ']);
+  assert.deepEqual(Array.from(f.context.getShellCompletionCandidates('/lateral w')), ['/lateral wmiexec', '/lateral winrm']);
   assert.equal(f.context.getShellCompletionCandidates('/lateral ').length, 3);
   assert.equal(f.context.getShellCompletionCandidates('/lateral winrm ').length, 0);
 });
@@ -275,4 +275,89 @@ test('rev2self failure is shown as an error', async () => {
   f.context.api = async () => ({status: 200, data: {ok: false, output: 'Rev2self failed: requires Windows'}});
   f.type('/rev2self'); await f.context.runCommand(false);
   assert.match(f.errors[0], /rev2self failed/);
+});
+
+test('creds dispatches list, add and delete with literal credential arguments', async () => {
+  for (const [command, path, body] of [
+    ['/creds list', '/creds', null],
+    [String.raw`/creds add LAB\alice 'two words\path'`, '/creds', {domain:'LAB', user:'alice', password:String.raw`two words\path`}],
+    ["/creds add alice ''", '/creds', {domain:'', user:'alice', password:''}],
+    ['/creds del credential-123', '/creds/credential-123', null],
+  ]) {
+    const f = fixture();
+    f.context.appendShellOutput = () => {};
+    await f.context.dispatchShellMetaCommand(command);
+    assert.equal(f.errors.length, 0);
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0][0], path);
+    if (body) assert.deepEqual(JSON.parse(f.calls[0][1].body), body);
+  }
+});
+
+test('creds rejects missing and extra arguments without requests', async () => {
+  for (const command of ['/creds list extra', '/creds add alice', '/creds add alice pass extra', '/creds del', '/creds del id extra']) {
+    const f = fixture();
+    await f.context.dispatchShellMetaCommand(command);
+    assert.equal(f.calls.length, 0, command);
+    assert.match(f.errors[0], /Usage:/);
+  }
+});
+
+test('creds completes subcommands and displays argument hints without credential history', () => {
+  const f = fixture();
+  f.type('/creds ');
+  assert.deepEqual(f.menu.children.map(x => x.textContent), ['/creds list', '/creds add', '/creds del']);
+  f.type('/creds a');
+  f.key('Tab');
+  assert.equal(f.input.value, '/creds add ');
+  assert.match(f.hint.textContent, /<password>/);
+  f.type('/creds del ');
+  assert.match(f.hint.textContent, /<cred_id>/);
+  assert.equal(f.context.getShellCompletionCandidates('/creds add alice ').length, 0);
+});
+
+test('identity commands accept stored IDs or direct credentials', async () => {
+  for (const verb of ['make_token', 'spawnas', 'runas']) {
+    for (const direct of [false, true]) {
+      const f = fixture(); f.context.appendShellOutput = () => {};
+      f.context.api = async (...args) => { f.calls.push(args); return {status:200,data:{ok:true}}; };
+      const identity = direct ? String.raw`LAB\alice 'two words\path'` : 'cred-123';
+      await f.context.dispatchShellMetaCommand(`/${verb} ${identity}${verb === 'runas' ? ' whoami /all' : ''}`);
+      assert.equal(f.errors.length, 0);
+      assert.equal(f.calls[0][0], `/sessions/agent/${verb}`);
+      const body = JSON.parse(f.calls[0][1].body);
+      if (direct) { assert.equal(body.user, String.raw`LAB\alice`); assert.equal(body.password, String.raw`two words\path`); assert.equal(body.cred_id, undefined); }
+      else { assert.equal(body.cred_id, 'cred-123'); assert.equal(body.password, undefined); }
+      if (verb === 'runas') assert.equal(body.command, 'whoami /all');
+      f.type(`/${verb} `); assert.match(f.hint.textContent, /<cred_id>/); assert.match(f.hint.textContent, /<password>/);
+    }
+  }
+});
+
+test('lateral opens its method menu after command completion and accepts keyboard selection', () => {
+  const f = fixture();
+  f.type('/lat'); f.key('Tab');
+  assert.equal(f.input.value, '/lateral ');
+  assert.deepEqual(f.menu.children.map(x => x.textContent), ['/lateral psexec', '/lateral wmiexec', '/lateral winrm']);
+  assert.equal(f.input.attrs['aria-expanded'], 'true');
+  assert.equal(f.input.attrs['aria-activedescendant'], 'shell-command-option-0');
+  f.key('ArrowDown'); f.key('Tab');
+  assert.equal(f.input.value, '/lateral wmiexec ');
+  assert.equal(f.input.attrs['aria-expanded'], 'false');
+  assert.equal(f.hint.textContent, '/lateral wmiexec <host>');
+});
+
+test('lateral filters methods, supports clicks, and leaves the host untouched', () => {
+  const f = fixture();
+  f.type('/lateral w');
+  assert.deepEqual(f.menu.children.map(x => x.textContent), ['/lateral wmiexec', '/lateral winrm']);
+  f.menu.children[1].listeners.mousedown({preventDefault() {}});
+  assert.equal(f.input.value, '/lateral winrm ');
+  assert.equal(f.hint.textContent, '/lateral winrm <host>');
+  f.context.getShellHistoryList = () => ['/lateral winrm ws01.old.example'];
+  f.type('/lateral winrm ws'); f.key('Tab');
+  assert.equal(f.input.value, '/lateral winrm ws');
+  assert.equal(f.input.attrs['aria-expanded'], 'false');
+  f.type('/lateral smbexec');
+  assert.equal(f.input.attrs['aria-expanded'], 'false');
 });

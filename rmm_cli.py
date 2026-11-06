@@ -212,11 +212,11 @@ class RmmApiClient:
             timeout=spawn_timeout + register_timeout + 2 * verify_timeout + 30,
         )
 
-    def make_token(self, session_id: str, domain: str, user: str, password: str, timeout: float = 120):
+    def make_token(self, session_id: str, domain: str = "", user: str = "", password: str = "", timeout: float = 120, cred_id: str = ""):
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/make_token",
-            {"domain": domain, "user": user, "password": password, "timeout": timeout},
+            {"timeout": timeout, **({"cred_id": cred_id} if cred_id else {"domain": domain, "user": user, "password": password})},
             timeout=timeout + 5,
         )
 
@@ -1025,6 +1025,17 @@ def parse_identity_arguments(line: str) -> list[str]:
 
 def cmd_make_token(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
+    if args.password is None and "\\" not in args.user:
+        code, data = client.make_token(sid, cred_id=args.user, timeout=args.timeout)
+        if code != 200:
+            die(f"make_token failed ({code}): {data.get('error')}")
+        if args.json:
+            print_json(data)
+        else:
+            say(data.get("output") or "(no output)")
+        return
+    if args.password is None:
+        die("Password is required with DOMAIN\\user")
     domain, user = split_identity(args.user)
     if not user:
         die("Missing user in identity (use DOMAIN\\user or user)")
@@ -2143,8 +2154,8 @@ def run_interactive(
                 except ValueError:
                     warn("Invalid quoting. Use /make_token <identity> <password>; quote passwords containing spaces.")
                     continue
-                if len(rest) != 2:
-                    warn("Usage: /make_token <domain\\user | user> <password>")
+                if len(rest) not in (1, 2) or (len(rest) == 1 and "\\" in rest[0]):
+                    warn("Usage: /make_token <cred_id> | /make_token <DOMAIN\\user> <password>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -2156,7 +2167,8 @@ def run_interactive(
                     continue
                 identity = f"{domain}\\{user}" if domain else user
                 say(f"Creating network token for {identity} (waits for the next beacon)...")
-                code, data = client.make_token(sid, domain, user, rest[1])
+                code, data = (client.make_token(sid, cred_id=rest[0]) if len(rest) == 1
+                              else client.make_token(sid, domain, user, rest[1]))
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"make_token failed ({code})" + (f": {detail}" if detail else ""))
@@ -2268,8 +2280,13 @@ def run_interactive(
                     warn("Usage: /creds list | /creds add <identity> <password> | /creds del <cred_id>")
                 continue
             if cmd == "spawnas":
-                if not rest:
-                    warn("Usage: /spawnas <cred_id>")
+                try:
+                    rest = parse_identity_arguments(line)[1:]
+                except ValueError:
+                    warn("Invalid quoting")
+                    continue
+                if len(rest) not in (1, 2) or (len(rest) == 1 and "\\" in rest[0]):
+                    warn("Usage: /spawnas <cred_id> | /spawnas <DOMAIN\\user> <password>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -2277,7 +2294,8 @@ def run_interactive(
                     continue
                 cred_id = rest[0]
                 say("Spawning agent under new identity (waits for the next beacon and registration)...")
-                code, data = client.spawnas(sid, cred_id=cred_id)
+                options = {"cred_id": cred_id} if len(rest) == 1 else {"user": rest[0], "password": rest[1]}
+                code, data = client.spawnas(sid, **options)
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"spawnas failed ({code})" + (f": {detail}" if detail else ""))
@@ -2292,17 +2310,24 @@ def run_interactive(
                     _refresh_completion_sessions(client, state)
                 continue
             if cmd == "runas":
-                if len(rest) < 2:
-                    warn("Usage: /runas <cred_id> <command...>")
+                try:
+                    rest = parse_identity_arguments(line)[1:]
+                except ValueError:
+                    warn("Invalid quoting")
+                    continue
+                direct = bool(rest and "\\" in rest[0])
+                if len(rest) < (3 if direct else 2):
+                    warn("Usage: /runas <cred_id> <command...> | /runas <DOMAIN\\user> <password> <command...>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
                     continue
                 runas_cred_id = rest[0]
-                runas_command = " ".join(rest[1:])
+                runas_command = " ".join(rest[2:] if direct else rest[1:])
                 say("Running command under new identity (waits for the next beacon)...")
-                code, data = client.runas(sid, runas_command, cred_id=runas_cred_id)
+                options = {"user": rest[0], "password": rest[1]} if direct else {"cred_id": runas_cred_id}
+                code, data = client.runas(sid, runas_command, **options)
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"runas failed ({code})" + (f": {detail}" if detail else ""))
@@ -2761,8 +2786,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared],
         help="Create a runas /netonly style network identity on a Go agent session",
     )
-    sp_mt.add_argument("user", help="Identity as DOMAIN\\user or plain user")
-    sp_mt.add_argument("password", help="Password for the network identity")
+    sp_mt.add_argument("user", help="Credential ID or identity as DOMAIN\\user")
+    sp_mt.add_argument("password", nargs="?", default=None, help="Password for a direct identity")
     sp_mt.add_argument("--session", "-s", default=None)
     sp_mt.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
     sp_mt.set_defaults(func=cmd_make_token)

@@ -2103,8 +2103,16 @@ function getShellCompletionCandidates(line) {
     const prefix = q.trim().split(/\s+/)[1] || "";
     return ["psexec", "wmiexec", "winrm"]
       .filter(method => method.startsWith(prefix.toLowerCase()))
-      .map(method => `/lateral ${method} `);
+      .map(method => `/lateral ${method}`);
   }
+  if (/^\/lateral\s/i.test(q)) return [];
+  if (/^\/creds\s+\S*$/i.test(q)) {
+    const prefix = q.trim().split(/\s+/)[1] || "";
+    return ["list", "add", "del"].filter(sub => sub.startsWith(prefix.toLowerCase()))
+      .map(sub => `/creds ${sub}`);
+  }
+  if (/^\/creds\s/i.test(q)) return [];
+  if (/^\/(make_token|spawnas|runas)\s/i.test(q)) return [];
   const lower = q.toLowerCase();
   const seen = new Set();
   const cands = [];
@@ -2212,6 +2220,7 @@ function acceptShellCommandCompletion() {
   input.value = command + " ";
   input.setSelectionRange(input.value.length, input.value.length);
   closeShellCommandMenu();
+  shellCommandMenu.index = 0;
   updateShellCompletionHint();
 }
 
@@ -2225,7 +2234,7 @@ function updateShellCompletionHint() {
   }
   const line = input.value;
   const cands = getShellCompletionCandidates(line);
-  if (!shellCommandMenu.dismissed && /^\s*\/\S*$/.test(line) && cands.length && state.viewMode !== "history") {
+  if (!shellCommandMenu.dismissed && /^\s*\/(?:\S*|(?:creds|lateral)\s+\S*)$/i.test(line) && cands.length && state.viewMode !== "history") {
     shellCommandMenu.candidates = cands;
     shellCommandMenu.index = Math.min(shellCommandMenu.index, cands.length - 1);
     hint.classList.add("hidden");
@@ -2233,6 +2242,25 @@ function updateShellCompletionHint() {
     return;
   }
   closeShellCommandMenu();
+  const lateralMethod = line.match(/^\s*\/lateral\s+(psexec|wmiexec|winrm)\s/i)?.[1].toLowerCase();
+  if (lateralMethod) {
+    hint.textContent = `/lateral ${lateralMethod} <host>`;
+    hint.classList.remove("hidden");
+    return;
+  }
+  const identityCommand = line.match(/^\s*\/(make_token|spawnas|runas)\s/i)?.[1].toLowerCase();
+  if (identityCommand) {
+    hint.textContent = `/${identityCommand} <cred_id> | /${identityCommand} <DOMAIN\\user> <password>${identityCommand === "runas" ? " <command...> (required in both forms)" : ""}`;
+    hint.classList.remove("hidden");
+    return;
+  }
+  if (/^\s*\/creds\s+(add|del)\s/i.test(line)) {
+    hint.textContent = /^\s*\/creds\s+add\s/i.test(line)
+      ? '/creds add <domain\\user | user> <password> (quote values containing spaces)'
+      : '/creds del <cred_id>';
+    hint.classList.remove("hidden");
+    return;
+  }
   if (!line || !cands.length) {
     hint.textContent = "";
     hint.classList.add("hidden");
@@ -3025,6 +3053,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
     return true;
   }
   const rest = words.slice(1);
+  const args = rest;
 
   if (verb === "embeddings") {
     const args = parseShellWords(cmd, true).slice(1);
@@ -3080,10 +3109,10 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
                                    Run a saved embedding profile on this session
   /pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
   /spawn                           Spawn a detached second Go agent (same identity)
-  /spawnas &lt;cred_id&gt;               Spawn a Go agent copy under a different process identity (cascade)
-  /runas &lt;cred_id&gt; &lt;command&gt;      Run a command under a different process identity (cascade)
+  /spawnas &lt;cred_id&gt; | /spawnas &lt;DOMAIN\\user&gt; &lt;password&gt;               Spawn a Go agent copy under a different process identity (cascade)
+  /runas &lt;cred_id&gt; &lt;command&gt; | /runas &lt;DOMAIN\\user&gt; &lt;password&gt; &lt;command&gt;      Run a command under a different process identity (cascade)
   /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del &lt;cred_id&gt;   Manage workspace credentials
-  /make_token &lt;domain\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
+  /make_token &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
   /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt;   Start a Go agent on another host
@@ -3211,8 +3240,8 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   }
 
   if (verb === "make_token") {
-    if (rest.length !== 2) {
-      appendShellError("Usage: /make_token <domain\\user | user> <password>");
+    if (![1, 2].includes(rest.length) || !rest[0] || (rest.length === 1 && rest[0].includes("\\"))) {
+      appendShellError("Usage: /make_token <cred_id> | /make_token <DOMAIN\\user> <password>");
       return true;
     }
     if (!target.sessionId) {
@@ -3225,7 +3254,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/make_token`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user: identity, password }),
+        body: JSON.stringify(rest.length === 1 ? { cred_id: identity } : { user: identity, password }),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
@@ -3342,6 +3371,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     const sub = args[0]?.toLowerCase();
     try {
       if (!sub || sub === "list") {
+        if (args.length > 1) { appendShellError("Usage: /creds list"); return true; }
         const { status, data } = await api("/creds");
         if (!target.isCurrent()) return true;
         if (status !== 200) { appendShellError(`creds list failed (${status})`); return true; }
@@ -3352,13 +3382,17 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
           appendShellOutput(`  ${c.cred_id ?? c.id}  ${identity}`);
         }
       } else if (sub === "add") {
-        if (args.length < 3) { appendShellError("Usage: /creds add &lt;domain\\user | user&gt; &lt;password&gt;"); return true; }
-        const { status, data } = await api("/creds", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user: args[1], password: args[2] }) });
+        if (args.length !== 3 || !args[1]) { appendShellError("Usage: /creds add <domain\\user | user> <password>"); return true; }
+        const separator = args[1].indexOf("\\");
+        const domain = separator < 0 ? "" : args[1].slice(0, separator);
+        const user = separator < 0 ? args[1] : args[1].slice(separator + 1);
+        if (!user) { appendShellError("Credential username is required."); return true; }
+        const { status, data } = await api("/creds", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain, user, password: args[2] }) });
         if (!target.isCurrent()) return true;
         if (status !== 200) { appendShellError(`creds add failed (${status}): ${data?.error ?? ""}`); return true; }
         appendShellOutput(`stored ${data?.cred_id} (${args[1]})`);
       } else if (sub === "del") {
-        if (args.length < 2) { appendShellError("Usage: /creds del &lt;cred_id&gt;"); return true; }
+        if (args.length !== 2 || !args[1]) { appendShellError("Usage: /creds del <cred_id>"); return true; }
         const { status, data } = await api(`/creds/${encodeURIComponent(args[1])}`, { method: "DELETE" });
         if (!target.isCurrent()) return true;
         if (status !== 200 && status !== 404) { appendShellError(`creds del failed (${status})`); return true; }
@@ -3373,14 +3407,14 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   }
 
   if (verb === "spawnas") {
-    if (!args[0]) { appendShellError("Usage: /spawnas &lt;cred_id&gt;"); return true; }
+    if (![1, 2].includes(args.length) || !args[0] || (args.length === 1 && args[0].includes("\\"))) { appendShellError("Usage: /spawnas <cred_id> | /spawnas <DOMAIN\\user> <password>"); return true; }
     if (!target.sessionId) { appendShellError("Select a Go agent session before spawnas."); return true; }
     appendShellEcho(cmd);
     appendShellOutput("Spawning agent under new identity…");
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/spawnas`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cred_id: args[0], verify: true }),
+        body: JSON.stringify({ ...(args.length === 1 ? { cred_id: args[0] } : { user: args[0], password: args[1] }), verify: true }),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) { appendShellError(`spawnas failed (${status}): ${data?.error ?? ""}`); return true; }
@@ -3397,16 +3431,18 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   }
 
   if (verb === "runas") {
-    if (args.length < 2) { appendShellError("Usage: /runas &lt;cred_id&gt; &lt;command...&gt;"); return true; }
+    const direct = args[0]?.includes("\\");
+    if (args.length < (direct ? 3 : 2) || !args[0]) { appendShellError("Usage: /runas <cred_id> <command...> | /runas <DOMAIN\\user> <password> <command...>"); return true; }
     if (!target.sessionId) { appendShellError("Select a Go agent session before runas."); return true; }
     appendShellEcho(cmd);
     const runasCred = args[0];
-    const runasCommand = args.slice(1).join(" ");
+    const runasCommand = args.slice(direct ? 2 : 1).join(" ");
+    if (!runasCommand.trim()) { appendShellError("Runas command is required."); return true; }
     appendShellOutput("Running command under new identity…");
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/runas`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cred_id: runasCred, command: runasCommand }),
+        body: JSON.stringify({ ...(direct ? { user: args[0], password: args[1] } : { cred_id: runasCred }), command: runasCommand }),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) { appendShellError(`runas failed (${status}): ${data?.error ?? ""}`); return true; }

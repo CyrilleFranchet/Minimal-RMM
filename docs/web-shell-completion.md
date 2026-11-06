@@ -121,6 +121,40 @@ passes the literal password `two words\path`. Commands remain visible and are
 saved verbatim in CLI and WebUI history, including passwords. Server identity
 audit events record the identity label without the password.
 
+## Lateral method completion
+
+Completing `/lateral` opens a method menu containing `psexec`, `wmiexec`, and
+`winrm`. Type a prefix to filter it, then use arrows and Tab or click to select.
+Selection inserts one trailing space and displays `/lateral <method> <host>`
+as the argument hint. Host input is left unchanged by Tab and does not reuse
+historical lateral targets.
+
+## Credential commands
+
+The identity commands accept credentials from `/creds list` or a direct identity:
+
+```text
+/make_token <cred_id>
+/make_token DOMAIN\user 'password with spaces'
+/spawnas <cred_id>
+/spawnas DOMAIN\user 'password with spaces'
+/runas <cred_id> whoami /all
+/runas DOMAIN\user 'password with spaces' whoami /all
+```
+
+For direct `/runas` credentials, include the domain separator (`DOMAIN\user` or
+`.\user`) to distinguish the identity from a credential ID. Argument hints show
+both forms. Stored IDs resolve within the authenticated workspace; passwords
+are never retrieved by the browser. The CLI interactive commands support the
+same forms. CLI `make-token <cred_id>` also accepts a stored credential.
+
+`/creds` and `/creds list` list workspace credentials. `/creds add <domain\user | user> <password>`
+splits the identity into the API's domain and user fields; quote passwords with
+spaces, or use `''` for an empty password. `/creds del <cred_id>` removes an entry.
+Extra arguments are rejected. The command menu completes `list`, `add`, and `del`;
+after selection, argument hints show the required values. Credential arguments
+are excluded from history-based completion suggestions.
+
 ## Spawn result display
 
 `/spawn` shows the new session ID, parent ID, optional PID and hostname,

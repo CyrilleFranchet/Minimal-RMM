@@ -119,6 +119,21 @@ class SlashCommandTests(unittest.TestCase):
         client.make_token.assert_not_called()
         self.assertEqual(warn.call_count, 2)
 
+    def test_make_token_accepts_stored_credential_id(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.make_token.return_value = (200, {'ok': True, 'output': 'token created'})
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/make_token cred-123', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.make_token.assert_called_once_with('session-id', cred_id='cred-123')
+        warn.assert_not_called()
+
     def test_make_token_failure_warns_with_agent_output(self):
         client = Mock(base_url='http://example.test')
         client.list_sessions.return_value = (200, {'sessions': []})

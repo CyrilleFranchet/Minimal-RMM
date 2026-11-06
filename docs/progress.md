@@ -14,6 +14,35 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Repair lateral method completion
+
+- Show the supported lateral methods in the dropdown, filter by prefix, and
+  reset selection when entering the submenu. Insert one space after selection
+  and show the host argument hint. Exclude host input from history completion.
+- Add keyboard, click, submenu, and host preservation regressions; all 26 shell
+  completion tests pass, along with JavaScript syntax validation.
+
+### 2026-11-06 — Accept stored or direct identity credentials
+
+- Support credential IDs and direct identity/password arguments for WebUI and
+  interactive CLI make_token, spawnas, and runas. Direct runas identities require
+  a domain separator to distinguish passwords from command arguments.
+- Resolve make_token credential IDs within the authenticated workspace in the
+  API; expose the optional ID in the API client, MCP tool, and web AI schema.
+- Update help and completion hints; cover both WebUI forms and workspace-scoped
+  API credential resolution, including missing entries and missing workspace auth.
+- Validation: syntax checks, AI tests, WebUI contracts, CLI tests, identity API
+  tests, and operator parity pass. No native Windows execution was performed.
+
+### 2026-11-06 — Repair credential commands and completion
+
+- Bind parsed arguments used by credential and identity command handlers;
+  split domain-qualified credential identities for the API and reject extra
+  arguments for credential operations.
+- Complete credential subcommands in the menu and show required argument hints.
+  Exclude credential arguments from history-based completion. Add regressions for
+  list/add/delete requests, quoted and empty passwords, validation, and completion.
+
 ### 2026-11-06 — Readable WebUI spawn results
 
 - Replace the `/spawn` JSON dump with an escaped text summary of the session,

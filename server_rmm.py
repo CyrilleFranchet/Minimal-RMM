@@ -5182,11 +5182,23 @@ class RMMHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self._json(400, {"error": "invalid_make_token_options"})
                 return True
+            domain = str(body.get("domain") or "")
+            user = str(body.get("user") or "")
+            password = str(body.get("password") or "")
+            cred_id = str(body.get("cred_id") or "").strip()
+            if cred_id:
+                owner = self._workspace_scope()
+                if not owner:
+                    self._json(403, {"error": "workspace_auth_required"})
+                    return True
+                cred = _rmm_creds.creds_resolve(plugin_directory(owner), cred_id)
+                if cred is None:
+                    self._json(404, {"error": "cred_not_found", "cred_id": cred_id})
+                    return True
+                domain, user, password = cred["domain"], cred["user"], cred["password"]
             result, status = srv.make_token(
                 session.id,
-                str(body.get("domain") or ""),
-                str(body.get("user") or ""),
-                str(body.get("password") or ""),
+                domain, user, password,
                 timeout=timeout,
             )
             if status == "not_found":
