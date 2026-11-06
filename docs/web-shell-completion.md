@@ -62,11 +62,11 @@ These commands are handled in the browser instead of being sent to the agent she
 | `/screenshot` | `POST …/screenshot` | No arguments |
 | `/embeddings run <profile> --document <path>` | `POST /api/v1/embeddings/run` | Uses the selected session and a saved profile; repeat `--document` for up to 32 paths; quoted Windows and UNC backslashes are preserved |
 | `/pe <plugin> [export] [input]` | `POST …/pe` | Loads a Go PE plugin through the selected agent; export defaults to `Run` |
-| `/spawn` | `POST …/spawn` | Starts a detached second Go agent from the selected Go session with a fresh session ID; the request waits for registration and verifies both sessions (see `docs/go-agent.md`) |
+| `/spawn` | `POST …/spawn` | Starts a detached second Go agent from the selected Go session with a fresh session ID; the request confirms registration without extra probe commands (see `docs/go-agent.md`) |
 | `/make_token <domain\user \| user> <password>` | `POST …/make_token` | Creates a `runas /netonly` style network identity on the selected Go session; identity and password are passed as parameters |
 | `/rev2self` | `POST …/rev2self` | Reverts the selected Go session to its own network identity |
 | `/uid` | `POST …/uid` | Shows the identity used by the selected Go agent (process user + active network identity) |
-| `/lateral <psexec\|wmiexec\|winrm> <host>` | `POST …/lateral` | Starts a Go agent on another host through the requested method; the request waits for registration and verifies both sessions (see `docs/go-agent.md`) |
+| `/lateral <psexec\|wmiexec\|winrm> <host>` | `POST …/lateral` | Starts a Go agent on another host through the requested method; the request confirms registration without extra probe commands (see `docs/go-agent.md`) |
 | `/bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
 | `/creds <add \| del \| list> [domain\user] [password]` | `GET/POST/DELETE …/creds` | Manage the workspace credential store; `add` returns a `cred_id`; `del` takes a `cred_id`; `list` shows all stored credentials by ID |
 | `/spawnas <cred_id>` | `POST …/spawnas` | Spawn a new agent copy under a different process identity using the cascade (`CreateProcessAsUser → CreateProcessWithTokenW → CreateProcessWithLogonW → CreateProcessA`); accepts a credential store ID or inline `domain\user password` |
@@ -169,7 +169,7 @@ are excluded from history-based completion suggestions.
 ## Spawn result display
 
 `/spawn` shows the new session ID, parent ID, optional PID and hostname,
-registration status, and each agent's response and verification status.
+and registration status, plus the creation method and identity-downgrade warning.
 `renderSpawnResult` escapes response values and keeps the full API response in
-a collapsed **Response details (JSON)** section for troubleshooting. Registration
-and verification remain separate: a registered agent can fail response checks.
+a collapsed **Response details (JSON)** section for troubleshooting. No additional
+verification command is executed on either session.

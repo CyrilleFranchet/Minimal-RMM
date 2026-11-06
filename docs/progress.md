@@ -14,6 +14,17 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Remove deployment response probes
+
+- Confirm spawn, spawnas, and lateral deployment through the expected session's
+  registration under the source workspace. Remove automatic echo probes; no
+  replacement internal ping or agent capability is needed.
+- Keep `verified` as a compatibility alias for registration; omit response-probe
+  fields and remove their CLI/WebUI display. Accept legacy verify_timeout options
+  without sending or waiting for probe commands.
+- Regressions assert that spawn queues only its launch request and lateral
+  queues only launch and existing artifact cleanup, with no target probe.
+
 ### 2026-11-06 — Fix identity review findings
 
 - Explicit rev2self now checks the OS result, closes and clears the operator

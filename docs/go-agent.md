@@ -176,11 +176,12 @@ the expected new session to register under the source workspace before returning
 timeout is inconclusive; the server still checks the known session ID rather
 than automatically retrying. The response retains that ID for later inspection.
 
-`_probe_deployment_session` then sends a different random `echo rmm-verify-…`
-probe to each session. `verified: true` requires the exact corresponding output
-from both sessions, in addition to registration. Unrelated delayed output,
-command errors, and the old fixed verification marker cannot pass. The response
-includes the registered hostname for target identity inspection.
+Deployment confirmation waits only for the expected new session to register
+under the source workspace. No echo, internal ping, shell, or additional command
+is sent to either agent. The legacy `verified` field mirrors `registered` for
+compatibility; parent/source/target responsiveness and probe-output fields are
+no longer returned. Normal beacons provide ongoing activity information.
+Registration does not establish shell execution privileges or network identity.
 
 With `verify: false` (`--no-verify`), the response reports `accepted: true`,
 `pending: true`, `ok: false`, and `registered: null`; request acceptance is not
@@ -189,7 +190,8 @@ This behavior also applies to lateral deployment.
 
 Surfaces: REST `POST /api/v1/sessions/{id}/spawn`, CLI `spawn` and `/spawn`,
 WebUI `/spawn`, MCP/AI `spawn_session`. The request budgets are `spawn_timeout`,
-`register_timeout`, and `verify_timeout` for each probe.
+`register_timeout`. `verify_timeout` is accepted for compatibility but no longer
+used by the server.
 
 ### Alternate network identity (`__MAKE_TOKEN__` / `__REV2SELF__`)
 
@@ -367,9 +369,8 @@ cleanup command can remove exactly this deployment. An acknowledgment
 does not prove deployment; failures answer `Lateral failed: <detail>`
 with the explanation from the failing step. The server
 (`lateral_move` in `server_rmm.py`) waits for the target session to
-register, runs unique probes with exact output matching on both
-sessions, and reports `registered`, `source_responsive`,
-`target_responsive`, and `verified`. Surfaces:
+register under the source workspace and reports `registered` and the legacy
+`verified` alias. No response probes are sent. Surfaces:
 `POST /api/v1/sessions/{id}/lateral`, CLI `lateral` and `/lateral`,
 WebUI `/lateral`, MCP `lateral_move`. Requirements and caveats: Go agent
 Windows build with embedded connection settings, admin rights on the
@@ -443,8 +444,7 @@ Listener staging (`server_rmm.py`):
   allowed on the beacon listener without a beacon token; expired or
   already-fetched entries answer 404.
 
-Cleanup (`__LATERAL_CLEANUP__`): once the target session registers (the
-deployed agent answered a probe, so stage1 has exited), the server
+Cleanup (`__LATERAL_CLEANUP__`): once the target session registers, the server
 sends the cleanup command with the deployment names from the handshake.
 It runs in a bounded child under the active `make_token` identity and
 deletes the stage1 service and the launcher binary from `ADMIN$`,

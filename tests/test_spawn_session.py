@@ -42,16 +42,12 @@ class SpawnSessionFlowTests(unittest.TestCase):
         self.server._await_session_registration = Mock(return_value=True)
         self.ack_status = "ok"
         self.ack_output = self.handshake()
-        self.probe_output = None
         self.server.exec_and_wait = Mock(side_effect=self.execute)
 
     def execute(self, sid, command, timeout=None):
-        if command.startswith("echo "):
-            body = self.probe_output if self.probe_output is not None else command[5:]
-            return {"body": body}, "ok"
         return {"body": self.ack_output}, self.ack_status
 
-    def test_registration_and_exact_probe_confirm_success(self):
+    def test_registration_confirms_success_without_probes(self):
         result, status = self.call()
         self.assertEqual(status, "ok")
         self.assertTrue(result["ok"])
@@ -64,8 +60,9 @@ class SpawnSessionFlowTests(unittest.TestCase):
         self.assertEqual(request["session_id"], self.target_id)
         self.assertEqual(request["workspace_id"], "alice")
         probes = [c for c in commands if c.startswith("echo ")]
-        self.assertEqual(len(probes), 2)
-        self.assertNotEqual(probes[0], probes[1])
+        self.assertEqual(probes, [])
+        self.assertNotIn("source_verify", result)
+        self.assertNotIn("target_verify", result)
 
     def test_spawn_method_and_identity_downgrade_are_reported(self):
         self.ack_output = self.handshake() + "\nspawn method=CreateProcessA identity_degraded=true"
@@ -83,13 +80,12 @@ class SpawnSessionFlowTests(unittest.TestCase):
         self.assertFalse(result["verified"])
         self.assertEqual(result["launch_status"], "acknowledged")
 
-    def test_unrelated_or_failed_output_cannot_verify_execution(self):
-        for body in ("unrelated delayed output", "command failed: access denied", "rmm-spawn-verify", ""):
-            self.probe_output = body
-            result, _ = self.call()
-            self.assertTrue(result["registered"])
-            self.assertFalse(result["verified"])
-            self.assertEqual(result["source_verify"]["status"], "unexpected_output")
+    def test_registration_needs_no_parent_or_target_execution_probe(self):
+        result, _ = self.call()
+        self.assertTrue(result["verified"])
+        self.server.exec_and_wait.assert_called_once()
+        self.assertNotIn("parent_responsive", result)
+        self.assertNotIn("spawned_responsive", result)
 
     def test_registration_proves_success_even_after_ack_timeout(self):
         self.ack_status = "timeout"

@@ -999,10 +999,8 @@ def cmd_spawn(client: RmmApiClient, state: dict, args):
         say("Registration was not checked (--no-verify); this request remains unconfirmed.")
         return
     say(f"registered: {'yes' if data.get('registered') else 'no'}")
-    say(f"parent responsive: {'yes' if data.get('parent_responsive') else 'no'}")
-    say(f"spawned responsive: {'yes' if data.get('spawned_responsive') else 'no'}")
-    if not data.get("verified"):
-        warn("Spawn verification did not pass — inspect both sessions before relying on them.")
+    if not data.get("registered"):
+        warn("Spawn registration was not confirmed.")
 
 
 def split_identity(raw: str) -> tuple[str, str]:
@@ -1135,11 +1133,9 @@ def cmd_spawnas(client: RmmApiClient, state: dict, args):
     if isinstance(data, dict):
         say(f"spawned session {data.get('spawned_session_id')} pid={data.get('spawn_pid')} identity={data.get('identity')}")
         if data.get("verify"):
-            say(f"registered: {'yes' if data.get('registered') else 'no'}; "
-                f"parent responsive: {'yes' if data.get('parent_responsive') else 'no'}; "
-                f"spawned responsive: {'yes' if data.get('spawned_responsive') else 'no'}")
-            if not data.get("verified"):
-                warn("spawnas verification did not pass — inspect both sessions.")
+            say(f"registered: {'yes' if data.get('registered') else 'no'}")
+            if not data.get("registered"):
+                warn("spawnas registration was not confirmed.")
 
 
 def cmd_runas(client: RmmApiClient, state: dict, args):
@@ -1197,10 +1193,8 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         say("Registration was not checked (--no-verify); this request remains unconfirmed.")
         return
     say(f"registered: {'yes' if data.get('registered') else 'no'}")
-    say(f"source responsive: {'yes' if data.get('source_responsive') else 'no'}")
-    say(f"target responsive: {'yes' if data.get('target_responsive') else 'no'}")
-    if not data.get("verified"):
-        warn("Lateral verification did not pass — inspect both sessions before relying on them.")
+    if not data.get("registered"):
+        warn("Lateral registration was not confirmed.")
 
 
 def cmd_uid(client: RmmApiClient, state: dict, args):
@@ -2151,12 +2145,10 @@ def run_interactive(
                 say(f"Requested session {data.get('spawned_session_id')} (pid {data.get('spawn_pid') or 'unconfirmed'})")
                 if data.get("verify"):
                     say(
-                        f"registered: {'yes' if data.get('registered') else 'no'}; "
-                        f"parent responsive: {'yes' if data.get('parent_responsive') else 'no'}; "
-                        f"spawned responsive: {'yes' if data.get('spawned_responsive') else 'no'}"
+                        f"registered: {'yes' if data.get('registered') else 'no'}"
                     )
-                    if not data.get("verified"):
-                        warn("Spawn verification did not pass — inspect both sessions.")
+                    if not data.get("registered"):
+                        warn("Spawn registration was not confirmed.")
                 _refresh_completion_sessions(client, state)
                 continue
             if cmd == "make_token":
@@ -2223,12 +2215,10 @@ def run_interactive(
                     say(data.get("output") or f"lateral {method} started on {host}")
                     if data.get("verify"):
                         say(
-                            f"registered: {'yes' if data.get('registered') else 'no'}; "
-                            f"source responsive: {'yes' if data.get('source_responsive') else 'no'}; "
-                            f"target responsive: {'yes' if data.get('target_responsive') else 'no'}"
+                            f"registered: {'yes' if data.get('registered') else 'no'}"
                         )
-                        if not data.get("verified"):
-                            warn("Lateral verification did not pass — inspect both sessions.")
+                        if not data.get("registered"):
+                            warn("Lateral registration was not confirmed.")
                     _refresh_completion_sessions(client, state)
                 continue
             if cmd == "uid":
@@ -2317,11 +2307,9 @@ def run_interactive(
                 elif isinstance(data, dict):
                     say(f"spawned session={data.get('spawned_session_id')} pid={data.get('spawn_pid')} identity={data.get('identity')}")
                     if data.get("verify"):
-                        say(f"registered: {'yes' if data.get('registered') else 'no'}; "
-                            f"parent responsive: {'yes' if data.get('parent_responsive') else 'no'}; "
-                            f"spawned responsive: {'yes' if data.get('spawned_responsive') else 'no'}")
-                        if not data.get("verified"):
-                            warn("spawnas verification did not pass — inspect both sessions.")
+                        say(f"registered: {'yes' if data.get('registered') else 'no'}")
+                        if not data.get("registered"):
+                            warn("spawnas registration was not confirmed.")
                     _refresh_completion_sessions(client, state)
                 continue
             if cmd == "runas":
@@ -2787,13 +2775,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp_spawn = sub.add_parser(
         "spawn",
         parents=[shared],
-        help="Spawn a detached second Go agent from a live Go session and verify both sessions",
+        help="Spawn a detached second Go agent from a live Go session and confirm the new session registration",
     )
     sp_spawn.add_argument("--session", "-s", default=None)
     sp_spawn.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_spawn.add_argument("--spawn-timeout", type=float, default=120, help="Seconds to wait for the spawn command result")
     sp_spawn.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the spawned session to register")
-    sp_spawn.add_argument("--verify-timeout", type=float, default=120, help="Seconds to wait for each verification command")
+    sp_spawn.add_argument("--verify-timeout", type=float, default=120, help="Deprecated compatibility option; no probe is sent")
     sp_spawn.set_defaults(func=cmd_spawn)
 
     sp_mt = sub.add_parser(
@@ -2867,7 +2855,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")
-    sp_lat.add_argument("--verify-timeout", type=float, default=120, help="Seconds to wait for each verification command")
+    sp_lat.add_argument("--verify-timeout", type=float, default=120, help="Deprecated compatibility option; no probe is sent")
     sp_lat.set_defaults(func=cmd_lateral)
 
     sp_uid = sub.add_parser("uid", parents=[shared], help="Show the identity used by a Go agent session")

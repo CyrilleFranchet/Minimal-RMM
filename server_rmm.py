@@ -2989,24 +2989,10 @@ class RMMServer:
             if session_id not in getattr(self, "sessions", {}) and session_id not in getattr(self, "killed_sessions", set()):
                 return session_id
 
-    def _probe_deployment_session(self, session_id, timeout):
-        """Require the exact fresh probe response, not merely any output event."""
-        marker = "rmm-verify-" + secrets.token_hex(16)
-        command = "echo " + marker
-        session = self.get_session(session_id)
-        if session:
-            self.record_operator_action(session, command, "exec")
-        event, status = self.exec_and_wait(session_id, command, timeout=timeout)
-        output = str((event or {}).get("body") or "").strip()
-        responsive = status == "ok" and output == marker
-        return responsive, {"status": status if status != "ok" or responsive else "unexpected_output",
-                            "output": output, "command": command}
-
-    def _verify_deployment(self, source, target_id, payload, verify, register_timeout, verify_timeout, source_key, target_key):
+    def _verify_deployment(self, source, target_id, payload, verify, register_timeout):
         """Prove fresh registration under the source owner before reporting success."""
         payload.update({"ok": False, "accepted": True, "verify": bool(verify),
-                        "registered": None, "verified": None,
-                        source_key: None, target_key: None})
+                        "registered": None, "verified": None})
         if not verify:
             payload["pending"] = True
             return payload, "ok"
@@ -3019,10 +3005,7 @@ class RMMServer:
         payload["workspace_id"] = owner
         payload["registered_hostname"] = getattr(target, "hostname", None) if registered else None
         payload["ok"] = registered
-        payload[source_key], payload["source_verify"] = self._probe_deployment_session(source.id, verify_timeout)
-        if registered:
-            payload[target_key], payload["target_verify"] = self._probe_deployment_session(target_id, verify_timeout)
-        payload["verified"] = bool(registered and payload[source_key] and payload[target_key])
+        payload["verified"] = registered
         return payload, "ok"
 
     def spawn_session(self, session_id_or_prefix, verify=True, spawn_timeout=120.0,
@@ -3051,8 +3034,7 @@ class RMMServer:
         if acknowledged and context:
             payload["spawn_method"] = context.group(1)
             payload["identity_degraded"] = context.group(2) == "true"
-        return self._verify_deployment(session, spawned_id, payload, verify, register_timeout,
-                                       verify_timeout, "parent_responsive", "spawned_responsive")
+        return self._verify_deployment(session, spawned_id, payload, verify, register_timeout)
 
     @staticmethod
     def _identity_label(domain: str, user: str) -> str:
@@ -3160,9 +3142,7 @@ class RMMServer:
             "launch_status": "acknowledged" if acknowledged else "inconclusive",
             "submission_status": status,
         }
-        return self._verify_deployment(session, spawned_id, payload, verify,
-                                       register_timeout, verify_timeout,
-                                       "parent_responsive", "spawned_responsive")
+        return self._verify_deployment(session, spawned_id, payload, verify, register_timeout)
 
     def runas(self, session_id_or_prefix, command_str, domain, user, password, timeout=120.0):
         """Run an arbitrary command on a Go session under a different identity.
@@ -3240,8 +3220,7 @@ class RMMServer:
         payload = {"session_id": session.id, "method": method, "host": host,
                    "target_session_id": target_id, "output": output,
                    "launch_status": "acknowledged" if acknowledged else "inconclusive", "submission_status": status}
-        payload, verify_status = self._verify_deployment(session, target_id, payload, verify, register_timeout,
-                                                          verify_timeout, "source_responsive", "target_responsive")
+        payload, verify_status = self._verify_deployment(session, target_id, payload, verify, register_timeout)
         if method == "psexec":
             payload["stage_status"] = self.staging_status(stage_id) if stage_id else None
             payload["cleanup"] = self._lateral_cleanup(

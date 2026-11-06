@@ -556,7 +556,7 @@ def spawn_session(
     register_timeout: float = 60,
     verify_timeout: float = 120,
 ) -> str:
-    """Spawn a detached second Go agent from a live Go session with a fresh session ID, then require registration and exact fresh probe responses. verify=False reports an unconfirmed request only."""
+    """Spawn a detached second Go agent from a live Go session with a fresh session ID, then confirm registration without extra probe commands. verify=False reports an unconfirmed request only."""
     return tool_spawn_session(
         _client(),
         session_ref,
@@ -592,7 +592,7 @@ def lateral_move(
     register_timeout: float = 60,
     verify_timeout: float = 120,
 ) -> str:
-    """Start a Go agent on another host through psexec, wmiexec, or winrm; waits for registration and verifies both sessions."""
+    """Start a Go agent on another host through psexec, wmiexec, or winrm; confirms target registration without extra probe commands."""
     return tool_lateral_move(
         _client(),
         session_ref,

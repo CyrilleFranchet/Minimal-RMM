@@ -1830,7 +1830,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "spawn_session",
-            "description": "Spawn a detached second Go agent from a live Go agent session. The agent-side command starts a separate process with independent standard streams and a fresh session ID, then returns promptly so the parent beacon loop keeps polling. verify=false reports acceptance only (ok=false, pending=true). Waits for the spawned session to register and verifies that both sessions answer a harmless command; report verified=false instead of resubmitting. PowerShell sessions are rejected (spawn requires a Go agent session).",
+            "description": "Spawn a detached second Go agent from a live Go agent session. The agent-side command starts a separate process with independent standard streams and a fresh session ID, then returns promptly so the parent beacon loop keeps polling. verify=false reports acceptance only (ok=false, pending=true). Waits for the spawned session to register without sending additional verification commands; report verified=false instead of resubmitting. PowerShell sessions are rejected (spawn requires a Go agent session).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1883,7 +1883,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "lateral_move",
-            "description": "Start a Go agent on another host through a live Go agent session, using psexec, wmiexec, or winrm. The agent stages its own binary on the target's ADMIN$ share and starts it with a fresh session ID; make_token first to use alternate credentials. The call waits for the target session to register and verifies both sessions answer a harmless command; report verified=false instead of resubmitting. Requires an agent binary built with embedded connection settings and admin rights on the target.",
+            "description": "Start a Go agent on another host through a live Go agent session, using psexec, wmiexec, or winrm. The agent stages its own binary on the target's ADMIN$ share and starts it with a fresh session ID; make_token first to use alternate credentials. The call waits for the target session to register without sending additional verification commands; report verified=false instead of resubmitting. Requires an agent binary built with embedded connection settings and admin rights on the target.",
             "parameters": {
                 "type": "object",
                 "properties": {

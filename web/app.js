@@ -3005,12 +3005,10 @@ function renderSpawnResult(data) {
   ];
   if (data.spawn_pid != null) lines.push(`PID: ${data.spawn_pid}`);
   if (data.spawn_method) lines.push(`Method: ${data.spawn_method}`);
+
   if (data.identity_degraded) lines.push("WARNING: spawned with the original process identity; make_token credentials were not carried into the child.");
   if (data.registered_hostname) lines.push(`Host: ${data.registered_hostname}`);
-  lines.push(`Registration: ${status(data.registered)}`,
-    `Parent response: ${status(data.parent_responsive)}`,
-    `Spawned agent response: ${status(data.spawned_responsive)}`,
-    `Verification: ${status(data.verified)}`);
+  lines.push(`Registration: ${status(data.registered)}`);
   return `<pre>${escapeHtml(lines.join("\n"))}</pre><details><summary>Response details (JSON)</summary><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></details>`;
 }
 
@@ -3231,8 +3229,6 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       appendShellLine("output", renderSpawnResult(data));
       if (data.registered === false) {
         appendShellError("Spawn unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
-      } else if (!data.verified && data.verify) {
-        appendShellError("Spawn verification did not pass — inspect both sessions before relying on them.");
       }
       pollSessionEvents().catch(() => {});
     } catch (error) {
@@ -3332,8 +3328,6 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       appendShellLine("output", `<pre>${escapeHtml(data.output || JSON.stringify(data, null, 2))}</pre>`);
       if (!data.registered) {
         appendShellError("Deployment unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
-      } else if (data.verify && !data.verified) {
-        appendShellError("Lateral verification did not pass — inspect both sessions before relying on them.");
       }
       pollSessionEvents().catch(() => {});
     } catch (error) {
@@ -3422,8 +3416,8 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       if (status !== 200) { appendShellError(`spawnas failed (${status}): ${data?.error ?? ""}`); return true; }
       appendShellOutput(`spawned session=${data?.spawned_session_id} pid=${data?.spawn_pid} identity=${data?.identity}`);
       if (data?.verify) {
-        appendShellOutput(`registered: ${data?.registered ? "yes" : "no"}; parent responsive: ${data?.parent_responsive ? "yes" : "no"}; spawned responsive: ${data?.spawned_responsive ? "yes" : "no"}`);
-        if (!data?.verified) appendShellError("spawnas verification did not pass — inspect both sessions.");
+        appendShellOutput(`registered: ${data?.registered ? "yes" : "no"}`);
+        if (data?.registered === false) appendShellError("spawnas registration was not confirmed.");
       }
       pollSessionEvents().catch(() => {});
     } catch (error) {

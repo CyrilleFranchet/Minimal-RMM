@@ -8,7 +8,7 @@ import test_agent_workspace_binding as binding_fixtures
 
 
 class DeploymentVerificationTests(unittest.TestCase):
-    def run_deployment(self, kind, *, acknowledge=True, register=True, probe_output=None):
+    def run_deployment(self, kind, *, acknowledge=True, register=True):
         server = binding_fixtures.AgentRegistrationWorkspaceTests().server()
         server.staging_lock = threading.Lock()
         server.staging_entries = {}
@@ -38,8 +38,8 @@ class DeploymentVerificationTests(unittest.TestCase):
                                 reply = (f'spawned session={target_id} pid=42' if kind == 'spawn' else
                                          f'lateral started: method=psexec host=target target session={target_id}')
                                 server._record_event(session, 'output', reply)
-                        elif command.startswith('echo '):
-                            server._record_event(session, 'output', command[5:] if probe_output is None else probe_output)
+                        else:
+                            raise AssertionError(f'unexpected automatic command: {command.split()[0]}')
                     stop.wait(.001)
             except BaseException as error:
                 errors.append(error)
@@ -85,10 +85,6 @@ class DeploymentVerificationTests(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertFalse(result['verified'])
 
-    def test_unrelated_output_does_not_confirm_command_execution(self):
-        result, _, _ = self.run_deployment('lateral', probe_output='old unrelated output')
-        self.assertTrue(result['registered'])
-        self.assertFalse(result['verified'])
 
 
 if __name__ == '__main__':

@@ -306,7 +306,8 @@ scope mismatches. Only Windows build targets are supported.
 
 Spawn/lateral responses reserve the expected session ID before dispatch and
 report `ok: true` only after that agent registers under the source workspace.
-`verified: true` also requires exact fresh command-probe outputs. Skipping checks
+`verified` mirrors the registration result for compatibility. No shell command
+or internal ping is sent to either agent. Skipping registration checks
 reports request acceptance with `pending: true`, `ok: false`, and `registered:
 null`; HTTP 200 or a process acknowledgment is not successful deployment.
 

@@ -6,7 +6,7 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '../web/app.
 const context = vm.createContext({ escapeHtml: text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;') });
 vm.runInContext(source.slice(source.indexOf('function renderSpawnResult('), source.indexOf('async function dispatchShellMetaCommand(')), context);
 
-test('spawn summary distinguishes registration from verification and retains diagnostics', () => {
+test('spawn summary reports registration without execution probes and retains diagnostics', () => {
   const html = context.renderSpawnResult({ registered: true, verified: false,
     spawned_session_id: 'go-spawn-123', parent_session_id: 'go-parent', spawn_pid: 42,
     parent_responsive: true, spawned_responsive: false, registered_hostname: '<host>' });
@@ -15,24 +15,23 @@ test('spawn summary distinguishes registration from verification and retains dia
   assert.match(html, /PID: 42/);
   assert.match(html, /Host: &lt;host&gt;/);
   assert.doesNotMatch(html, /<host>/);
-  assert.match(html, /Parent response: confirmed/);
-  assert.match(html, /Spawned agent response: not confirmed/);
-  assert.match(html, /Verification: not confirmed/);
+  assert.match(html, /Registration: confirmed/);
+  assert.doesNotMatch(html, /Parent response:|Spawned agent response:|Verification:/);
   assert.match(html, /<details><summary>Response details \(JSON\)<\/summary>/);
   assert.doesNotMatch(html, /<details open/);
 });
 
 test('pending and missing registration never claim success', () => {
   assert.match(context.renderSpawnResult({ registered: null }), /Spawn pending/);
-  assert.match(context.renderSpawnResult({ registered: null }), /Verification: not checked/);
+  assert.match(context.renderSpawnResult({ registered: null }), /Registration: not checked/);
   assert.match(context.renderSpawnResult({ registered: false }), /Spawn unconfirmed/);
-  assert.match(context.renderSpawnResult({ registered: true, verified: true }), /Verification: confirmed/);
+  assert.match(context.renderSpawnResult({ registered: true, verified: true }), /Registration: confirmed/);
 });
 
 test('spawn summary exposes identity downgrade separately from registration', () => {
   const html = context.renderSpawnResult({registered:true, verified:true, spawn_method:'CreateProcessA', identity_degraded:true});
   assert.match(html, /Method: CreateProcessA/);
   assert.match(html, /WARNING: spawned with the original process identity/);
-  assert.match(html, /Verification: confirmed/);
+  assert.match(html, /Registration: confirmed/);
   assert.doesNotMatch(context.renderSpawnResult({identity_degraded:false}), /WARNING:/);
 });

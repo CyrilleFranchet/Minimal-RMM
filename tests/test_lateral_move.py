@@ -38,7 +38,6 @@ class LateralFlowTests(unittest.TestCase):
         self.server._await_session_registration = Mock(return_value=True)
         self.ack_status = "ok"
         self.ack_output = self.handshake()
-        self.probe_output = None
         self.cleanup_output = "lateral cleanup: service deleted; launcher binary removed from ADMIN$"
         self.server.exec_and_wait = Mock(side_effect=self.execute)
         agent_binary = tempfile.NamedTemporaryFile(suffix=".exe", delete=False)
@@ -51,14 +50,11 @@ class LateralFlowTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def execute(self, sid, command, timeout=None):
-        if command.startswith("echo "):
-            body = self.probe_output if self.probe_output is not None else command[5:]
-            return {"body": body}, "ok"
         if command.startswith("__LATERAL_CLEANUP__"):
             return {"body": self.cleanup_output}, "ok"
         return {"body": self.ack_output}, self.ack_status
 
-    def test_registration_and_exact_probe_confirm_success(self):
+    def test_registration_confirms_success_without_probes(self):
         result, status = self.call()
         self.assertEqual(status, "ok")
         self.assertTrue(result["ok"])
@@ -72,8 +68,9 @@ class LateralFlowTests(unittest.TestCase):
         self.assertEqual(request["workspace_id"], "alice")
         self.assertTrue(request["stage"], "psexec must carry a staging reference")
         probes = [c for c in commands if c.startswith("echo ")]
-        self.assertEqual(len(probes), 2)
-        self.assertNotEqual(probes[0], probes[1])
+        self.assertEqual(probes, [])
+        self.assertNotIn("source_verify", result)
+        self.assertNotIn("target_verify", result)
 
     def test_psexec_cleanup_runs_after_registration(self):
         result, _ = self.call()
@@ -86,10 +83,8 @@ class LateralFlowTests(unittest.TestCase):
         self.assertEqual(request["host"], "target")
         self.assertEqual(request["service_name"], "MinimalRmmAgent-0011223344556677")
         self.assertEqual(request["binary_name"], "minimal-rmm-agent-0011223344556677.exe")
-        # Cleanup must run after the target probe: stage1 has exited by the
-        # time the deployed agent answers, so the launcher is removable.
-        self.assertGreater(commands.index(cleanup_commands[0]),
-                           max(index for index, command in enumerate(commands) if command.startswith("echo ")))
+        self.server._await_session_registration.assert_called_once()
+        self.assertGreater(commands.index(cleanup_commands[0]), 0)
 
     def test_cleanup_requires_positive_success_output(self):
         for output in ("Lateral cleanup failed: access denied", "", "unexpected response"):
@@ -134,13 +129,14 @@ class LateralFlowTests(unittest.TestCase):
         self.assertFalse(result["verified"])
         self.assertEqual(result["launch_status"], "acknowledged")
 
-    def test_unrelated_or_failed_output_cannot_verify_execution(self):
-        for body in ("unrelated delayed output", "command failed: access denied", "rmm-spawn-verify", ""):
-            self.probe_output = body
-            result, _ = self.call()
-            self.assertTrue(result["registered"])
-            self.assertFalse(result["verified"])
-            self.assertEqual(result["source_verify"]["status"], "unexpected_output")
+    def test_registration_needs_no_source_or_target_execution_probe(self):
+        result, _ = self.call()
+        self.assertTrue(result["verified"])
+        commands = [c.args[1] for c in self.server.exec_and_wait.call_args_list]
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(all(c.startswith(("__LATERAL__\n", "__LATERAL_CLEANUP__\n")) for c in commands))
+        self.assertNotIn("source_responsive", result)
+        self.assertNotIn("target_responsive", result)
 
     def test_registration_proves_success_even_after_ack_timeout(self):
         self.ack_status = "timeout"
