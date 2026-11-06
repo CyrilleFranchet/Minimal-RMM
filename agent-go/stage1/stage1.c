@@ -53,6 +53,13 @@
 #define STAGE1_INSECURE 0
 #endif
 
+/* WINHTTP_OPTION_AUTOLOGON_SECURITY_LEVEL (0x80) is absent from some MinGW
+ * winhttp.h versions; define it manually. The numeric value is stable across
+ * all Windows versions that ship WinHTTP. */
+#ifndef WINHTTP_OPTION_AUTOLOGON_SECURITY_LEVEL
+#define WINHTTP_OPTION_AUTOLOGON_SECURITY_LEVEL 128
+#endif
+
 /* Maximum payload size accepted: 32 MiB */
 #define MAX_PAYLOAD_BYTES (32u * 1024u * 1024u)
 
