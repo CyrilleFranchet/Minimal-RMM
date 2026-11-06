@@ -1877,7 +1877,10 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.wfile.write(raw)
+        except BrokenPipeError:
+            pass
 
     def _bytes(self, status: int, payload: bytes, content_type: str) -> None:
         """Write a binary or static response."""
@@ -1885,7 +1888,10 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.wfile.write(payload)
+        except BrokenPipeError:
+            pass
 
     def _request_body(self) -> dict[str, Any]:
         """Read and decode a bounded JSON request body."""
