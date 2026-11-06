@@ -19,13 +19,28 @@ class GoAgentTests(unittest.TestCase):
                 "plugin_library_windows.go",
                 "platform_other.go",
                 "platform_windows.go",
+                "spawn.go",
+                "make_token.go",
+                "make_token_windows.go",
+                "lateral.go",
+                "lateral_results.go",
+                "lateral_windows.go",
+                "service_windows.go",
+                "uid.go",
+                "wmi_windows.go",
+                "wsman_windows.go",
+                "stage1/main.go",
+                "stage1/service_windows.go",
+                "stage1/service_other.go",
             },
         )
         self.assertTrue(all(".." not in item["filename"] for item in files))
 
     def test_build_rejects_unallowlisted_target(self):
-        with self.assertRaises(ValueError):
-            server_rmm.build_go_agent("darwin", "amd64")
+        for target in ("darwin", "linux"):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                server_rmm.build_go_agent(target, "amd64")
+        self.assertEqual(server_rmm.GO_AGENT_TARGETS, {("windows", "amd64"), ("windows", "arm64")})
 
     def test_build_rejects_wrong_secret_before_starting_compiler(self):
         handler = object.__new__(server_rmm.RMMHandler)

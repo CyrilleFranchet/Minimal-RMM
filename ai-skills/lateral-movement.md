@@ -45,7 +45,7 @@ Actions requiring existing target control are not substitutes for reaching it.
 
 Execution surface matters: commands launched through the Windows agent use
 that agent's context and connectivity. Impacket-style
-executors (`psexec`, `wmiexec`, `smbexec`, `atexec`), `evil-winrm`, or
+executors (`psexec`, `wmiexec`, `atexec`), `evil-winrm`, or
 NetExec run in Exegol and need their own route to the target — follow
 `exegol-rmm-pivot` before blaming the credential. Keep agent-side and
 Exegol-side attempts distinct in the report.

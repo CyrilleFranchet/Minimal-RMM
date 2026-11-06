@@ -1,0 +1,190 @@
+"""Verify the spawn_session server flow and REST routing without live agents."""
+import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import server_rmm
+
+
+def _session(session_id="go-1730000000000000000", agent_type="go"):
+    session = SimpleNamespace(id=session_id, agent_type=agent_type)
+    return session
+
+
+class SpawnSessionFlowTests(unittest.TestCase):
+    def handshake(self):
+        return f"spawned session={self.target_id} pid=42"
+
+    def call(self, **options):
+        return self.server.spawn_session(self.source.id, **options)
+
+    def setUp(self):
+        self.server = object.__new__(server_rmm.RMMServer)
+        self.source = SimpleNamespace(id="go-source-session", agent_type="go", workspace_id="alice", hostname="source")
+        self.target_id = "srv-target-session-12345678"
+        self.target = SimpleNamespace(id=self.target_id, workspace_id="alice", hostname="target")
+        self.server.resolve_session = Mock(return_value=self.source)
+        self.server._new_deployment_id = Mock(return_value=self.target_id)
+        self.server.get_session = Mock(side_effect=lambda sid: self.source if sid == self.source.id else self.target)
+        self.server.record_operator_action = Mock()
+        self.server._await_session_registration = Mock(return_value=True)
+        self.ack_status = "ok"
+        self.ack_output = self.handshake()
+        self.probe_output = None
+        self.server.exec_and_wait = Mock(side_effect=self.execute)
+
+    def execute(self, sid, command, timeout=None):
+        if command.startswith("echo "):
+            body = self.probe_output if self.probe_output is not None else command[5:]
+            return {"body": body}, "ok"
+        return {"body": self.ack_output}, self.ack_status
+
+    def test_registration_and_exact_probe_confirm_success(self):
+        result, status = self.call()
+        self.assertEqual(status, "ok")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["registered"])
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["workspace_id"], "alice")
+        self.assertEqual(result["registered_hostname"], "target")
+        commands = [c.args[1] for c in self.server.exec_and_wait.call_args_list]
+        request = __import__('json').loads(commands[0].split("\n", 1)[1])
+        self.assertEqual(request["session_id"], self.target_id)
+        self.assertEqual(request["workspace_id"], "alice")
+        probes = [c for c in commands if c.startswith("echo ")]
+        self.assertEqual(len(probes), 2)
+        self.assertNotEqual(probes[0], probes[1])
+
+    def test_launch_acknowledgement_without_new_agent_is_not_success(self):
+        self.server._await_session_registration.return_value = False
+        result, _ = self.call()
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["registered"])
+        self.assertFalse(result["verified"])
+        self.assertEqual(result["launch_status"], "acknowledged")
+
+    def test_unrelated_or_failed_output_cannot_verify_execution(self):
+        for body in ("unrelated delayed output", "command failed: access denied", "rmm-spawn-verify", ""):
+            self.probe_output = body
+            result, _ = self.call()
+            self.assertTrue(result["registered"])
+            self.assertFalse(result["verified"])
+            self.assertEqual(result["source_verify"]["status"], "unexpected_output")
+
+    def test_registration_proves_success_even_after_ack_timeout(self):
+        self.ack_status = "timeout"
+        self.ack_output = ""
+        result, _ = self.call()
+        self.assertTrue(result["registered"])
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["launch_status"], "inconclusive")
+        self.assertEqual(result["submission_status"], "timeout")
+
+    def test_missing_registration_after_timeout_preserves_expected_identity(self):
+        self.ack_status = "timeout"
+        self.ack_output = ""
+        self.server._await_session_registration.return_value = False
+        result, _ = self.call()
+        self.assertFalse(result["ok"])
+        self.assertIn(self.target_id, str(result))
+
+    def test_wrong_workspace_registration_is_rejected(self):
+        self.target.workspace_id = "bob"
+        result, _ = self.call()
+        self.assertFalse(result["registered"])
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["verified"])
+
+    def test_without_verification_only_request_acceptance_is_reported(self):
+        result, _ = self.call(verify=False)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["pending"])
+        self.assertIsNone(result["registered"])
+        self.server._await_session_registration.assert_not_called()
+        self.assertEqual(self.server.exec_and_wait.call_count, 1)
+
+    def test_busy_and_unknown_sessions_do_not_attempt_registration(self):
+        self.ack_status = "session_busy"
+        self.assertEqual(self.call(), (None, "session_busy"))
+        self.server._await_session_registration.assert_not_called()
+        self.server.resolve_session.return_value = None
+        self.assertEqual(self.call(), (None, "not_found"))
+        self.server.resolve_session.return_value = SimpleNamespace(id="ps-session", agent_type="powershell")
+        self.assertEqual(self.call(), (None, "agent_type_unsupported"))
+
+    def test_failure_output_stays_unconfirmed_without_registration(self):
+        self.ack_output = "Agent failed: test error"
+        self.server._await_session_registration.return_value = False
+        result, _ = self.call()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["launch_status"], "inconclusive")
+
+
+class SpawnHttpRoutingTests(unittest.TestCase):
+    def _handler(self, spawn_result, spawn_status="ok"):
+        handler = object.__new__(server_rmm.RMMHandler)
+        handler._api_authorized = Mock(return_value=True)
+        handler._api_path_parts = Mock(return_value=["sessions", "abc", "spawn"])
+        handler._workspace_scope = Mock(return_value=None)
+        handler._json = Mock()
+        handler.server_instance = SimpleNamespace(
+            spawn_session=Mock(return_value=(spawn_result, spawn_status)),
+        )
+        return handler
+
+    def _resolve(self, handler):
+        with patch.object(server_rmm, "_resolve_api_session", return_value=SimpleNamespace(id="full-session-id")):
+            handler._handle_api_post("/api/v1/sessions/abc/spawn", {})
+
+    def test_ok_response_passes_payload_through(self):
+        handler = self._handler({"ok": True, "verified": True}, "ok")
+        self._resolve(handler)
+        code, payload = handler._json.call_args.args
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["verified"])
+        handler.server_instance.spawn_session.assert_called_once_with(
+            "full-session-id", verify=True, spawn_timeout=120.0,
+            register_timeout=60.0, verify_timeout=120.0,
+        )
+
+    def test_status_codes_follow_exec_conventions(self):
+        cases = [
+            ("agent_type_unsupported", 409),
+            ("session_busy", 409),
+            ("timeout", 408),
+            ("session_killed", 410),
+            ("server_stopped", 503),
+            ("spawn_result_invalid", 502),
+        ]
+        for status, expected_code in cases:
+            with self.subTest(status=status):
+                handler = self._handler(None, status)
+                self._resolve(handler)
+                code, payload = handler._json.call_args.args
+                self.assertEqual(code, expected_code)
+                self.assertEqual(payload["error"], status)
+
+    def test_rejects_invalid_options(self):
+        handler = self._handler(None, "ok")
+        handler._api_path_parts = Mock(return_value=["sessions", "abc", "spawn"])
+        with patch.object(server_rmm, "_resolve_api_session", return_value=SimpleNamespace(id="full-session-id")):
+            handler._handle_api_post("/api/v1/sessions/abc/spawn", {"spawn_timeout": 0})
+        code, payload = handler._json.call_args.args
+        self.assertEqual(code, 400)
+        self.assertEqual(payload["error"], "invalid_spawn_options")
+        handler.server_instance.spawn_session.assert_not_called()
+
+    def test_spawn_result_regex_only_accepts_agent_handshake(self):
+        for body, expected in [
+            ("spawned session=go-spawn-child-1 pid=4242", "go-spawn-child-1"),
+            ("Spawn failed: resolve agent executable: boom", None),
+            ("spawned session=../pwn pid=1", None),
+        ]:
+            with self.subTest(body=body):
+                match = server_rmm.SPAWN_RESULT_RE.search(body)
+                self.assertEqual(match.group("session_id") if match else None, expected)
+
+
+if __name__ == "__main__":
+    unittest.main()

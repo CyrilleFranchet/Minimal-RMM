@@ -1841,6 +1841,27 @@ class WorkspaceService:
         return None
 
 
+def operator_proxy_timeout(path: str, body: dict | None) -> float:
+    """Keep workspace relay waits longer than the central operation budget."""
+    options = body if isinstance(body, dict) else {}
+    def seconds(key, default):
+        try:
+            value = float(options.get(key, default))
+            return value if 1 <= value <= 3600 else default
+        except (TypeError, ValueError):
+            return default
+    if re.fullmatch(r"/api/v1/sessions/[^/]+/(spawn|lateral)", path):
+        wait = seconds("spawn_timeout", 120) if path.endswith("/spawn") else seconds("exec_timeout", 300)
+        if options.get("verify", True):
+            wait += seconds("register_timeout", 60) + 2 * seconds("verify_timeout", 120)
+        return wait + 30
+    if re.fullmatch(r"/api/v1/sessions/[^/]+/(make_token|rev2self|uid)", path):
+        return seconds("timeout", 120) + 30
+    if path.endswith("/exec") or path.endswith("/ai/chat") or path == "/api/v1/agent/go/build":
+        return 300
+    return 120 if path == "/api/v1/bloodhound" else 30
+
+
 class WorkspaceRequestHandler(BaseHTTPRequestHandler):
     """HTTP adapter for the workspace-local API and static WebUI."""
 
@@ -1954,7 +1975,7 @@ class WorkspaceRequestHandler(BaseHTTPRequestHandler):
             self._json(500, {"error": "workspace_asset_store_failed"})
             return
         if result is None:
-            timeout = 300 if path.endswith("/exec") or path.endswith("/ai/chat") or path == "/api/v1/agent/go/build" else 120 if path == "/api/v1/bloodhound" else 30
+            timeout = operator_proxy_timeout(path, body)
             # Preserve operation parameters without forwarding the local login token.
             query = urllib.parse.urlencode([
                 (key, value) for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)

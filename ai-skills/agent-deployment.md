@@ -7,6 +7,54 @@ default: true
 
 # Deploy an agent on another machine
 
+## Supported platform and workspace ownership
+
+Managed agents are **Windows-only**. Linux/macOS agent deployment is not
+supported. The control plane and Exegol workspaces can run on other platforms.
+
+Configured PowerShell scripts and Go builds include the authenticated workspace
+ID. Agents send that ID on registration; the server assigns the session before
+publishing events and rejects attempts to change an existing owner. Spawn and
+lateral deployment inherit the source workspace. Do not deploy an artifact from
+another workspace or use an operator token as agent configuration. For an
+administrator build with multiple workspaces, supply the intended `workspace_id`.
+
+## Execution constraints
+
+This reference applies only when included in the explicitly submitted AI
+playbook; `default: true` does not load it into production AI requests.
+
+Agent command execution is synchronous. Running a long-lived agent binary or
+the supplied `run-agent.ps1` launcher in the foreground can
+block the controlling agent's command loop indefinitely. `queue_command`
+only changes submission timing; it does not detach the target process.
+An operator tool timeout does not cancel the target command or prove that the
+controlling agent was killed.
+
+Before execution, establish that the selected launch mechanism returns promptly
+and gives the new process an independent lifetime and standard streams. This
+also applies to a second agent on the same machine. If these properties cannot
+be established, stop before launching and report the limitation. Do not kill
+the controlling agent or repeat an inconclusive launch as a recovery step.
+
+For a second Go agent on a host that already runs one, prefer the
+`spawn_session` tool: it starts a detached copy of the running agent with a
+fresh session ID, waits for registration, and verifies that both sessions
+answer a harmless command. Report `verified: false` results to the operator
+instead of resubmitting; never launch an agent binary through a foreground
+shell command on an existing session.
+
+Workspace requests allow the configured execution, registration, and verification
+wait budgets. Expiration is still an inconclusive outcome: it does not cancel a
+queued spawn or lateral move. Inspect existing session and event evidence before
+any recovery action; do not resubmit merely because the operator request expired.
+
+Use a fresh session identity for each process. Check for inherited
+`RMM_SESSION_ID` and a fixed identity embedded in the build; the generated
+launcher currently preserves inherited values when its configured ID is empty.
+Record existing session IDs before launch. A second agent on the same host
+must register under a new ID, and both sessions must still respond afterward.
+
 ## Purpose and scope
 
 Apply this skill when the operator asks to get an RMM agent running on another
@@ -33,7 +81,7 @@ artifact paths and metadata, never secret-bearing file content.
 - `build_go_agent` compiles the repository Go agent on the server with the
   active connection settings embedded, and returns the ZIP `artifact_ref` and server-local `path`
   (binary + launcher + README), the binary name, size, and SHA-256. Windows
-  amd64 is the normal target; other allowlisted pairs exist.
+  amd64 is the normal target; Windows arm64 is also allowlisted.
 - Both tools fail with `no_active_beacon_url` when no beacon transport is
   running. Check `profile_status` first, and start one with `start_profile`
   autonomously when an artifact is needed; report the prerequisite if no
@@ -77,7 +125,9 @@ artifact paths and metadata, never secret-bearing file content.
    blindly queue another upload.
 5. Execute remotely through the same lateral technique:
    `powershell -ExecutionPolicy Bypass -File <path>` for the script agent, or
-   the extracted binary/launcher for the Go agent.
+   the extracted binary/launcher for the Go agent, using a launch mechanism
+   that satisfies the execution constraints above. These paths describe the
+   payload, not a safe foreground command for an existing agent session.
 6. Verify registration: `list_sessions` must show a new session whose host is
    the target. A remote process start message is not proof; the new session
    is. Use `get_session` on it and, if needed, a local identity command on the
@@ -105,6 +155,21 @@ artifact paths and metadata, never secret-bearing file content.
 - **Go build fails server-side**: the tool returns the server's error
   (missing toolchain, timeout, unsupported target); report it rather than
   retrying unchanged.
+
+## Deployment proof
+
+The spawn/lateral tools reserve a fresh expected session ID before launch. A
+process-creation message, successful shell exit, or service-wrapper timeout is
+not deployment proof. Only registration of that expected agent under the source
+workspace permits `registered: true` / `ok: true`. The tools retain the expected
+ID even when the launch acknowledgment is lost; inspect that ID after a timeout
+instead of resubmitting. With verification disabled, the result is only request
+acceptance (`pending: true`, `ok: false`, `registered: null`).
+
+`verified: true` additionally requires both source and new agents to return the
+exact output of different fresh command probes. Unrelated events or command
+errors do not count. Inspect `registered_hostname` against the intended target
+and report registration separately from successful command execution.
 
 ## Reporting
 

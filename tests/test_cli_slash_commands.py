@@ -53,6 +53,159 @@ class SlashCommandTests(unittest.TestCase):
         client.queue_screenshot.assert_called_once_with('session-id')
         client.queue_command.assert_called_once_with('session-id', 'whoami')
 
+    def test_spawn_dispatches_and_reports_verification(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.spawn_session.return_value = (200, {
+            'ok': True, 'spawned_session_id': 'go-spawn-child-1', 'spawn_pid': 4242,
+            'verify': True, 'registered': True, 'parent_responsive': True,
+            'spawned_responsive': True, 'verified': True,
+        })
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/spawn', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt) as factory, \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.spawn_session.assert_called_once_with('session-id')
+        warn.assert_not_called()
+
+    def test_spawn_failure_warns_without_raising(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.spawn_session.return_value = (409, {'error': 'agent_type_unsupported'})
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/spawn', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.spawn_session.assert_called_once_with('session-id')
+        self.assertIn('agent_type_unsupported', warn.call_args.args[0])
+
+    def test_make_token_passes_credentials_as_parameters(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.make_token.return_value = (200, {
+            'ok': True, 'identity': 'LAB\\alice',
+            'output': 'token created: LAB\\alice; spawned commands now use this network identity',
+        })
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/make_token LAB\\alice s3cret-pw', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.make_token.assert_called_once_with('session-id', 'LAB', 'alice', 's3cret-pw')
+        warn.assert_not_called()
+
+    def test_make_token_requires_identity_and_password(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/make_token', '/make_token LAB\\alice', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.make_token.assert_not_called()
+        self.assertEqual(warn.call_count, 2)
+
+    def test_make_token_failure_warns_with_agent_output(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.make_token.return_value = (200, {
+            'ok': False, 'identity': 'LAB\\alice', 'output': 'Make token failed: LogonUserW failed: access denied',
+        })
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/make_token LAB\\alice wrong-pw', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.make_token.assert_called_once_with('session-id', 'LAB', 'alice', 'wrong-pw')
+        self.assertIn('LogonUserW', warn.call_args.args[0])
+
+    def test_rev2self_dispatches_to_selected_session(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.rev2self.return_value = (200, {'ok': True, 'output': 'token reverted: LAB\\alice'})
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/rev2self', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.rev2self.assert_called_once_with('session-id')
+        warn.assert_not_called()
+
+    def test_lateral_dispatches_and_reports_verification(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.lateral_move.return_value = (200, {
+            'ok': True, 'method': 'psexec', 'host': 'ws01',
+            'target_session_id': 'go-src-lateral-1', 'verify': True,
+            'registered': True, 'source_responsive': True,
+            'target_responsive': True, 'verified': True,
+            'output': 'lateral started: method=psexec host=ws01 target session=go-src-lateral-1',
+        })
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/lateral psexec ws01', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.lateral_move.assert_called_once_with('session-id', 'psexec', 'ws01')
+        warn.assert_not_called()
+
+    def test_lateral_rejects_wrong_arity_and_unknown_method(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.lateral_move.return_value = (400, {'error': 'invalid_method'})
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/lateral', '/lateral psexec', '/lateral ssh ws01', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        self.assertEqual(warn.call_count, 3)
+        client.lateral_move.assert_called_once_with('session-id', 'ssh', 'ws01')
+
+    def test_uid_dispatches_and_prints_identity_lines(self):
+        client = Mock(base_url='http://example.test')
+        client.list_sessions.return_value = (200, {'sessions': []})
+        client.get_session.return_value = (200, {})
+        client.session_uid.return_value = (200, {
+            'ok': True, 'output': 'agent user: LAB\\alice\nnetwork identity: none (spawned commands use the agent identity)',
+        })
+        prompt = Mock()
+        prompt.prompt.side_effect = ['/uid', EOFError()]
+        with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                patch.object(rmm_cli.threading, 'Thread'), \
+                patch.object(rmm_cli, 'say') as say, patch.object(rmm_cli, 'warn') as warn:
+            rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+        client.session_uid.assert_called_once_with('session-id')
+        warn.assert_not_called()
+        printed = [call.args[0] for call in say.call_args_list if call.args]
+        self.assertTrue(any('agent user: LAB\\alice' in line for line in printed))
+
     def test_completer_prefixes_and_arguments(self):
         completer = rmm_cli.RmmCliPTKCompleter({'_completion_sessions': ['abc12345']})
         def matches(text):
@@ -104,3 +257,80 @@ class SlashCommandTests(unittest.TestCase):
                         with contextlib.suppress(asyncio.CancelledError):
                             await task
         asyncio.run(scenario())
+
+
+class IdentityQuotingTests(unittest.TestCase):
+    def test_interactive_passwords_preserve_spaces_backslashes_and_empty_values(self):
+        cases = [
+            (r'''/make_token LAB\alice 'two words\path#1' ''', 'two words\\path#1'),
+            ('/make_token LAB\\alice ""', ''),
+            ('''/make_token LAB\\alice "it's a password"''', "it's a password"),
+        ]
+        for line, password in cases:
+            with self.subTest(line=line):
+                client = Mock(base_url='http://example.test')
+                client.list_sessions.return_value = (200, {'sessions': []})
+                client.make_token.return_value = (200, {'ok': True, 'output': 'token created'})
+                prompt = Mock()
+                prompt.prompt.side_effect = [line, EOFError()]
+                with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                        patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                        patch.object(rmm_cli.threading, 'Thread'), \
+                        patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+                    rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+                client.make_token.assert_called_once_with('session-id', 'LAB', 'alice', password)
+                warn.assert_not_called()
+
+    def test_unclosed_quotes_are_rejected(self):
+        with self.assertRaises(ValueError):
+            rmm_cli.parse_identity_arguments('/make_token alice "unfinished')
+
+    def test_argument_completion(self):
+        completer = rmm_cli.RmmCliPTKCompleter({'_completion_sessions': ['abc12345']})
+        def matches(text):
+            return [item.text for item in completer.get_completions(Document(text), CompleteEvent())]
+        self.assertEqual(matches('/spawn a'), ['abc12345'])
+        self.assertEqual(matches('/lateral '), ['psexec ', 'wmiexec ', 'winrm '])
+        self.assertEqual(matches('/lateral w'), ['wmiexec ', 'winrm '])
+        self.assertEqual(matches('/lateral winrm '), [])
+        with patch.object(rmm_cli, 'readline') as readline:
+            completer = rmm_cli.RmmCliCompleter({'_completion_sessions': ['abc12345']})
+            readline.get_line_buffer.return_value = '/spawn a'
+            self.assertEqual(completer.complete('a', 0), 'abc12345')
+            readline.get_line_buffer.return_value = '/lateral w'
+            self.assertEqual(completer.complete('w', 0), 'wmiexec ')
+            self.assertEqual(completer.complete('w', 1), 'winrm ')
+
+
+class DeploymentExitStatusTests(unittest.TestCase):
+    def test_spawn_and_lateral_fail_without_registration_including_json(self):
+        from types import SimpleNamespace
+        for action in ('spawn', 'lateral'):
+            for json_mode in (False, True):
+                with self.subTest(action=action, json_mode=json_mode):
+                    client = Mock()
+                    response = {'ok': False, 'registered': False, 'verified': False,
+                                'spawned_session_id': 'expected-child-session', 'spawn_pid': None}
+                    getattr(client, 'spawn_session' if action == 'spawn' else 'lateral_move').return_value = (200, response)
+                    args = SimpleNamespace(session='source-session', json=json_mode, no_verify=False,
+                        spawn_timeout=120, exec_timeout=300, register_timeout=60, verify_timeout=120,
+                        method='winrm', host='target')
+                    with patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'print_json'), \
+                            contextlib.redirect_stderr(__import__('io').StringIO()), self.assertRaises(SystemExit) as error:
+                        getattr(rmm_cli, 'cmd_' + action)(client, {}, args)
+                    self.assertEqual(error.exception.code, 1)
+
+    def test_no_verify_is_accepted_as_pending_without_claiming_success(self):
+        from types import SimpleNamespace
+        client = Mock()
+        client.spawn_session.return_value = (200, {'ok': False, 'accepted': True, 'pending': True,
+            'registered': None, 'verify': False, 'spawned_session_id': 'expected-child-session', 'spawn_pid': None})
+        args = SimpleNamespace(session='source-session', json=False, no_verify=True,
+            spawn_timeout=120, register_timeout=60, verify_timeout=120)
+        with patch.object(rmm_cli, 'say') as say:
+            rmm_cli.cmd_spawn(client, {}, args)
+        self.assertIn('unconfirmed', str(say.call_args_list))
+
+
+if __name__ == "__main__":
+    unittest.main()

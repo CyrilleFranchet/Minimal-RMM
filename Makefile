@@ -11,7 +11,7 @@ PY_MODULES := rmm_settings.py rmm_plugin_sources.py rmm_plugin_releases.py rmm_e
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-ai check-cli check-parity check-web-contracts check check-exegol-mcp go-test tun-build workspace-service docker-build docker-up
+.PHONY: help install-lint lint-md lint-yaml lint test check-ai check-cli check-agent-deployment check-parity check-web-contracts check check-exegol-mcp go-test tun-build workspace-service docker-build docker-up
 
 help:
 	@printf "Available targets:\n"
@@ -22,6 +22,7 @@ help:
 	@printf "  make test          Python syntax check (py_compile)\n"
 	@printf "  make check-parity  MCP / API client / web shell alignment\n"
 	@printf "  make check-cli     CLI dispatch and interactive completion tests\n"
+	@printf "  make check-agent-deployment  Agent enrollment, registration proof, and generator regressions\n"
 	@printf "  make check-ai      AI skill, context, provider and route regression tests\n"
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
@@ -35,7 +36,7 @@ help:
 
 go-test:
 	@cd agent-go && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false ./...
-	@cd agent-go && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -buildvcs=false ./...
+	@cd agent-go && GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -buildvcs=false ./...
 	@cd server-tun && go test -buildvcs=false ./...
 
 tun-build:
@@ -89,6 +90,10 @@ check-ai:
 	@node tests/test_ai_jobs_ui.cjs
 	@node tests/test_ai_operation_details.cjs
 
+check-agent-deployment:
+	@PYTHONPATH=tests $(PYTHON) -m unittest test_spawn_session test_lateral_move test_make_token test_agent_workspace_binding test_deployment_verification test_operator_proxy_timeout test_agent_deploy test_go_agent test_deployment_artifacts
+	@node tests/test_agent_generator_workspace.cjs
+
 check-web-contracts:
 	@$(PYTHON) scripts/check_web_contracts.py
 	@node tests/test_shell_completion.cjs
@@ -100,7 +105,7 @@ check-web-contracts:
 	@node tests/test_assets_ui.cjs
 	@node tests/test_agent_redirects.cjs
 
-check: test check-ai check-cli check-parity check-web-contracts lint
+check: test check-ai check-cli check-agent-deployment check-parity check-web-contracts lint
 
 check-exegol-mcp:
 	@$(PYTHON) scripts/check_exegol_mcp.py $(ARGS)
