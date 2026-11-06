@@ -36,6 +36,29 @@ class SlashCommandTests(unittest.TestCase):
                          [('session-id', 'screenshot'), ('session-id', 'help'), ('session-id', 'quit')])
         client.health.assert_called_once_with()
 
+    def test_creds_preserves_quoted_empty_and_literal_passwords(self):
+        for password, expected in [("'two words\\path'", "two words\\path"), ("''", "")]:
+            client = Mock(base_url='http://example.test')
+            client.list_sessions.return_value = (200, {'sessions': []})
+            client.get_session.return_value = (200, {})
+            client.creds_add.return_value = (200, {'cred_id': 'cred-123'})
+            prompt = Mock()
+            prompt.prompt.side_effect = [f'/creds add LAB\\alice {password}', EOFError()]
+            with patch('prompt_toolkit.PromptSession', return_value=prompt), \
+                    patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
+                    patch.object(rmm_cli.threading, 'Thread'), \
+                    patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
+                rmm_cli.run_interactive(client, {'current_session': 'session-id'})
+            client.creds_add.assert_called_once_with('LAB', 'alice', expected)
+            warn.assert_not_called()
+
+    def test_creds_rejects_extra_arguments_and_bad_quoting(self):
+        client, _, _ = self.run_lines(['/creds list extra', '/creds add alice pw extra',
+                                      '/creds del id extra', "/creds add alice 'unterminated"])
+        client.creds_add.assert_not_called()
+        client.creds_del.assert_not_called()
+        client.creds_list.assert_not_called()
+
     def test_unknown_and_malformed_slashes_never_reach_agent(self):
         client, _, warn = self.run_lines(['/', '//screenshot', '/ screenshot', '/unknown', '/assets'])
         client.queue_command.assert_not_called()

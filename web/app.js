@@ -3375,10 +3375,10 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         const { status, data } = await api("/creds");
         if (!target.isCurrent()) return true;
         if (status !== 200) { appendShellError(`creds list failed (${status})`); return true; }
-        const creds = data?.credentials ?? [];
+        const creds = data?.creds ?? [];
         if (!creds.length) { appendShellOutput("no credentials stored"); return true; }
         for (const c of creds) {
-          const identity = c.domain ? `${c.domain}\\${c.user}` : (c.user ?? "?");
+          const identity = c.label ?? "?";
           appendShellOutput(`  ${c.cred_id ?? c.id}  ${identity}`);
         }
       } else if (sub === "add") {

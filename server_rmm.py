@@ -4397,7 +4397,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(403, {"error": "workspace_auth_required"})
                 return True
             workspace_dir = plugin_directory(owner)
-            self._json(200, _rmm_creds.creds_list(workspace_dir))
+            result = _rmm_creds.creds_list(workspace_dir)
+            self._json(503 if result.get("error") == "credential_store_unavailable" else 200, result)
             return True
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("GET", parts)
@@ -5191,7 +5192,11 @@ class RMMHandler(BaseHTTPRequestHandler):
                 if not owner:
                     self._json(403, {"error": "workspace_auth_required"})
                     return True
-                cred = _rmm_creds.creds_resolve(plugin_directory(owner), cred_id)
+                try:
+                    cred = _rmm_creds.creds_resolve(plugin_directory(owner), cred_id)
+                except (OSError, ValueError):
+                    self._json(503, {"error": "credential_store_unavailable"})
+                    return True
                 if cred is None:
                     self._json(404, {"error": "cred_not_found", "cred_id": cred_id})
                     return True
@@ -5270,7 +5275,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             cred_id = str(body.get("cred_id") or "").strip()
             if cred_id:
                 workspace_dir = plugin_directory(owner)
-                cred = _rmm_creds.creds_resolve(workspace_dir, cred_id)
+                try:
+                    cred = _rmm_creds.creds_resolve(workspace_dir, cred_id)
+                except (OSError, ValueError):
+                    self._json(503, {"error": "credential_store_unavailable"})
+                    return True
                 if cred is None:
                     self._json(404, {"error": "cred_not_found", "cred_id": cred_id})
                     return True
@@ -5325,7 +5334,11 @@ class RMMHandler(BaseHTTPRequestHandler):
             cred_id = str(body.get("cred_id") or "").strip()
             if cred_id:
                 workspace_dir = plugin_directory(owner)
-                cred = _rmm_creds.creds_resolve(workspace_dir, cred_id)
+                try:
+                    cred = _rmm_creds.creds_resolve(workspace_dir, cred_id)
+                except (OSError, ValueError):
+                    self._json(503, {"error": "credential_store_unavailable"})
+                    return True
                 if cred is None:
                     self._json(404, {"error": "cred_not_found", "cred_id": cred_id})
                     return True
@@ -5353,7 +5366,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(200, result)
             return True
 
-        if len(parts) == 2 and parts[0] == "creds":
+        if parts == ["creds"]:
             # POST /api/v1/creds — add a credential entry (workspace-scoped).
             owner = self._workspace_scope()
             if not owner:
@@ -5366,7 +5379,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 str(body.get("user") or ""),
                 str(body.get("password") or ""),
             )
-            self._json(200 if result.get("ok") else 400, result)
+            self._json(503 if result.get("error") == "credential_store_unavailable" else 200 if result.get("ok") else 400, result)
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "lateral":
@@ -5948,7 +5961,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             workspace_dir = plugin_directory(owner)
             result = _rmm_creds.creds_del(workspace_dir, urllib.parse.unquote(parts[1]))
-            self._json(200 if result.get("ok") else 404, result)
+            self._json(503 if result.get("error") == "credential_store_unavailable" else 200 if result.get("ok") else 404, result)
             return True
         if len(parts) == 2 and parts[0] == "plugin-sources":
             return self._handle_plugin_sources("DELETE", urllib.parse.unquote(parts[1]))

@@ -1098,12 +1098,12 @@ def cmd_creds_list(client: RmmApiClient, state: dict, args):
         return
     if code != 200:
         die(f"creds list failed ({code})", 1)
-    creds = (data.get("credentials") or []) if isinstance(data, dict) else []
+    creds = (data.get("creds") or []) if isinstance(data, dict) else []
     if not creds:
         say("no credentials stored")
         return
     for c in creds:
-        identity = (c.get("domain") + "\\" + c.get("user")) if c.get("domain") else c.get("user", "?")
+        identity = c.get("label", "?")
         say(f"  {c.get('cred_id') or c.get('id')}  {identity}")
 
 
@@ -1693,6 +1693,10 @@ class RmmCliCompleter:
                 return matches[state_index] + (" " if cmd == "use" else "")
             return None
 
+        if cmd == "creds" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
+            matches = [sub for sub in ("list", "add", "del") if sub.startswith(text.lower())]
+            return matches[state_index] + " " if state_index < len(matches) else None
+
         if cmd == "lateral" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
             matches = [m for m in ("psexec", "wmiexec", "winrm") if m.startswith(text.lower())]
             return matches[state_index] + " " if state_index < len(matches) else None
@@ -1743,6 +1747,13 @@ class RmmCliPTKCompleter(_PTCompleterBase):
                     if p.startswith(prefix):
                         yield Completion(p + (" " if cmd == "use" else ""), start_position=-len(prefix))
                 return
+
+        if cmd == "creds" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
+            prefix = parts[1] if len(parts) == 2 else ""
+            for sub in ("list", "add", "del"):
+                if sub.startswith(prefix.lower()):
+                    yield Completion(sub + " ", start_position=-len(prefix))
+            return
 
         if cmd == "lateral" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
             prefix = parts[1] if len(parts) == 2 else ""
@@ -2235,27 +2246,31 @@ def run_interactive(
                         say(line)
                 continue
             if cmd == "creds":
-                sub_rest = rest
+                try:
+                    sub_rest = parse_identity_arguments(line)[1:]
+                except ValueError:
+                    warn("Invalid quoting. Quote credential arguments containing spaces.")
+                    continue
                 sub_cmd = sub_rest[0].lower() if sub_rest else ""
                 if sub_cmd == "list" or not sub_cmd:
+                    if len(sub_rest) > 1:
+                        warn("Usage: /creds list")
+                        continue
                     code, data = client.creds_list()
                     if code != 200:
                         warn(f"creds list failed ({code})")
                     else:
-                        creds = (data.get("credentials") or []) if isinstance(data, dict) else []
+                        creds = (data.get("creds") or []) if isinstance(data, dict) else []
                         if not creds:
                             say("no credentials stored")
                         for c in creds:
-                            identity = (c.get("domain") + "\\" + c.get("user")) if c.get("domain") else c.get("user", "?")
+                            identity = c.get("label", "?")
                             say(f"  {c.get('cred_id') or c.get('id')}  {identity}")
                 elif sub_cmd == "add":
-                    if len(sub_rest) < 3:
+                    if len(sub_rest) != 3:
                         warn("Usage: /creds add <domain\\user | user> <password>")
                     else:
-                        try:
-                            cred_parts = parse_identity_arguments(" ".join(sub_rest[1:]))
-                        except ValueError:
-                            cred_parts = sub_rest[1:]
+                        cred_parts = sub_rest[1:]
                         if len(cred_parts) < 2:
                             warn("Usage: /creds add <domain\\user | user> <password>")
                         else:
@@ -2268,7 +2283,7 @@ def run_interactive(
                                 cred_identity = (cred_domain + "\\" + cred_user) if cred_domain else cred_user
                                 say(f"stored {data.get('cred_id')} ({cred_identity})")
                 elif sub_cmd == "del":
-                    if len(sub_rest) < 2:
+                    if len(sub_rest) != 2:
                         warn("Usage: /creds del <cred_id>")
                     else:
                         code, data = client.creds_del(sub_rest[1])

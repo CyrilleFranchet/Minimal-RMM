@@ -14,6 +14,26 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Complete credential command audit
+
+- Parse interactive CLI credential arguments once, preserving spaces, literal
+  backslashes, and empty passwords; reject extra arguments and malformed quoting.
+  Add CLI subcommand completion.
+- Preserve corrupt credential files, validate stored records, report unavailable
+  storage with HTTP 503, and write new credential files with mode 0600.
+- Add regressions for workspace isolation, exact password preservation, deletion,
+  file permissions, corrupt-store preservation, and CLI parsing. Password storage
+  remains plaintext; shell history behavior is unchanged.
+
+### 2026-11-06 — Fix credential creation routing and list response handling
+
+- Match POST `/api/v1/creds` against its single path component, fixing the 404
+  returned for credential creation. Keep workspace authentication required.
+- Read the store's `creds` array and `label` fields in WebUI and CLI lists.
+- Add real path parsing and store round-trip regressions for add/list/delete,
+  plus authentication and WebUI list rendering checks. Include route tests in
+  `make check-agent-deployment`.
+
 ### 2026-11-06 — Repair lateral method completion
 
 - Show the supported lateral methods in the dropdown, filter by prefix, and

@@ -131,6 +131,17 @@ historical lateral targets.
 
 ## Credential commands
 
+CLI and WebUI enforce exact argument counts and preserve quoted spaces,
+backslashes, and empty passwords (`''`). CLI completion offers `list`, `add`, and
+`del`. Credential IDs and labels come from the API's `creds` array.
+
+The credential store writes `creds.json` with owner-only permissions (0600).
+Passwords remain plaintext on disk. `_store_operation` converts filesystem and
+store-validation failures into `credential_store_unavailable`; API operations
+return HTTP 503 for these failures. Invalid JSON or malformed records are never
+treated as an empty store or overwritten by a later add. Credential resolution
+for identity commands also returns HTTP 503 when the store is unavailable.
+
 The identity commands accept credentials from `/creds list` or a direct identity:
 
 ```text

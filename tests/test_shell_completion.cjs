@@ -361,3 +361,12 @@ test('lateral filters methods, supports clicks, and leaves the host untouched', 
   f.type('/lateral smbexec');
   assert.equal(f.input.attrs['aria-expanded'], 'false');
 });
+
+test('creds list renders API credential IDs and labels', async () => {
+  const f = fixture(), output = [];
+  f.context.appendShellOutput = text => output.push(text);
+  f.context.api = async () => ({status:200,data:{ok:true,creds:[{cred_id:'cred-123',label:String.raw`LAB\alice`}]}});
+  await f.context.dispatchShellMetaCommand('/creds list');
+  assert.equal(f.errors.length, 0);
+  assert.deepEqual(output, [String.raw`  cred-123  LAB\alice`]);
+});

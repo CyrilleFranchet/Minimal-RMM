@@ -14,6 +14,7 @@ import json
 import os
 import secrets
 import threading
+from functools import wraps
 from typing import Any
 
 _lock = threading.Lock()
@@ -32,9 +33,14 @@ def _load(workspace_dir: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-            if isinstance(data, dict):
-                return data
-    except (FileNotFoundError, json.JSONDecodeError):
+            if not isinstance(data, dict) or any(
+                not isinstance(row, dict) or row.get("id") != key or
+                any(not isinstance(row.get(field), str) for field in ("label", "domain", "user", "password"))
+                for key, row in data.items()
+            ):
+                raise ValueError("invalid credential store")
+            return data
+    except FileNotFoundError:
         pass
     return {}
 
@@ -42,11 +48,26 @@ def _load(workspace_dir: str) -> dict:
 def _save(workspace_dir: str, creds: dict) -> None:
     path = _creds_path(workspace_dir)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    os.makedirs(workspace_dir, mode=0o700, exist_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        os.fchmod(fh.fileno(), 0o600)
         json.dump(creds, fh, indent=2)
     os.replace(tmp, path)
 
 
+def _store_operation(operation):
+    """Report storage failures without exposing secret data or replacing corrupt files."""
+    @wraps(operation)
+    def guarded(*args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except (OSError, ValueError):
+            return {"ok": False, "error": "credential_store_unavailable"}
+    return guarded
+
+
+@_store_operation
 def creds_add(workspace_dir: str, domain: str, user: str, password: str) -> dict[str, Any]:
     """
     Add a credential entry and return its ID and label.
@@ -81,6 +102,7 @@ def creds_add(workspace_dir: str, domain: str, user: str, password: str) -> dict
     return {"ok": True, "cred_id": cred_id, "label": label}
 
 
+@_store_operation
 def creds_del(workspace_dir: str, cred_id: str) -> dict[str, Any]:
     """Remove a credential entry by ID."""
     cred_id = (cred_id or "").strip()
@@ -95,6 +117,7 @@ def creds_del(workspace_dir: str, cred_id: str) -> dict[str, Any]:
     return {"ok": True, "cred_id": cred_id}
 
 
+@_store_operation
 def creds_list(workspace_dir: str) -> dict[str, Any]:
     """List all stored credentials. Passwords are omitted."""
     with _lock:
