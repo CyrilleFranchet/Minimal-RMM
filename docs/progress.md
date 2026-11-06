@@ -14,6 +14,16 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-06 — Readable WebUI spawn results
+
+- Replace the `/spawn` JSON dump with an escaped text summary of the session,
+  parent, PID, host, registration, and response checks. Preserve the full API
+  response in a collapsed native details element.
+- Distinguish unchecked registration from failed registration. Add rendering
+  regressions to `make check-web-contracts`. Rendering and session-routing
+  tests, JavaScript syntax validation, and operator parity pass. Browser visual
+  validation remains outstanding.
+
 ### 2026-11-06 — Fix staged (stage1) manual deployment flow
 
 The staged ZIP delivery (`build_go_agent` default) only worked when the

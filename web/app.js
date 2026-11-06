@@ -2968,6 +2968,22 @@ async function postPeQueue(plugin, exportName, pluginInput, target = captureShel
   return true;
 }
 
+function renderSpawnResult(data) {
+  const status = value => value === true ? "confirmed" : value === false ? "not confirmed" : "not checked";
+  const lines = [
+    `Spawn ${data.registered === true ? "registered" : data.registered === false ? "unconfirmed" : "pending"}`,
+    `Session: ${data.spawned_session_id || "unknown"}`,
+    `Parent: ${data.parent_session_id || "unknown"}`,
+  ];
+  if (data.spawn_pid != null) lines.push(`PID: ${data.spawn_pid}`);
+  if (data.registered_hostname) lines.push(`Host: ${data.registered_hostname}`);
+  lines.push(`Registration: ${status(data.registered)}`,
+    `Parent response: ${status(data.parent_responsive)}`,
+    `Spawned agent response: ${status(data.spawned_responsive)}`,
+    `Verification: ${status(data.verified)}`);
+  return `<pre>${escapeHtml(lines.join("\n"))}</pre><details><summary>Response details (JSON)</summary><pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre></details>`;
+}
+
 /** @returns {boolean} true if cmd was a meta command (handled locally). */
 async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   // Recognize the verb before parsing so malformed quoting cannot escape to the agent.
@@ -3181,8 +3197,8 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         appendShellError(data?.error || `HTTP ${status}`);
         return true;
       }
-      appendShellLine("output", `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`);
-      if (!data.registered) {
+      appendShellLine("output", renderSpawnResult(data));
+      if (data.registered === false) {
         appendShellError("Spawn unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
       } else if (!data.verified && data.verify) {
         appendShellError("Spawn verification did not pass — inspect both sessions before relying on them.");

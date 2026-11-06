@@ -1,0 +1,30 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { test } = require('node:test');
+const source = fs.readFileSync(require('node:path').join(__dirname, '../web/app.js'), 'utf8');
+const context = vm.createContext({ escapeHtml: text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;') });
+vm.runInContext(source.slice(source.indexOf('function renderSpawnResult('), source.indexOf('async function dispatchShellMetaCommand(')), context);
+
+test('spawn summary distinguishes registration from verification and retains diagnostics', () => {
+  const html = context.renderSpawnResult({ registered: true, verified: false,
+    spawned_session_id: 'go-spawn-123', parent_session_id: 'go-parent', spawn_pid: 42,
+    parent_responsive: true, spawned_responsive: false, registered_hostname: '<host>' });
+  assert.match(html, /Spawn registered/);
+  assert.match(html, /Session: go-spawn-123/);
+  assert.match(html, /PID: 42/);
+  assert.match(html, /Host: &lt;host&gt;/);
+  assert.doesNotMatch(html, /<host>/);
+  assert.match(html, /Parent response: confirmed/);
+  assert.match(html, /Spawned agent response: not confirmed/);
+  assert.match(html, /Verification: not confirmed/);
+  assert.match(html, /<details><summary>Response details \(JSON\)<\/summary>/);
+  assert.doesNotMatch(html, /<details open/);
+});
+
+test('pending and missing registration never claim success', () => {
+  assert.match(context.renderSpawnResult({ registered: null }), /Spawn pending/);
+  assert.match(context.renderSpawnResult({ registered: null }), /Verification: not checked/);
+  assert.match(context.renderSpawnResult({ registered: false }), /Spawn unconfirmed/);
+  assert.match(context.renderSpawnResult({ registered: true, verified: true }), /Verification: confirmed/);
+});

@@ -120,3 +120,11 @@ quote is rejected locally. For example, `/make_token LAB\alice 'two words\path'`
 passes the literal password `two words\path`. Commands remain visible and are
 saved verbatim in CLI and WebUI history, including passwords. Server identity
 audit events record the identity label without the password.
+
+## Spawn result display
+
+`/spawn` shows the new session ID, parent ID, optional PID and hostname,
+registration status, and each agent's response and verification status.
+`renderSpawnResult` escapes response values and keeps the full API response in
+a collapsed **Response details (JSON)** section for troubleshooting. Registration
+and verification remain separate: a registered agent can fail response checks.
