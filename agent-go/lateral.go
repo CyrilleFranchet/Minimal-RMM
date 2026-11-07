@@ -34,6 +34,7 @@ type lateralPayload struct {
 	RemoteName     string  `json:"remote_name"`
 	Stage          string  `json:"stage"`
 	TimeoutSeconds float64 `json:"timeout_seconds"`
+	HTTPS          bool    `json:"https,omitempty"`
 	winrmIdentity  *winrmCredentials
 }
 
@@ -92,7 +93,23 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 	if err := json.Unmarshal([]byte(parts[1]), &payload); err != nil {
 		return payload, err
 	}
+	// encoding/json treats null as a no-op for bool fields. Reject it here
+	// rather than silently selecting HTTP for an invalid transport option.
+	var transport struct {
+		HTTPS json.RawMessage `json:"https"`
+	}
+	if err := json.Unmarshal([]byte(parts[1]), &transport); err != nil {
+		return payload, err
+	}
+	if strings.TrimSpace(string(transport.HTTPS)) == "null" {
+		return payload, errors.New("https must be a boolean")
+	}
 	payload.Method = strings.ToLower(strings.TrimSpace(payload.Method))
+	// The HTTPS wire method is intentionally unknown to older agents. They
+	// must reject it rather than silently ignore https and connect over HTTP.
+	if payload.Method == "winrm_https" {
+		payload.Method, payload.HTTPS = "winrm", true
+	}
 	payload.Host = strings.Trim(strings.TrimSpace(payload.Host), `\`)
 	payload.RemoteName = strings.TrimSpace(payload.RemoteName)
 	if payload.RemoteName == "" {
@@ -100,6 +117,9 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 	}
 	if !lateralMethods[payload.Method] {
 		return payload, errors.New("method must be one of psexec, wmiexec, winrm")
+	}
+	if payload.HTTPS && payload.Method != "winrm" {
+		return payload, errors.New("https is supported only for winrm")
 	}
 	if payload.SessionID != "" && !regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`).MatchString(payload.SessionID) {
 		return payload, errors.New("invalid target session id")

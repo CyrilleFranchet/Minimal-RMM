@@ -241,7 +241,7 @@ func (s *wsmanScope) closeHandle(native wsmanCaller, name string, handle uintptr
 
 // winrmCreateProcess uses selected explicit credentials when make_token is
 // active, otherwise thread defaults. Detach must finish before the shell closes.
-func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string, identity *winrmCredentials) error {
+func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string, identity *winrmCredentials, useHTTPS bool) error {
 	// Initialize the shared COM security policy before WSMan can initialize
 	// it implicitly, so a later WMI command can use thread-token cloaking.
 	runtime.LockOSThread()
@@ -257,7 +257,7 @@ func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, 
 	if err != nil {
 		return err
 	}
-	return winrmCreateProcessWithIdentityAPI(native, host, agentPath, sessionID, workspaceID, serviceName, wsmanCompletionTimeout, identity)
+	return winrmCreateProcessWithTransportAPI(native, host, agentPath, sessionID, workspaceID, serviceName, wsmanCompletionTimeout, identity, useHTTPS)
 }
 
 func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration) (resultErr error) {
@@ -267,6 +267,12 @@ func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID st
 // winrmCreateProcessWithIdentityAPI supplies selected make_token credentials
 // explicitly to WSMan; an absent identity retains default thread credentials.
 func winrmCreateProcessWithIdentityAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration, identity *winrmCredentials) (resultErr error) {
+	return winrmCreateProcessWithTransportAPI(native, host, agentPath, sessionID, workspaceID, serviceName, timeout, identity, false)
+}
+
+// winrmCreateProcessWithTransportAPI selects HTTP/5985 or HTTPS/5986 while
+// leaving native server-certificate and authentication validation enabled.
+func winrmCreateProcessWithTransportAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration, identity *winrmCredentials, useHTTPS bool) (resultErr error) {
 	arguments, err := lateralDetachArguments(sessionID, workspaceID, serviceName)
 	if err != nil {
 		return err
@@ -281,7 +287,11 @@ func winrmCreateProcessWithIdentityAPI(native wsmanCaller, host, agentPath, sess
 		}
 		return pointer, err
 	}
-	connection, err := utf16("http://" + net.JoinHostPort(host, "5985") + "/wsman")
+	scheme, port := "http", "5985"
+	if useHTTPS {
+		scheme, port = "https", "5986"
+	}
+	connection, err := utf16(scheme + "://" + net.JoinHostPort(host, port) + "/wsman")
 	if err != nil {
 		return err
 	}

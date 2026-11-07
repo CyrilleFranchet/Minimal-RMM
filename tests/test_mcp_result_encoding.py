@@ -1,7 +1,9 @@
 """MCP result conversion must preserve structured-only protocol responses."""
 import json
+import asyncio
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from rmm_mcp_client import _tool_result_text, mcp_available, mcp_tool_to_openai
 from rmm_exegol_runtime import execution_arguments
@@ -23,6 +25,22 @@ class McpSchemaTests(unittest.TestCase):
 
 @unittest.skipUnless(mcp_available(), 'MCP dependencies are not installed')
 class McpResultEncodingTests(unittest.TestCase):
+    def test_registered_lateral_https_is_strict_boolean(self):
+        import mcp_rmm_server as module
+
+        async def run():
+            with patch.object(module, "tool_lateral_move", Mock(return_value='{"ok":true}')) as helper, \
+                    patch.object(module, "_client", return_value=object()):
+                arguments = {"session_ref": "source", "method": "winrm", "host": "fixture"}
+                for value in ["true", "false", 0, 1, None]:
+                    with self.subTest(value=value), self.assertRaisesRegex(Exception, "validation error"):
+                        await module.mcp.call_tool("lateral_move", {**arguments, "https": value})
+                    helper.assert_not_called()
+                for value in [True, False]:
+                    await module.mcp.call_tool("lateral_move", {**arguments, "https": value})
+                    self.assertIs(helper.call_args.kwargs["https"], value)
+        asyncio.run(run())
+
     def test_real_sdk_tool_schema_is_preserved(self):
         from mcp.types import Tool
         schema = {'type': 'object', 'properties': {'command': {'type': 'string'}}}

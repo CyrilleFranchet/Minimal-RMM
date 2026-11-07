@@ -269,6 +269,44 @@ class LateralFlowTests(unittest.TestCase):
         self.assertEqual(status, "ok")
         self.assertIn("agent user:", result["output"])
 
+    def test_winrm_https_is_queued_and_audited(self):
+        self.ack_output = f"lateral started: method=winrm host=target target session={self.target_id}"
+        result, status = self.server.lateral_move(self.source.id, "winrm", "target", https=True)
+        self.assertEqual(status, "ok")
+        self.assertTrue(result["ok"])
+        request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+        self.assertIs(request["https"], True)
+        self.assertEqual(request["method"], "winrm_https", "older agents must reject HTTPS instead of ignoring it")
+        self.assertIn("-s", self.server.record_operator_action.call_args.args[1])
+
+    def test_invalid_https_never_stages_or_dispatches(self):
+        for method, value in [("psexec", True), ("wmiexec", True), ("winrm", "true"), ("winrm", 1), ("winrm", None)]:
+            with self.subTest(method=method, value=value):
+                self.assertEqual(self.server.lateral_move(self.source.id, method, "target", https=value), (None, "invalid_https"))
+        self.server.exec_and_wait.assert_not_called()
+        self.server._new_deployment_id.assert_not_called()
+
+    def test_https_client_and_tool_forward_and_validate(self):
+        import rmm_cli
+        import rmm_tools
+        client = rmm_cli.RmmApiClient("http://fixture", "fixture-token")
+        client.request = Mock(return_value=(200, {"ok": True}))
+        client.lateral_move("source", "winrm", "target", https=True)
+        self.assertIs(client.request.call_args.args[2]["https"], True)
+        client.lateral_move("source", " WinRM ", "target", https=True)
+        self.assertIs(client.request.call_args.args[2]["https"], True)
+        for method, value in [("psexec", True), ("winrm", "false"), ("winrm", 0)]:
+            with self.assertRaises(ValueError):
+                client.lateral_move("source", method, "target", https=value)
+        mocked = Mock()
+        mocked.lateral_move.return_value = (200, {"ok": True})
+        with patch.object(rmm_tools, "_resolve_session_id", return_value=("source", {})):
+            rmm_tools.TOOL_HANDLERS["lateral_move"](mocked, {"session_ref": "source", "method": "winrm", "host": "target", "https": True})
+            self.assertIs(mocked.lateral_move.call_args.kwargs["https"], True)
+            for value in ["false", 0, None]:
+                result = json.loads(rmm_tools.tool_lateral_move(mocked, "source", "winrm", "target", https=value))
+                self.assertEqual(result["error"], "invalid_https")
+
 
 class StagingStoreTests(unittest.TestCase):
     def setUp(self):
@@ -381,6 +419,16 @@ class StagingStoreTests(unittest.TestCase):
 
 
 class LateralHttpRoutingTests(unittest.TestCase):
+    def test_https_route_forwards_boolean_and_rejects_strings(self):
+        handler = self._handler("lateral", {"ok": True})
+        self._run(handler, {"method": "winrm", "host": "target", "https": True})
+        self.assertIs(handler.server_instance.lateral_move.call_args.kwargs["https"], True)
+        for value in ["true", "false", 1, None]:
+            handler = self._handler("lateral", {"ok": True})
+            self._run(handler, {"method": "winrm", "host": "target", "https": value})
+            self.assertEqual(handler._json.call_args.args[0], 400)
+            handler.server_instance.lateral_move.assert_not_called()
+
     def _handler(self, endpoint, result, status="ok"):
         handler = object.__new__(server_rmm.RMMHandler)
         handler._api_authorized = Mock(return_value=True)
@@ -414,6 +462,7 @@ class LateralHttpRoutingTests(unittest.TestCase):
             ("session_busy", 409),
             ("invalid_method", 400),
             ("invalid_host", 400),
+            ("invalid_https", 400),
             ("agent_payload_unavailable", 503),
             ("debug_payload_unavailable", 503),
             ("timeout", 408),

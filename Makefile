@@ -117,7 +117,7 @@ check-ai:
 
 check-agent-deployment:
 	@PYTHONPATH=tests $(PYTHON) -m unittest test_spawn_session test_lateral_move test_make_token test_creds_routes test_agent_workspace_binding test_deployment_verification test_operator_proxy_timeout test_agent_deploy test_go_agent test_deployment_artifacts \
-		test_debug_registration test_debug_deployment test_go_debug_build test_spawnas_debug
+		test_debug_registration test_debug_deployment test_go_debug_build test_spawnas_debug test_mcp_result_encoding
 	@node tests/test_agent_generator_workspace.cjs
 
 check-web-contracts:

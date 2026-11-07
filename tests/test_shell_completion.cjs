@@ -143,6 +143,19 @@ test('lateral validates method and posts method and host', async () => {
   assert.deepEqual(f.history, ['/lateral psexec ws01.lab.local']);
 });
 
+test('WinRM HTTPS flag forwards a boolean and rejects invalid combinations', async () => {
+  for (const command of ['/lateral winrm -s ws01', '/lateral winrm ws01 -s', '/lateral winrm --https ws01']) {
+    const f = fixture(); f.type(command); await f.context.runCommand(false);
+    assert.equal(f.calls.length, 1);
+    assert.deepEqual(JSON.parse(f.calls[0][1].body), { method: 'winrm', host: 'ws01', https: true });
+  }
+  for (const command of ['/lateral psexec ws01 -s', '/lateral wmiexec -s ws01', '/lateral winrm -s', '/lateral winrm ws01 -s -s', '/lateral winrm --https ws01 -s']) {
+    const f = fixture(); f.type(command); await f.context.runCommand(false);
+    assert.equal(f.calls.length, 0);
+    assert.match(f.errors[0], /Usage: \/lateral/);
+  }
+});
+
 test('lateral renders results only through events and preserves registration warnings', async () => {
   for (const method of ['wmiexec', 'psexec', 'winrm']) {
     for (const registered of [true, false]) {
@@ -502,7 +515,7 @@ test('lateral filters methods, supports clicks, and leaves the host untouched', 
   assert.deepEqual(f.menu.children.map(x => x.textContent), ['/lateral wmiexec', '/lateral winrm']);
   f.menu.children[1].listeners.mousedown({preventDefault() {}});
   assert.equal(f.input.value, '/lateral winrm ');
-  assert.equal(f.hint.textContent, '/lateral winrm <host>');
+  assert.equal(f.hint.textContent, '/lateral winrm <host> [-s|--https]');
   f.context.getShellHistoryList = () => ['/lateral winrm ws01.old.example'];
   f.type('/lateral winrm ws'); f.key('Tab');
   assert.equal(f.input.value, '/lateral winrm ws');

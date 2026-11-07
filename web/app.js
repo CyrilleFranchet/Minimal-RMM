@@ -2282,7 +2282,7 @@ function updateShellCompletionHint() {
   closeShellCommandMenu();
   const lateralMethod = line.match(/^\s*\/lateral\s+(psexec|wmiexec|winrm)\s/i)?.[1].toLowerCase();
   if (lateralMethod) {
-    hint.textContent = `/lateral ${lateralMethod} <host>`;
+    hint.textContent = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https]" : ""}`;
     hint.classList.remove("hidden");
     return;
   }
@@ -3178,7 +3178,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /make_token -i &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
-  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt;   Start a Go agent on another host; inherits the source build mode
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https]   HTTPS/5986 for winrm only; inherits the source build mode
   /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
                                    Operate workspace BloodHound; never sent to the agent
 
@@ -3359,16 +3359,19 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   }
 
   if (verb === "lateral") {
-    if (rest.length !== 2 || rest.some(arg => arg.startsWith("-"))) {
-      showError("Usage: /lateral <psexec|wmiexec|winrm> <host>");
+    const method = (rest[0] || "").toLowerCase();
+    const flags = rest.slice(1).filter(arg => ["-s", "--https"].includes(arg));
+    const targets = rest.slice(1).filter(arg => !["-s", "--https"].includes(arg));
+    if (targets.length !== 1 || flags.length > 1 || targets.some(arg => arg.startsWith("-")) ||
+        (flags.length && method !== "winrm")) {
+      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https (winrm only)]");
       return true;
     }
     if (!target.sessionId) {
       showError("Select a Go agent session before moving laterally.");
       return true;
     }
-    const method = rest[0].toLowerCase();
-    const host = rest[1];
+    const host = targets[0];
     if (!["psexec", "wmiexec", "winrm"].includes(method)) {
       showError("Method must be psexec, wmiexec, or winrm.");
       return true;
@@ -3380,7 +3383,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/lateral`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method, host }),
+        body: JSON.stringify({ method, host, ...(flags.length ? { https: true } : {}) }),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {

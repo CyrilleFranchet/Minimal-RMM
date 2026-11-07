@@ -212,6 +212,16 @@ class SlashCommandTests(unittest.TestCase):
                 getattr(client, method).assert_called_once_with(*args)
                 warn.assert_not_called()
 
+    def test_winrm_https_slash_flag(self):
+        for command in ["/lateral winrm -s ws01", "/lateral winrm ws01 -s", "/lateral winrm --https ws01"]:
+            client, _, warn = self.run_lines([command])
+            client.lateral_move.assert_called_once_with("session-id", "winrm", "ws01", https=True)
+            warn.assert_not_called()
+        invalid = ["/lateral psexec ws01 -s", "/lateral wmiexec -s ws01", "/lateral winrm -s", "/lateral winrm ws01 -s -s", "/lateral winrm --https ws01 -s"]
+        client, _, warn = self.run_lines(invalid)
+        client.lateral_move.assert_not_called()
+        self.assertEqual(warn.call_count, len(invalid))
+
     def test_spawn_and_lateral_invalid_flags_never_send_requests(self):
         commands = ['/spawn -d --debug', '/spawn --unknown', '/spawn one two',
                     '/lateral psexec -d', '/lateral psexec --unknown',

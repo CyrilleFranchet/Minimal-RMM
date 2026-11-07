@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 from functools import wraps
+from pydantic import StrictBool
 
 from rmm_settings import bootstrap, getenv as settings_getenv
 
@@ -592,6 +593,7 @@ def lateral_move(
     exec_timeout: float = 300,
     register_timeout: float = 60,
     verify_timeout: float = 120,
+    https: StrictBool = False,
 ) -> str:
     """Start a Go agent on another host and confirm registration. Children inherit the source agent's compiled debug mode. Debug is selected only at build time. A debug source requires a server-side Windows amd64 debug artifact for PsExec; missing required artifacts fail without fallback."""
     return tool_lateral_move(
@@ -603,6 +605,7 @@ def lateral_move(
         exec_timeout=exec_timeout,
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
+        https=https,
     )
 
 

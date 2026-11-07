@@ -270,6 +270,10 @@ def main() -> int:
         schema = next(entry["function"]["parameters"]["properties"]
                       for entry in tools_mod.OPENAI_TOOLS if entry["function"]["name"] == name)
         client_parameters = inspect.signature(getattr(cli.RmmApiClient, name)).parameters
+        if name == "lateral_move":
+            if (schema.get("https", {}).get("type") != "boolean" or
+                    "https" not in mcp_parameters.get(name, set()) or "https" not in client_parameters):
+                errors.append("lateral_move must expose boolean https in client, MCP and AI schemas")
         if name == "build_go_agent":
             if schema.get("debug", {}).get("type") != "boolean" or "debug" not in mcp_parameters.get(name, set()):
                 errors.append("build_go_agent must expose boolean debug in MCP and AI schemas")

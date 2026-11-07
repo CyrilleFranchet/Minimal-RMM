@@ -105,7 +105,7 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 			return "", err
 		}
 	case "winrm":
-		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName, payload.winrmIdentity); err != nil {
+		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName, payload.winrmIdentity, payload.HTTPS); err != nil {
 			return "", err
 		}
 	}

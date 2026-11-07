@@ -11,6 +11,22 @@ import rmm_cli
 
 
 class CliDispatchTests(unittest.TestCase):
+    def test_lateral_https_and_explicit_session(self):
+        client = Mock()
+        client.lateral_move.return_value = (200, {"ok": True})
+        for arguments in [
+            ["lateral", "winrm", "ws01", "-s", "--session", "session-id", "--json"],
+            ["lateral", "winrm", "--https", "ws01", "--session", "session-id", "--json"],
+        ]:
+            client.reset_mock()
+            self.invoke(arguments, client)
+            self.assertIs(client.lateral_move.call_args.kwargs["https"], True)
+            self.assertEqual(client.lateral_move.call_args.args, ("session-id", "winrm", "ws01"))
+        client.reset_mock()
+        with self.assertRaises(SystemExit):
+            self.invoke(["lateral", "psexec", "ws01", "-s", "--session", "session-id"], client)
+        client.lateral_move.assert_not_called()
+
     def test_debug_build_requests_separate_full_agent_artifact(self):
         client = Mock()
         client.build_go_agent.return_value = (200, {"filename": "debug.zip"})

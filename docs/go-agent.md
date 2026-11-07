@@ -423,6 +423,44 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
 
 Modules:
 
+WinRM accepts `-s` / `--https` in the CLI and WebUI shell:
+
+```text
+/lateral winrm -s 10.254.100.32
+/lateral winrm 10.254.100.32 -s
+```
+
+The standalone CLI uses `lateral winrm <host> -s --session <source-id>`.
+For `lateral` only, `-s` now selects HTTPS; use the existing long `--session`
+option for source selection. Other commands retain their `-s` session alias.
+REST `POST /sessions/{id}/lateral`, `RmmApiClient.lateral_move`, MCP, and the
+AI tool expose `https: true`. It defaults to false and is valid only for WinRM;
+the server rejects other methods and nonboolean values before dispatch.
+HTTPS commands use the internal `winrm_https` wire method, normalized by the
+new agent to WinRM with HTTPS enabled. Older agents reject that method instead
+of ignoring a new field and silently connecting over HTTP. Rebuild the source
+agent to use `-s`; the external API method remains `winrm`.
+
+The private command's `https` boolean reaches
+`winrmCreateProcessWithTransportAPI`, which selects HTTPS/5986 instead of
+HTTP/5985 and brackets IPv6 literals. It does not change the selected account
+or authentication mechanism. Default credentials still use Windows negotiation;
+explicit credentials still select Kerberos for DNS or Negotiate for IP targets.
+There is no HTTP fallback after an HTTPS failure.
+
+HTTPS can provide server authentication for NTLM without TrustedHosts when
+the target has a WinRM HTTPS listener and its server certificate is trusted,
+unexpired, and valid for the supplied DNS name or IP address. For an IP URL,
+the certificate must cover that IP. `-s` does not bypass CA, name, or revocation
+checks and does not configure the listener or change machine trust settings.
+`TestLateralHTTPSValidation` checks protocol inputs; `TestWSManHTTPSTransport`
+checks transport/authentication combinations, and
+`TestWSManHTTPSFailureDoesNotDowngrade` checks failure propagation without
+retrying through HTTP or changing certificate checks.
+The registered MCP tool uses `StrictBool` for HTTPS; its SDK-boundary test in
+`test_mcp_result_encoding.py` rejects strings, integers, and null before the
+implementation runs. `make check-agent-deployment` includes that test.
+
 | Method | Technique |
 |--------|-----------|
 | `psexec` | Two-stage RemCom-style deployment: push the dedicated lateral service host to `ADMIN$`, start it as a demand-start service; its linked stage1 worker fetches the masked stage2 agent payload from the listener's staging endpoint, decodes it in memory, installs and starts the agent, then stops. The calling agent waits for successful service completion and removes the temporary service and host binary itself; the server cleanup command is only a retry path when that immediate cleanup stays pending |
@@ -578,7 +616,7 @@ register under the source workspace and reports `registered` and the legacy
 WebUI `/lateral`, MCP `lateral_move`. Requirements and caveats: Go agent
 Windows build with embedded connection settings, admin rights on the
 target (or a `make_token` identity with them), `ADMIN$` reachable for
-staging, and WinRM over HTTP on port 5985 for the `winrm` module. Live
+staging, and WinRM on port 5985 or HTTPS/5986 with `-s`. Live
 behavior of every module remains to be validated on real hosts.
 
 `exec_timeout` bounds the server response wait. For PsExec, the agent's worker

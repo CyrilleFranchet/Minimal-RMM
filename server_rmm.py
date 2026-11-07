@@ -3310,7 +3310,7 @@ class RMMServer:
         return {"ok": True, "session_id": session.id, "identity": identity, "output": body}, "ok"
 
     def lateral_move(self, session_id_or_prefix, method, host, verify=True,
-                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0):
+                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, https=False):
         """Request remote execution using the source agent's compiled debug mode."""
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3322,6 +3322,8 @@ class RMMServer:
         host = (host or "").strip().strip("\\")
         if method not in LATERAL_METHODS:
             return None, "invalid_method"
+        if not isinstance(https, bool) or (https and method != "winrm"):
+            return None, "invalid_https"
         if not host:
             return None, "invalid_host"
         target_id = self._new_deployment_id("lateral")
@@ -3346,10 +3348,10 @@ class RMMServer:
                 1 + float(getattr(session, "jitter_percent", 30)) / 100) + 15
             worker_timeout -= min(delivery_budget, worker_timeout / 2)
         command = LATERAL_COMMAND + "\n" + json.dumps({
-            "method": method, "host": host, "timeout_seconds": worker_timeout,
+            "method": "winrm_https" if https else method, "host": host, "timeout_seconds": worker_timeout,
             "session_id": target_id, "workspace_id": getattr(session, "workspace_id", None) or "",
-            "stage": stage_id}, separators=(",", ":"))
-        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}", "lateral")
+            "stage": stage_id, **({"https": True} if https else {})}, separators=(",", ":"))
+        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else ""), "lateral")
         event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
         if status not in ("ok", "timeout"):
             return None, status
@@ -5556,6 +5558,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             try:
                 verify = body.get("verify", True)
                 exec_timeout = float(body.get("exec_timeout", 300))
+                https = body.get("https", False)
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
                 if not isinstance(verify, bool):
@@ -5563,6 +5566,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                 if not all(1 <= value <= 3600
                            for value in (exec_timeout, register_timeout, verify_timeout)):
                     raise ValueError("lateral timeouts must be between 1 and 3600 seconds")
+                if not isinstance(https, bool):
+                    raise ValueError("https must be a boolean")
             except (TypeError, ValueError):
                 self._json(400, {"error": "invalid_lateral_options"})
                 return True
@@ -5574,12 +5579,13 @@ class RMMHandler(BaseHTTPRequestHandler):
                 exec_timeout=exec_timeout,
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
+                **({"https": True} if https else {}),
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
             elif status in ("agent_type_unsupported", "session_busy"):
                 self._json(409, {"error": status})
-            elif status in ("invalid_method", "invalid_host"):
+            elif status in ("invalid_method", "invalid_host", "invalid_https"):
                 self._json(400, {"error": status})
             elif status == "agent_payload_unavailable":
                 self._json(503, {"error": status,

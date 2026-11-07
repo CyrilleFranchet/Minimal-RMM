@@ -1,5 +1,31 @@
 # Progress Log
 
+## 2026-11-07 — Add WinRM HTTPS selection
+
+- Add `-s` / `--https` to CLI/WebUI lateral WinRM commands. Accept either
+  side of the target argument; reject unsupported methods and invalid flags.
+  Standalone lateral source selection retains `--session`; its former `-s`
+  session alias now selects HTTPS as requested.
+- Forward strict boolean `https` through REST, API client, MCP/AI tools,
+  server command payload, and Go agent to `winrmCreateProcessWithTransportAPI`.
+  Default remains HTTP/5985; HTTPS uses port 5986, including IPv6 URL handling.
+- Use the internal `winrm_https` method for secure dispatch so older agents
+  reject the request instead of ignoring the new flag and silently using HTTP.
+- Preserve authentication choice and all native certificate checks. Require
+  a configured HTTPS listener and a trusted certificate covering the target;
+  do not disable validation, modify TrustedHosts, or downgrade on failure.
+- Add parser, route, queue, API/MCP, shell, native URL/authentication, and
+  no-downgrade coverage, and extend the parity guard for the new parameter.
+- Use `StrictBool` at the registered MCP boundary and test it through the SDK
+  so strings, integers, and null cannot be coerced into the transport flag.
+- Align direct agent parsing by rejecting explicit JSON null for HTTPS,
+  including case-insensitive field names. Normalize the Python client's method
+  validation consistently with the server for whitespace and uppercase names.
+- Validation: full `make check`, uncached `make go-test`, host vet, formatting,
+  and whitespace checks passed. Windows amd64/arm64 normal/debug test binaries
+  cross-compiled. Code/security/test/frontend reviews found no remaining
+  blockers. Native Windows HTTPS/TLS execution still requires a lab retest.
+
 ## 2026-11-07 — Use the documented default-process WinRM path
 
 - Without make_token, pass NULL authentication credentials to WSManCreateSession
