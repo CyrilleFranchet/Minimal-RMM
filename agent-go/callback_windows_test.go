@@ -43,6 +43,20 @@ func TestWindowsRegistrationUsesProcessIdentityDespiteInheritedEnvironment(t *te
 	}
 }
 
+// Resolve every SCM entry point before any service operation can trigger a lazy-load panic.
+func TestWindowsSCMProceduresResolve(t *testing.T) {
+	for _, proc := range []*syscall.LazyProc{
+		procOpenSCManagerW, procOpenServiceW, procCreateServiceW,
+		procStartServiceW, procDeleteService, procCloseServiceHandle, procQueryServiceStatus,
+	} {
+		t.Run(proc.Name, func(t *testing.T) {
+			if err := proc.Find(); err != nil {
+				t.Fatalf("SCM procedure is unavailable: %v", err)
+			}
+		})
+	}
+}
+
 // Exercise the real dedicated C service without fetching or launching any agent.
 // No listener URL is supplied, so the worker reports stage exit 2 through SCM.
 func TestDedicatedLateralServiceProtocol(t *testing.T) {

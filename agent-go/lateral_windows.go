@@ -22,7 +22,7 @@ var (
 	procOpenServiceW       = advapi32.NewProc("OpenServiceW")
 	procCreateServiceW     = advapi32.NewProc("CreateServiceW")
 	procStartServiceW      = advapi32.NewProc("StartServiceW")
-	procDeleteServiceW     = advapi32.NewProc("DeleteServiceW")
+	procDeleteService      = advapi32.NewProc("DeleteService")
 	procCloseServiceHandle = advapi32.NewProc("CloseServiceHandle")
 	procQueryServiceStatus = advapi32.NewProc("QueryServiceStatus")
 )
@@ -267,7 +267,7 @@ func scmStartService(host, serviceName, binPath string, markForDeletion bool) er
 	defer procCloseServiceHandle.Call(service)
 	started, _, callErr := procStartServiceW.Call(service, 0, 0)
 	if markForDeletion {
-		procDeleteServiceW.Call(service)
+		procDeleteService.Call(service)
 	}
 	if err := serviceStartOutcome(started != 0, callErr); err != nil {
 		return fmt.Errorf("start service on %s: %w", host, err)
@@ -325,7 +325,7 @@ func scmDeleteService(host, serviceName string) (bool, error) {
 		}
 	}()
 	debugEvent("scm.delete_service.begin", nil)
-	deleted, _, callErr := procDeleteServiceW.Call(service)
+	deleted, _, callErr := procDeleteService.Call(service)
 	if deleted == 0 {
 		debugEvent("scm.delete_service.failed", callErr)
 		return false, fmt.Errorf("delete service on %s: %w", host, callErr)

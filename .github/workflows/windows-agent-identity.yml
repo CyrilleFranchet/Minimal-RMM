@@ -87,7 +87,7 @@ jobs:
           $exe = (Resolve-Path ../lateral-service-test.exe).Path
           $env:RMM_LATERAL_SERVICE_TEST_EXE = $exe
           go test -buildvcs=false -count=1 -v `
-            -run TestDedicatedLateralServiceProtocol .
+            -run 'Test(DedicatedLateralServiceProtocol|WindowsSCMProcedures)' .
       - name: Test callback isolation, token revocation, and spawn dispatch
         working-directory: agent-go
         shell: pwsh

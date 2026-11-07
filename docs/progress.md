@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-07 — Fix the native service-deletion panic
+
+- Native Windows CI reproduced a process-ending panic when lazy-loading the
+  nonexistent `DeleteServiceW` entry point. Bind `DeleteService`, which takes
+  only a service handle and has no ANSI/Unicode variants. Fix both immediate
+  deletion and mark-for-deletion calls.
+- Add native resolution checks for all SCM procedures and run them alongside
+  the service handshake/cleanup fixture. The debug diagnostic jobs passed on
+  Go 1.21 and Go 1.27; they were separate from the failing cleanup fixture.
+- This is a reproduced cleanup-path crash matching the reported source-agent
+  exit and retained remote service; the earlier pointer fix did not address it.
+
 ## 2026-11-07 — Separate Go debug agents
 
 - Extend the same explicit debug selection to `spawn` and all three `lateral`
