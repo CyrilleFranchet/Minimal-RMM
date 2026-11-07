@@ -212,15 +212,16 @@ func waitStage1Stopped(host, name string, timeout time.Duration) error {
 // deletion immediately (removed once the process stops); the psexec module
 // leaves the entry in place so the cleanup command owns its removal.
 func scmStartService(host, serviceName, binPath string, markForDeletion bool) error {
-	var machinePtr uintptr
+	var machinePtr *uint16
 	if host != "" {
 		pointer, err := syscall.UTF16PtrFromString(`\\` + host)
 		if err != nil {
 			return fmt.Errorf("encode host: %w", err)
 		}
-		machinePtr = uintptr(unsafe.Pointer(pointer))
+		machinePtr = pointer
 	}
-	scm, _, callErr := procOpenSCManagerW.Call(machinePtr, 0, scManagerAllAccess)
+	// Convert inside Call so Go retains the hostname for the native call.
+	scm, _, callErr := procOpenSCManagerW.Call(uintptr(unsafe.Pointer(machinePtr)), 0, scManagerAllAccess)
 	if scm == 0 {
 		return fmt.Errorf("open SC manager on %s: %w", host, callErr)
 	}
@@ -261,15 +262,16 @@ func scmStartService(host, serviceName, binPath string, markForDeletion bool) er
 // scmDeleteService removes a service on the target host; a missing service
 // is reported as already removed.
 func scmDeleteService(host, serviceName string) (bool, error) {
-	var machinePtr uintptr
+	var machinePtr *uint16
 	if host != "" {
 		pointer, err := syscall.UTF16PtrFromString(`\\` + host)
 		if err != nil {
 			return false, fmt.Errorf("encode host: %w", err)
 		}
-		machinePtr = uintptr(unsafe.Pointer(pointer))
+		machinePtr = pointer
 	}
-	scm, _, callErr := procOpenSCManagerW.Call(machinePtr, 0, scManagerAllAccess)
+	// Convert inside Call so Go retains the hostname for the native call.
+	scm, _, callErr := procOpenSCManagerW.Call(uintptr(unsafe.Pointer(machinePtr)), 0, scManagerAllAccess)
 	if scm == 0 {
 		return false, fmt.Errorf("open SC manager on %s: %w", host, callErr)
 	}

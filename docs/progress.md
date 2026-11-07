@@ -209,6 +209,12 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ### 2026-11-07 — PsExec lifecycle review fixes
 
+- Preserve the typed UTF-16 hostname pointer until `OpenSCManagerW.Call` in
+  both service creation and deletion. Converting it to a stored `uintptr`
+  beforehand lost Go's native-call pointer lifetime guarantees. This fixes a
+  cleanup crash candidate; the reported source-agent exit is not yet reproduced.
+- Pointer fix validation: host Go tests and vet pass; Windows amd64/arm64 test
+  binaries cross-compile. Native Windows cleanup/crash validation remains pending.
 - Publish and retain exact service/binary cleanup authority as soon as SCM
   acknowledges the start. `awaitLateralResult` preserves that acknowledgment
   when the command deadline expires and prefers an already completed result.
