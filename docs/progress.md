@@ -45,12 +45,14 @@
   real local DLL/session checks, and Windows SDK C layout assertions. Run the
   Windows fixtures through CI in normal and debug modes.
 - Preserve default thread credentials. Rebuild and replace the source agent
-  to apply the correction. Native Windows tests and remote lab execution
-  remain pending; host tests and cross-builds cannot verify remote behavior.
+  to apply the correction. Native Windows CI run `42382698565` passed the
+  SDK layout assertions and all WinRM fixtures in normal/debug modes.
+  Remote authentication, staging, and detach still require lab validation.
 - Validation: `make check` and `make go-test` pass. Normal/debug Windows test
   binaries cross-compile for amd64 and arm64; independent C SDK layout
   assertions pass with MinGW. Final code/security/test review found no
-  blocking implementation issue. Windows CI execution is still pending.
+  blocking implementation issue. The Microsoft SDK fixture uses MSVC's C++
+  parser for typed enums; it also compiles as C and C++ with MinGW.
 
 ## 2026-11-07 — Remove per-command debug controls
 
