@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-07 — Remove duplicate spawnas shell output
+
+- Render the launch result through session events only; the HTTP response
+  still supplies the registration status. Previously both paths printed the
+  same session ID, PID, and identity after a single launch.
+- This is a WebUI display change; agent execution is unchanged.
+- Add a regression test covering one displayed result and registration status
+  for both successful and unconfirmed registration.
+- Validation: JavaScript syntax, all 28 shell completion tests, the full WebUI
+  contract suite, operator parity, Markdown lint, and diff whitespace checks
+  pass. Live browser validation is pending.
+
 ## 2026-11-07 — Consistent random Go deployment identities
 
 - Use random 32-character hex session IDs for server-selected `spawn`,

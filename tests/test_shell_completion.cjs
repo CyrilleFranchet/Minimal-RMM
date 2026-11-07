@@ -172,6 +172,27 @@ test('identity results render only through session events, including failed oper
   }
 });
 
+test('spawnas renders its launch result once through events and preserves registration status', async () => {
+  for (const registered of [true, false]) {
+    const f = fixture(), outputs = [];
+    const result = 'spawned session=child-session pid=42 identity=LAB\\alice';
+    f.context.api = async (...args) => {
+      f.calls.push(args);
+      return {status: 200, data: {spawned_session_id: 'child-session', spawn_pid: 42,
+        identity: 'LAB\\alice', verify: true, registered}};
+    };
+    f.context.appendShellOutput = text => outputs.push(text);
+    f.context.pollSessionEvents = async () => outputs.push(result);
+    f.type('/spawnas cred-example');
+    await f.context.runCommand(false);
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0][0], '/sessions/agent/spawnas');
+    assert.deepEqual(outputs, ['Spawning agent under new identity…',
+      `registered: ${registered ? 'yes' : 'no'}`, result]);
+    assert.deepEqual(f.errors, registered ? [] : ['spawnas registration was not confirmed.']);
+  }
+});
+
 test('failed validation and HTTP requests remain recallable as original input', async () => {
   for (const command of ['/unknown', '/uid extra', '/make_token', '/lateral psexec', '/embeddings run']) {
     const f = fixture();

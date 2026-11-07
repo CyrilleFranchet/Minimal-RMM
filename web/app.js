@@ -3445,7 +3445,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) { appendShellError(`spawnas failed (${status}): ${data?.error ?? ""}`); return true; }
-      appendShellOutput(`spawned session=${data?.spawned_session_id} pid=${data?.spawn_pid} identity=${data?.identity}`);
+      // The session event stream renders the agent's launch result.
       if (data?.verify) {
         appendShellOutput(`registered: ${data?.registered ? "yes" : "no"}`);
         if (data?.registered === false) appendShellError("spawnas registration was not confirmed.");
