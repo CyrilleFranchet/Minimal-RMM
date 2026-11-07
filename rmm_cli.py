@@ -1687,6 +1687,7 @@ Spawn:    /spawn [id]   (same identity; children inherit the source build mode)
 Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id>
 Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
 Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure]   (HTTPS/5986 for winrm only; inherits source build mode)
+          -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
 Config:   /rclone-config   (rclone profiles + bootstrap status)
@@ -2922,7 +2923,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_lat.add_argument("host", help="Target hostname or IP address")
     sp_lat.add_argument("--session", default=None, help="Source session ID")
     sp_lat.add_argument("-s", "--https", action="store_true", help="Use HTTPS/5986 with certificate validation (winrm only)")
-    sp_lat.add_argument("-k", "--insecure", action="store_true", help="Skip WinRM server certificate checks (requires --https)")
+    sp_lat.add_argument("-k", "--insecure", action="store_true", help="Skip CA/name/revocation checks; certificate dates still apply (requires --https)")
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")

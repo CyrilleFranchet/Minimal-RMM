@@ -3179,6 +3179,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
   /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure]   HTTPS/5986 for winrm only; inherits the source build mode
+                                   -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
   /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
                                    Operate workspace BloodHound; never sent to the agent
 

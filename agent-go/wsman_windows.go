@@ -432,7 +432,7 @@ func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, agentPath, sessionID
 		}
 		certificateMode := "verify"
 		if insecure {
-			certificateMode = "skipped"
+			certificateMode = "skip-ca-cn-revocation"
 		}
 		return fmt.Errorf("WinRM shell on %s (%s; auth=%s; cert=%s): %w", host, scheme, mode, certificateMode, err)
 	}

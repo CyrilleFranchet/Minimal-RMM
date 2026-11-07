@@ -1911,7 +1911,7 @@ OPENAI_TOOLS: list[dict] = [
                     "method": {"type": "string", "enum": ["psexec", "wmiexec", "winrm"]},
                     "host": {"type": "string", "description": "Target hostname or IP address"},
                     "https": {"type": "boolean", "default": False, "description": "WinRM only: HTTPS on port 5986 with server certificate validation; default HTTP/5985."},
-                    "insecure": {"type": "boolean", "default": False, "description": "Skip CA, name and revocation checks for this WinRM HTTPS session. Requires https=true."},
+                    "insecure": {"type": "boolean", "default": False, "description": "Skip CA, name and revocation checks for this WinRM HTTPS session. Certificate date checks still apply. Requires https=true."},
                     "verify": {"type": "boolean", "default": True},
                     "exec_timeout": {"type": "number", "default": 300},
                     "register_timeout": {"type": "number", "default": 60},

@@ -127,6 +127,7 @@ type wsmanFixture struct {
 	t                     *testing.T
 	fail                  string
 	failOption            uintptr
+	faultCode             uint32
 	timeout               string
 	calls                 []string
 	contexts              []uintptr
@@ -169,6 +170,9 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		code := uint32(0)
 		if name == f.fail {
 			code = 5
+			if f.faultCode != 0 {
+				code = f.faultCode
+			}
 		}
 		wsmanTestCallback(async, wsmanEndOfOperation, code, data)
 	}

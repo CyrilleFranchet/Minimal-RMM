@@ -145,3 +145,16 @@ func TestWSManCertificateBypass(t *testing.T) {
 		t.Fatal("HTTP bypass must fail before native calls")
 	}
 }
+
+// Skip-CA/name/revocation is not a blanket TLS-validation override. Native
+// secure-channel failures, including certificate expiry, must still surface.
+func TestWSManPartialCertificateBypassPreservesTLSFailure(t *testing.T) {
+	identity := &winrmCredentials{user: "fixture", password: "fixture"}
+	f := &wsmanFixture{t: t, wantURL: "https://10.0.0.8:5986/wsman", wantAuth: 4,
+		wantIdentity: identity, wantCertificateBypass: true, fail: "WSManCreateShell", faultCode: 12175}
+	workspace := "fixture-workspace"
+	err := winrmCreateProcessWithTLSAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity, true, true)
+	if err == nil || !strings.Contains(err.Error(), "WSMan error 12175") || !strings.Contains(err.Error(), "cert=skip-ca-cn-revocation") {
+		t.Fatalf("partial certificate bypass obscured native TLS failure: %v", err)
+	}
+}

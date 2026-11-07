@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-11-08 — Clarify native WSMan certificate-bypass limits
+
+- An operator-reported run reached TLS error 12175 with an expired server certificate
+  despite the requested skip-CA/name/revocation options. WSMan exposes no
+  documented option to disable certificate date validation.
+- Correct the misleading `cert=skipped` label to
+  `cert=skip-ca-cn-revocation`, and clarify CLI/tool help and documentation.
+- Add native-fixture coverage that TLS errors remain failures under partial
+  bypass. This does not resolve certificate expiry; that requires listener
+  certificate renewal/rebinding or a different TLS transport implementation.
+- Review correction: explain the partial bypass in interactive CLI and web
+  help as well. The regression fixture injects a native error; it does not
+  exercise a TLS handshake or validate expiry behavior on Windows.
+
 ## 2026-11-08 — Add requested per-session WinRM certificate bypass
 
 - Add `-k` / `--insecure` alongside `-s` in CLI/WebUI. Expose strict boolean

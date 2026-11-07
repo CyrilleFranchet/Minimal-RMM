@@ -462,7 +462,15 @@ distinct internal `winrm_https_insecure` method instead of ignoring the flag.
 `winrmCreateProcessWithTLSAPI` applies the three skip options before opening
 the shell and stops if an option fails. `TestWSManCertificateBypass` checks
 the option values, ordering, failure handling, and rejection without HTTPS.
-Operator errors identify the configured certificate mode as `verify` or `skipped`.
+Operator errors identify the configured certificate mode as `verify` or
+`skip-ca-cn-revocation`. This is a partial bypass: native WSMan still enforces
+certificate validity dates. An expired or not-yet-valid server certificate can
+still fail with error 12175. The documented WSMan API exposes no skip-date
+option; renew/rebind the target listener certificate to resolve expiry on this
+transport. See Microsoft's [WSMan session options](https://learn.microsoft.com/en-us/windows/win32/api/wsman/ne-wsman-wsmansessionoption)
+for the available checks. `TestWSManPartialCertificateBypassPreservesTLSFailure`
+injects error 12175 to check error propagation and the certificate-mode label;
+it does not exercise TLS or an actual expired certificate.
 `TestLateralHTTPSValidation` checks protocol inputs; `TestWSManHTTPSTransport`
 checks transport/authentication combinations, and
 `TestWSManHTTPSFailureDoesNotDowngrade` checks failure propagation without
