@@ -183,7 +183,7 @@ test('spawnas renders its launch result once through events and preserves regist
     };
     f.context.appendShellOutput = text => outputs.push(text);
     f.context.pollSessionEvents = async () => outputs.push(result);
-    f.type('/spawnas cred-example');
+    f.type('/spawnas -i cred-example');
     await f.context.runCommand(false);
     assert.equal(f.calls.length, 1);
     assert.equal(f.calls[0][0], '/sessions/agent/spawnas');
@@ -303,7 +303,7 @@ test('creds dispatches list, add and delete with literal credential arguments', 
     ['/creds list', '/creds', null],
     [String.raw`/creds add LAB\alice 'two words\path'`, '/creds', {domain:'LAB', user:'alice', password:String.raw`two words\path`}],
     ["/creds add alice ''", '/creds', {domain:'', user:'alice', password:''}],
-    ['/creds del credential-123', '/creds/credential-123', null],
+    ['/creds del -i credential-123', '/creds/credential-123', null],
   ]) {
     const f = fixture();
     f.context.appendShellOutput = () => {};
@@ -342,7 +342,7 @@ test('identity commands accept stored IDs or direct credentials', async () => {
     for (const direct of [false, true]) {
       const f = fixture(); f.context.appendShellOutput = () => {};
       f.context.api = async (...args) => { f.calls.push(args); return {status:200,data:{ok:true}}; };
-      const identity = direct ? String.raw`LAB\alice 'two words\path'` : 'cred-123';
+      const identity = direct ? String.raw`LAB\alice 'two words\path'` : '-i cred-123';
       await f.context.dispatchShellMetaCommand(`/${verb} ${identity}${verb === 'runas' ? ' whoami /all' : ''}`);
       assert.equal(f.errors.length, 0);
       assert.equal(f.calls[0][0], `/sessions/agent/${verb}`);
@@ -351,6 +351,35 @@ test('identity commands accept stored IDs or direct credentials', async () => {
       else { assert.equal(body.cred_id, 'cred-123'); assert.equal(body.password, undefined); }
       if (verb === 'runas') assert.equal(body.command, 'whoami /all');
       f.type(`/${verb} `); assert.match(f.hint.textContent, /<cred_id>/); assert.match(f.hint.textContent, /<password>/);
+    }
+  }
+});
+
+test('credential commands reject missing IDs, positional IDs and mixed identity arguments locally', async () => {
+  const commands = ['/creds del cred-123', '/creds del -i', '/creds del -i ""', '/creds del -i id extra'];
+  for (const verb of ['make_token', 'spawnas', 'runas']) {
+    commands.push(`/${verb} cred-123`, `/${verb} -i`, `/${verb} -i ""`, `/${verb} -i -i`);
+    if (verb === 'runas') commands.push('/runas cred-123 whoami', '/runas -i id ""');
+    else commands.push(`/${verb} -i id alice password`);
+  }
+  for (const command of commands) {
+    const f = fixture(); await f.context.dispatchShellMetaCommand(command);
+    assert.equal(f.calls.length, 0, command);
+    assert.match(f.errors[0], /Usage:/, command);
+  }
+});
+
+test('direct identity syntax accepts domainless names and preserves empty or flag-like passwords', async () => {
+  for (const verb of ['make_token', 'spawnas', 'runas']) {
+    for (const password of ['', '-i', 'two words\\path']) {
+      const f = fixture(); f.context.appendShellOutput = () => {};
+      f.context.api = async (...args) => { f.calls.push(args); return {status: 200, data: {ok: true}}; };
+      await f.context.dispatchShellMetaCommand(`/${verb} alice '${password}'${verb === 'runas' ? ' whoami /all' : ''}`);
+      assert.equal(f.errors.length, 0);
+      const body = JSON.parse(f.calls[0][1].body);
+      assert.equal(body.user, 'alice'); assert.equal(body.password, password);
+      assert.equal(body.cred_id, undefined);
+      if (verb === 'runas') assert.equal(body.command, 'whoami /all');
     }
   }
 });

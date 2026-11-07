@@ -1021,10 +1021,37 @@ def parse_identity_arguments(line: str) -> list[str]:
     return list(lexer)
 
 
+def parse_credential_arguments(parts: list[str], *, with_command: bool = False) -> tuple[dict, str]:
+    """Parse explicit stored credentials or a direct identity/password pair."""
+    minimum = 3 if with_command else 2
+    if len(parts) < minimum or (not with_command and len(parts) != minimum):
+        raise ValueError("Expected -i <cred_id> or <identity> <password>" +
+                         (" followed by a command" if with_command else ""))
+    if parts[0] == "-i":
+        if not parts[1].strip() or parts[1].startswith("-"):
+            raise ValueError("A credential ID is required after -i")
+        options = {"cred_id": parts[1]}
+    else:
+        if not parts[0].strip() or parts[0].startswith("-"):
+            raise ValueError("Expected -i <cred_id> or <identity> <password>")
+        _, user = split_identity(parts[0])
+        if not user:
+            raise ValueError("Missing user in identity")
+        options = {"user": parts[0], "password": parts[1]}
+    command = " ".join(parts[2:]) if with_command else ""
+    if with_command and not command.strip():
+        raise ValueError("A command is required")
+    return options, command
+
+
 def cmd_make_token(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
-    if args.password is None and "\\" not in args.user:
-        code, data = client.make_token(sid, cred_id=args.user, timeout=args.timeout)
+    if args.cred_id is not None:
+        if not args.cred_id.strip() or args.cred_id.startswith("-"):
+            die("A credential ID is required after -i")
+        if args.user is not None or args.password is not None:
+            die("Use either -i <cred_id> or identity/password, not both")
+        code, data = client.make_token(sid, cred_id=args.cred_id, timeout=args.timeout)
         if code != 200:
             die(f"make_token failed ({code}): {data.get('error')}")
         if args.json:
@@ -1032,8 +1059,8 @@ def cmd_make_token(client: RmmApiClient, state: dict, args):
         else:
             say(data.get("output") or "(no output)")
         return
-    if args.password is None:
-        die("Password is required with DOMAIN\\user")
+    if args.user is None or args.password is None:
+        die("Provide -i <cred_id> or an identity and password")
     domain, user = split_identity(args.user)
     if not user:
         die("Missing user in identity (use DOMAIN\\user or user)")
@@ -1080,6 +1107,8 @@ def cmd_creds_add(client: RmmApiClient, state: dict, args):
 
 
 def cmd_creds_del(client: RmmApiClient, state: dict, args):
+    if not args.cred_id.strip() or args.cred_id.startswith("-"):
+        die("A credential ID is required after -i")
     code, data = client.creds_del(args.cred_id)
     if args.json:
         print_json(data)
@@ -1111,8 +1140,13 @@ def cmd_spawnas(client: RmmApiClient, state: dict, args):
     user = getattr(args, "user", "") or ""
     domain = getattr(args, "domain", "") or ""
     password = getattr(args, "password", "") or ""
-    if not cred_id and not user:
-        die("Provide a cred_id positional argument or --user", 1)
+    if args.cred_id is not None:
+        if not cred_id.strip() or cred_id.startswith("-"):
+            die("A credential ID is required after -i", 1)
+        if any(getattr(args, field, None) is not None for field in ("user", "domain", "password")):
+            die("Use either -i <cred_id> or direct credentials, not both", 1)
+    elif not user.strip() or args.password is None:
+        die("Provide -i <cred_id> or --user and --password", 1)
     if not cred_id and domain == "" and "\\" in user:
         domain, user = user.split("\\", 1)
     verify = not getattr(args, "no_verify", False)
@@ -1144,8 +1178,13 @@ def cmd_runas(client: RmmApiClient, state: dict, args):
     user = getattr(args, "user", "") or ""
     domain = getattr(args, "domain", "") or ""
     password = getattr(args, "password", "") or ""
-    if not cred_id and not user:
-        die("Provide a cred_id positional argument or --user", 1)
+    if args.cred_id is not None:
+        if not cred_id.strip() or cred_id.startswith("-"):
+            die("A credential ID is required after -i", 1)
+        if any(getattr(args, field, None) is not None for field in ("user", "domain", "password")):
+            die("Use either -i <cred_id> or direct credentials, not both", 1)
+    elif not user.strip() or args.password is None:
+        die("Provide -i <cred_id> or --user and --password", 1)
     if not cred_id and domain == "" and "\\" in user:
         domain, user = user.split("\\", 1)
     say("Running command under new identity (waits for the next beacon)...", err=True)
@@ -1625,10 +1664,10 @@ Session:  /list | /use <id> | /info | /background | /kill [id]
 Beacon:   /set_sleep <seconds> | /set_jitter <percent> | /show_config
 Remote:   <command> or /run <command>  (queue) | /exec <command>  (wait) | /persist <cmd> | /stop
 Spawn:    /spawn [id]   (detached second Go agent, same identity)
-          /spawnas <cred_id>   (spawn under different identity, CreateProcessAsUser cascade)
-          /runas <cred_id> <command>   (run command under different identity)
-Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del <cred_id>
-Identity: /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
+          /spawnas -i <cred_id>   (spawn under different identity, CreateProcessAsUser cascade)
+          /runas -i <cred_id> <command>   (run command under different identity)
+Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id>
+Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
 Lateral:  /lateral <psexec|wmiexec|winrm> <host>   (start a Go agent on another host)
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
@@ -2157,21 +2196,22 @@ def run_interactive(
                 except ValueError:
                     warn("Invalid quoting. Use /make_token <identity> <password>; quote passwords containing spaces.")
                     continue
-                if len(rest) not in (1, 2) or (len(rest) == 1 and "\\" in rest[0]):
-                    warn("Usage: /make_token <cred_id> | /make_token <DOMAIN\\user> <password>")
+                try:
+                    options, _ = parse_credential_arguments(rest)
+                except ValueError:
+                    warn("Usage: /make_token -i <cred_id> | /make_token <identity> <password>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
                     continue
-                domain, user = split_identity(rest[0])
-                if not user:
-                    warn("Missing user in identity (use DOMAIN\\user or user)")
-                    continue
-                identity = f"{domain}\\{user}" if domain else user
+                identity = options.get("user", "stored credential")
                 say(f"Creating network token for {identity} (waits for the next beacon)...")
-                code, data = (client.make_token(sid, cred_id=rest[0]) if len(rest) == 1
-                              else client.make_token(sid, domain, user, rest[1]))
+                if "cred_id" in options:
+                    code, data = client.make_token(sid, **options)
+                else:
+                    domain, user = split_identity(options["user"])
+                    code, data = client.make_token(sid, domain, user, options["password"])
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"make_token failed ({code})" + (f": {detail}" if detail else ""))
@@ -2273,16 +2313,17 @@ def run_interactive(
                                 cred_identity = (cred_domain + "\\" + cred_user) if cred_domain else cred_user
                                 say(f"stored {data.get('cred_id')} ({cred_identity})")
                 elif sub_cmd == "del":
-                    if len(sub_rest) != 2:
-                        warn("Usage: /creds del <cred_id>")
+                    if (len(sub_rest) != 3 or sub_rest[1] != "-i" or
+                            not sub_rest[2].strip() or sub_rest[2].startswith("-")):
+                        warn("Usage: /creds del -i <cred_id>")
                     else:
-                        code, data = client.creds_del(sub_rest[1])
+                        code, data = client.creds_del(sub_rest[2])
                         if code not in (200, 404):
                             warn(f"creds del failed ({code}): {data.get('error') if isinstance(data, dict) else data}")
                         else:
                             say(data.get("message") or ("deleted" if code == 200 else "not found"))
                 else:
-                    warn("Usage: /creds list | /creds add <identity> <password> | /creds del <cred_id>")
+                    warn("Usage: /creds list | /creds add <identity> <password> | /creds del -i <cred_id>")
                 continue
             if cmd == "spawnas":
                 try:
@@ -2290,16 +2331,16 @@ def run_interactive(
                 except ValueError:
                     warn("Invalid quoting")
                     continue
-                if len(rest) not in (1, 2) or (len(rest) == 1 and "\\" in rest[0]):
-                    warn("Usage: /spawnas <cred_id> | /spawnas <DOMAIN\\user> <password>")
+                try:
+                    options, _ = parse_credential_arguments(rest)
+                except ValueError:
+                    warn("Usage: /spawnas -i <cred_id> | /spawnas <identity> <password>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
                     continue
-                cred_id = rest[0]
                 say("Spawning agent under new identity (waits for the next beacon and registration)...")
-                options = {"cred_id": cred_id} if len(rest) == 1 else {"user": rest[0], "password": rest[1]}
                 code, data = client.spawnas(sid, **options)
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
@@ -2318,18 +2359,16 @@ def run_interactive(
                 except ValueError:
                     warn("Invalid quoting")
                     continue
-                direct = bool(rest and "\\" in rest[0])
-                if len(rest) < (3 if direct else 2):
-                    warn("Usage: /runas <cred_id> <command...> | /runas <DOMAIN\\user> <password> <command...>")
+                try:
+                    options, runas_command = parse_credential_arguments(rest, with_command=True)
+                except ValueError:
+                    warn("Usage: /runas -i <cred_id> <command...> | /runas <identity> <password> <command...>")
                     continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
                     continue
-                runas_cred_id = rest[0]
-                runas_command = " ".join(rest[2:] if direct else rest[1:])
                 say("Running command under new identity (waits for the next beacon)...")
-                options = {"user": rest[0], "password": rest[1]} if direct else {"cred_id": runas_cred_id}
                 code, data = client.runas(sid, runas_command, **options)
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
@@ -2789,7 +2828,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared],
         help="Create a runas /netonly style network identity on a Go agent session",
     )
-    sp_mt.add_argument("user", help="Credential ID or identity as DOMAIN\\user")
+    sp_mt.add_argument("-i", dest="cred_id", default=None, help="Credential ID from creds add")
+    sp_mt.add_argument("user", nargs="?", default=None, help="Identity as DOMAIN\\user or plain user")
     sp_mt.add_argument("password", nargs="?", default=None, help="Password for a direct identity")
     sp_mt.add_argument("--session", "-s", default=None)
     sp_mt.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
@@ -2811,7 +2851,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_creds_add_p.add_argument("password", help="Password")
     sp_creds_add_p.set_defaults(func=cmd_creds_add)
     sp_creds_del_p = sp_creds_sub.add_parser("del", parents=[shared], help="Remove a stored credential")
-    sp_creds_del_p.add_argument("cred_id", help="Credential ID")
+    sp_creds_del_p.add_argument("-i", dest="cred_id", required=True, help="Credential ID")
     sp_creds_del_p.set_defaults(func=cmd_creds_del)
     sp_creds_list_p = sp_creds_sub.add_parser("list", parents=[shared], help="List stored credentials (no passwords)")
     sp_creds_list_p.set_defaults(func=cmd_creds_list)
@@ -2821,9 +2861,9 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared],
         help="Spawn a Go agent copy under a different process identity (CreateProcessAsUser cascade)",
     )
-    sp_spawnas.add_argument("cred_id", nargs="?", default="", help="Credential ID from 'creds add'")
-    sp_spawnas.add_argument("--user", default="", help="Identity as DOMAIN\\user or plain user (if no cred_id)")
-    sp_spawnas.add_argument("--password", default="", help="Password (if no cred_id)")
+    sp_spawnas.add_argument("-i", dest="cred_id", default=None, help="Credential ID from 'creds add'")
+    sp_spawnas.add_argument("--user", default=None, help="Identity as DOMAIN\\user or plain user (if no cred_id)")
+    sp_spawnas.add_argument("--password", default=None, help="Password (if no cred_id)")
     sp_spawnas.add_argument("--session", "-s", default=None)
     sp_spawnas.add_argument("--no-verify", dest="no_verify", action="store_true")
     sp_spawnas.add_argument("--spawn-timeout", type=float, default=120)
@@ -2837,9 +2877,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a command on a Go agent under a different process identity",
     )
     sp_runas.add_argument("command", help="Shell command to execute")
-    sp_runas.add_argument("cred_id", nargs="?", default="", help="Credential ID from 'creds add'")
-    sp_runas.add_argument("--user", default="", help="Identity (if no cred_id)")
-    sp_runas.add_argument("--password", default="", help="Password (if no cred_id)")
+    sp_runas.add_argument("-i", dest="cred_id", default=None, help="Credential ID from 'creds add'")
+    sp_runas.add_argument("--user", default=None, help="Identity (if no cred_id)")
+    sp_runas.add_argument("--password", default=None, help="Password (if no cred_id)")
     sp_runas.add_argument("--session", "-s", default=None)
     sp_runas.add_argument("--timeout", type=float, default=120)
     sp_runas.set_defaults(func=cmd_runas)

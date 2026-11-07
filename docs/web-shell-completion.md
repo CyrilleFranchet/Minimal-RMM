@@ -69,8 +69,8 @@ These commands are handled in the browser instead of being sent to the agent she
 | `/lateral <psexec\|wmiexec\|winrm> <host>` | `POST …/lateral` | Starts a Go agent on another host through the requested method; the request confirms registration without extra probe commands (see `docs/go-agent.md`) |
 | `/bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
 | `/creds <add \| del \| list> [domain\user] [password]` | `GET/POST/DELETE …/creds` | Manage the workspace credential store; `add` returns a `cred_id`; `del` takes a `cred_id`; `list` shows all stored credentials by ID |
-| `/spawnas <cred_id>` | `POST …/spawnas` | Spawn a new agent copy under a different process identity using the cascade (`CreateProcessAsUser → CreateProcessWithTokenW → CreateProcessWithLogonW → CreateProcessA`); accepts a credential store ID or inline `domain\user password` |
-| `/runas <cred_id> <command>` | `POST …/runas` | Run a shell command on the selected Go session under a different process identity using the same cascade; accepts a credential store ID or inline `domain\user password` |
+| `/spawnas -i <cred_id>` | `POST …/spawnas` | Spawn a new agent copy under a different process identity using the cascade (`CreateProcessAsUser → CreateProcessWithTokenW → CreateProcessWithLogonW → CreateProcessA`); accepts a credential store ID or inline `domain\user password` |
+| `/runas -i <cred_id> <command>` | `POST …/runas` | Run a shell command on the selected Go session under a different process identity using the same cascade; accepts a credential store ID or inline `domain\user password` |
 
 BloodHound shell output includes the HTTP status and response data. The shell
 remains inside a selected session view; use CLI or MCP for advanced actions
@@ -145,26 +145,40 @@ for identity commands also returns HTTP 503 when the store is unavailable.
 The identity commands accept credentials from `/creds list` or a direct identity:
 
 ```text
-/make_token <cred_id>
+/make_token -i <cred_id>
 /make_token DOMAIN\user 'password with spaces'
-/spawnas <cred_id>
+/spawnas -i <cred_id>
 /spawnas DOMAIN\user 'password with spaces'
-/runas <cred_id> whoami /all
+/runas -i <cred_id> whoami /all
 /runas DOMAIN\user 'password with spaces' whoami /all
 ```
 
-For direct `/runas` credentials, include the domain separator (`DOMAIN\user` or
-`.\user`) to distinguish the identity from a credential ID. Argument hints show
-both forms. Stored IDs resolve within the authenticated workspace; passwords
+All stored credential IDs require `-i <cred_id>`; positional IDs are no longer
+accepted. Direct credentials accept `DOMAIN\user`, `.\user`, or a domainless
+username with a password. Argument hints show both forms. Stored IDs resolve
+within the authenticated workspace; passwords
 are never retrieved by the browser. The CLI interactive commands support the
-same forms. CLI `make-token <cred_id>` also accepts a stored credential.
+same forms. The standalone CLI accepts `make-token -i <cred_id>`,
+`spawnas -i <cred_id>`, `runas -i <cred_id> "whoami /all"`, and
+`creds del -i <cred_id>`. Direct CLI `make-token <identity> <password>` and
+`spawnas`/`runas` with `--user` and `--password` remain available (embed any
+domain in `--user DOMAIN\user`);
+combining an ID with direct credentials is rejected.
 
 `/creds` and `/creds list` list workspace credentials. `/creds add <domain\user | user> <password>`
 splits the identity into the API's domain and user fields; quote passwords with
-spaces, or use `''` for an empty password. `/creds del <cred_id>` removes an entry.
+spaces, or use `''` for an empty password. `/creds del -i <cred_id>` removes an entry.
 Extra arguments are rejected. The command menu completes `list`, `add`, and `del`;
 after selection, argument hints show the required values. Credential arguments
 are excluded from history-based completion suggestions.
+
+`parseShellCredentials` validates the WebUI's stored-ID or direct-credential
+form before dispatch and returns the API credential fields plus the optional
+runas command. It rejects missing IDs, extra identity arguments, and empty
+commands while preserving literal passwords and command arguments.
+The CLI's `parse_credential_arguments` applies the same rules after
+`parse_identity_arguments` tokenizes interactive input without stripping
+literal backslashes; direct identities must contain a nonempty username.
 
 ## Spawn result display
 

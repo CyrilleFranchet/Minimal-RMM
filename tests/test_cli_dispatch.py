@@ -49,3 +49,59 @@ class CliDispatchTests(unittest.TestCase):
         output, _ = self.invoke(['health', '--json'], client)
         self.assertEqual(json.loads(output), {'status': 200, 'ok': True})
         client.health.assert_called_once_with()
+
+    def test_stored_credential_id_dispatch(self):
+        for arguments, method in [
+            (['make-token', '-i', 'cred-123'], 'make_token'),
+            (['spawnas', '-i', 'cred-123'], 'spawnas'),
+            (['runas', '-i', 'cred-123', 'whoami /all'], 'runas'),
+        ]:
+            with self.subTest(arguments=arguments):
+                client = Mock()
+                getattr(client, method).return_value = (200, {'ok': True})
+                self.invoke([*arguments, '--session', 'session-id', '--json'], client)
+                call = getattr(client, method).call_args
+                self.assertEqual(call.kwargs['cred_id'], 'cred-123')
+                self.assertEqual(call.args[0], 'session-id')
+                if method == 'runas':
+                    self.assertEqual(call.args[1], 'whoami /all')
+        client = Mock()
+        client.creds_del.return_value = (200, {'ok': True})
+        self.invoke(['creds', 'del', '-i', 'cred-123', '--json'], client)
+        client.creds_del.assert_called_once_with('cred-123')
+
+    def test_stored_credential_validation_prevents_requests(self):
+        cases = [['creds', 'del', 'cred-123'], ['creds', 'del', '-i', '']]
+        for command in ('make-token', 'spawnas', 'runas'):
+            suffix = ['whoami'] if command == 'runas' else []
+            cases.extend([
+                [command, 'cred-123', *suffix],
+                [command, '-i', *suffix],
+                [command, '-i', '', *suffix],
+                [command, '-i', 'cred-123', *suffix,
+                 *(['alice', 'pw'] if command == 'make-token' else ['--user', 'alice', '--password', 'pw'])],
+            ])
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                client = Mock()
+                with self.assertRaises(SystemExit):
+                    self.invoke([*arguments, '--session', 'session-id'], client)
+                for method in ('make_token', 'spawnas', 'runas', 'creds_del'):
+                    getattr(client, method).assert_not_called()
+
+    def test_direct_credentials_preserve_empty_password(self):
+        for arguments, method in [
+            (['make-token', 'alice', ''], 'make_token'),
+            (['spawnas', '--user', 'alice', '--password', ''], 'spawnas'),
+            (['runas', 'whoami', '--user', 'alice', '--password', ''], 'runas'),
+        ]:
+            with self.subTest(arguments=arguments):
+                client = Mock()
+                getattr(client, method).return_value = (200, {'ok': True})
+                self.invoke([*arguments, '--session', 'session-id', '--json'], client)
+                call = getattr(client, method).call_args
+                if method == 'make_token':
+                    self.assertEqual(call.args[2:], ('alice', ''))
+                else:
+                    self.assertEqual(call.kwargs['user'], 'alice')
+                    self.assertEqual(call.kwargs['password'], '')

@@ -501,7 +501,10 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `run <command>` | Queue command (`--type oneshot\|persistent`) |
 | `exec <command>` | Run and wait (`--wait` seconds, `-f` command file) |
 | `spawn [--session ID] [--no-verify]` | Start a detached second Go agent with a fresh session ID and verify both sessions respond (Go agent sessions only) |
-| `make-token <DOMAIN\|user> <password>` | Create a `runas /netonly` style network identity on a Go agent session; the password is passed as an argument |
+| `make-token -i <cred_id>` or `make-token <identity> <password>` | Create a `runas /netonly` style network identity using a stored credential or direct credentials |
+| `spawnas -i <cred_id>` | Start a Go agent copy under a stored identity; direct credentials use `--user` and `--password` |
+| `runas -i <cred_id> <command>` | Run a command under a stored identity; direct credentials use `--user` and `--password` |
+| `creds del -i <cred_id>` | Remove a stored workspace credential; positional IDs are rejected |
 | `rev2self [--session ID]` | Revert a Go agent session to its own network identity |
 | `lateral <psexec\|wmiexec\|winrm> <host> [--session ID] [--no-verify]` | Start a Go agent on another host and verify both sessions respond |
 | `uid [--session ID]` | Show the identity used by a Go agent session (process user + active network identity) |

@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-11-07 — Explicit credential ID options
+
+- Require `-i <cred_id>` for CLI and WebUI `make_token`, `spawnas`, `runas`,
+  and `creds del` (standalone CLI uses `make-token`). Reject implicit IDs,
+  missing/empty IDs, and conflicting standalone direct credentials before
+  credential requests. API and MCP `cred_id` fields retain their contracts.
+- Direct interactive credentials accept domainless usernames; quoted empty
+  passwords and literal backslashes remain supported. Update help and docs.
+- Validation: 38 CLI tests, 20 credential/API tests, 39 shell/routing tests,
+  operator parity, JavaScript syntax, and changed-document lint passed.
+  Full `make check` passed with local test-server access, including the
+  previously sandbox-blocked redirect regression and repository lint.
+- Code, frontend, security, and test reviews found no blocking issues.
+  Live browser and native Windows execution were not performed.
+
 ## 2026-11-07 — Remove duplicate spawnas shell output
 
 - Render the launch result through session events only; the HTTP response

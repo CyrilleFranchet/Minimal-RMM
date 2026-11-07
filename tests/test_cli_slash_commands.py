@@ -20,6 +20,10 @@ class SlashCommandTests(unittest.TestCase):
         client.queue_command.return_value = (200, {})
         client.queue_screenshot.return_value = (200, {})
         client.health.return_value = (200, {'sessions': 0})
+        client.make_token.return_value = (200, {'ok': True})
+        client.spawnas.return_value = (200, {'ok': True})
+        client.runas.return_value = (200, {'ok': True, 'output': 'done'})
+        client.creds_del.return_value = (200, {'message': 'deleted'})
         prompt = Mock()
         prompt.prompt.side_effect = [*lines, EOFError()]
         with patch('prompt_toolkit.PromptSession', return_value=prompt) as factory, \
@@ -148,7 +152,7 @@ class SlashCommandTests(unittest.TestCase):
         client.get_session.return_value = (200, {})
         client.make_token.return_value = (200, {'ok': True, 'output': 'token created'})
         prompt = Mock()
-        prompt.prompt.side_effect = ['/make_token cred-123', EOFError()]
+        prompt.prompt.side_effect = ['/make_token -i cred-123', EOFError()]
         with patch('prompt_toolkit.PromptSession', return_value=prompt), \
                 patch('prompt_toolkit.patch_stdout.patch_stdout', contextlib.nullcontext), \
                 patch.object(rmm_cli.threading, 'Thread'), \
@@ -156,6 +160,43 @@ class SlashCommandTests(unittest.TestCase):
             rmm_cli.run_interactive(client, {'current_session': 'session-id'})
         client.make_token.assert_called_once_with('session-id', cred_id='cred-123')
         warn.assert_not_called()
+
+    def test_all_stored_credentials_require_explicit_id(self):
+        client, _, warn = self.run_lines([
+            '/make_token -i cred-123', '/spawnas -i cred-123',
+            '/runas -i cred-123 whoami /all', '/creds del -i cred-123',
+        ])
+        client.make_token.assert_called_once_with('session-id', cred_id='cred-123')
+        client.spawnas.assert_called_once_with('session-id', cred_id='cred-123')
+        client.runas.assert_called_once_with('session-id', 'whoami /all', cred_id='cred-123')
+        client.creds_del.assert_called_once_with('cred-123')
+        warn.assert_not_called()
+
+    def test_domainless_direct_credentials_and_empty_password(self):
+        client, _, warn = self.run_lines([
+            '/make_token alice ""', '/spawnas alice "two words\\path"',
+            '/runas alice "" whoami /all',
+        ])
+        client.make_token.assert_called_once_with('session-id', '', 'alice', '')
+        client.spawnas.assert_called_once_with('session-id', user='alice', password='two words\\path')
+        client.runas.assert_called_once_with('session-id', 'whoami /all', user='alice', password='')
+        warn.assert_not_called()
+
+    def test_invalid_credential_forms_never_send_requests(self):
+        lines = [
+            '/make_token cred-123', '/spawnas cred-123', '/runas cred-123 whoami',
+            '/creds del cred-123', '/creds del -i', '/creds del -i ""',
+            '/creds del -i cred-123 extra',
+        ]
+        for command in ('make_token', 'spawnas', 'runas'):
+            lines.extend([f'/{command} -i', f'/{command} -i ""',
+                          f'/{command} -i "" whoami', f'/{command} --user alice'])
+        lines.extend(['/make_token -i cred-123 alice pw', '/spawnas -i cred-123 alice pw',
+                      '/runas -i cred-123 ""'])
+        client, _, warn = self.run_lines(lines)
+        for name in ('make_token', 'spawnas', 'runas', 'creds_del'):
+            getattr(client, name).assert_not_called()
+        self.assertEqual(warn.call_count, len(lines))
 
     def test_make_token_failure_warns_with_agent_output(self):
         client = Mock(base_url='http://example.test')
