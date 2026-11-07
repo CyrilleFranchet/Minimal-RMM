@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const agentDebugBuild = true
+
 var debugLog = struct {
 	sync.Mutex
 	file *os.File
@@ -20,11 +22,8 @@ var debugLog = struct {
 
 var errDebugCrashUnsupported = errors.New("runtime crash capture requires Go 1.23 or newer")
 
-// initAgentDebug enables diagnostics by default in debug builds unless explicitly disabled.
+// initAgentDebug enables diagnostics for every process compiled in debug mode.
 func initAgentDebug(announce bool) {
-	if value, set := os.LookupEnv("RMM_DEBUG"); set && value != "1" {
-		return
-	}
 	path := filepath.Join(debugDirectory(), fmt.Sprintf("minimal-rmm-debug-%d.log", os.Getpid()))
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {

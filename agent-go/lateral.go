@@ -26,7 +26,6 @@ var embeddedLateralService []byte
 // lateralPayload carries the lateral movement request as a JSON body on the
 // __LATERAL__ beacon command, mirroring __MAKE_TOKEN__.
 type lateralPayload struct {
-	Debug          bool    `json:"debug,omitempty"`
 	Method         string  `json:"method"`
 	Host           string  `json:"host"`
 	SessionID      string  `json:"session_id"`
@@ -76,6 +75,9 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 	parts := strings.SplitN(command, "\n", 2)
 	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
 		return payload, errors.New("missing JSON payload")
+	}
+	if err := rejectCommandDebugOption([]byte(parts[1])); err != nil {
+		return payload, err
 	}
 	if err := json.Unmarshal([]byte(parts[1]), &payload); err != nil {
 		return payload, err

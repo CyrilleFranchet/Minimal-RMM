@@ -520,7 +520,7 @@ def build_go_agent(
     stageless: bool = False,
     debug: bool = False,
 ) -> str:
-    """Build the repository Go agent. Default (stageless=False): return a stage1 launcher ZIP that fetches the agent. stageless=True: return the full agent ZIP. debug=True requires stageless=True and produces a separate diagnostic companion executable; normal builds omit diagnostic implementation."""
+    """Build the repository Go agent. Default (stageless=False): return a stage1 launcher ZIP that fetches the agent. stageless=True: return the full agent ZIP. debug=True builds the main agent with diagnostics and automatically selects the full-agent ZIP. Its spawn, spawnas, and lateral descendants inherit tracing automatically. Normal builds omit diagnostic implementation."""
     return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy, workspace_id, stageless, debug)
 
 
@@ -556,9 +556,8 @@ def spawn_session(
     spawn_timeout: float = 120,
     register_timeout: float = 60,
     verify_timeout: float = 120,
-    debug: bool = False,
 ) -> str:
-    """Spawn a detached second Go agent and confirm fresh registration. debug=True selects the separate source-side debug companion. Caller tracing requires a debug source agent. verify=False reports an unconfirmed request only."""
+    """Spawn a detached second Go agent and confirm fresh registration. Children inherit the source agent's compiled debug mode. Debug is selected only at build time. verify=False reports an unconfirmed request only."""
     return tool_spawn_session(
         _client(),
         session_ref,
@@ -566,7 +565,6 @@ def spawn_session(
         spawn_timeout=spawn_timeout,
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
-        debug=debug,
     )
 
 
@@ -594,9 +592,8 @@ def lateral_move(
     exec_timeout: float = 300,
     register_timeout: float = 60,
     verify_timeout: float = 120,
-    debug: bool = False,
 ) -> str:
-    """Start a Go agent on another host and confirm registration. debug=True selects a separate debug target: PsExec requires a server-side Windows amd64 debug artifact; WMI/WinRM require the source-side companion. Caller tracing requires a debug source agent."""
+    """Start a Go agent on another host and confirm registration. Children inherit the source agent's compiled debug mode. Debug is selected only at build time. A debug source requires a server-side Windows amd64 debug artifact for PsExec; missing required artifacts fail without fallback."""
     return tool_lateral_move(
         _client(),
         session_ref,
@@ -606,7 +603,6 @@ def lateral_move(
         exec_timeout=exec_timeout,
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
-        debug=debug,
     )
 
 
@@ -651,15 +647,13 @@ def spawnas(
     spawn_timeout: float = 120,
     register_timeout: float = 60,
     verify_timeout: float = 120,
-    debug: bool = False,
 ) -> str:
-    """Spawn under a different identity using CreateProcessWithLogonW. Debug selects the separate companion installed beside the source agent, with sanitized events and raw runtime crash output. Pass cred_id from creds_add, or domain/user/password directly. Never repeat credentials in responses."""
+    """Spawn under a different identity using CreateProcessWithLogonW. Children inherit the source agent's compiled debug mode, selected only at build time. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly. Never repeat credentials in responses."""
     return tool_spawnas(
         _client(), session_ref,
         cred_id=cred_id, user=user, domain=domain, password=password,
         verify=verify, spawn_timeout=spawn_timeout,
         register_timeout=register_timeout, verify_timeout=verify_timeout,
-        debug=debug,
     )
 
 

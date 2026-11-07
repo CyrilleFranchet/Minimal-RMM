@@ -101,34 +101,28 @@ class CliDispatchTests(unittest.TestCase):
                 for method in ('make_token', 'spawnas', 'runas', 'creds_del'):
                     getattr(client, method).assert_not_called()
 
-    def test_spawnas_debug_flag_reaches_api_client(self):
-        for flag in ('-d', '--debug'):
-            with self.subTest(flag=flag):
-                client = Mock()
-                client.spawnas.return_value = (200, {'ok': True})
-                self.invoke(['spawnas', '-i', 'cred-123', flag,
-                             '--session', 'session-id', '--json'], client)
-                self.assertTrue(client.spawnas.call_args.kwargs['debug'])
-
-    def test_spawn_and_lateral_debug_flags_reach_api_client(self):
-        for command, method in ((['spawn'], 'spawn_session'),
-                                (['lateral', 'psexec', 'ws01'], 'lateral_move')):
+    def test_deployment_debug_flags_are_rejected_before_requests(self):
+        for command in (['spawn'], ['spawnas', '-i', 'cred-123'], ['lateral', 'psexec', 'ws01']):
             for flag in ('-d', '--debug'):
                 with self.subTest(command=command, flag=flag):
                     client = Mock()
-                    getattr(client, method).return_value = (200, {'ok': True})
-                    self.invoke([*command, flag, '--session', 'session-id', '--json'], client)
-                    self.assertTrue(getattr(client, method).call_args.kwargs['debug'])
+                    with self.assertRaises(SystemExit):
+                        self.invoke([*command, flag, '--session', 'session-id', '--json'], client)
+                    client.spawn_session.assert_not_called()
+                    client.spawnas.assert_not_called()
+                    client.lateral_move.assert_not_called()
 
-    def test_spawn_and_lateral_client_post_explicit_debug_boolean(self):
+    def test_deployment_client_requests_do_not_override_source_build_mode(self):
         client = object.__new__(rmm_cli.RmmApiClient)
         client.request = Mock(return_value=(200, {'ok': True}))
-        for method, args in ((client.spawn_session, ('session-id',)),
-                             (client.lateral_move, ('session-id', 'psexec', 'ws01'))):
-            for debug in (False, True):
-                with self.subTest(method=method.__name__, debug=debug):
-                    method(*args, debug=debug)
-                    self.assertIs(client.request.call_args.args[2]['debug'], debug)
+        for method, args, kwargs in ((client.spawn_session, ('session-id',), {}),
+                                     (client.lateral_move, ('session-id', 'psexec', 'ws01'), {}),
+                                     (client.spawnas, ('session-id',), {'cred_id': 'cred-123'})):
+            with self.subTest(method=method.__name__):
+                method(*args, **kwargs)
+                self.assertNotIn('debug', client.request.call_args.args[2])
+                with self.assertRaises(TypeError):
+                    method(*args, **kwargs, debug=True)
 
     def test_spawn_and_lateral_reject_unknown_or_duplicate_arguments(self):
         for arguments in (['spawn', '--unexpected'], ['spawn', 'extra'],
@@ -141,16 +135,6 @@ class CliDispatchTests(unittest.TestCase):
                     self.invoke(arguments, client)
                 client.spawn_session.assert_not_called()
                 client.lateral_move.assert_not_called()
-
-    def test_spawnas_client_posts_explicit_debug_boolean(self):
-        client = object.__new__(rmm_cli.RmmApiClient)
-        client.request = Mock(return_value=(200, {'ok': True}))
-        for debug in (False, True):
-            with self.subTest(debug=debug):
-                client.spawnas('session-id', cred_id='cred-123', debug=debug)
-                body = client.request.call_args.args[2]
-                self.assertIs(body['debug'], debug)
-                self.assertEqual(body['cred_id'], 'cred-123')
 
     def test_direct_credentials_preserve_empty_password(self):
         for arguments, method in [

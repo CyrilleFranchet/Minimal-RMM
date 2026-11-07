@@ -35,7 +35,7 @@ jobs:
         shell: pwsh
         run: |
           $tests = '^Test(Debug|SpawnasDebug|SpawnDebug|LateralDebug'
-          $tests += '|SpawnEnvironmentDoesNotInheritDebug'
+          $tests += '|SpawnEnvironment'
           $tests += '|NormalBuild|WinRMDetach)'
           go test -buildvcs=false -count=1 -v -tags= -run $tests .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

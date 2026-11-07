@@ -269,10 +269,18 @@ def main() -> int:
     for name in ("spawnas", "spawn_session", "lateral_move", "build_go_agent"):
         schema = next(entry["function"]["parameters"]["properties"]
                       for entry in tools_mod.OPENAI_TOOLS if entry["function"]["name"] == name)
-        if schema.get("debug", {}).get("type") != "boolean" or "debug" not in mcp_parameters.get(name, set()):
-            errors.append(f"{name} must expose boolean debug in MCP and AI schemas")
-        if "debug" not in inspect.signature(getattr(cli.RmmApiClient, name)).parameters:
-            errors.append(f"{name} must expose debug in RmmApiClient")
+        client_parameters = inspect.signature(getattr(cli.RmmApiClient, name)).parameters
+        if name == "build_go_agent":
+            if schema.get("debug", {}).get("type") != "boolean" or "debug" not in mcp_parameters.get(name, set()):
+                errors.append("build_go_agent must expose boolean debug in MCP and AI schemas")
+            if "debug" not in client_parameters:
+                errors.append("build_go_agent must expose debug in RmmApiClient")
+        elif "debug" in schema or "debug" in mcp_parameters.get(name, set()) or "debug" in client_parameters:
+            errors.append(f"{name} must inherit build mode without a debug parameter")
+    for name in ("spawn", "spawnas", "lateral"):
+        if any({"-d", "--debug"} & set(action.option_strings)
+               for action in subparsers.choices[name]._actions):
+            errors.append(f"{name} must not expose per-command debug flags")
     for name in ("get_events", "get_history_events"):
         schema = next(entry["function"]["parameters"]["properties"]
                       for entry in tools_mod.OPENAI_TOOLS if entry["function"]["name"] == name)

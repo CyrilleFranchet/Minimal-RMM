@@ -184,32 +184,32 @@ class SlashCommandTests(unittest.TestCase):
         client.runas.assert_called_once_with('session-id', 'whoami /all', user='alice', password='')
         warn.assert_not_called()
 
-    def test_spawnas_debug_flags_preserve_credentials(self):
-        for command, expected in [
-            ('/spawnas -i cred-123 -d', {'cred_id': 'cred-123', 'debug': True}),
-            ('/spawnas --debug -i cred-123', {'cred_id': 'cred-123', 'debug': True}),
-            ('/spawnas alice pw --debug', {'user': 'alice', 'password': 'pw', 'debug': True}),
-            ('/spawnas -d alice -d', {'user': 'alice', 'password': '-d', 'debug': True}),
-            ('/spawnas alice -d', {'user': 'alice', 'password': '-d'}),
-            ('/spawnas alice --debug', {'user': 'alice', 'password': '--debug'}),
-        ]:
-            with self.subTest(command=command):
-                client, _, warn = self.run_lines([command])
-                client.spawnas.assert_called_once_with('session-id', **expected)
+    def test_spawnas_preserves_flag_like_password_data(self):
+        for password in ('-d', '--debug'):
+            with self.subTest(password=password):
+                client, _, warn = self.run_lines([f'/spawnas alice {password}'])
+                client.spawnas.assert_called_once_with('session-id', user='alice', password=password)
                 warn.assert_not_called()
 
-    def test_spawn_and_lateral_debug_flags(self):
-        for command, method, args, options in [
-            ('/spawn -d', 'spawn_session', ('session-id',), {'debug': True}),
-            ('/spawn --debug session-id', 'spawn_session', ('session-id',), {'debug': True}),
-            ('/spawn session-id', 'spawn_session', ('session-id',), {}),
-            ('/lateral psexec ws01 -d', 'lateral_move', ('session-id', 'psexec', 'ws01'), {'debug': True}),
-            ('/lateral --debug winrm ws01', 'lateral_move', ('session-id', 'winrm', 'ws01'), {'debug': True}),
-            ('/lateral wmiexec ws01', 'lateral_move', ('session-id', 'wmiexec', 'ws01'), {}),
+    def test_deployment_slashes_reject_removed_debug_flags(self):
+        commands = ['/spawn -d', '/spawn --debug', '/spawn --debug session-id',
+                    '/spawnas -i cred-123 -d', '/spawnas --debug -i cred-123',
+                    '/spawnas alice pw --debug', '/spawnas -d alice pw',
+                    '/lateral psexec ws01 -d', '/lateral --debug winrm ws01']
+        client, _, warn = self.run_lines(commands)
+        client.spawn_session.assert_not_called()
+        client.spawnas.assert_not_called()
+        client.lateral_move.assert_not_called()
+        self.assertEqual(warn.call_count, len(commands))
+
+    def test_deployment_slashes_use_source_build_without_request_override(self):
+        for command, method, args in [
+            ('/spawn session-id', 'spawn_session', ('session-id',)),
+            ('/lateral wmiexec ws01', 'lateral_move', ('session-id', 'wmiexec', 'ws01')),
         ]:
             with self.subTest(command=command):
                 client, _, warn = self.run_lines([command])
-                getattr(client, method).assert_called_once_with(*args, **options)
+                getattr(client, method).assert_called_once_with(*args)
                 warn.assert_not_called()
 
     def test_spawn_and_lateral_invalid_flags_never_send_requests(self):

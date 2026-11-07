@@ -8,78 +8,56 @@ crash-capture implementation, and diagnostic event strings. Debug builds use
 the `rmmdebug` Go build tag; this is a separate artifact from the same source
 tree, not a runtime switch that adds logging to the normal executable.
 
-## Build and place the companion executable
+## Enable debug when building the main agent
 
-Rebuild and redeploy the normal source agent to obtain the `spawn -d`,
-`spawnas -d`, and `lateral -d`
-companion selection support. An older agent does not implement it.
-
-Build the separate debug ZIP through **Separate debug agent** in the WebUI
-generator, or use:
+Select **Debug build** in the WebUI Go generator, or use:
 
 ```text
 rmm_cli agent go-build --debug --goarch amd64
 ```
 
-Download and extract the returned ZIP. Place
-`minimal-rmm-agent-debug-windows-amd64.exe` beside the normal source agent's
-executable. For an arm64 source agent, build `--goarch arm64` and use the
-matching `minimal-rmm-agent-debug-windows-arm64.exe` companion.
+Download and extract the returned ZIP, then deploy it as the main agent using
+`run-agent.ps1`. There is no companion executable to place beside it. Spawned
+children reuse the current diagnostic executable, including after renaming it.
+For an arm64 source agent, build with `--goarch arm64`.
 
 Debug builds are full-agent ZIPs. They use separate output filenames and are
 excluded from the normal payload lookup used by lateral deployment. The REST
 build request uses `debug: true` with `stageless: true`; CLI and WebUI select
 the full-agent format automatically.
 
-## Start a debug agent
+The server and source agent must both include build-mode inheritance support.
+Already-running normal agents do not gain diagnostics: replace them with the
+new debug build. To return to normal operation, build and deploy with debug
+unchecked. Normal executables exclude the diagnostic implementation entirely.
 
-From the interactive CLI or WebUI shell, select the source Go session and run:
+## All descendant agents inherit the build mode
 
-```text
-/spawnas -i toto -d
-/spawn -d
-```
-
-The standalone CLI accepts the same flag:
+Select the main debug session and use the ordinary commands:
 
 ```text
-rmm_cli spawnas -i toto -d --session <source-session>
+/spawn
+/spawnas -i toto
+/lateral psexec <host>
+/lateral wmiexec <host>
+/lateral winrm <host>
 ```
 
-`spawn -d` uses the current process identity; `spawnas -i toto -d` uses the
-stored credential. `--debug` is an alias for `-d`. REST, MCP, and AI tools for
-spawn, spawnas, and lateral accept `debug: true`. The default is false.
+Per-command debug flags are not accepted. Local spawn/spawnas and WMI/WinRM reuse the
+source debug image. PsExec selects a debug artifact on the server and writes
+`minimal-rmm-agent-debug.exe` on the target. Its current server payload lookup
+supports Windows amd64: an arm64 source still needs a separate amd64 debug
+build on the server for that method. Missing debug payloads fail without
+falling back to a normal payload.
 
-Select the newly spawned session and reproduce the failing operation there.
-The flag selects the separate companion executable and enables tracing in
-that child, including subsequent remote service
-polling and cleanup. It does not turn tracing on in the parent or automatically
-enable tracing in agents launched on another host.
-If the companion executable is absent, the command fails instead of launching
-the normal executable with debug requested.
+The agent registers its compiled build mode as `debug_build`; session metadata
+exposes `agent_debug`. The server inherits that mode when selecting deployment
+payloads. Deployment commands and their REST/MCP/AI interfaces have no debug
+option. Diagnostics are a build-level mode that cannot be changed by command
+flags or inherited environment settings.
 
-## Deploy a debug agent laterally
-
-```text
-/lateral psexec <host> -d
-/lateral wmiexec <host> -d
-/lateral winrm <host> -d
-```
-
-For psexec, first build the separate debug amd64 artifact on the server. The
-server stages that artifact only for a debug request; if it is absent, the
-request fails without selecting the normal payload. The dedicated C service
-worker uses a separate `minimal-rmm-agent-debug.exe` target filename.
-The current server payload lookup for psexec supports amd64.
-
-For wmiexec and winrm, place the matching debug companion beside the source
-executable. The source stages that companion instead of its own image.
-The separate debug target enables its diagnostic writer on startup.
-
-The `-d` flag selects the target agent. It does not enable diagnostic code in
-the source's normal executable. To capture the caller's remote-service cleanup
-too, run `/spawn -d`, select that new session, and run `/lateral psexec <host> -d`
-from it. Caller and target write separate logs on their respective hosts.
+Caller and target write separate logs on their respective hosts. Inheritance
+continues when a spawned agent itself spawns or deploys another agent.
 
 ## Find the trace
 
@@ -106,16 +84,15 @@ completed checkpoint. The file does not establish who terminated the process.
 For those cases, correlate its timestamps with Windows Application Error and
 Windows Error Reporting events.
 
-Debug tracing is enabled only for the requested child and its cleanup helpers.
-Normal builds ignore the debug environment switch. Remove the trace after collecting
-the evidence; the files are not automatically uploaded or rotated.
+Debug builds enable tracing in the main agent, descendants, and cleanup helpers.
+Debug mode has no runtime environment switch. Remove the trace after
+collecting the evidence; the files are not automatically uploaded or rotated.
 
 ## Implementation reference
 
 | Function | Purpose |
 | --- | --- |
-| `resolveDebugAgentExecutable` | Select the exact debug companion beside the source executable, without fallback |
-| `spawnasDebugEnvironment` | Replace inherited debug flags with the explicit request |
+| `rejectCommandDebugOption` | Reject removed deployment JSON overrides before a command can launch an agent |
 | `initAgentDebug` | Create an exclusive per-process trace and install crash capture |
 | `closeAgentDebug` | Flush/close the event writer while retaining runtime crash capture |
 | `debugEvent` | Write static checkpoints, UTC timestamps, PID, and sanitized error classes |

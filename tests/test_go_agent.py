@@ -16,7 +16,6 @@ class GoAgentTests(unittest.TestCase):
                 "main.go",
                 "debug_log.go",
                 "debug_disabled.go",
-                "debug_environment.go",
                 "debug_crash_go123.go",
                 "debug_crash_legacy.go",
                 "debug_dir_windows.go",

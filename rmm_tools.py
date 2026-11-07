@@ -726,21 +726,17 @@ def tool_spawn_session(
     spawn_timeout: float = 120,
     register_timeout: float = 60,
     verify_timeout: float = 120,
-    debug: bool = False,
 ) -> str:
     """Spawn a detached second Go agent from a live Go session and verify both."""
     sid, info = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, **info})
-    if not isinstance(debug, bool):
-        return _json_result({"ok": False, "error": "debug must be a boolean"})
     code, data = client.spawn_session(
         sid,
         verify=verify,
         spawn_timeout=spawn_timeout,
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
-        debug=debug,
     )
     if code == 408:
         return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__SPAWN__"})
@@ -801,14 +797,11 @@ def tool_lateral_move(
     exec_timeout: float = 300,
     register_timeout: float = 60,
     verify_timeout: float = 120,
-    debug: bool = False,
 ) -> str:
     """Start a Go agent on another host through psexec, wmiexec, or winrm."""
     sid, info = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, **info})
-    if not isinstance(debug, bool):
-        return _json_result({"ok": False, "error": "debug must be a boolean"})
     method = (method or "").strip().lower()
     if method not in ("psexec", "wmiexec", "winrm"):
         return _json_result({
@@ -827,7 +820,6 @@ def tool_lateral_move(
         exec_timeout=exec_timeout,
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
-        debug=debug,
     )
     if code == 408:
         return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__LATERAL__"})
@@ -899,21 +891,17 @@ def tool_spawnas(
     spawn_timeout: float = 120,
     register_timeout: float = 60,
     verify_timeout: float = 120,
-    debug: bool = False,
 ) -> str:
-    """Spawn under a different identity, optionally selecting the installed debug companion."""
+    """Spawn under a different identity, inheriting the source build's tracing."""
     sid, info = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, **info})
     if not cred_id and not (user or "").strip():
         return _json_result({"ok": False, "error": "cred_id or user is required"})
-    if not isinstance(debug, bool):
-        return _json_result({"ok": False, "error": "debug must be a boolean"})
     code, data = client.spawnas(
         sid, cred_id=cred_id, domain=domain, user=user, password=password,
         verify=verify, spawn_timeout=spawn_timeout,
         register_timeout=register_timeout, verify_timeout=verify_timeout,
-        debug=debug,
     )
     if code == 408:
         return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__SPAWNAS__"})
@@ -1088,7 +1076,6 @@ TOOL_HANDLERS = {
         float(a.get("spawn_timeout", 120)),
         float(a.get("register_timeout", 60)),
         float(a.get("verify_timeout", 120)),
-        a.get("debug", False),
     ),
     "make_token": lambda c, a: tool_make_token(
         c,
@@ -1113,7 +1100,6 @@ TOOL_HANDLERS = {
         float(a.get("exec_timeout", 300)),
         float(a.get("register_timeout", 60)),
         float(a.get("verify_timeout", 120)),
-        a.get("debug", False),
     ),
     "session_uid": lambda c, a: tool_session_uid(
         c,
@@ -1139,7 +1125,6 @@ TOOL_HANDLERS = {
         spawn_timeout=float(a.get("spawn_timeout", 120)),
         register_timeout=float(a.get("register_timeout", 60)),
         verify_timeout=float(a.get("verify_timeout", 120)),
-        debug=a.get("debug", False),
     ),
     "runas": lambda c, a: tool_runas(
         c,
@@ -1157,6 +1142,9 @@ TOOL_HANDLERS = {
 def execute_tool(client: RmmApiClient, name: str, arguments: dict | str) -> str:
     if isinstance(arguments, str):
         arguments = json.loads(arguments) if arguments.strip() else {}
+    if name in {"spawn_session", "spawnas", "lateral_move"} and "debug" in arguments:
+        return _json_result({"ok": False, "error": "debug_is_build_time_only",
+                             "detail": "Select debug when building the agent, not per deployment."})
     handler = TOOL_HANDLERS.get(name)
     if not handler:
         return _json_result({"ok": False, "error": f"unknown_tool: {name}"})
@@ -1752,7 +1740,7 @@ OPENAI_TOOLS: list[dict] = [
                 "jitter_percent": {"type": "integer", "description": "Beacon jitter percent (default 30)"},
                 "http_proxy": {"type": "string", "description": "Optional HTTP proxy URL used by the deployed agent"},
                 "stageless": {"type": "boolean", "description": "false (default): return a small stage1 ZIP (~20 KB C launcher) that fetches the Go agent from the server at runtime. true: return a ZIP with the full Go agent binary embedded directly (no staging server required, larger file on target)."},
-                "debug": {"type": "boolean", "default": False, "description": "Build a separate diagnostic companion executable with the rmmdebug build tag. Requires stageless=true; normal builds exclude diagnostic implementation."},
+                "debug": {"type": "boolean", "default": False, "description": "Build the main agent with the rmmdebug build tag in a full-agent ZIP. Spawn, spawnas, and lateral descendants inherit tracing automatically. Normal builds exclude diagnostic implementation."},
             }},
         },
     },
@@ -1860,7 +1848,6 @@ OPENAI_TOOLS: list[dict] = [
                     "spawn_timeout": {"type": "number", "default": 120},
                     "register_timeout": {"type": "number", "default": 60},
                     "verify_timeout": {"type": "number", "default": 120},
-                    "debug": {"type": "boolean", "default": False, "description": "Launch the separately compiled debug companion for the new agent; caller tracing requires a debug source agent."},
                 },
                 "required": ["session_ref"],
             },
@@ -1916,7 +1903,6 @@ OPENAI_TOOLS: list[dict] = [
                     "exec_timeout": {"type": "number", "default": 300},
                     "register_timeout": {"type": "number", "default": 60},
                     "verify_timeout": {"type": "number", "default": 120},
-                    "debug": {"type": "boolean", "default": False, "description": "Deploy the separately compiled debug agent. PsExec requires an existing Windows amd64 debug artifact on the server; WMI/WinRM use the source-side companion. Caller tracing requires a debug source agent."},
                 },
                 "required": ["session_ref", "method", "host"],
             },
@@ -1977,7 +1963,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "spawnas",
-            "description": "Spawn a new agent copy on the same host under a different process identity using CreateProcessWithLogonW. Set debug to select the separately installed companion with sanitized events and raw runtime crash output. Pass cred_id from creds_add, or domain/user/password directly. NEVER repeat credentials in responses.",
+            "description": "Spawn a new agent copy on the same host under a different process identity using CreateProcessWithLogonW. Children inherit source build tracing without a debug flag; normal sources do not trace by default. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly. NEVER repeat credentials in responses.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1990,8 +1976,6 @@ OPENAI_TOOLS: list[dict] = [
                     "spawn_timeout": {"type": "number", "default": 120},
                     "register_timeout": {"type": "number", "default": 60},
                     "verify_timeout": {"type": "number", "default": 120},
-                    "debug": {"type": "boolean", "default": False,
-                              "description": "Launch the separate debug companion installed beside the source agent. Events omit sensitive payloads; raw runtime crash output may contain sensitive data."},
                 },
                 "required": ["session_ref"],
             },

@@ -12,44 +12,6 @@ import (
 	"testing"
 )
 
-func TestSpawnasDebugEnvironmentIsExplicit(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		env := spawnasDebugEnvironment([]string{"RMM_DEBUG=1", "rmm_debug=1", "KEEP=value"}, enabled)
-		want := "RMM_DEBUG=0"
-		if enabled {
-			want = "RMM_DEBUG=1"
-		}
-		if len(env) != 2 || env[0] != "KEEP=value" || env[1] != want {
-			t.Fatalf("debug choice %t produced %q", enabled, env)
-		}
-	}
-}
-
-func TestSpawnEnvironmentDoesNotInheritDebug(t *testing.T) {
-	t.Setenv("RMM_DEBUG", "1")
-	t.Setenv("rmm_debug", "1")
-	base := spawnEnvironment(&config{}, "debug-fixture-session")
-	for _, enabled := range []bool{false, true} {
-		env := base
-		if enabled {
-			env = spawnasDebugEnvironment(base, true)
-		}
-		count := 0
-		for _, entry := range env {
-			key, value, _ := strings.Cut(entry, "=")
-			if strings.EqualFold(key, "RMM_DEBUG") {
-				count++
-				if (value == "1") != enabled || (value != "0" && value != "1") {
-					t.Fatalf("debug=%t inherited wrong value %q", enabled, value)
-				}
-			}
-		}
-		if count != 1 {
-			t.Fatalf("debug=%t has %d environment definitions", enabled, count)
-		}
-	}
-}
-
 func TestDebugEventsExcludeSensitiveErrorDetails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trace.log")
 	file, err := os.Create(path)
@@ -73,16 +35,6 @@ func TestDebugEventsExcludeSensitiveErrorDetails(t *testing.T) {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("sensitive error content leaked: %q", text)
 		}
-	}
-}
-
-func TestDebugDisabledDoesNotCreateLog(t *testing.T) {
-	t.Setenv("RMM_DEBUG", "0")
-	initAgentDebug(true)
-	debugLog.Lock()
-	defer debugLog.Unlock()
-	if debugLog.file != nil {
-		t.Fatal("debug writer enabled without explicit opt-in")
 	}
 }
 
@@ -157,50 +109,52 @@ func TestDebugLifecycleSubprocess(t *testing.T) {
 	}
 }
 
-func TestDebugMainStartupOverridesAmbientSelection(t *testing.T) {
-	executable := filepath.Join(t.TempDir(), "diagnostic-agent.exe")
-	build := exec.Command("go", "build", "-buildvcs=false", "-tags=rmmdebug", "-o", executable, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build diagnostic agent: %v: %s", err, output)
-	}
-	for _, selected := range []string{"1", "0"} {
-		t.Run(selected, func(t *testing.T) {
-			ambient := "1"
-			if selected == "1" {
-				ambient = "0"
-			}
-			env := make([]string, 0, len(os.Environ())+5)
-			for _, entry := range os.Environ() {
-				key, _, _ := strings.Cut(entry, "=")
-				switch strings.ToUpper(key) {
-				case "RMM_DEBUG", "RMM_BASE_URL", "RMM_BEACON_SECRET", "RMM_AGENT_WORKSPACE_ID", "RMM_LOG_FILE":
-					continue
+func TestDebugMainStartupUsesCompiledMode(t *testing.T) {
+	for _, diagnostic := range []bool{false, true} {
+		tags := ""
+		if diagnostic {
+			tags = "rmmdebug"
+		}
+		executable := filepath.Join(t.TempDir(), "renamed-agent.exe")
+		build := exec.Command("go", "build", "-buildvcs=false", "-tags="+tags, "-o", executable, ".")
+		if output, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build diagnostic=%t: %v: %s", diagnostic, err, output)
+		}
+		for _, ambient := range []string{"1", "0"} {
+			t.Run(fmt.Sprintf("debug=%t/obsolete-env=%s", diagnostic, ambient), func(t *testing.T) {
+				env := make([]string, 0, len(os.Environ())+5)
+				for _, entry := range os.Environ() {
+					key, _, _ := strings.Cut(entry, "=")
+					switch strings.ToUpper(key) {
+					case "RMM_DEBUG", "RMM_BASE_URL", "RMM_BEACON_SECRET", "RMM_AGENT_WORKSPACE_ID", "RMM_LOG_FILE":
+						continue
+					}
+					env = append(env, entry)
 				}
-				env = append(env, entry)
-			}
-			env = append(env, "RMM_DEBUG="+ambient, "RMM_BASE_URL=", "RMM_BEACON_SECRET=",
-				"RMM_AGENT_WORKSPACE_ID=invalid/workspace", "RMM_LOG_FILE="+filepath.Join(t.TempDir(), "agent.log"))
-			cmd := exec.Command(executable, "--lateral-session", "fixture-child", "--debug-agent", selected)
-			cmd.Env = env
-			output, err := cmd.CombinedOutput()
-			if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 2 {
-				t.Fatalf("expected configuration exit before network: %v: %s", err, output)
-			}
-			path := filepath.Join(debugDirectory(), fmt.Sprintf("minimal-rmm-debug-%d.log", cmd.Process.Pid))
-			t.Cleanup(func() { os.Remove(path) })
-			data, readErr := os.ReadFile(path)
-			if selected == "0" {
-				if !os.IsNotExist(readErr) {
-					t.Fatalf("disabled main startup created a trace: %v: %s", readErr, data)
+				env = append(env, "RMM_DEBUG="+ambient, "RMM_BASE_URL=", "RMM_BEACON_SECRET=",
+					"RMM_AGENT_WORKSPACE_ID=invalid/workspace", "RMM_LOG_FILE="+filepath.Join(t.TempDir(), "agent.log"))
+				cmd := exec.Command(executable, "--lateral-session", "fixture-child")
+				cmd.Env = env
+				output, err := cmd.CombinedOutput()
+				if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 2 {
+					t.Fatalf("expected configuration exit before network: %v: %s", err, output)
 				}
-				return
-			}
-			if readErr != nil {
-				t.Fatalf("explicit main startup did not enable diagnostics: %v: %s", readErr, output)
-			}
-			if !strings.Contains(string(data), "event=configuration.invalid") {
-				t.Fatalf("main did not record its configuration exit: %s", data)
-			}
-		})
+				path := filepath.Join(debugDirectory(), fmt.Sprintf("minimal-rmm-debug-%d.log", cmd.Process.Pid))
+				t.Cleanup(func() { os.Remove(path) })
+				data, readErr := os.ReadFile(path)
+				if !diagnostic {
+					if !os.IsNotExist(readErr) {
+						t.Fatalf("normal build created a trace: %v: %s", readErr, data)
+					}
+					return
+				}
+				if readErr != nil {
+					t.Fatalf("debug build did not enable diagnostics: %v: %s", readErr, output)
+				}
+				if !strings.Contains(string(data), "event=configuration.invalid") {
+					t.Fatalf("main did not record its configuration exit: %s", data)
+				}
+			})
+		}
 	}
 }

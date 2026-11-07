@@ -405,7 +405,7 @@ class LateralHttpRoutingTests(unittest.TestCase):
         self.assertTrue(payload["verified"])
         handler.server_instance.lateral_move.assert_called_once_with(
             "full-session-id", "psexec", "ws01",
-            verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, debug=False,
+            verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0,
         )
 
     def test_lateral_status_codes(self):

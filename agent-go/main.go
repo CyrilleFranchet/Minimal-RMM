@@ -30,7 +30,6 @@ import (
 )
 
 type config struct {
-	SpawnDebug    bool
 	BaseURL       string
 	BeaconSecret  string
 	SessionID     string
@@ -84,8 +83,6 @@ var agentServiceNamePattern = regexp.MustCompile(`^MinimalRmmAgent-[0-9a-f]{32}$
 var agentServiceName = defaultLateralServiceName
 
 type lateralStartup struct {
-	Debug        bool
-	DebugSet     bool
 	SessionID    string
 	WorkspaceID  string
 	WorkspaceSet bool
@@ -108,16 +105,8 @@ func parseLateralStartup(args []string) (lateralStartup, error) {
 	}
 	startup.SessionID = args[1]
 	seenService := false
-	seenDebug := false
 	for i := 2; i < len(args); i += 2 {
 		switch args[i] {
-		case "--debug-agent":
-			if seenDebug || (args[i+1] != "1" && args[i+1] != "0") {
-				return startup, errors.New("invalid or duplicate lateral debug selector")
-			}
-			seenDebug = true
-			startup.Debug = args[i+1] == "1"
-			startup.DebugSet = true
 		case "--workspace-id":
 			value := args[i+1]
 			if startup.WorkspaceSet || (value != "" && value != "-" && !agentWorkspaceIDPattern.MatchString(value)) {
@@ -175,12 +164,16 @@ func main() {
 		return
 	}
 	if len(os.Args) > 2 && os.Args[1] == "--lateral-detach" {
+		initAgentDebug(false)
+		defer closeAgentDebug()
 		// A WinRM shell started this copy inside its job object; it
 		// re-registers itself as a local service and exits immediately.
 		if err := runLateralDetach(os.Args[2:]); err != nil {
+			debugEvent("lateral.detach.failed", err)
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(3)
 		}
+		debugEvent("process.exit.graceful", nil)
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "--lateral-session" {
@@ -192,13 +185,6 @@ func main() {
 			os.Exit(3)
 		}
 		os.Setenv("RMM_SESSION_ID", startup.SessionID)
-		if startup.DebugSet {
-			value := "0"
-			if startup.Debug {
-				value = "1"
-			}
-			os.Setenv("RMM_DEBUG", value)
-		}
 		agentServiceName = startup.ServiceName
 		if startup.WorkspaceSet {
 			os.Setenv("RMM_AGENT_WORKSPACE_ID", startup.WorkspaceID)
@@ -436,6 +422,7 @@ func register(client *http.Client, cfg *config) error {
 	v.Set("j", strconv.Itoa(cfg.JitterPercent))
 	v.Set("sync", "1")
 	v.Set("agent", "go")
+	v.Set("debug_build", strconv.FormatBool(agentDebugBuild))
 	v.Set("pid", strconv.Itoa(os.Getpid()))
 	if executable, err := os.Executable(); err == nil {
 		v.Set("process_name", filepath.Base(executable))

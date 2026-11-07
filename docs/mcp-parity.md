@@ -8,18 +8,18 @@ Every **operator REST capability** exposed by `server_rmm.py` under `/api/v1/*` 
 
 ## Workspace routing and scope
 
-`spawnas` exposes an optional boolean `debug` across REST, API client, MCP,
-and the AI tool schema. CLI and WebUI shells accept `/spawnas -i <cred_id> -d`;
-the standalone CLI accepts `-d` or `--debug`. See [agent debug tracing](agent-debug.md)
-for the child-local file location and crash-capture limits. The parity checker
-verifies the API-client parameter and MCP/AI schema coverage.
-Go agent build tools also expose `debug` for a separate executable compiled
-with the `rmmdebug` tag; normal builds exclude diagnostics. Debug build requests
-use full-agent ZIPs, and `spawnas -d` selects the explicitly placed companion.
-`spawn_session` and `lateral_move` expose the same strict boolean option.
-CLI and WebUI accept `/spawn -d` and `/lateral <method> <host> -d`.
-Lateral debug selects the debug target artifact; caller-side cleanup tracing
-requires the source session to run the separate debug build.
+Only the Go agent build tools expose a boolean `debug` option. They compile the
+main executable with the `rmmdebug` tag and return a full-agent ZIP. Normal
+builds exclude diagnostics. The WebUI generator exposes the same setting as
+**Debug build (child agents inherit)**.
+
+Spawn, spawnas, and lateral inherit `agent_debug` from their source session;
+there are no per-command debug flags or deployment API/MCP/AI debug parameters.
+Local child deployments reuse the current executable. PsExec chooses the
+matching server artifact and fails if it is unavailable. See
+[agent debug tracing](agent-debug.md) for log locations and build-mode limits.
+The parity checker requires build debug support and rejects deployment debug
+parameters, preventing the removed companion-selection interface from returning.
 
 Operator CLI and external MCP clients default to the workspace URL on port
 8787; an explicit URL remains authoritative. Central administration requires

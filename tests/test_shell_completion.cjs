@@ -407,49 +407,34 @@ test('credential commands reject missing IDs, positional IDs and mixed identity 
   }
 });
 
-test('spawnas debug flags propagate without consuming flag-like passwords', async () => {
+test('deployment requests inherit source build mode and preserve flag-like passwords', async () => {
   const cases = [
-    ['/spawnas -i cred-123 -d', {cred_id: 'cred-123', debug: true}],
-    ['/spawnas --debug -i cred-123', {cred_id: 'cred-123', debug: true}],
-    ['/spawnas alice pw --debug', {user: 'alice', password: 'pw', debug: true}],
-    ['/spawnas -d alice -d', {user: 'alice', password: '-d', debug: true}],
-    ['/spawnas alice -d', {user: 'alice', password: '-d', debug: false}],
-    ['/spawnas alice --debug', {user: 'alice', password: '--debug', debug: false}],
-  ];
-  for (const [command, expected] of cases) {
-    const f = fixture(); f.context.appendShellOutput = () => {};
-    f.context.api = async (...args) => { f.calls.push(args); return {status: 200, data: {ok: true}}; };
-    await f.context.dispatchShellMetaCommand(command);
-    assert.deepEqual(f.errors, [], command);
-    assert.equal(f.calls.length, 1, command);
-    assert.deepEqual(JSON.parse(f.calls[0][1].body), {...expected, verify: true}, command);
-  }
-});
-
-test('spawn and lateral explicitly select debug agents and reject malformed flags', async () => {
-  const cases = [
-    ['/spawn -d', '/sessions/agent/spawn', {debug: true}],
-    ['/spawn --debug', '/sessions/agent/spawn', {debug: true}],
     ['/spawn', '/sessions/agent/spawn', {}],
-    ['/lateral psexec ws01 -d', '/sessions/agent/lateral', {method: 'psexec', host: 'ws01', debug: true}],
-    ['/lateral --debug winrm ws01', '/sessions/agent/lateral', {method: 'winrm', host: 'ws01', debug: true}],
+    ['/spawnas -i cred-123', '/sessions/agent/spawnas', {cred_id: 'cred-123', verify: true}],
+    ['/spawnas alice -d', '/sessions/agent/spawnas', {user: 'alice', password: '-d', verify: true}],
+    ['/spawnas alice --debug', '/sessions/agent/spawnas', {user: 'alice', password: '--debug', verify: true}],
     ['/lateral wmiexec ws01', '/sessions/agent/lateral', {method: 'wmiexec', host: 'ws01'}],
   ];
   for (const [command, path, expected] of cases) {
-    const f = fixture();
+    const f = fixture(); f.context.appendShellOutput = () => {};
     f.context.api = async (...args) => { f.calls.push(args); return {status: 200, data: {ok: true, registered: true}}; };
     await f.context.dispatchShellMetaCommand(command);
     assert.deepEqual(f.errors, [], command);
     assert.equal(f.calls[0][0], path, command);
     assert.deepEqual(JSON.parse(f.calls[0][1].body), expected, command);
   }
-  for (const command of ['/spawn -d --debug', '/spawn --unknown', '/spawn extra',
-    '/lateral psexec -d', '/lateral psexec --unknown', '/lateral psexec ws01 -d --debug',
+});
+
+test('removed deployment debug flags stay local and echo before their error', async () => {
+  for (const command of ['/spawn -d', '/spawn --debug', '/spawn extra',
+    '/spawnas -i cred-123 -d', '/spawnas --debug -i cred-123', '/spawnas alice pw --debug',
+    '/lateral psexec -d', '/lateral psexec ws01 -d', '/lateral --debug winrm ws01',
     '/lateral psexec ws01 extra']) {
     const f = fixture();
     await f.context.dispatchShellMetaCommand(command);
     assert.equal(f.calls.length, 0, command);
     assert.match(f.errors[0], /Usage:/, command);
+    assert.deepEqual(f.lines.map(line => line.kind), ['echo', 'error'], command);
   }
 });
 

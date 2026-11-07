@@ -5,6 +5,11 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
 
+test('Go generator exposes the debug build checkbox and inherited tracing label', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
+  assert.match(html, /<label for="agent-go-debug"[^>]*>[\s\S]*?<input type="checkbox" id="agent-go-debug"> Debug build \(child agents inherit\)/);
+});
+
 function fixture(options = {}) {
   class Element {
     constructor() {
@@ -61,7 +66,7 @@ function fixture(options = {}) {
   return { get, options, calls, storage, window, click: async (id) => get(id).handlers.click() };
 }
 
-test('debug generation is explicit and requests a separate full-agent artifact', async () => {
+test('debug generation is explicit and requests a full-agent debug build', async () => {
   for (const debug of [false, true]) {
     const ui = fixture();
     ui.get('debug').checked = debug;
@@ -70,6 +75,22 @@ test('debug generation is explicit and requests a separate full-agent artifact',
     assert.equal(request.body.debug, debug);
     assert.equal(request.body.stageless, debug);
   }
+});
+
+test('saved debug build preference survives reload and can be disabled for the next build', async () => {
+  const ui = fixture({prefs: {debug: true}});
+  assert.equal(ui.get('debug').checked, true);
+  await ui.click('build');
+  let builds = ui.calls.filter(call => call.url.endsWith('/build'));
+  assert.equal(builds[0].body.debug, true);
+  assert.equal(builds[0].body.stageless, true);
+  ui.get('debug').checked = false;
+  ui.get('debug').handlers.change();
+  assert.equal(JSON.parse(ui.storage.get('rmm_go_agent_prefs')).debug, false);
+  await ui.click('build');
+  builds = ui.calls.filter(call => call.url.endsWith('/build'));
+  assert.equal(builds[1].body.debug, false);
+  assert.equal(builds[1].body.stageless, false);
 });
 
 test('stale saved Quick Tunnel URL blocks compilation without replacing operator input', async () => {

@@ -40,7 +40,7 @@ class GoDebugBuildTests(unittest.TestCase):
                 with zipfile.ZipFile(result["path"]) as archive:
                     self.assertIn(expected, archive.namelist())
                     launcher = archive.read("run-agent.ps1").decode()
-                    self.assertEqual("$env:RMM_DEBUG = '1'" in launcher, debug)
+                    self.assertNotIn("RMM_DEBUG", launcher)
             normal, diagnostic = results
             self.assertNotEqual(normal["filename"], diagnostic["filename"])
             self.assertEqual(os.path.basename(server_rmm.latest_go_agent_binary()).split("-", 1)[1],

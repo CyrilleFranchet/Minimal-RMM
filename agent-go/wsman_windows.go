@@ -138,8 +138,8 @@ func wsmanCommandDone(data uintptr) (bool, uint32) {
 // winrmCreateProcess runs the staged agent on the target through the native
 // WSMan shell protocol. The command completes once the detach is done, so
 // closing the shell cannot kill a still-running process.
-func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string, debug ...bool) error {
-	arguments, err := lateralDetachArguments(sessionID, workspaceID, serviceName, debug...)
+func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string) error {
+	arguments, err := lateralDetachArguments(sessionID, workspaceID, serviceName)
 	if err != nil {
 		return err
 	}
@@ -252,7 +252,7 @@ func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, 
 
 // lateralDetachArguments builds the remote command arguments: the detach
 // flag followed by the standard lateral startup arguments.
-func lateralDetachArguments(sessionID string, workspaceID *string, serviceName string, debug ...bool) ([]string, error) {
+func lateralDetachArguments(sessionID string, workspaceID *string, serviceName string) ([]string, error) {
 	args := []string{"--lateral-detach", "--lateral-session", sessionID}
 	if workspaceID != nil {
 		value := *workspaceID
@@ -263,13 +263,6 @@ func lateralDetachArguments(sessionID string, workspaceID *string, serviceName s
 	}
 	if serviceName != "" {
 		args = append(args, "--service-name", serviceName)
-	}
-	if len(debug) != 0 {
-		value := "0"
-		if debug[0] {
-			value = "1"
-		}
-		args = append(args, "--debug-agent", value)
 	}
 	return args, nil
 }

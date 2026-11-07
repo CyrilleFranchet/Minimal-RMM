@@ -500,13 +500,13 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `session kill` | Kill session |
 | `run <command>` | Queue command (`--type oneshot\|persistent`) |
 | `exec <command>` | Run and wait (`--wait` seconds, `-f` command file) |
-| `spawn [--session ID] [--no-verify] [-d]` | Start a detached second Go agent; `-d` selects the separate debug companion |
+| `spawn [--session ID] [--no-verify]` | Start a detached second Go agent; inherits the source build mode |
 | `make-token -i <cred_id>` or `make-token <identity> <password>` | Create a `runas /netonly` style network identity using a stored credential or direct credentials |
-| `spawnas -i <cred_id> [-d]` | Start a Go agent copy under a stored identity; `-d` enables [debug tracing](docs/agent-debug.md); direct credentials use `--user` and `--password` |
+| `spawnas -i <cred_id>` | Start a Go agent copy under a stored identity; inherits [build-level debug](docs/agent-debug.md); direct credentials use `--user` and `--password` |
 | `runas -i <cred_id> <command>` | Run a command under a stored identity; direct credentials use `--user` and `--password` |
 | `creds del -i <cred_id>` | Remove a stored workspace credential; positional IDs are rejected |
 | `rev2self [--session ID]` | Revert a Go agent session to its own network identity |
-| `lateral <psexec\|wmiexec\|winrm> <host> [--session ID] [--no-verify] [-d]` | Start a Go agent on another host; `-d` selects a separate debug target |
+| `lateral <psexec\|wmiexec\|winrm> <host> [--session ID] [--no-verify]` | Start a Go agent on another host; inherits the source build mode |
 | `uid [--session ID]` | Show the identity used by a Go agent session (process user + active network identity) |
 | `config set-sleep <n>` | 1–3600 |
 | `config set-jitter <n>` | 0–100 |

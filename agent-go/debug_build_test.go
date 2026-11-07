@@ -2,111 +2,126 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-func TestSpawnasDebugCompanionSelection(t *testing.T) {
-	directory := t.TempDir()
-	self := filepath.Join(directory, "normal-agent.exe")
-	if got, err := resolveDebugAgentExecutable(self, false); err != nil || got != self {
-		t.Fatalf("normal spawn changed: %q %v", got, err)
+func TestDebugBuildReusesRenamedCurrentExecutable(t *testing.T) {
+	if !agentDebugBuild {
+		t.Skip("diagnostic image fixture")
 	}
-	if got, err := resolveDebugAgentExecutable(self, true); err == nil || got != "" {
-		t.Fatal("missing debug companion fell back to source executable")
-	}
-	companion := filepath.Join(directory, "minimal-rmm-agent-debug-windows-"+runtime.GOARCH+".exe")
-	if err := os.WriteFile(companion, []byte("invalid"), 0700); err != nil {
+	current, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveDebugAgentExecutable(self, true); err == nil {
-		t.Fatal("non-executable companion accepted")
+	if expected := os.Getenv("RMM_DEBUG_REUSE_FIXTURE"); expected != "" {
+		if current != expected {
+			t.Fatalf("copied debug image did not preserve its executable identity: %q", current)
+		}
+		if _, _, err := parseSpawnCommand("__SPAWN__", &config{SessionID: "fixture-parent"}); err != nil {
+			t.Fatalf("renamed diagnostic image could not prepare a legacy spawn: %v", err)
+		}
+		return
 	}
-	if err := os.WriteFile(companion, []byte("MZfixture"), 0700); err != nil {
+	data, err := os.ReadFile(current)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := resolveDebugAgentExecutable(self, true); err != nil || got != companion {
-		t.Fatalf("debug companion not selected: %q %v", got, err)
-	}
-	if err := os.Remove(companion); err != nil {
+	copyPath := filepath.Join(t.TempDir(), "renamed-debug.exe")
+	if err := os.WriteFile(copyPath, data, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(companion, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := resolveDebugAgentExecutable(self, true); err == nil {
-		t.Fatal("directory accepted as debug companion")
+	cmd := exec.Command(copyPath, "-test.run=^TestDebugBuildReusesRenamedCurrentExecutable$")
+	cmd.Env = append(os.Environ(), "RMM_DEBUG_REUSE_FIXTURE="+copyPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("copied diagnostic executable failed without a companion: %v: %s", err, output)
 	}
 }
 
-func TestSpawnDebugCommandPreservesExplicitSelection(t *testing.T) {
-	cfg := &config{SessionID: "parent-fixture", SpawnDebug: true}
+func TestDebugRuntimeCommandOverridesRejected(t *testing.T) {
+	cfg := &config{SessionID: "parent-fixture"}
 	for _, command := range []string{"__SPAWN__", "__SPAWN__\n" + `{"session_id":"child-fixture"}`} {
-		child, _, err := parseSpawnCommand(command, cfg)
-		if err != nil || child.SpawnDebug {
-			t.Fatalf("debug inherited without selection: %v %#v", err, child)
+		if _, _, err := parseSpawnCommand(command, cfg); err != nil {
+			t.Fatalf("build-only spawn rejected: %v", err)
 		}
 	}
-	child, _, err := parseSpawnCommand("__SPAWN__\n"+`{"session_id":"child-fixture","debug":true}`, cfg)
-	if err != nil || !child.SpawnDebug {
-		t.Fatalf("explicit debug selection lost: %v %#v", err, child)
-	}
-	debugCount := 0
-	for _, entry := range spawnEnvironment(child, "child-fixture") {
-		if strings.HasPrefix(strings.ToUpper(entry), "RMM_DEBUG=") {
-			debugCount++
-			if entry != "RMM_DEBUG=1" {
-				t.Fatalf("debug child environment disabled trace: %q", entry)
+	for _, value := range []string{"true", "false", "null", "1", `"yes"`} {
+		if _, _, err := parseSpawnCommand("__SPAWN__\n"+`{"session_id":"child-fixture","debug":`+value+`}`, cfg); err == nil {
+			t.Fatalf("removed spawn debug option %s accepted", value)
+		}
+		for _, method := range []string{"psexec", "wmiexec", "winrm"} {
+			command := "__LATERAL__\n" + `{"method":"` + method + `","host":"lab-host","stage":"fixture-stage","debug":` + value + `}`
+			if _, err := parseLateralPayload(command); err == nil {
+				t.Fatalf("removed %s debug option %s accepted", method, value)
 			}
 		}
-	}
-	if debugCount != 1 {
-		t.Fatalf("debug child has %d debug environment definitions", debugCount)
-	}
-	if _, _, err := parseSpawnCommand("__SPAWN__\n"+`{"session_id":"child-fixture","debug":"yes"}`, cfg); err == nil {
-		t.Fatal("nonboolean debug selection accepted")
 	}
 }
 
 func TestLateralDebugPayloadAndServiceArguments(t *testing.T) {
 	for _, method := range []string{"psexec", "wmiexec", "winrm"} {
-		command := "__LATERAL__\n" + `{"method":"` + method + `","host":"lab-host","stage":"fixture-stage","debug":true}`
-		payload, err := parseLateralPayload(command)
-		if err != nil || !payload.Debug {
-			t.Fatalf("%s debug selection lost: %v %#v", method, err, payload)
+		command := "__LATERAL__\n" + `{"method":"` + method + `","host":"lab-host","stage":"fixture-stage"}`
+		if _, err := parseLateralPayload(command); err != nil {
+			t.Fatalf("%s build-only deployment rejected: %v", method, err)
 		}
 	}
-	for _, debug := range []bool{false, true} {
-		command := lateralAgentCommand("agent.exe", "session-fixture", nil, "", debug)
-		startup, err := parseLateralStartup(strings.Fields(command)[1:])
-		if err != nil || !startup.DebugSet || startup.Debug != debug {
-			t.Fatalf("explicit debug startup selection not preserved: %q %+v %v", command, startup, err)
+	command := lateralAgentCommand("agent.exe", "session-fixture", nil, "")
+	if strings.Contains(command, "debug") {
+		t.Fatalf("target startup still has runtime debug controls: %q", command)
+	}
+	if _, err := parseLateralStartup(strings.Fields(command)[1:]); err != nil {
+		t.Fatal(err)
+	}
+	args := lateralServiceArguments("stage-fixture", "session-fixture", "https://listener.invalid/a path")
+	if len(args) < 6 || args[5] != "https://listener.invalid/a path" {
+		t.Fatalf("listener URL split before Windows quoting: %q", args)
+	}
+	if agentDebugBuild {
+		if len(args) != 8 || args[6] != "--debug-stage-filename" || args[7] != "1" {
+			t.Fatalf("compiled debug stage2 filename selector missing: %q", args)
 		}
-		args := lateralServiceArguments("stage-fixture", "session-fixture", "https://listener.invalid/a path", debug)
-		if len(args) != 6 && len(args) != 8 {
-			t.Fatalf("invalid service argument count: %q", args)
-		}
-		if args[5] != "https://listener.invalid/a path" {
-			t.Fatalf("listener URL split before Windows quoting: %q", args)
-		}
-		if debug && (len(args) != 8 || args[6] != "--debug-agent" || args[7] != "1") {
-			t.Fatalf("debug stage2 filename selector missing: %q", args)
-		}
-		if !debug && len(args) != 6 {
-			t.Fatalf("normal stage2 unexpectedly selects debug: %q", args)
+	} else if len(args) != 6 {
+		t.Fatalf("normal build requested diagnostic stage2 filename: %q", args)
+	}
+	for _, flags := range [][]string{{"--debug-agent", "1"}, {"--debug-agent", "0"}, {"-d", "1"}, {"--debug-stage-filename", "1"}} {
+		if _, err := parseLateralStartup(append([]string{"--lateral-session", "session-fixture"}, flags...)); err == nil {
+			t.Fatalf("removed or worker-only debug flags accepted by agent startup: %q", flags)
 		}
 	}
-	for _, value := range []string{"true", "2", ""} {
-		if _, err := parseLateralStartup([]string{"--lateral-session", "session-fixture", "--debug-agent", value}); err == nil {
-			t.Fatalf("invalid debug selector %q accepted", value)
+}
+
+func TestDebugRegistrationReportsCompiledMode(t *testing.T) {
+	called := false
+	client := &http.Client{Transport: workspaceBindingTransport(func(request *http.Request) (*http.Response, error) {
+		called = true
+		if got := request.URL.Query().Get("debug_build"); got != strconv.FormatBool(agentDebugBuild) {
+			t.Errorf("registration lost compiled mode: %q", got)
 		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader("REGISTERED"))}, nil
+	})}
+	if err := register(client, &config{BaseURL: "https://fixture.invalid", SessionID: "fixture-session"}); err != nil || !called {
+		t.Fatalf("registration failed: called=%t err=%v", called, err)
 	}
-	if _, err := parseLateralStartup([]string{"--lateral-session", "session-fixture", "--debug-agent", "1", "--debug-agent", "0"}); err == nil {
-		t.Fatal("duplicate debug selector accepted")
+}
+
+func TestDebugChildEnvironmentOmitsRemovedSwitch(t *testing.T) {
+	for _, ambient := range []string{"0", "1"} {
+		t.Setenv("RMM_DEBUG", ambient)
+		t.Setenv("rmm_debug", ambient)
+		for _, entry := range spawnEnvironment(&config{}, "fixture-child") {
+			key, _, _ := strings.Cut(entry, "=")
+			if strings.EqualFold(key, "RMM_DEBUG") {
+				t.Fatalf("removed debug environment switch propagated: %q", entry)
+			}
+		}
 	}
 }
 

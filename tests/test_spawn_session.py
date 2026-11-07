@@ -183,7 +183,7 @@ class SpawnHttpRoutingTests(unittest.TestCase):
         self.assertTrue(payload["verified"])
         handler.server_instance.spawn_session.assert_called_once_with(
             "full-session-id", verify=True, spawn_timeout=120.0,
-            register_timeout=60.0, verify_timeout=120.0, debug=False,
+            register_timeout=60.0, verify_timeout=120.0,
         )
 
     def test_status_codes_follow_exec_conventions(self):

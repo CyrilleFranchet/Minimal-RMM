@@ -1,5 +1,37 @@
 # Progress Log
 
+## 2026-11-07 — Remove per-command debug controls
+
+- Remove legacy debug flags, deployment API/tool parameters, companion lookup,
+  and runtime debug selectors. The main build option is the sole control;
+  normal/debug descendants reuse their source image and compiled mode.
+- Preserve the WebUI's debug build checkbox and matching CLI/API build option.
+  PsExec chooses the correct payload from source build metadata and does not
+  fall back to a different mode. Older entries below record superseded designs.
+- Verification: full `make check`, normal/debug Go suites, both Windows
+  architecture builds, C compilation, and parity pass. WebUI tests cover the
+  visible checkbox, checked/unchecked requests, and saved preferences. Actual
+  server builds produced normal and debug Windows amd64 ZIPs; binary inspection
+  confirmed diagnostics only in the debug artifact and no runtime switch in
+  either launcher. Native Windows execution of this revision remains pending.
+
+## 2026-11-07 — Inherit debug from the main agent build (superseded controls)
+
+- Make the generated debug executable the main agent rather than requiring
+  manual companion placement. Its descendants inherit diagnostics through
+  spawn, spawnas, WMI, WinRM, and server-staged PsExec payload selection.
+- Keep normal builds free of diagnostic implementation. Command debug flags
+  still opt a normal source into a diagnostic branch; false/omitted flags do
+  not disable a compiled debug source. Existing normal agents need replacement.
+- Report and persist the compiled build mode as session metadata so the server
+  selects the correct PsExec variant automatically. Never fall back to a normal
+  payload when a debug build is required.
+- Validation: full `make check` (including 150 deployment/build/registration
+  tests), normal/debug Go suites, both Windows architecture builds, C compile
+  checks, vet, parity, and lint pass. Real subprocess tests verify build-mode
+  startup and renamed-image reuse. Code/security/frontend review found no
+  blockers; native Windows execution of the new inheritance behavior is pending.
+
 ## 2026-11-07 — Show invalid WebUI shell commands before errors
 
 - Echo rejected slash input before its error so the transcript retains the
@@ -32,7 +64,7 @@
   diagnostics on Go 1.21 and Go 1.27 all pass. The user's remote environment
   still requires rebuilding the source agent with the corrected binding.
 
-## 2026-11-07 — Separate Go debug agents
+## 2026-11-07 — Separate Go debug agents (superseded design)
 
 - Extend the same explicit debug selection to `spawn` and all three `lateral`
   methods across CLI, WebUI, REST, MCP, and AI. Local spawn and WMI/WinRM use
@@ -42,7 +74,7 @@
 - Pass the lateral target's requested debug state explicitly, including through
   WinRM detach-to-service, so inherited environment settings cannot enable or
   disable tracing contrary to the request. Cover both on/off startup selectors.
-- Add `spawnas -i <cred_id> -d` / `--debug` to CLI and WebUI shells and expose
+- Initially add per-command debug selection to CLI and WebUI shells and expose
   the boolean through REST, MCP, and AI tools. Select a separately built debug
   companion beside the source executable; missing companions fail explicitly.
 - Gate diagnostics behind the `rmmdebug` build tag. Normal executables exclude
