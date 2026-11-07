@@ -644,6 +644,43 @@ func pluginCommandEnvelope(command, input string) (string, error) {
 	return string(payload), nil
 }
 
+// normalizeCMDQuotes accepts simple single-quoted arguments as a CMD convenience.
+// Preserve literal apostrophes, existing double quotes, and ambiguous segments.
+func normalizeCMDQuotes(line string) string {
+	boundary := func(c byte) bool { return strings.ContainsRune(" \t\r\n&|<>()", rune(c)) }
+	result := []byte(line)
+	inDouble := false
+	for i := 0; i < len(line); i++ {
+		if line[i] == '^' && !inDouble {
+			i++ // CMD's escape protects the next character.
+			continue
+		}
+		if line[i] == '"' {
+			inDouble = !inDouble
+			continue
+		}
+		if line[i] != '\'' || inDouble || (i > 0 && !boundary(line[i-1])) {
+			continue
+		}
+		for end := i + 1; end < len(line); end++ {
+			if line[end] != '\'' {
+				continue
+			}
+			// A partial argument or internal apostrophe is ambiguous. Never
+			// search past it for a closing quote in another command.
+			if end+1 < len(line) && !boundary(line[end+1]) {
+				break
+			}
+			if !strings.ContainsAny(line[i+1:end], "\"^\r\n") {
+				result[i], result[end] = '"', '"'
+				i = end
+			}
+			break
+		}
+	}
+	return string(result)
+}
+
 // buildCommandInvocation translates the shared operator dispatch syntax into a
 // child-process invocation. The target platform and pwsh availability are
 // explicit so the routing can be tested without running a target shell.
@@ -678,13 +715,13 @@ func buildCommandInvocation(command, goos string, pwshAvailable bool) (string, [
 		if strings.EqualFold(body, "ls") {
 			body = "dir"
 		}
-		return "cmd.exe", []string{"/d", "/c", body}, nil
+		return "cmd.exe", []string{"/d", "/c", normalizeCMDQuotes(body)}, nil
 	default:
 		if goos == "windows" {
 			if strings.EqualFold(body, "ls") {
 				body = "dir"
 			}
-			return "cmd.exe", []string{"/d", "/c", body}, nil
+			return "cmd.exe", []string{"/d", "/c", normalizeCMDQuotes(body)}, nil
 		}
 		return "/bin/sh", []string{"-c", body}, nil
 	}

@@ -1,5 +1,18 @@
 # Progress Log
 
+## 2026-11-07 — Normalize single-quoted arguments in Go CMD dispatch
+
+- Restore the CMD single-quote convenience missing from the Go agent while
+  preserving literal apostrophes and existing double-quoted text. PowerShell
+  dispatch is unchanged.
+- Add host-runnable normalization and dispatch tests plus native Windows
+  regressions for single-quoted arguments and script paths.
+- Add `make check-agent-commands` to `make check`; `make go-test` also includes
+  the host unit tests through its existing package test command.
+- Validation: focused unit tests, `make go-test`, Windows test cross-compilation,
+  and changed-document Markdown lint pass. Native Windows execution of these
+  additional single-quote cases remains pending.
+
 ## 2026-11-07 — Preserve quotes in Go Windows CMD commands
 
 - Windows `newCommand` supplies an explicit `/d /s /c` command tail for

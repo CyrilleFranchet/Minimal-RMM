@@ -544,6 +544,20 @@ quotes are incompatible with CMD. `TestWindowsCMDQuotedCommands` exercises
 quoted arguments, a script path containing spaces, and command operators on
 Windows without changing system state.
 
+Before CMD dispatch, `normalizeCMDQuotes` converts complete single-quoted
+arguments such as `'two words'` to `"two words"`. This restores the Go agent's
+missing convenience behavior already offered by the PowerShell agent. The Go
+normalizer preserves apostrophes within words, existing double-quoted text,
+unmatched quotes, partial arguments, and segments containing double quotes,
+carets, or newlines. CMD expansion rules still apply to converted arguments.
+`PS:`, `powershell:`, `pwsh:`, and non-Windows test adapters bypass normalization.
+
+`TestNormalizeCMDQuotes` and `TestBuildCommandInvocationQuoteNormalization` are
+host-runnable unit regressions. Run `make check-agent-commands` for focused
+validation; both `make check` and `make go-test` include them. The Windows-only
+`TestWindowsCMDQuotedCommands` also exercises single-quoted input through the
+dispatch layer and actual CMD process in the dedicated Windows CI step.
+
 | Input | Windows behavior |
 |-------|------------------|
 | Bare command | Runs with `cmd.exe /d /c`; an exact `ls` is normalized to `dir` |

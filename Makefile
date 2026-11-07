@@ -11,7 +11,7 @@ PY_MODULES := rmm_settings.py rmm_plugin_sources.py rmm_plugin_releases.py rmm_e
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-ai check-cli check-agent-deployment check-parity check-web-contracts check check-exegol-mcp go-test tun-build workspace-service docker-build docker-up
+.PHONY: help install-lint lint-md lint-yaml lint test check-ai check-cli check-agent-deployment check-agent-commands check-parity check-web-contracts check check-exegol-mcp go-test tun-build workspace-service docker-build docker-up
 
 help:
 	@printf "Available targets:\n"
@@ -29,10 +29,14 @@ help:
 	@printf "  make check-exegol-mcp  Validate a live Exegol MCP endpoint (needs RMM_EXEGOL_MCP_URL); not part of 'check'\n"
 	@printf "                         pass ARGS=\"--config PATH\" or ARGS=\"--data-dir PATH\" to point at a saved workspace config\n"
 	@printf "  make go-test       Cross-build the Go agent and test the pivot components\n"
+	@printf "  make check-agent-commands  Test Go command routing and CMD quote normalization\n"
 	@printf "  make tun-build     Build the server-side TUN helper\n"
 	@printf "  make workspace-service  Start the local Exegol workspace service\n"
 	@printf "  make docker-build  Build the distributed central-only image\n"
 	@printf "  make docker-up     Start the central control plane with Compose\n"
+
+check-agent-commands:
+	@cd agent-go && go test -buildvcs=false -count=1 -run 'Test(NormalizeCMDQuotes|BuildCommandInvocation)' .
 
 go-test:
 	@cd agent-go && go test -buildvcs=false ./...
@@ -124,7 +128,7 @@ check-web-contracts:
 	@node tests/test_assets_ui.cjs
 	@node tests/test_agent_redirects.cjs
 
-check: test check-ai check-cli check-agent-deployment check-parity check-web-contracts lint
+check: test check-agent-commands check-ai check-cli check-agent-deployment check-parity check-web-contracts lint
 
 check-exegol-mcp:
 	@$(PYTHON) scripts/check_exegol_mcp.py $(ARGS)

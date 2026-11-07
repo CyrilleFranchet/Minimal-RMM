@@ -18,11 +18,17 @@ func TestWindowsCMDQuotedCommands(t *testing.T) {
 		name, command, want string
 	}{
 		{"quoted argument", `echo "two words"`, `"two words"`},
+		{"single-quoted argument", `echo 'two words'`, `"two words"`},
+		{"single-quoted program and argument", `'` + script + `' 'two words'`, `[two words]`},
 		{"quoted program and argument", `"` + script + `" "two words"`, `[two words]`},
 		{"operators", `echo "two & words" & echo done`, "\"two & words\"\r\ndone"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			child := newCommand("cmd.exe", "/d", "/c", tt.command)
+			name, args, err := buildCommandInvocation(tt.command, "windows", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			child := newCommand(name, args...)
 			out, err := child.CombinedOutput()
 			// CMD echo can retain whitespace immediately before an operator.
 			lines := strings.Split(strings.TrimSpace(string(out)), "\r\n")
