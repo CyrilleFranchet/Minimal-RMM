@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-11-07 — Correct native WMI COM dispatch
+
+- Correct IWbemClassObject vtable slots for GetMethod (19), SpawnInstance
+  (15), Put (5), and Get (4), matching the Windows SDK WbemCli.h declaration.
+  The previous GetMethod dispatch called GetObjectText and could return
+  `0x80041008` before process creation.
+- Rebuild and replace the source Go agent to apply this correction. Native
+  Windows runtime validation remains pending.
+- Pin the WMI call chain to one OS thread for COM apartment lifetime.
+  Add `TestWMICreateProcess` to Windows CI for real local process creation
+  and provider-error propagation on Go 1.21/1.27, normal and debug builds.
+- Validation: isolated `make go-test` passes, including normal/debug suites,
+  both Windows architecture builds, TUN tests, and C compile checks. The
+  Windows test binary cross-compiles, and repository Markdown/YAML lint passes.
+
 ## 2026-11-07 — Remove per-command debug controls
 
 - Remove legacy debug flags, deployment API/tool parameters, companion lookup,

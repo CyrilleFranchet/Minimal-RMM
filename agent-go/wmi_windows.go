@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -106,6 +107,9 @@ func sysFreeString(handle uintptr) {
 // sequence: locator, remote namespace connection, proxy authentication,
 // class object, Create input instance, method execution, result check.
 func wmiCreateProcess(host, command string) error {
+	// COM apartments belong to OS threads, not goroutines.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded); hr != 0 && hr != 1 {
 		return fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
 	}
@@ -155,8 +159,8 @@ func wmiCreateProcess(host, command string) error {
 	}
 	defer comRelease(classObject)
 	var inSignature, outSignature uintptr
-	// IWbemClassObject::GetMethod (slot 13).
-	if err := comCall(classObject, 13, methodName, 0,
+	// IWbemClassObject::GetMethod (slot 19, including IUnknown).
+	if err := comCall(classObject, 19, methodName, 0,
 		uintptr(unsafe.Pointer(&inSignature)), uintptr(unsafe.Pointer(&outSignature))); err != nil {
 		return fmt.Errorf("WMI get Win32_Process.Create: %w", err)
 	}
@@ -168,8 +172,8 @@ func wmiCreateProcess(host, command string) error {
 	}
 	defer comRelease(inSignature)
 	var inInstance uintptr
-	// IWbemClassObject::SpawnInstance (slot 9).
-	if err := comCall(inSignature, 9, 0, uintptr(unsafe.Pointer(&inInstance))); err != nil {
+	// IWbemClassObject::SpawnInstance (slot 15).
+	if err := comCall(inSignature, 15, 0, uintptr(unsafe.Pointer(&inInstance))); err != nil {
 		return fmt.Errorf("WMI spawn Create input: %w", err)
 	}
 	defer comRelease(inInstance)
@@ -183,8 +187,8 @@ func wmiCreateProcess(host, command string) error {
 		return err
 	}
 	arguments := variant{vt: vtBstr, value: commandLine}
-	// IWbemClassObject::Put (slot 4).
-	if err := comCall(inInstance, 4, uintptr(unsafe.Pointer(propertyName)), 0,
+	// IWbemClassObject::Put (slot 5).
+	if err := comCall(inInstance, 5, uintptr(unsafe.Pointer(propertyName)), 0,
 		uintptr(unsafe.Pointer(&arguments)), cimString); err != nil {
 		return fmt.Errorf("WMI set CommandLine: %w", err)
 	}
@@ -203,8 +207,8 @@ func wmiCreateProcess(host, command string) error {
 		return err
 	}
 	var returnValue variant
-	// IWbemClassObject::Get (slot 5).
-	if err := comCall(outParams, 5, uintptr(unsafe.Pointer(resultName)), 0,
+	// IWbemClassObject::Get (slot 4).
+	if err := comCall(outParams, 4, uintptr(unsafe.Pointer(resultName)), 0,
 		uintptr(unsafe.Pointer(&returnValue)), 0, 0); err != nil {
 		return fmt.Errorf("WMI read ReturnValue: %w", err)
 	}

@@ -420,6 +420,15 @@ Modules:
 | `wmiexec` | Native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`, no PowerShell |
 | `winrm` | Native WSMan client (`wsman_windows.go`) through `WsmSvc.dll` — the library `winrs.exe` itself uses: `WSManInitialize`, `WSManCreateSession`, `WSManCreateShell`, `WSManRunShellCommand`, receive until the command's Done state, then close. The remote command runs the agent with `--lateral-detach`, which re-registers itself as a local SCM service and exits: WinRM terminates a shell's process tree when the shell closes, while the SCM-started instance runs outside that job object. No `winrs.exe`, no `wmic.exe` |
 
+The native WMI binding uses the Windows SDK `IWbemClassObject` vtable slots:
+`GetMethod=19`, `SpawnInstance=15`, `Put=5`, and `Get=4` (including
+`IUnknown`). Older agents can fail at method lookup with `0x80041008`
+because they dispatch to `GetObjectText` instead. Rebuild and replace the
+source agent to apply the correction; native Windows runtime validation is
+still required. The COM call chain stays on one OS thread so initialization
+and cleanup share the same apartment. `TestWMICreateProcess` exercises local
+process creation and a missing executable's provider error on Windows CI.
+
 Result contract: an acknowledged launch answers
 `lateral started: method=<method> host=<host> target session=<id>`; the
 psexec handshake also carries `service=<name> binary=<name>` so cleanup
