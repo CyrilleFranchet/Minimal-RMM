@@ -14,6 +14,53 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-07 — PsExec lifecycle review fixes
+
+- Publish and retain exact service/binary cleanup authority as soon as SCM
+  acknowledges the start. `awaitLateralResult` preserves that acknowledgment
+  when the command deadline expires and prefers an already completed result.
+- `lateralMoveWithProgress` publishes progress before waiting. `launcherFailure`
+  distinguishes a stopped, failed worker from a running or unreachable service:
+  stopped failures permit cleanup and report deployment failure to the operator.
+- Retain deployment names in failed-worker results and retry owned cleanup even
+  without registration. Reserve beacon delivery and response time within the
+  server timeout. Remove the duplicate post-wait ownership write so successful
+  cleanup cannot be undone by a stale timeout acknowledgment.
+- Bound C console diagnostics without concatenating an ANSI temp path into a
+  fixed buffer, and size the launcher command line for a 128-character session.
+- Add regressions for deadline results and typed worker failures. Native Windows
+  runtime validation remains required.
+- Validation: full host Go tests, `go vet ./...`, Windows amd64/arm64 test
+  cross-compilation, and `git diff --check` pass. Host tests required permission
+  to open localhost listeners outside the restricted sandbox.
+- Final validation also covers the Python failed-worker cleanup and reserved
+  timeout-budget regressions, full repository checks, and both C compile checks.
+- Serialize the shared service embed through Go compilation so concurrent
+  amd64/arm64 builds cannot embed another target's service. Cover both
+  architectures in the concurrent build regression.
+
+### 2026-11-07 — Dedicated PsExec service host and caller cleanup
+
+- Keep the normal C/Go stage1 launchers free of SCM handling. Add a separate
+  compact C service host that runs linked stage1 code on a native worker thread.
+  Build and embed it independently as lateral-service.bin, including stageless
+  agent builds; no Go standalone fallback or stale service image is substituted.
+- The caller passes its listener URL and staging/session IDs, waits for successful
+  service completion, deletes the temporary service and host binary, and reports
+  the result. Sharing errors receive a bounded retry. Keep exact-artifact cleanup
+  authority only when immediate cleanup is pending; retain the server retry path.
+- Add service completion/ownership/build-isolation regressions and native Windows
+  CI checks for SCM imports, service handshake, and caller-side artifact deletion.
+- Review pass: aligned stale comments with the caller-owned cleanup flow (embed,
+  psexec move, cleanup retry, service host), converted the service-host build
+  timeout into a clean build error like the stage1 build, and normalized the
+  Makefile recipe and placeholder test naming. `make go-test` (host tests,
+  amd64/arm64 Windows cross-builds, stage1 and lateral-service C compile checks),
+  `make check-agent-deployment`, `make check-parity`, and `make lint` pass.
+  Native Windows runtime execution remains pending; the windows-agent-identity
+  CI workflow builds the service host with MSVC and runs the SCM handshake and
+  import-boundary checks.
+
 ### 2026-11-06 — Preserve spawn fallback diagnostics
 
 - Return every attempted method's success or numeric Windows error and message,

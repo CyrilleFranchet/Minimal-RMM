@@ -20,12 +20,15 @@ class AgentWorkspaceBindingTests(unittest.TestCase):
 
     def _isolated_agent_root(self, directory):
         """Minimal agent-go skeleton so build tests never rewrite the
-        repository's embedded stage1.bin placeholder."""
+        repository's embedded lateral-service.bin placeholder."""
         root = Path(directory) / "agent-go"
         (root / "stage1" / "c").mkdir(parents=True, exist_ok=True)
         (root / "go.mod").write_text("module minimal-rmm-agent\n")
         source = Path(server_rmm.__file__).parent / "agent-go" / "stage1" / "c" / "stage1.c"
         (root / "stage1" / "c" / "stage1.c").write_text(source.read_text())
+        (root / "lateral-service" / "c").mkdir(parents=True, exist_ok=True)
+        service = source.parents[2] / "lateral-service" / "c" / "service.c"
+        (root / "lateral-service" / "c" / "service.c").write_text(service.read_text())
         return str(root)
 
     def test_artifact_owner_uses_authenticated_scope(self):

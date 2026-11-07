@@ -24,6 +24,8 @@ Copy `stage1.exe` and `run-stage1.ps1` to the target, then run:
 .\run-stage1.ps1
 ```
 
+The wrapper waits for stage1 and prints its exit code: `0` = agent installed and started, `1` = staging failure (check the stage status endpoint below), `2` = stage1 rejected its arguments or has no base URL embedded. The C launcher attaches to a parent console when available and prints diagnostics; service and Explorer launches stay silent. A network failure can also prevent delivery of the status report.
+
 stage1 connects back to the RMM server over HTTPS, fetches the masked Go agent, decodes it, writes it to the current user's temp directory (`%TEMP%\minimal-rmm-agent.exe` — no administrator rights required), and executes it. The session ID is fixed at build time so the agent registers with a known ID on first beacon.
 
 ### Checking the launcher status
@@ -112,3 +114,35 @@ Applied in 32-byte blocks over the entire binary. Implemented in both `server_rm
 - `x86_64-w64-mingw32-gcc` (package: `mingw-w64`) for the compact C stage1. Falls back to Go stage1 if not available.
 - The RMM server must be reachable from the target at the time stage1 runs (the `BASE_URL` is baked into stage1 at build time).
 - The staging entry lives in server memory: restart the RMM server and staged builds must be rebuilt. The entry expires 24 hours after the build or on first successful fetch.
+
+## Dedicated lateral service
+
+The normal C and Go stage1 launchers are standalone programs with no Windows
+service lifecycle. PsExec uses a separate compact service host built from
+`agent-go/lateral-service/c/service.c`. It compiles the shared stage1 worker code
+into its own image and runs that worker on a native thread. The agent embeds
+`lateral-service.bin` and transfers only that host to ADMIN$. The calling agent
+waits for worker completion, deletes the temporary service, and
+removes the host binary after image handles close. It leaves the new agent alone.
+
+A stopped worker permits cleanup even when staging failed; failure results retain
+the exact deployment names and report failure separately from cleanup success.
+The source records cleanup authority before waiting and removes it on successful
+cleanup. It does not restore that authority from a stale timeout result. The
+server can retry owned cleanup without target registration; the source checks
+that the service is stopped before removing artifacts.
+
+For PsExec, the worker budget is shorter than the server response timeout by the
+source beacon sleep plus maximum jitter and 15 seconds, capped at half the total
+timeout. This reserves time for delivery and the final result. An offline source,
+exceptionally delayed delivery, or blocked network calls can still make the
+result inconclusive; registration alone does not prove artifact cleanup.
+
+A target-architecture MinGW compiler is required for the dedicated service.
+The Go standalone launcher remains a manual-deployment fallback; it is never
+substituted for the dedicated service. Rebuild and redeploy the calling agent
+to obtain the new embedded host.
+
+Builds serialize replacement of the shared service embed through completion of
+the Go compilation. Concurrent amd64 and arm64 builds keep their own service
+architecture; their compiler outputs and archives still use unique paths.

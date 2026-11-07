@@ -2,10 +2,40 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestLateralDeadlinePreservesAcknowledgedCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := lateralPayload{Method: "psexec", Host: "deadline-host", SessionID: "deadline-session", RemoteName: "lab.exe"}
+	suffix := strings.Repeat("ef", 16)
+	artifact := lateralCleanupPayload{Host: request.Host, ServiceName: "MinimalRmmAgent-" + suffix, BinaryName: "lab-" + suffix + ".exe"}
+	defer func() {
+		lateralCleanupOwners.Lock()
+		delete(lateralCleanupOwners.artifacts, artifact)
+		lateralCleanupOwners.Unlock()
+	}()
+	ack := "lateral started: method=psexec host=" + request.Host + " target session=" + request.SessionID + " service=" + artifact.ServiceName + " binary=" + artifact.BinaryName
+	rememberLateralCleanup(request, ack)
+	progress := make(chan string, 1)
+	progress <- ack
+	output, err := awaitLateralResult(ctx, make(chan lateralResult), progress)
+	if err != nil || !strings.HasPrefix(output, ack+"\nlateral cleanup pending: ") || !ownsLateralCleanup(artifact) {
+		t.Fatalf("deadline lost acknowledged artifacts: %q %v", output, err)
+	}
+	if _, err := awaitLateralResult(ctx, make(chan lateralResult), make(chan string)); err == nil {
+		t.Fatal("deadline before acknowledgment must remain inconclusive")
+	}
+	results := make(chan lateralResult, 1)
+	results <- lateralResult{result: "Lateral failed: stage 2"}
+	if output, err := awaitLateralResult(ctx, results, make(chan string)); err != nil || output != "Lateral failed: stage 2" {
+		t.Fatalf("completed failure lost to deadline: %q %v", output, err)
+	}
+}
 
 func TestCleanupRequiresExactAcknowledgedArtifacts(t *testing.T) {
 	request := lateralPayload{Method: "psexec", Host: "ownership-test-host", SessionID: "srv-owned-session", RemoteName: "lab-agent.exe"}
@@ -149,9 +179,9 @@ func TestLateralCleanupCommandRequiresWindowsBuild(t *testing.T) {
 	}
 }
 
-func TestEmbeddedStage1PlaceholderIsDetected(t *testing.T) {
-	if bytes.HasPrefix(embeddedStage1, []byte("MZ")) && len(embeddedStage1) < 1024 {
-		t.Fatalf("unexpectedly small embedded stage1 binary: %d bytes", len(embeddedStage1))
+func TestEmbeddedLateralServicePlaceholderIsDetected(t *testing.T) {
+	if bytes.HasPrefix(embeddedLateralService, []byte("MZ")) && len(embeddedLateralService) < 1024 {
+		t.Fatalf("unexpectedly small embedded lateral service binary: %d bytes", len(embeddedLateralService))
 	}
 }
 
@@ -182,5 +212,26 @@ func TestUidActionContract(t *testing.T) {
 	lines := strings.Split(output, "\n")
 	if len(lines) != 2 || !strings.HasPrefix(lines[0], "agent user: ") || !strings.HasPrefix(lines[1], "network identity: ") {
 		t.Fatalf("uid output must be a stable two-line contract, got %q", output)
+	}
+}
+
+func TestCleanupOwnershipRetainedOnlyWhenImmediateCleanupIsPending(t *testing.T) {
+	request := lateralPayload{Method: "psexec", Host: "pending-cleanup-host", SessionID: "pending-session-123", RemoteName: "lab.exe"}
+	suffix := strings.Repeat("cd", 16)
+	artifact := lateralCleanupPayload{Host: request.Host, ServiceName: "MinimalRmmAgent-" + suffix, BinaryName: "lab-" + suffix + ".exe"}
+	clear := func() {
+		lateralCleanupOwners.Lock()
+		delete(lateralCleanupOwners.artifacts, artifact)
+		lateralCleanupOwners.Unlock()
+	}
+	defer clear()
+	ack := "lateral started: method=psexec host=" + request.Host + " target session=" + request.SessionID + " service=" + artifact.ServiceName + " binary=" + artifact.BinaryName
+	rememberLateralCleanup(request, ack+"\nlateral cleanup: service deleted; launcher binary removed from ADMIN$")
+	if ownsLateralCleanup(artifact) {
+		t.Fatal("completed cleanup retained deletion authority")
+	}
+	rememberLateralCleanup(request, ack+"\nlateral cleanup pending: file busy")
+	if !ownsLateralCleanup(artifact) {
+		t.Fatal("pending cleanup lost exact-artifact retry authority")
 	}
 }

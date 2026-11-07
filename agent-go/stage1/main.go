@@ -162,9 +162,6 @@ func main() {
 		reportStageStatus(cfg, "ok: agent installed and started")
 		return nil
 	}
-	if runStageAsService(work) {
-		return
-	}
 	if err := work(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(3)

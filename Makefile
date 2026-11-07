@@ -48,6 +48,11 @@ go-test:
 			agent-go/stage1/c/stage1.c \
 			-lwinhttp -lbcrypt -lshell32 && \
 		printf "stage1 C compile: OK\n"; \
+		x86_64-w64-mingw32-gcc -Os -s -mwindows \
+			-o /tmp/lateral-service-check.exe \
+			agent-go/lateral-service/c/service.c \
+			-lwinhttp -lbcrypt -lshell32 -ladvapi32 && \
+		printf "lateral service C compile: OK\n"; \
 	else \
 		printf "stage1 C compile: SKIP (x86_64-w64-mingw32-gcc not found; install mingw-w64 to enable)\n"; \
 	fi

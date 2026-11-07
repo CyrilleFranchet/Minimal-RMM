@@ -376,14 +376,14 @@ Modules:
 
 | Method | Technique |
 |--------|-----------|
-| `psexec` | Two-stage RemCom-style deployment: push the embedded compact stage1 launcher to `ADMIN$`, start it as a demand-start service; stage1 fetches the masked stage2 agent payload from the listener's staging endpoint, decodes it in memory, installs and starts the agent, then stops. The cleanup command removes the service and the launcher binary after the target registers |
+| `psexec` | Two-stage RemCom-style deployment: push the dedicated lateral service host to `ADMIN$`, start it as a demand-start service; its linked stage1 worker fetches the masked stage2 agent payload from the listener's staging endpoint, decodes it in memory, installs and starts the agent, then stops. The calling agent waits for successful service completion and removes the temporary service and host binary itself; the server cleanup command is only a retry path when that immediate cleanup stays pending |
 | `wmiexec` | Native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`, no PowerShell |
 | `winrm` | Native WSMan client (`wsman_windows.go`) through `WsmSvc.dll` — the library `winrs.exe` itself uses: `WSManInitialize`, `WSManCreateSession`, `WSManCreateShell`, `WSManRunShellCommand`, receive until the command's Done state, then close. The remote command runs the agent with `--lateral-detach`, which re-registers itself as a local SCM service and exits: WinRM terminates a shell's process tree when the shell closes, while the SCM-started instance runs outside that job object. No `winrs.exe`, no `wmic.exe` |
 
 Result contract: an acknowledged launch answers
 `lateral started: method=<method> host=<host> target session=<id>`; the
-psexec handshake also carries `service=<name> binary=<name>` so the
-cleanup command can remove exactly this deployment. An acknowledgment
+psexec handshake also carries `service=<name> binary=<name>` so cleanup
+can remove exactly this deployment. An acknowledgment
 does not prove deployment; failures answer `Lateral failed: <detail>`
 with the explanation from the failing step. The server
 (`lateral_move` in `server_rmm.py`) waits for the target session to
@@ -396,10 +396,12 @@ target (or a `make_token` identity with them), `ADMIN$` reachable for
 staging, and WinRM over HTTP on port 5985 for the `winrm` module. Live
 behavior of every module remains to be validated on real hosts.
 
-`exec_timeout` is forwarded as the agent's `timeout_seconds`, including
-fractional seconds; it bounds the lateral worker after command delivery. The
-server wait includes beacon delivery time, so it may expire before the worker
-finishes. An HTTP timeout does not cancel queued or running target work.
+`exec_timeout` bounds the server response wait. For PsExec, the agent's worker
+budget subtracts the source beacon sleep plus maximum jitter and 15 seconds,
+capped at half the total timeout, to reserve delivery and response time. WMI and
+WinRM receive the unchanged timeout, including fractional seconds. Delayed or
+offline agents can still exceed the server wait. An HTTP timeout does not cancel
+queued or running target work.
 
 Workspace `operator_proxy_timeout` uses the requested command wait plus a
 30-second margin for identity actions, and the execution wait plus registration
@@ -407,40 +409,37 @@ and two verification waits plus 30 seconds for spawn/lateral. Registration and
 verification budgets are omitted when `verify` is false. Invalid budget values
 use bounded defaults in the proxy; the central API still validates the request.
 
-### PsExec method: stage1 launcher and listener staging
+### PsExec method: dedicated lateral service and listener staging
 
 The `psexec` module is a two-stage reimplementation of the RemCom
 deployment model ([RemCom source](https://github.com/kavika13/RemCom) as
 architectural reference, not a dependency): RemCom embeds a small
 service binary inside its client and extracts it at runtime; here the
-agent embeds the compact stage1 launcher and pushes it instead of the
-full agent binary.
+agent embeds the dedicated lateral service host and pushes it instead of
+the full agent binary.
 
-Stage1 (`agent-go/stage1/`, embedded via `go:embed stage1.bin`):
+Dedicated lateral service (`agent-go/lateral-service/c/service.c`):
 
-- `build_go_agent` compiles `./stage1` first for Windows targets with
-  the build's base URL injected, writes the binary to `stage1.bin`, and
-  the agent build embeds it. The committed placeholder does not start
-  with `MZ`, so an agent built outside the server flow reports that the
-  launcher is not embedded. The launcher measures about 6 MB against
-  14 MB for the full agent (the Go runtime floor with `net/http`), so
-  the pushed binary is less than half the deployment size.
-- The lateral worker writes the embedded launcher to
-  `\\<host>\ADMIN$\System32\<stem>-<random>.exe` and creates a
-  demand-start service with the binPath
-  `<path> --stage <staging id> --session <target session>`. The service
-  is not marked for deletion at start; the cleanup command owns it.
-- Stage1 is a proper Windows service (`stage1/service_windows.go`): it
-  connects to the SCM dispatcher, runs the staging work as the service
-  body, reports STOPPED, and exits within seconds.
-- Stage1 carries no beacon secret: the unguessable staging identifier on
-  its command line is its only capability. It fetches the masked stage2
-  payload, decodes it in memory (the payload never exists as a
-  downloaded executable file), verifies the `MZ` header, writes the
-  agent to the temp directory of the service account
-  (`%TEMP%\minimal-rmm-agent.exe` — `C:\Windows\Temp` under SYSTEM, the
-  user's temp directory for a manual launcher run), starts it with
-  `--lateral-session`, reports one status line, and stops.
+- The normal stage1 launcher has no SCM code. The dedicated host compiles its
+  staging worker code with `STAGE1_EMBEDDED`, which excludes standalone WinMain.
+  It owns its own SCM dispatcher and runs the linked stage1 worker on a native
+  CreateThread thread. There is no second stage1 executable or custom PE loader.
+- `stageServiceMain` registers the actual SCM service name, reports startup and
+  running state, waits for `stageWorker`, and reports STOPPED with its result.
+  `reportServiceState` and `stageServiceControl` publish SCM status. The worker
+  invokes the shared `runLauncher` function. SCM controls cannot stop the worker
+  midway through staging.
+- The builder compiles this host separately and embeds it as
+  `lateral-service.bin`, including in stageless agents. The host has no baked
+  listener configuration; the calling agent passes its URL, the staging
+  reference, and the target session ID in the service command line. No beacon
+  secret is passed. The target-architecture MinGW compiler is required for this
+  component. Without it the embedded placeholder fails closed; the normal Go
+  stage1 fallback is never installed as a service and a stale host is not reused.
+- Only the dedicated service host is copied to ADMIN$ for PsExec. Stage1 fetches
+  stage2 over HTTP, decodes it, writes it to the service account's temp directory,
+  launches the agent, and exits. The full agent is not copied over SMB on this
+  path. WMI and WinRM retain their separate full-agent deployment paths.
 
 Listener staging (`server_rmm.py`):
 
@@ -462,37 +461,21 @@ Listener staging (`server_rmm.py`):
   allowed on the beacon listener without a beacon token; expired or
   already-fetched entries answer 404.
 
-Cleanup (`__LATERAL_CLEANUP__`): once the target session registers, the server
-sends the cleanup command with the deployment names from the handshake.
-It runs in a bounded child under the active `make_token` identity and
-deletes the stage1 service and the launcher binary from `ADMIN$`,
-reporting each outcome honestly; a locked binary means stage1 was still
-running. Cleanup is skipped when verification is disabled or the target
-never registered. The deployed agent's own binary remains on the target
-by design: it is the running agent, like any deployment.
+Cleanup is owned by the calling agent. After starting the service it uses
+`waitStage1Stopped` and `launcherServiceOutcome` to observe SCM worker
+completion, then calls `lateralCleanup` to delete the temporary service
+and its exact binary. `removeStoppedLauncher` retries sharing/access errors
+briefly while Windows releases image handles. It does not wait for a server
+beacon round trip, run a shell, or delete the new agent executable.
 
-`lateralDeploymentNames` uses the operating system's cryptographic random source
-to generate a shared suffix for `MinimalRmmAgent-<random>` and the staged binary.
-Random-source errors abort before staging. `lateralAgentCommand` passes the
-generated service name with `--service-name`; `parseLateralStartup` accepts that
-flag once and validates its format. Its `lateralStartup` result keeps service,
-session, and workspace identities separate. The target uses the selected name
-for both its service dispatcher table and its control-handler registration.
-Legacy starts without the flag keep `MinimalRmmAgent` as the default name;
-`lateralStartupConfig` remains a compatibility wrapper for identity parsing.
-
-Current limits: the remote executable path assumes
-`C:\Windows`. Helper tests cover result classification, argument
-construction, staging masks, and payload validation; they do not execute
-the COM/DCOM chain, the WSMan calls, `scmStartService`, or the service
-entry points. Live Windows validation remains required before treating
-this path as production-verified.
-
-Windows execution helpers in `lateral_results.go`: `lateralAgentCommand`
-preserves the selected owner, including explicit empty bindings, across remote
-command wrappers. `serviceStartOutcome` requires an acknowledged SCM start;
-all errors, including service handshake timeout 1053, remain errors. Neither
-a shell exit code nor an SCM timeout proves an agent is operational.
+The result reports immediate cleanup success or pending/failure details. The
+server recognizes completed source-agent cleanup without queuing another
+command. Pending cleanup retains exact-artifact ownership, allowing the existing
+`__LATERAL_CLEANUP__` retry even when target registration failed. Arbitrary service
+names and paths
+remain rejected. Service deletion takes effect after outstanding SCM handles
+close. A stopped worker permits cleanup even after a staging failure; running or
+unreachable workers block deletion.
 
 ## Workspace ownership
 

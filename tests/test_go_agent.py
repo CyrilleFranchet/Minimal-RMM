@@ -32,8 +32,6 @@ class GoAgentTests(unittest.TestCase):
                 "spawnas_windows.go",
                 "spawnas_other.go",
                 "stage1/main.go",
-                "stage1/service_windows.go",
-                "stage1/service_other.go",
             },
         )
         self.assertTrue(all(".." not in item["filename"] for item in files))

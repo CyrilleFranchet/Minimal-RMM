@@ -86,6 +86,26 @@ class LateralFlowTests(unittest.TestCase):
         self.server._await_session_registration.assert_called_once()
         self.assertGreater(commands.index(cleanup_commands[0]), 0)
 
+    def test_immediate_source_cleanup_does_not_queue_another_command(self):
+        self.ack_output += "\n" + self.cleanup_output
+        result, _ = self.call()
+        self.assertEqual(result["cleanup"]["status"], "ok")
+        self.assertEqual(result["cleanup"]["performed_by"], "source_agent")
+        self.server.exec_and_wait.assert_called_once()
+
+    def test_immediate_cleanup_is_reported_even_without_registration_wait(self):
+        self.ack_output += "\n" + self.cleanup_output
+        result, _ = self.call(verify=False)
+        self.assertTrue(result["pending"])
+        self.assertEqual(result["cleanup"]["performed_by"], "source_agent")
+        self.server.exec_and_wait.assert_called_once()
+
+    def test_pending_cleanup_uses_existing_owned_retry_path(self):
+        self.ack_output += "\nlateral cleanup pending: launcher still running"
+        result, _ = self.call()
+        self.assertEqual(result["cleanup"]["status"], "ok")
+        self.assertEqual(self.server.exec_and_wait.call_count, 2)
+
     def test_cleanup_requires_positive_success_output(self):
         for output in ("Lateral cleanup failed: access denied", "", "unexpected response"):
             with self.subTest(output=output):
@@ -94,15 +114,35 @@ class LateralFlowTests(unittest.TestCase):
                 self.assertEqual(result["cleanup"]["status"], "failed")
                 self.assertEqual(result["cleanup"]["output"], output)
 
-    def test_psexec_cleanup_skipped_without_registration_or_verification(self):
+    def test_owned_cleanup_retries_even_without_registration(self):
         self.server._await_session_registration.return_value = False
         result, _ = self.call()
-        self.assertEqual(result["cleanup"]["status"], "skipped")
+        self.assertEqual(result["cleanup"]["status"], "ok")
+        self.server.exec_and_wait.reset_mock()
         result, _ = self.call(verify=False)
         self.assertEqual(result["cleanup"]["status"], "skipped")
         cleanup_commands = [c.args[1] for c in self.server.exec_and_wait.call_args_list
                             if c.args[1].startswith("__LATERAL_CLEANUP__")]
         self.assertEqual(cleanup_commands, [])
+
+    def test_failed_worker_keeps_names_for_cleanup_retry(self):
+        self.server._await_session_registration.return_value = False
+        self.ack_output = self.handshake().replace("lateral started:", "lateral failed:")
+        self.ack_output += "\nlauncher service failed: Windows 1066, stage 1\nlateral cleanup pending: file busy"
+        result, _ = self.call()
+        self.assertEqual(result["launch_status"], "failed")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["cleanup"]["status"], "ok")
+        self.assertEqual(self.server.exec_and_wait.call_count, 2)
+
+    def test_failed_worker_reports_immediate_cleanup_without_registration(self):
+        self.server._await_session_registration.return_value = False
+        self.ack_output = self.handshake().replace("lateral started:", "lateral failed:")
+        self.ack_output += "\nlauncher service failed: Windows 1066, stage 1\n" + self.cleanup_output
+        result, _ = self.call()
+        self.assertEqual(result["launch_status"], "failed")
+        self.assertEqual(result["cleanup"]["performed_by"], "source_agent")
+        self.server.exec_and_wait.assert_called_once()
 
     def test_psexec_without_staged_build_is_reported(self):
         with patch.object(server_rmm, "latest_go_agent_binary", return_value=None):
@@ -207,12 +247,21 @@ class LateralFlowTests(unittest.TestCase):
         definition = next(tool['function'] for tool in rmm_tools.OPENAI_TOOLS if tool['function']['name'] == 'lateral_move')
         self.assertEqual(definition['parameters']['properties']['method']['enum'], ['psexec', 'wmiexec', 'winrm'])
 
-    def test_fractional_timeout_is_forwarded(self):
+    def test_fractional_timeout_reserves_response_budget(self):
         self.call(exec_timeout=12.5)
         call = self.server.exec_and_wait.call_args_list[0]
         request = __import__('json').loads(call.args[1].split("\n", 1)[1])
-        self.assertEqual(request["timeout_seconds"], 12.5)
+        self.assertEqual(request["timeout_seconds"], 6.25)
         self.assertEqual(call.kwargs["timeout"], 12.5)
+
+    def test_worker_budget_includes_beacon_sleep_and_jitter(self):
+        self.source.sleep_seconds = 60
+        self.source.jitter_percent = 30
+        self.call(exec_timeout=300)
+        call = self.server.exec_and_wait.call_args_list[0]
+        request = json.loads(call.args[1].split("\n", 1)[1])
+        self.assertEqual(request["timeout_seconds"], 207)
+        self.assertEqual(call.kwargs["timeout"], 300)
 
     def test_uid_reports_output(self):
         self.server.exec_and_wait = Mock(return_value=({"body": "agent user: LAB\\alice\nnetwork identity: none"}, "ok"))

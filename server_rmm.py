@@ -106,6 +106,7 @@ CLIENT_SCRIPT = os.path.join(
 )
 GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-go")
 GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
+_GO_AGENT_EMBED_LOCK = threading.Lock()
 AGENT_DEPLOY_DIR = os.path.join(LOG_DIR, "agent-deploy")
 # Workspace-published delivery copies; never an operator-owned plugin store.
 PLUGIN_CACHE_DIR = settings_getenv("RMM_PLUGIN_CACHE_DIR", "").strip() or os.path.join(LOG_DIR, "plugin-cache")
@@ -635,6 +636,10 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
     is_staged = goos == "windows" and not stageless and staging_fn is not None
     if is_staged and not config_values["session_id"]:
         config_values["session_id"] = secrets.token_hex(16)
+    # stage1 carries no fallback configuration: without a baked base URL it
+    # exits silently on the target, so refuse the build instead.
+    if is_staged and not config_values["base_url"]:
+        raise ValueError("staged builds require a base URL (start a beacon profile or set config.base_url)")
     if config_values["workspace_id"] and not valid_workspace_id(config_values["workspace_id"]):
         raise ValueError("invalid workspace id")
     try:
@@ -662,9 +667,8 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
             "GOCACHE": go_cache,
         }
     )
-    # The psexec lateral module embeds the compact stage1 launcher in the
-    # agent binary (go:embed stage1.bin): build it first for Windows targets
-    # so the agent can extract and push it at runtime.
+    # The standalone stage1 launcher is built for manual staged delivery.
+    # The separate psexec service host is built below.
     #
     # Preferred: compile the minimal C stage1 (stage1/stage1.c) with
     # x86_64-w64-mingw32-gcc.  The resulting binary is ~30-50 KB vs ~2 MB
@@ -743,48 +747,71 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
                 detail = (completed_stage1.stderr or completed_stage1.stdout or "build failed").strip()
                 raise RuntimeError(detail[-4000:])
 
-        with open(stage1_path, "rb") as handle:
-            stage1_binary = handle.read()
-        with open(os.path.join(root, "stage1.bin"), "wb") as handle:
-            handle.write(stage1_binary)
-    linker_values = {
-        "defaultBaseURLB64": config_values["base_url"],
-        "defaultBeaconSecretB64": config_values["beacon_secret"],
-        "defaultSessionIDB64": config_values["session_id"],
-        "defaultWorkspaceIDB64": config_values["workspace_id"],
-        "defaultHTTPProxyB64": config_values["http_proxy"],
-        "defaultSleepSecondsB64": str(sleep_seconds),
-        "defaultJitterPercentB64": str(jitter_percent),
-    }
-    linker_flags = ["-s", "-w"]
-    if goos == "windows":
-        linker_flags.append("-H=windowsgui")
-    for name, value in linker_values.items():
-        encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
-        linker_flags.extend(["-X", f"main.{name}={encoded}"])
-    ldflags = " ".join(shlex.quote(flag) for flag in linker_flags)
-    try:
-        completed = (process_owner or BuildProcessManager()).run(
-            [
-                go_bin,
-                "build",
-                "-buildvcs=false",
-                "-trimpath",
-                "-ldflags",
-                ldflags,
-                "-o",
-                binary_path,
-                ".",
-            ],
-            cwd=root,
-            env=env,
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("Go build timed out after 120 seconds") from exc
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "build failed").strip()
-        raise RuntimeError(detail[-4000:])
+    # Embed a dedicated SCM service host, never the standalone stage1 binary.
+    # It carries no connection configuration; the calling agent supplies its
+    # listener URL and staging capability when starting the temporary service.
+    service_embed = os.path.join(root, "lateral-service.bin")
+    service_source = os.path.join(root, "lateral-service", "c", "service.c")
+    service_cc = shutil.which("aarch64-w64-mingw32-gcc" if goarch == "arm64" else "x86_64-w64-mingw32-gcc")
+    service_binary = b"Dedicated lateral service unavailable: build with the target MinGW compiler.\n"
+    if service_cc and os.path.isfile(service_source):
+        service_path = safe_join_under(GO_AGENT_BUILD_DIR, f"{build_id}-lateral-service.exe")
+        try:
+            completed_service = (process_owner or BuildProcessManager()).run(
+                [service_cc, "-Os", "-s", "-mwindows", "-o", service_path, service_source,
+                 "-lwinhttp", "-lbcrypt", "-lshell32", "-ladvapi32", "-DSTAGE1_INSECURE"],
+                cwd=root, env=env, timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("dedicated lateral service build timed out after 60 seconds") from exc
+        if completed_service.returncode != 0:
+            raise RuntimeError("dedicated lateral service build failed: " +
+                               str(completed_service.stderr or completed_service.stdout or "compiler failure")[-4000:])
+        with open(service_path, "rb") as handle:
+            service_binary = handle.read()
+    # The shared embed must match this build until the Go compiler consumes it.
+    with _GO_AGENT_EMBED_LOCK:
+        embed_temp = service_embed + "." + build_id
+        with open(embed_temp, "wb") as handle:
+            handle.write(service_binary)
+        os.replace(embed_temp, service_embed)
+        linker_values = {
+            "defaultBaseURLB64": config_values["base_url"],
+            "defaultBeaconSecretB64": config_values["beacon_secret"],
+            "defaultSessionIDB64": config_values["session_id"],
+            "defaultWorkspaceIDB64": config_values["workspace_id"],
+            "defaultHTTPProxyB64": config_values["http_proxy"],
+            "defaultSleepSecondsB64": str(sleep_seconds),
+            "defaultJitterPercentB64": str(jitter_percent),
+        }
+        linker_flags = ["-s", "-w"]
+        if goos == "windows":
+            linker_flags.append("-H=windowsgui")
+        for name, value in linker_values.items():
+            encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+            linker_flags.extend(["-X", f"main.{name}={encoded}"])
+        ldflags = " ".join(shlex.quote(flag) for flag in linker_flags)
+        try:
+            completed = (process_owner or BuildProcessManager()).run(
+                [
+                    go_bin,
+                    "build",
+                    "-buildvcs=false",
+                    "-trimpath",
+                    "-ldflags",
+                    ldflags,
+                    "-o",
+                    binary_path,
+                    ".",
+                ],
+                cwd=root,
+                env=env,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Go build timed out after 120 seconds") from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "build failed").strip()
+            raise RuntimeError(detail[-4000:])
     if is_staged:
         # --- Staged build: C stage1 launcher + Go agent stored as stage2 ---
         # Register the Go agent binary in the staging endpoint so stage1 can
@@ -798,11 +825,20 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
         stage1_exe_path = stage1_path
 
         # PowerShell launcher with staging ID and session ID pre-filled.
+        # Start-Process -Wait makes the wrapper synchronous: stage1 is a GUI
+        # binary with no console output, so its exit code is the only local
+        # feedback a manual run gets (0 = agent started, 1 = staging failure
+        # posted to the server, 2 = invalid arguments or base URL).
         session_id = config_values["session_id"]
         launcher = (
             "$ErrorActionPreference = 'Stop'\n"
             "$stage1 = Join-Path $PSScriptRoot 'stage1.exe'\n"
-            f"& $stage1 --stage {staging_id} --session {session_id}\n"
+            "$proc = Start-Process -FilePath $stage1 -Wait -PassThru "
+            f"-ArgumentList '--stage','{staging_id}','--session','{session_id}'\n"
+            "Write-Host \"stage1 exit code: $($proc.ExitCode)\"\n"
+            "if ($proc.ExitCode -eq 0) { Write-Host 'agent installed and started' }\n"
+            "elseif ($proc.ExitCode -eq 1) { Write-Host 'staging failed: check the stage status on the server' }\n"
+            "else { Write-Host 'stage1 rejected its arguments or has no base URL embedded' }\n"
         )
         readme = f"""Minimal-RMM stage1 launcher (Windows amd64)
 
@@ -813,6 +849,12 @@ Files:
 Deployment:
   Copy stage1.exe and run-stage1.ps1 to the target host, then run:
     .\\run-stage1.ps1
+
+run-stage1.ps1 waits for stage1 and prints its exit code:
+  0 = agent installed and started
+  1 = staging failed (the reason was posted to the server; check
+      GET {API_PREFIX}/agent/go/stage/{staging_id})
+  2 = stage1 rejected its arguments or has no base URL embedded
 
 stage1 fetches the full agent from the RMM server over HTTPS ({config_values["base_url"] or "<base_url>"}),
 uses the system/IE proxy if configured, writes the agent to the current
@@ -3241,8 +3283,15 @@ class RMMServer:
             except OSError as exc:
                 self.log(f"Staging the agent payload failed: {exc}", "WARNING")
                 return None, "agent_payload_unavailable"
+        # Reserve response time for delivery and the final result instead of
+        # expiring the worker and its server waiter at the same instant.
+        worker_timeout = float(exec_timeout)
+        if method == "psexec":
+            delivery_budget = float(getattr(session, "sleep_seconds", 60)) * (
+                1 + float(getattr(session, "jitter_percent", 30)) / 100) + 15
+            worker_timeout -= min(delivery_budget, worker_timeout / 2)
         command = LATERAL_COMMAND + "\n" + json.dumps({
-            "method": method, "host": host, "timeout_seconds": float(exec_timeout),
+            "method": method, "host": host, "timeout_seconds": worker_timeout,
             "session_id": target_id, "workspace_id": getattr(session, "workspace_id", None) or "",
             "stage": stage_id}, separators=(",", ":"))
         self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}", "lateral")
@@ -3252,11 +3301,12 @@ class RMMServer:
         output = str((event or {}).get("body") or "").strip()
         match = LATERAL_RESULT_RE.search(output)
         acknowledged = bool(output.startswith("lateral started:") and match and match.group("session_id") == target_id)
+        failed = bool(output.startswith("lateral failed:") and match and match.group("session_id") == target_id)
         service_match = LATERAL_SERVICE_RE.search(output)
         binary_match = LATERAL_BINARY_RE.search(output)
         payload = {"session_id": session.id, "method": method, "host": host,
                    "target_session_id": target_id, "output": output,
-                   "launch_status": "acknowledged" if acknowledged else "inconclusive", "submission_status": status}
+                   "launch_status": "acknowledged" if acknowledged else "failed" if failed else "inconclusive", "submission_status": status}
         payload, verify_status = self._verify_deployment(session, target_id, payload, verify, register_timeout)
         if method == "psexec":
             payload["stage_status"] = self.staging_status(stage_id) if stage_id else None
@@ -3267,10 +3317,15 @@ class RMMServer:
         return payload, verify_status
 
     def _lateral_cleanup(self, session, payload, host, service_name, binary_name):
-        """Remove the psexec stage1 service and binary once the agent runs."""
+        """Remove exact acknowledged artifacts after their worker stops."""
+        owned = payload.get("launch_status") in ("acknowledged", "failed") and service_name and binary_name
+        if owned:
+            for line in str(payload.get("output") or "").splitlines()[1:]:
+                if line.startswith("lateral cleanup: "):
+                    return {"status": "ok", "output": line, "performed_by": "source_agent"}
         if not payload.get("verify"):
             return {"status": "skipped", "detail": "verification disabled"}
-        if not payload.get("registered"):
+        if not payload.get("registered") and not owned:
             return {"status": "skipped", "detail": "target session never registered"}
         if not (service_name and binary_name):
             return {"status": "skipped", "detail": "deployment names not acknowledged"}

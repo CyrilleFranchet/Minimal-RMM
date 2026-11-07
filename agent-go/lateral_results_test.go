@@ -121,3 +121,23 @@ func TestGeneratedServiceNameSurvivesTargetStartup(t *testing.T) {
 		}
 	}
 }
+
+func TestLauncherCompletionRequiresSuccessfulStoppedState(t *testing.T) {
+	for _, state := range []uint32{0, 2, 3, 4, 7} {
+		ready, err := launcherServiceOutcome(state, 0, 0)
+		if ready || err != nil {
+			t.Fatalf("running service authorized cleanup: %d %t %v", state, ready, err)
+		}
+	}
+	if ready, err := launcherServiceOutcome(1, 0, 0); !ready || err != nil {
+		t.Fatal("successful stopped service was not accepted")
+	}
+	if ready, err := launcherServiceOutcome(1, 1066, 2); ready || err == nil {
+		t.Fatal("failed launcher reported deployment success")
+	} else {
+		var failed *launcherFailure
+		if !errors.As(err, &failed) || failed.specificCode != 2 {
+			t.Fatal("completed failure must be distinguishable from a running or unreachable service")
+		}
+	}
+}

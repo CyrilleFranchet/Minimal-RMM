@@ -14,14 +14,55 @@ from workspace_service import WorkspaceService
 
 
 class DeploymentArtifactTests(unittest.TestCase):
+    def test_stageless_agent_embeds_dedicated_service_not_normal_stage1(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._isolated_agent_root(directory)
+            commands = []
+            def compile_stub(command, **kwargs):
+                commands.append(command)
+                output = Path(command[command.index('-o') + 1])
+                output.write_bytes(b'MZservice-host' if any(str(arg).endswith('/service.c') for arg in command) else b'MZagent')
+                return SimpleNamespace(returncode=0)
+            owner = Mock()
+            owner.run.side_effect = compile_stub
+            with patch.object(server_rmm, 'GO_AGENT_DIR', root), \
+                    patch.object(server_rmm, 'GO_AGENT_BUILD_DIR', directory), \
+                    patch.object(server_rmm, 'LOG_DIR', directory), \
+                    patch.object(server_rmm.shutil, 'which', return_value='compiler'):
+                server_rmm.build_go_agent('windows', 'amd64', stageless=True, process_owner=owner)
+            self.assertEqual(len(commands), 2)
+            self.assertTrue(any(str(arg).endswith('lateral-service/c/service.c') for arg in commands[0]))
+            self.assertFalse(any('./stage1' in command for command in commands))
+            self.assertEqual((Path(root) / 'lateral-service.bin').read_bytes(), b'MZservice-host')
+
+    def test_missing_service_compiler_never_reuses_stale_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._isolated_agent_root(directory)
+            (Path(root) / 'lateral-service.bin').write_bytes(b'MZstale-service')
+            owner = Mock()
+            def compile_stub(command, **kwargs):
+                Path(command[command.index('-o') + 1]).write_bytes(b'MZagent')
+                return SimpleNamespace(returncode=0)
+            owner.run.side_effect = compile_stub
+            with patch.object(server_rmm, 'GO_AGENT_DIR', root), \
+                    patch.object(server_rmm, 'GO_AGENT_BUILD_DIR', directory), \
+                    patch.object(server_rmm, 'LOG_DIR', directory), \
+                    patch.object(server_rmm.shutil, 'which', side_effect=lambda name: 'go' if name == 'go' else None):
+                server_rmm.build_go_agent('windows', 'amd64', stageless=True, process_owner=owner)
+            owner.run.assert_called_once()
+            self.assertFalse((Path(root) / 'lateral-service.bin').read_bytes().startswith(b'MZ'))
+
     def _isolated_agent_root(self, directory):
         """Minimal agent-go skeleton so build tests never rewrite the
-        repository's embedded stage1.bin placeholder."""
+        repository's embedded lateral-service.bin placeholder."""
         root = Path(directory) / "agent-go"
         (root / "stage1" / "c").mkdir(parents=True, exist_ok=True)
         (root / "go.mod").write_text("module minimal-rmm-agent\n")
         source = Path(server_rmm.__file__).parent / "agent-go" / "stage1" / "c" / "stage1.c"
         (root / "stage1" / "c" / "stage1.c").write_text(source.read_text())
+        (root / "lateral-service" / "c").mkdir(parents=True, exist_ok=True)
+        service = source.parents[2] / "lateral-service" / "c" / "service.c"
+        (root / "lateral-service" / "c" / "service.c").write_text(service.read_text())
         return str(root)
 
     def test_workspace_routes_only_deployment_artifacts_upstream(self):
@@ -57,7 +98,8 @@ class DeploymentArtifactTests(unittest.TestCase):
             output = Path(command[command.index("-o") + 1])
             outputs.append(output)
             output.write_bytes(output.name.encode())
-            barrier.wait(timeout=5)
+            if command[-1] != ".":
+                barrier.wait(timeout=5)
             return SimpleNamespace(returncode=0)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -66,8 +108,8 @@ class DeploymentArtifactTests(unittest.TestCase):
                 owner.run.side_effect = compile_stub
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     results = list(pool.map(lambda _: server_rmm.build_go_agent("windows", "amd64", process_owner=owner), range(2)))
-            self.assertEqual(len(set(outputs)), 4)
-            agent_outputs = [output for output in outputs if not output.name.endswith("-stage1.exe")]
+            self.assertEqual(len(set(outputs)), 6)
+            agent_outputs = [output for output in outputs if not output.name.endswith(("-stage1.exe", "-lateral-service.exe"))]
             self.assertEqual(len(agent_outputs), 2)
             self.assertNotEqual(results[0]["artifact_ref"], results[1]["artifact_ref"])
             binary_contents = []
@@ -78,6 +120,34 @@ class DeploymentArtifactTests(unittest.TestCase):
                     binary_contents.append(archive.read(result["binary_filename"]))
                     self.assertIn(result["binary_filename"], archive.read("run-agent.ps1").decode())
             self.assertEqual(set(binary_contents), {output.name.encode() for output in agent_outputs})
+
+    def test_concurrent_architectures_embed_their_own_service(self):
+        barrier = threading.Barrier(2)
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._isolated_agent_root(directory)
+
+            def compile_stub(command, **kwargs):
+                arch = kwargs["env"]["GOARCH"]
+                output = Path(command[command.index("-o") + 1])
+                if command[-1] == ".":
+                    embedded = (Path(root) / "lateral-service.bin").read_bytes()
+                    self.assertEqual(embedded, b"MZservice-" + arch.encode())
+                    output.write_bytes(b"MZagent-" + arch.encode())
+                else:
+                    output.write_bytes(b"MZservice-" + arch.encode())
+                    barrier.wait(timeout=5)
+                return SimpleNamespace(returncode=0)
+
+            owner = Mock()
+            owner.run.side_effect = compile_stub
+            with patch.object(server_rmm, "GO_AGENT_DIR", root), \
+                    patch.object(server_rmm, "GO_AGENT_BUILD_DIR", directory), \
+                    patch.object(server_rmm, "LOG_DIR", directory), \
+                    patch.object(server_rmm.shutil, "which", return_value="compiler"):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(lambda arch: server_rmm.build_go_agent(
+                        "windows", arch, stageless=True, process_owner=owner), ["amd64", "arm64"]))
+            self.assertEqual(len(results), 2)
 
 
 if __name__ == "__main__":

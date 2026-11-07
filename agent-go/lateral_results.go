@@ -12,6 +12,24 @@ import (
 
 const defaultLateralServiceName = "MinimalRmmAgent"
 
+// launcherFailure records a completed worker failure, which is safe to clean up.
+type launcherFailure struct{ exitCode, specificCode uint32 }
+
+func (e *launcherFailure) Error() string {
+	return fmt.Sprintf("launcher service failed: Windows %d, stage %d", e.exitCode, e.specificCode)
+}
+
+// launcherServiceOutcome permits cleanup only after successful worker completion.
+func launcherServiceOutcome(state, exitCode, specificCode uint32) (bool, error) {
+	if state != 1 {
+		return false, nil
+	}
+	if exitCode != 0 {
+		return false, &launcherFailure{exitCode, specificCode}
+	}
+	return true, nil
+}
+
 // serviceLookupOutcome treats only ERROR_SERVICE_DOES_NOT_EXIST as absent.
 func serviceLookupOutcome(callErr error) error {
 	if errors.Is(callErr, syscall.Errno(1060)) {

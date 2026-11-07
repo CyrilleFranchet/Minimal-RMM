@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,38 @@ import (
 	"time"
 	"unsafe"
 )
+
+// Exercise the real dedicated C service without fetching or launching any agent.
+// No listener URL is supplied, so the worker reports stage exit 2 through SCM.
+func TestDedicatedLateralServiceProtocol(t *testing.T) {
+	source := os.Getenv("RMM_LATERAL_SERVICE_TEST_EXE")
+	if source == "" {
+		t.Skip("dedicated C service fixture not configured")
+	}
+	name := fmt.Sprintf("MinimalRmmAgent-%032x", time.Now().UnixNano())
+	path := filepath.Join(t.TempDir(), "service-fixture.exe")
+	if err := copyFile(source, path); err != nil {
+		t.Fatal(err)
+	}
+	defer scmDeleteService("", name)
+	startErr := scmStartService("", name, buildWindowsCmdLine([]string{path}), false)
+	if errors.Is(startErr, syscall.Errno(1053)) {
+		t.Fatal("dedicated host did not perform the SCM handshake")
+	}
+	err := waitStage1Stopped("", name, 10*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "Windows 1066, stage 2") {
+		t.Fatalf("worker result was not reported through SCM: start=%v stop=%v", startErr, err)
+	}
+	if _, err := scmDeleteService("", name); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeStoppedLauncher(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("service executable still exists")
+	}
+}
 
 // This smoke test uses the current account's token; no alternate credentials
 // or remote authentication are needed. It must run on native Windows.
