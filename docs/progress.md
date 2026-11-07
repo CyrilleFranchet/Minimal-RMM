@@ -15,6 +15,10 @@
   assertions also pass, but Go's temporary executable removal exposed a fixture
   leak: the pipe-holder descendant remained alive. Track and reap both fixture
   descendant modes before returning from the test; production code is unchanged.
+- Native Windows run `42376981376` is green: SCM export resolution, dedicated
+  service handshake and cleanup, identity/process fixtures, and normal/debug
+  diagnostics on Go 1.21 and Go 1.27 all pass. The user's remote environment
+  still requires rebuilding the source agent with the corrected binding.
 
 ## 2026-11-07 — Separate Go debug agents
 
