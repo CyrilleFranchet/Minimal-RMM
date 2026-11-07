@@ -7,7 +7,9 @@
   The previous GetMethod dispatch called GetObjectText and could return
   `0x80041008` before process creation.
 - Rebuild and replace the source Go agent to apply this correction. Native
-  Windows runtime validation remains pending.
+  Windows CI run `42381057961` passed all four WMI test executions (Go 1.21
+  and 1.27, normal/debug), including local process creation and provider-error
+  propagation. Remote authentication and staging still require lab validation.
 - Pin the WMI call chain to one OS thread for COM apartment lifetime.
   Add `TestWMICreateProcess` to Windows CI for real local process creation
   and provider-error propagation on Go 1.21/1.27, normal and debug builds.

@@ -424,8 +424,8 @@ The native WMI binding uses the Windows SDK `IWbemClassObject` vtable slots:
 `GetMethod=19`, `SpawnInstance=15`, `Put=5`, and `Get=4` (including
 `IUnknown`). Older agents can fail at method lookup with `0x80041008`
 because they dispatch to `GetObjectText` instead. Rebuild and replace the
-source agent to apply the correction; native Windows runtime validation is
-still required. The COM call chain stays on one OS thread so initialization
+source agent to apply the correction. Native Windows CI run `42381057961`
+passed on Go 1.21 and 1.27 in normal and debug modes. The COM call chain stays on one OS thread so initialization
 and cleanup share the same apartment. `TestWMICreateProcess` exercises local
 process creation and a missing executable's provider error on Windows CI.
 
