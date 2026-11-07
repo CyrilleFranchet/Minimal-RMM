@@ -1672,7 +1672,7 @@ Spawn:    /spawn [id]   (same identity; children inherit the source build mode)
           /runas -i <cred_id> <command>   (run command under different identity)
 Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id>
 Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
-Lateral:  /lateral <psexec|wmiexec|winrm> <host>   (inherits source build mode)
+Lateral:  /lateral <psexec|wmiexec|winrm> <host>   (inherits source build mode; WMI/WinRM select auth by host form; SMB negotiates)
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
 Config:   /rclone-config   (rclone profiles + bootstrap status)

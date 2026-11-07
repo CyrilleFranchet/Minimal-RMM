@@ -41,6 +41,13 @@ validation. The following execution methods are examples, not a ranked checklist
 
 Authentication material (password, hash, or ticket) is separate from the
 execution method; possession alone establishes neither permission nor access.
+Agent-side WMI execution selects NTLM for IP literals and Kerberos for DNS
+names; WinRM selects Negotiate for IP literals and Kerberos for DNS names.
+SMB staging and psexec retain Windows negotiation, including possible NTLM
+fallback for DNS names. A DNS target does not guarantee Kerberos for the
+whole operation. WinRM's implicit Negotiate credentials require the target
+to satisfy the client's existing host-trust policy. Changing the host form
+alone does not establish access to a workgroup host.
 Actions requiring existing target control are not substitutes for reaching it.
 
 Execution surface matters: commands launched through the Windows agent use

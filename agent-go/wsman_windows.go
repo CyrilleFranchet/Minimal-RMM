@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"runtime"
 	"strings"
 	"sync"
@@ -20,6 +21,12 @@ const (
 	wsmanStreamReadLimit   = 128
 	wsmanCompletionTimeout = 30 * time.Second
 	wsmanEndOfOperation    = 1
+	// WSManAuthenticationFlags values from wsman.h. The native WSMan client
+	// exposes no direct NTLM flag; IP targets normally negotiate NTLM.
+	wsmanAuthNegotiate                     = 0x4
+	wsmanAuthKerberos                      = 0x10
+	wsmanAllowNegotiateImplicitCredentials = 32
+	wsmanDataTypeDWORD                     = 4
 )
 
 // wsmanCaller isolates native dispatch for Windows ABI regression fixtures.
@@ -39,6 +46,7 @@ func loadWSMan() (wsmanNative, error) {
 		"WSManInitialize", "WSManDeinitialize", "WSManCreateSession", "WSManCloseSession",
 		"WSManCreateShell", "WSManCloseShell", "WSManRunShellCommand", "WSManCloseCommand",
 		"WSManReceiveShellOutput", "WSManCloseOperation",
+		"WSManSetSessionOption",
 	} {
 		proc := dll.NewProc(name)
 		if err := proc.Find(); err != nil {
@@ -67,6 +75,27 @@ type wsmanReceiveData struct {
 	streamData   wsmanData
 	commandState *uint16
 	exitCode     uint32
+}
+
+// wsmanAuthCredentials mirrors WSMAN_AUTHENTICATION_CREDENTIALS: the
+// mechanism selects the authentication family while the null user account
+// keeps the implicit thread identity, which carries the active make_token
+// credentials when one is set.
+type wsmanAuthCredentials struct {
+	mechanism uint32
+	_         uint32
+	username  uintptr
+	password  uintptr
+}
+
+// wsmanAuthMechanism selects the WSMan authentication mechanism from the
+// target's written form: Kerberos for DNS names, Negotiate (NTLM against an
+// IP target under default Windows configuration) for IP literals.
+func wsmanAuthMechanism(host string) uint32 {
+	if lateralHostIsIP(host) {
+		return wsmanAuthNegotiate
+	}
+	return wsmanAuthKerberos
 }
 
 // wsmanResult retains copied values rather than native callback pointers.
@@ -221,10 +250,14 @@ func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID st
 		}
 		return pointer, err
 	}
-	connection, err := utf16(fmt.Sprintf("http://%s:5985/wsman", host))
+	connection, err := utf16("http://" + net.JoinHostPort(host, "5985") + "/wsman")
 	if err != nil {
 		return err
 	}
+	// The session selects Kerberos for DNS names and Negotiate for IP
+	// targets; the null user account preserves the implicit thread identity.
+	credentials := wsmanAuthCredentials{mechanism: wsmanAuthMechanism(host)}
+	scope.keep(&credentials)
 	uri, err := utf16(wsmanShellCmdURI)
 	if err != nil {
 		return err
@@ -257,7 +290,7 @@ func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID st
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManDeinitialize failed: 0x%08x", code))
 		}
 	}()
-	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, 0, 0, uintptr(unsafe.Pointer(&session))); code != 0 {
+	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, uintptr(unsafe.Pointer(&credentials)), 0, uintptr(unsafe.Pointer(&session))); code != 0 {
 		return fmt.Errorf("WSManCreateSession(%s) failed: 0x%08x", host, code)
 	}
 	defer func() {
@@ -265,6 +298,17 @@ func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID st
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManCloseSession failed: 0x%08x", code))
 		}
 	}()
+	if credentials.mechanism == wsmanAuthNegotiate {
+		// The DWORD union member is at offset 8, shared with binary length.
+		// This enables credentials for this session; host-trust policy remains
+		// enforced by WinRM. Do not change TrustedHosts or certificate checks.
+		option := wsmanData{kind: wsmanDataTypeDWORD, length: 1}
+		if code := native.call("WSManSetSessionOption", session,
+			wsmanAllowNegotiateImplicitCredentials, uintptr(unsafe.Pointer(&option))); code != 0 {
+			return fmt.Errorf("WSManSetSessionOption(implicit Negotiate credentials) failed: 0x%08x", code)
+		}
+		runtime.KeepAlive(&option)
+	}
 	shellCall := scope.pendingCall(false)
 	native.call("WSManCreateShell", session, 0, uintptr(unsafe.Pointer(uri)), 0, 0, 0,
 		uintptr(unsafe.Pointer(&shellCall.async)), uintptr(unsafe.Pointer(&shell)))

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"runtime"
@@ -39,6 +40,14 @@ var lateralMethods = map[string]bool{
 	"psexec":  true,
 	"wmiexec": true,
 	"winrm":   true,
+}
+
+// lateralHostIsIP reports whether a lateral target is an IP literal rather
+// than a DNS name. WMI selects NTLM for IP literals and Kerberos for DNS
+// names; WSMan selects Negotiate and Kerberos respectively. SMB staging
+// and psexec retain Windows negotiation and may fall back to NTLM for DNS.
+func lateralHostIsIP(host string) bool {
+	return net.ParseIP(strings.TrimSpace(host)) != nil
 }
 
 // The staged binary name becomes part of the service binPath, so it must be a

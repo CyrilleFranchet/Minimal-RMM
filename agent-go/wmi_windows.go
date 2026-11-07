@@ -19,6 +19,7 @@ const (
 	coinitMultithreaded      = 0x0
 	clsctxInprocServer       = 0x1
 	rpcCAuthnWinnt           = 10
+	rpcCAuthnGssKerberos     = 16
 	rpcCAuthzNone            = 0
 	rpcCAuthnLevelDefault    = 0
 	rpcCAuthnLevelPktPrivacy = 6
@@ -102,11 +103,38 @@ func sysFreeString(handle uintptr) {
 	}
 }
 
-// wmiCreateProcess starts the command on the target through
-// Win32_Process.Create over DCOM. The chain is the documented WMI client
-// sequence: locator, remote namespace connection, proxy authentication,
-// class object, Create input instance, method execution, result check.
+// wmiAuthentication allocates the ConnectServer BSTR and the proxy's UTF-16
+// principal. The caller owns the BSTR and must free it with sysFreeString.
+func wmiAuthentication(host string) (uintptr, uintptr, *uint16, error) {
+	authnSvc := uintptr(rpcCAuthnWinnt)
+	var authority uintptr
+	var serverPrincipal *uint16
+	if !lateralHostIsIP(host) {
+		authnSvc = rpcCAuthnGssKerberos
+		var err error
+		principal := "HOST/" + host
+		serverPrincipal, err = syscall.UTF16PtrFromString(principal)
+		if err != nil {
+			return 0, 0, nil, fmt.Errorf("encode WMI Kerberos server principal: %w", err)
+		}
+		// ConnectServer requires a length-prefixed BSTR, not an LPCWSTR.
+		authority = sysAllocString("kerberos:" + principal)
+		if authority == 0 {
+			return 0, 0, nil, errors.New("allocate WMI Kerberos authority")
+		}
+	}
+	return authnSvc, authority, serverPrincipal, nil
+}
+
+// wmiCreateProcess executes Win32_Process.Create over DCOM with the current
+// identity. DNS targets use one HOST SPN for both connection and proxy security.
 func wmiCreateProcess(host, command string) error {
+	authnSvc, authority, serverPrincipal, err := wmiAuthentication(host)
+	if err != nil {
+		return err
+	}
+	defer sysFreeString(authority)
+	defer runtime.KeepAlive(serverPrincipal)
 	// COM apartments belong to OS threads, not goroutines.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -133,13 +161,14 @@ func wmiCreateProcess(host, command string) error {
 	var services uintptr
 	// IWbemLocator::ConnectServer (slot 3): authenticate with the current
 	// process identity, which carries the active make_token credentials.
-	if err := comCall(locator, 3, namespace, 0, 0, 0, 0, 0, 0,
+	if err := comCall(locator, 3, namespace, 0, 0, 0, 0,
+		authority, 0,
 		uintptr(unsafe.Pointer(&services))); err != nil {
 		return fmt.Errorf("WMI connect to %s: %w", host, err)
 	}
 	defer comRelease(services)
 	if hr, _, _ := procCoSetProxyBlanket.Call(
-		services, rpcCAuthnWinnt, rpcCAuthzNone, 0,
+		services, authnSvc, rpcCAuthzNone, uintptr(unsafe.Pointer(serverPrincipal)),
 		rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, 0, eoacNone,
 	); hr != 0 {
 		return fmt.Errorf("CoSetProxyBlanket failed: 0x%08x", hr)

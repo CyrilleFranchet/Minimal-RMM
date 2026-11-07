@@ -36,7 +36,8 @@ jobs:
         run: |
           $tests = '^Test(Debug|SpawnasDebug|SpawnDebug|LateralDebug'
           $tests += '|SpawnEnvironment'
-          $tests += '|NormalBuild|WinRMDetach|WMICreateProcess)'
+          $tests += '|NormalBuild|WinRMDetach'
+          $tests += '|WMIAuthentication|WMICreateProcess)'
           go test -buildvcs=false -count=1 -v -tags= -run $tests .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -buildvcs=false -count=1 -v -tags=rmmdebug -run $tests .

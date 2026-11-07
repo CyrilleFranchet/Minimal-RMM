@@ -111,6 +111,19 @@ func TestParseLateralPayloadAppliesDefaultsAndBounds(t *testing.T) {
 	}
 }
 
+func TestLateralHostIsIPSelectsAuthenticationFamily(t *testing.T) {
+	for _, host := range []string{"10.0.0.8", "192.168.1.20", "fd00::8"} {
+		if !lateralHostIsIP(host) {
+			t.Fatalf("%s must be treated as an IP literal (NTLM)", host)
+		}
+	}
+	for _, host := range []string{"ws01", "ws01.lab.local", "WS01.LAB.LOCAL"} {
+		if lateralHostIsIP(host) {
+			t.Fatalf("%s must be treated as a DNS name (Kerberos)", host)
+		}
+	}
+}
+
 func TestDerivedSessionIDIsRandomForEveryCommand(t *testing.T) {
 	for _, tag := range []string{"spawn", "spawnas", "lateral"} {
 		id := derivedSessionID("go-1730000000000000000", tag)

@@ -420,6 +420,44 @@ Modules:
 | `wmiexec` | Native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`, no PowerShell |
 | `winrm` | Native WSMan client (`wsman_windows.go`) through `WsmSvc.dll` — the library `winrs.exe` itself uses: `WSManInitialize`, `WSManCreateSession`, `WSManCreateShell`, `WSManRunShellCommand`, receive until the command's Done state, then close. The remote command runs the agent with `--lateral-detach`, which re-registers itself as a local SCM service and exits: WinRM terminates a shell's process tree when the shell closes, while the SCM-started instance runs outside that job object. No `winrs.exe`, no `wmic.exe` |
 
+WMI and WSMan execution select authentication using the target's written
+form (`lateralHostIsIP` in `lateral.go`). This selection does not govern SMB
+staging or guarantee Kerberos for the whole operation.
+
+- `psexec` and SMB staging for every method retain Windows negotiation.
+  DNS targets may fall back to NTLM when Kerberos is unavailable. Client
+  policy, existing connections, and SPN configuration affect negotiation.
+- `wmiexec`: DNS names pass the `kerberos:HOST/<host>` authority as an
+  allocated BSTR to
+  `ConnectServer` and pin `RPC_C_AUTHN_GSS_KERBEROS` in `CoSetProxyBlanket`
+  with the target's `HOST/<host>` machine-account SPN as the server
+  principal, so the connection and proxy use the same identity; IP targets keep
+  the null authority and `RPC_C_AUTHN_WINNT` (NTLM).
+- `winrm`: `WSManCreateSession` receives a `WSMAN_AUTHENTICATION_CREDENTIALS`
+  structure with `WSMAN_FLAG_AUTH_KERBEROS` for DNS names and
+  `WSMAN_FLAG_AUTH_NEGOTIATE` for IP targets. The native WSMan client
+  exposes no direct NTLM flag; IP targets normally negotiate NTLM (Windows
+  can support IP SPNs when explicitly configured). The null user account inside
+  the credentials preserves the implicit thread identity, so `make_token`
+  credentials still apply.
+
+For Negotiate, the agent sets the session-scoped
+`WSMAN_OPTION_ALLOW_NEGOTIATE_IMPLICIT_CREDENTIALS` DWORD to 1 before
+opening a shell. Failure closes the session and stops execution. The agent
+does not change TrustedHosts, certificate validation, or host-trust policy;
+the destination must already satisfy the client's WinRM policy. The fixture
+checks the option's ABI, ordering, and failure cleanup, and the local native
+session test checks that the DLL accepts it.
+
+WSMan endpoint URLs bracket IPv6 literals using `net.JoinHostPort`. The
+native-call fixture checks exact URLs and authentication flags against
+independent expected values for DNS names, IPv4, and IPv6.
+
+The explicit Kerberos paths require a valid server principal and usable
+Kerberos credentials. Workgroup/local-account access is not established by
+switching to an IP address alone. WMI rejects an authority on local
+connections, so the local Windows CI WMI test uses the loopback IP.
+
 The native WMI binding uses the Windows SDK `IWbemClassObject` vtable slots:
 `GetMethod=19`, `SpawnInstance=15`, `Put=5`, and `Get=4` (including
 `IUnknown`). Older agents can fail at method lookup with `0x80041008`
@@ -429,9 +467,18 @@ passed on Go 1.21 and 1.27 in normal and debug modes. The COM call chain stays o
 and cleanup share the same apartment. `TestWMICreateProcess` exercises local
 process creation and a missing executable's provider error on Windows CI.
 
-The native `WSManCreateSession` binding supplies all six API arguments,
-including null credentials and proxy pointers before the session output
-pointer. Null credentials preserve the current thread's default identity.
+`wmiAuthentication` prepares the authentication service, an owned authority
+BSTR, and a UTF-16 proxy principal. Its caller frees the BSTR after the COM
+connection and proxies are released. `TestWMIAuthentication` checks the BSTR
+with the native `SysStringLen` API, verifies matching `HOST/<host>` identities,
+checks the NTLM path for IPv4/IPv6, and rejects embedded NULs. Windows CI
+includes this test in both normal and debug builds.
+
+The native `WSManCreateSession` binding supplies all six API arguments: an
+authentication-credentials structure selecting the mechanism (see the
+authentication paragraph above) and a null proxy pointer before the session
+output pointer. The null user account inside the credentials preserves the
+current thread's default identity.
 Agents built before this correction can fail locally with `0x803380ba`
 (`ERROR_WSMAN_CLIENT_CREATESESSION_NULL_PARAM`); rebuild and replace the
 source agent to pick up the corrected binding.
@@ -471,6 +518,13 @@ MSVC's C++ parser, which supports the SDK's typed enums; the same fixture
 also compiles as C with MinGW. These
 checks do not establish remote authentication, staging, or detach behavior;
 those still require an authorized Windows lab.
+
+Before accepting remote authentication changes, validate DNS/Kerberos and
+IP/NTLM connections separately with the agent identity and an alternate
+identity. Confirm the negotiated protocol and account in Windows security
+events, and confirm authentication fails for invalid credentials and an
+unregistered Kerberos principal. Local session-handle creation is only an ABI
+check and does not prove authentication or identity selection succeeded.
 
 The WebUI renders the agent result through session events once, while the
 HTTP response supplies registration status. Waiting messages and unconfirmed

@@ -1,5 +1,72 @@
 # Progress Log
 
+## 2026-11-07 — Complete WinRM authentication review fixes
+
+- Resolve `WSManSetSessionOption` and enable implicit Negotiate credentials
+  for the current IP-target session before shell creation. Stop and clean up
+  on option failure; keep existing host-trust policy intact.
+- Assert Go credential size and offsets independently, paired with SDK
+  assertions for credentials and the DWORD option's union offset and enums.
+  Cover option ordering, value, failure cleanup, and local native acceptance.
+- Correct CLI, README, agent comments, and AI guidance: explicit WMI/WSMan
+  execution selection does not constrain SMB staging or psexec negotiation.
+  DNS targets can still use NTLM during those stages.
+- Validation: `make go-test`, host `go vet`, operator parity, formatting,
+  and diff whitespace checks passed. Windows amd64 normal and arm64 debug
+  test binaries cross-compiled; the SDK fixture compiled with MinGW using
+  warnings as errors. Native Windows tests and remote authentication have
+  not run on this macOS host.
+
+## 2026-11-07 — Repair lateral authentication review findings
+
+- Allocate the WMI authority with `SysAllocString` and free it after COM
+  cleanup. Use `kerberos:HOST/<host>` so connection and proxy authentication
+  refer to the same server identity.
+- Add `TestWMIAuthentication` for native BSTR length/content, principal
+  consistency, IP defaults, and embedded-NUL rejection; include it in the
+  Windows normal/debug CI selection.
+- Check WSMan authentication against explicit expected SDK flag values,
+  rather than calling the implementation helper for the expected result.
+  Describe local session creation as configuration, not authentication proof.
+- Build WSMan URLs with `net.JoinHostPort` so IPv6 literals are bracketed;
+  assert exact URLs independently of the production formatter.
+- Validation: `make go-test` and host `go vet` passed. Windows amd64/arm64
+  test binaries cross-compiled. Native Windows execution and remote domain
+  authentication were not available on this macOS host and remain unverified.
+
+## 2026-11-07 — Select NTLM or Kerberos authentication for lateral movement
+
+- Choose WMI/WSMan execution authentication from the target's written form:
+  IP literals select NTLM/Negotiate, DNS names select Kerberos. SMB staging
+  and psexec retain Windows negotiation and possible NTLM fallback.
+  `lateralHostIsIP`
+  (`agent-go/lateral.go`) makes the selection and is covered by host-side
+  tests.
+- `wmiexec` passes the `kerberos:HOST/<host>` BSTR authority to `ConnectServer` and
+  pins `RPC_C_AUTHN_GSS_KERBEROS` with the target's `HOST/<host>`
+  machine-account SPN as the server principal in `CoSetProxyBlanket` for
+  DNS names; IP targets keep the previous NTLM
+  (`RPC_C_AUTHN_WINNT`) blanket and null authority.
+- `winrm` passes a `WSMAN_AUTHENTICATION_CREDENTIALS` structure to
+  `WSManCreateSession`: `WSMAN_FLAG_AUTH_KERBEROS` for DNS names and
+  `WSMAN_FLAG_AUTH_NEGOTIATE` for IP targets (the native WSMan client has
+  no NTLM flag; IP targets normally negotiate NTLM). The null
+  user account preserves the implicit thread identity so `make_token`
+  credentials still apply. `psexec` keeps the SMB redirector's automatic
+  Kerberos/NTLM choice.
+- Extend the WSMan fixture to validate the credentials structure and
+  mechanism per host form, add a real-DLL session configuration check, and
+  assert the `WSMAN_AUTHENTICATION_CREDENTIALS` layout and mechanism flags
+  in `testdata/wsman_layout.c` (compiles with MinGW). Move the local WMI
+  Windows CI test to the loopback IP: WMI rejects an authority on local
+  connections, and the DNS-name form now selects the Kerberos authority.
+- Validation: `make go-test` passes (normal/debug suites, both Windows
+  architecture builds, TUN tests, C compile checks) and the wsman SDK
+  layout fixture compiles with MinGW. Native Windows CI must rerun the WMI
+  loopback test; remote Kerberos/NTLM behavior still requires an
+  authorized domain lab. The operator surface is unchanged, so parity is
+  unaffected.
+
 ## 2026-11-07 — Render lateral results once in the WebUI
 
 - Let session events render lateral agent results, removing the duplicate
