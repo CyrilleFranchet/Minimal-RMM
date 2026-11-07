@@ -11,6 +11,10 @@
   Go 1.21 and Go 1.27; they were separate from the failing cleanup fixture.
 - This is a reproduced cleanup-path crash matching the reported source-agent
   exit and retained remote service; the earlier pointer fix did not address it.
+- The corrected binding passes native service cleanup. The subsequent identity
+  assertions also pass, but Go's temporary executable removal exposed a fixture
+  leak: the pipe-holder descendant remained alive. Track and reap both fixture
+  descendant modes before returning from the test; production code is unchanged.
 
 ## 2026-11-07 — Separate Go debug agents
 

@@ -338,6 +338,11 @@ func TestWindowsRunasOutputLifecycle(t *testing.T) {
 				}
 			}
 		case "hold":
+			if pidFile := os.Getenv("RMM_RUNAS_WRITER_PIDFILE"); pidFile != "" {
+				if err := os.WriteFile(pidFile+".ready", nil, 0o600); err != nil {
+					os.Exit(6)
+				}
+			}
 			time.Sleep(3 * time.Second)
 		case "write":
 			if err := os.WriteFile(os.Getenv("RMM_RUNAS_WRITER_PIDFILE")+".ready", nil, 0o600); err != nil {
@@ -363,7 +368,7 @@ func TestWindowsRunasOutputLifecycle(t *testing.T) {
 			defer outputFile.Close()
 			command := exec.Command(os.Args[0], "-test.run=^TestWindowsRunasOutputLifecycle$")
 			command.Env = append(os.Environ(), "RMM_RUNAS_OUTPUT_FIXTURE="+mode)
-			if mode == "continuous-descendant" {
+			if mode == "descendant" || mode == "continuous-descendant" {
 				pidFile := filepath.Join(t.TempDir(), "writer.pid")
 				command.Env = append(command.Env, "RMM_RUNAS_WRITER_PIDFILE="+pidFile)
 				t.Cleanup(func() {
