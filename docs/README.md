@@ -61,6 +61,7 @@ historical notes in `progress.md`.
 | Supported service launcher | [Server startup](server-startup.md) |
 | RMM-Profile volume and Cloudflared Quick/named tunnels | [RMM-Profiles](rmm-profiles.md) |
 | Go agent generation, targets, and runtime settings | [Go agent](go-agent.md) |
+| Investigate agent exits and remote service cleanup with `spawnas -d` | [Agent debug tracing](agent-debug.md) |
 | PowerShell agent generation | [PowerShell agent generator](web-agent-generator.md) |
 | Hidden command execution and shell dispatch | [Client command execution](client-command-execution.md) |
 | Persistent session and artifact storage | [Session history](session-history.md) |

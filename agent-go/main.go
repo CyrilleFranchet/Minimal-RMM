@@ -30,6 +30,7 @@ import (
 )
 
 type config struct {
+	SpawnDebug    bool
 	BaseURL       string
 	BeaconSecret  string
 	SessionID     string
@@ -83,6 +84,8 @@ var agentServiceNamePattern = regexp.MustCompile(`^MinimalRmmAgent-[0-9a-f]{32}$
 var agentServiceName = defaultLateralServiceName
 
 type lateralStartup struct {
+	Debug        bool
+	DebugSet     bool
 	SessionID    string
 	WorkspaceID  string
 	WorkspaceSet bool
@@ -105,8 +108,16 @@ func parseLateralStartup(args []string) (lateralStartup, error) {
 	}
 	startup.SessionID = args[1]
 	seenService := false
+	seenDebug := false
 	for i := 2; i < len(args); i += 2 {
 		switch args[i] {
+		case "--debug-agent":
+			if seenDebug || (args[i+1] != "1" && args[i+1] != "0") {
+				return startup, errors.New("invalid or duplicate lateral debug selector")
+			}
+			seenDebug = true
+			startup.Debug = args[i+1] == "1"
+			startup.DebugSet = true
 		case "--workspace-id":
 			value := args[i+1]
 			if startup.WorkspaceSet || (value != "" && value != "-" && !agentWorkspaceIDPattern.MatchString(value)) {
@@ -142,17 +153,25 @@ func main() {
 		return
 	}
 	if len(os.Args) > 2 && os.Args[1] == "--lateral-child" {
+		initAgentDebug(false)
+		defer closeAgentDebug()
 		if err := runLateralChild(os.Args[1:]); err != nil {
+			debugEvent("lateral.child.failed", err)
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(3)
 		}
+		debugEvent("process.exit.graceful", nil)
 		return
 	}
 	if len(os.Args) > 2 && os.Args[1] == "--lateral-cleanup-child" {
+		initAgentDebug(false)
+		defer closeAgentDebug()
 		if err := runLateralCleanupChild(os.Args[1:]); err != nil {
+			debugEvent("lateral.cleanup_child.failed", err)
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(3)
 		}
+		debugEvent("process.exit.graceful", nil)
 		return
 	}
 	if len(os.Args) > 2 && os.Args[1] == "--lateral-detach" {
@@ -173,6 +192,13 @@ func main() {
 			os.Exit(3)
 		}
 		os.Setenv("RMM_SESSION_ID", startup.SessionID)
+		if startup.DebugSet {
+			value := "0"
+			if startup.Debug {
+				value = "1"
+			}
+			os.Setenv("RMM_DEBUG", value)
+		}
 		agentServiceName = startup.ServiceName
 		if startup.WorkspaceSet {
 			os.Setenv("RMM_AGENT_WORKSPACE_ID", startup.WorkspaceID)
@@ -180,22 +206,29 @@ func main() {
 	}
 	initAgentLog()
 	defer closeAgentLog()
+	initAgentDebug(true)
+	defer closeAgentDebug()
 	if runAsWindowsService() {
 		// The SCM started this process as a service; the beacon loop already
 		// ran to completion inside the service entry point.
+		debugEvent("process.exit.graceful", nil)
 		return
 	}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	runAgentLoop(ctx)
+	debugEvent("process.exit.graceful", nil)
 }
 
 // runAgentLoop is the beacon body shared by interactive, service, and
 // lateral-started contexts.
 func runAgentLoop(ctx context.Context) {
+	debugEvent("beacon_loop.start", nil)
+	defer debugEvent("beacon_loop.stop", nil)
 	agentContext = ctx
 	cfg, err := loadConfig()
 	if err != nil {
+		debugEvent("configuration.invalid", err)
 		logf("configuration error: %v", err)
 		closeAgentLog()
 		os.Exit(2)
@@ -212,13 +245,18 @@ func runAgentLoop(ctx context.Context) {
 
 	for ctx.Err() == nil {
 		if identityBoundaryFault.Load() {
+			debugEvent("process.stop.identity_boundary", errIdentityUnsafe)
 			return
 		}
+		debugEvent("registration.begin", nil)
 		if err := register(client, cfg); err != nil {
+			debugEvent("registration.failed", err)
 			if ctx.Err() != nil || errors.Is(err, errIdentityUnsafe) {
+				debugEvent("process.stop.registration_context_or_identity", err)
 				return
 			}
 			if isSessionTerminatedError(err) {
+				debugEvent("process.stop.registration_terminated", nil)
 				logf("session terminated by server")
 				return
 			}
@@ -226,17 +264,24 @@ func runAgentLoop(ctx context.Context) {
 			sleepWithJitter(cfg, rng)
 			continue
 		}
+		debugEvent("registration.complete", nil)
+		debugEvent("poll.begin", nil)
 		if err := pollOnce(client, cfg, socksPlugin, tunPlugin); err != nil {
+			debugEvent("poll.failed", err)
 			if ctx.Err() != nil || errors.Is(err, errIdentityUnsafe) {
+				debugEvent("process.stop.poll_context_or_identity", err)
 				return
 			}
 			if err.Error() == "session terminated by server" {
+				debugEvent("process.stop.server_request", nil)
 				return
 			}
 			logf("poll failed: %v", err)
 		}
+		debugEvent("poll.complete", nil)
 		sleepWithJitter(cfg, rng)
 	}
+	debugEvent("process.stop.context", ctx.Err())
 }
 
 // pluginController keeps one persistent pivot plugin outside the normal

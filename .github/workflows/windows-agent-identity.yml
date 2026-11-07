@@ -17,6 +17,30 @@ permissions:
   contents: read
 
 jobs:
+  debug-diagnostics:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.21.x', '1.27.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: false
+      - name: Test normal and debug artifact boundaries and diagnostics
+        working-directory: agent-go
+        shell: pwsh
+        run: |
+          $tests = '^Test(Debug|SpawnasDebug|SpawnDebug|LateralDebug'
+          $tests += '|SpawnEnvironmentDoesNotInheritDebug'
+          $tests += '|NormalBuild|WinRMDetach)'
+          go test -buildvcs=false -count=1 -v -tags= -run $tests .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -buildvcs=false -count=1 -v -tags=rmmdebug -run $tests .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   identity:
     runs-on: windows-2022
     timeout-minutes: 10

@@ -61,6 +61,17 @@ function fixture(options = {}) {
   return { get, options, calls, storage, window, click: async (id) => get(id).handlers.click() };
 }
 
+test('debug generation is explicit and requests a separate full-agent artifact', async () => {
+  for (const debug of [false, true]) {
+    const ui = fixture();
+    ui.get('debug').checked = debug;
+    await ui.click('build');
+    const request = ui.calls.find(call => call.url.endsWith('/build'));
+    assert.equal(request.body.debug, debug);
+    assert.equal(request.body.stageless, debug);
+  }
+});
+
 test('stale saved Quick Tunnel URL blocks compilation without replacing operator input', async () => {
   const ui = fixture({ prefs: { serverUrl: 'https://old.trycloudflare.com', beaconSecret: 'private-beacon-secret' } });
   await ui.click('build');

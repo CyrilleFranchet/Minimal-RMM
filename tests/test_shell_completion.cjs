@@ -369,6 +369,52 @@ test('credential commands reject missing IDs, positional IDs and mixed identity 
   }
 });
 
+test('spawnas debug flags propagate without consuming flag-like passwords', async () => {
+  const cases = [
+    ['/spawnas -i cred-123 -d', {cred_id: 'cred-123', debug: true}],
+    ['/spawnas --debug -i cred-123', {cred_id: 'cred-123', debug: true}],
+    ['/spawnas alice pw --debug', {user: 'alice', password: 'pw', debug: true}],
+    ['/spawnas -d alice -d', {user: 'alice', password: '-d', debug: true}],
+    ['/spawnas alice -d', {user: 'alice', password: '-d', debug: false}],
+    ['/spawnas alice --debug', {user: 'alice', password: '--debug', debug: false}],
+  ];
+  for (const [command, expected] of cases) {
+    const f = fixture(); f.context.appendShellOutput = () => {};
+    f.context.api = async (...args) => { f.calls.push(args); return {status: 200, data: {ok: true}}; };
+    await f.context.dispatchShellMetaCommand(command);
+    assert.deepEqual(f.errors, [], command);
+    assert.equal(f.calls.length, 1, command);
+    assert.deepEqual(JSON.parse(f.calls[0][1].body), {...expected, verify: true}, command);
+  }
+});
+
+test('spawn and lateral explicitly select debug agents and reject malformed flags', async () => {
+  const cases = [
+    ['/spawn -d', '/sessions/agent/spawn', {debug: true}],
+    ['/spawn --debug', '/sessions/agent/spawn', {debug: true}],
+    ['/spawn', '/sessions/agent/spawn', {}],
+    ['/lateral psexec ws01 -d', '/sessions/agent/lateral', {method: 'psexec', host: 'ws01', debug: true}],
+    ['/lateral --debug winrm ws01', '/sessions/agent/lateral', {method: 'winrm', host: 'ws01', debug: true}],
+    ['/lateral wmiexec ws01', '/sessions/agent/lateral', {method: 'wmiexec', host: 'ws01'}],
+  ];
+  for (const [command, path, expected] of cases) {
+    const f = fixture();
+    f.context.api = async (...args) => { f.calls.push(args); return {status: 200, data: {ok: true, registered: true}}; };
+    await f.context.dispatchShellMetaCommand(command);
+    assert.deepEqual(f.errors, [], command);
+    assert.equal(f.calls[0][0], path, command);
+    assert.deepEqual(JSON.parse(f.calls[0][1].body), expected, command);
+  }
+  for (const command of ['/spawn -d --debug', '/spawn --unknown', '/spawn extra',
+    '/lateral psexec -d', '/lateral psexec --unknown', '/lateral psexec ws01 -d --debug',
+    '/lateral psexec ws01 extra']) {
+    const f = fixture();
+    await f.context.dispatchShellMetaCommand(command);
+    assert.equal(f.calls.length, 0, command);
+    assert.match(f.errors[0], /Usage:/, command);
+  }
+});
+
 test('direct identity syntax accepts domainless names and preserves empty or flag-like passwords', async () => {
   for (const verb of ['make_token', 'spawnas', 'runas']) {
     for (const password of ['', '-i', 'two words\\path']) {

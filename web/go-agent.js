@@ -49,6 +49,7 @@
       goos: $("#agent-goos")?.value || "windows",
       goarch: $("#agent-goarch")?.value || "amd64",
       stageless: $("#agent-go-stageless")?.checked || false,
+      debug: $("#agent-go-debug")?.checked || false,
     };
   }
 
@@ -80,6 +81,8 @@
     }
     const stagelessEl = $("#agent-go-stageless");
     if (stagelessEl) stagelessEl.checked = prefs.stageless || false;
+    const debugEl = $("#agent-go-debug");
+    if (debugEl) debugEl.checked = prefs.debug || false;
   }
 
   function status(message, error = false) {
@@ -161,7 +164,8 @@
     }
     const goos = $("#agent-goos")?.value || "windows";
     const goarch = $("#agent-goarch")?.value || "amd64";
-    const stageless = $("#agent-go-stageless")?.checked || false;
+    const debug = $("#agent-go-debug")?.checked || false;
+    const stageless = debug || $("#agent-go-stageless")?.checked || false;
     const serverUrl =
       $("#agent-go-server-url")?.value.trim() || $("#agent-server-url")?.value.trim() || "";
     const beaconSecret =
@@ -201,6 +205,7 @@
           goos,
           goarch,
           stageless,
+          debug,
           config: {
             base_url: serverUrl.replace(/\/$/, ""),
             beacon_secret: beaconSecret,
@@ -254,7 +259,9 @@
     ["#agent-goos", "#agent-goarch"].forEach((selector) =>
       $(selector)?.addEventListener("change", savePrefs),
     );
-    $("#agent-go-stageless")?.addEventListener("change", savePrefs);    $("#agent-go-download")?.addEventListener("click", async (event) => {
+    $("#agent-go-stageless")?.addEventListener("change", savePrefs);
+    $("#agent-go-debug")?.addEventListener("change", savePrefs);
+    $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
       const url = event.currentTarget.dataset.downloadUrl;
       if (!url || !downloadContext || !isCurrent(downloadContext)) return;

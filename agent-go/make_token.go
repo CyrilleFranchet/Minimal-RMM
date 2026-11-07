@@ -12,6 +12,7 @@ var identityBoundaryFault atomic.Bool
 
 // identityBoundaryFailure makes token-boundary failures terminal for this agent.
 func identityBoundaryFailure(err error) error {
+	debugEvent("identity_boundary.failed", err)
 	identityBoundaryFault.Store(true)
 	return errors.Join(errIdentityUnsafe, err)
 }

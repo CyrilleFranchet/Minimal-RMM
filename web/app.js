@@ -3160,14 +3160,14 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /embeddings run &lt;profile&gt; --document &lt;path&gt; [--document &lt;path&gt; ...]
                                    Run a saved embedding profile on this session
   /pe &lt;plugin&gt; [export] [input]     Load a Go agent plugin
-  /spawn                           Spawn a detached second Go agent (same identity)
-  /spawnas -i &lt;cred_id&gt; | /spawnas &lt;DOMAIN\\user | user&gt; &lt;password&gt;               Spawn a Go agent copy under a different process identity (cascade)
+  /spawn [-d|--debug]               Spawn a detached second Go agent; -d requires the installed debug companion
+  /spawnas -i &lt;cred_id&gt; [-d|--debug] | /spawnas &lt;DOMAIN\\user | user&gt; &lt;password&gt; [-d|--debug]   Spawn a Go agent copy; -d selects the installed debug companion
   /runas -i &lt;cred_id&gt; &lt;command&gt; | /runas &lt;DOMAIN\\user | user&gt; &lt;password&gt; &lt;command&gt;      Run a command under a different process identity (cascade)
   /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt;   Manage workspace credentials
   /make_token -i &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
-  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt;   Start a Go agent on another host
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-d|--debug]   Start a separate debug agent with -d (psexec: server artifact; wmiexec/winrm: source companion)
   /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
                                    Operate workspace BloodHound; never sent to the agent
 
@@ -3257,8 +3257,9 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   }
 
   if (verb === "spawn") {
-    if (rest.length) {
-      appendShellError("Usage: /spawn (uses the selected session)");
+    const debug = rest.length === 1 && ["-d", "--debug"].includes(rest[0]);
+    if (rest.length && !debug) {
+      appendShellError("Usage: /spawn [-d|--debug] (uses the selected session)");
       return true;
     }
     if (!target.sessionId) {
@@ -3271,7 +3272,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     }
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/spawn`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(debug ? { debug: true } : {}),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
@@ -3348,16 +3349,18 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   }
 
   if (verb === "lateral") {
-    if (rest.length !== 2) {
-      appendShellError("Usage: /lateral <psexec|wmiexec|winrm> <host>");
+    const flags = rest.filter(arg => ["-d", "--debug"].includes(arg));
+    const lateralArgs = rest.filter(arg => !["-d", "--debug"].includes(arg));
+    if (flags.length > 1 || lateralArgs.length !== 2 || lateralArgs.some(arg => arg.startsWith("-"))) {
+      appendShellError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-d|--debug]");
       return true;
     }
     if (!target.sessionId) {
       appendShellError("Select a Go agent session before moving laterally.");
       return true;
     }
-    const method = rest[0].toLowerCase();
-    const host = rest[1];
+    const method = lateralArgs[0].toLowerCase();
+    const host = lateralArgs[1];
     if (!["psexec", "wmiexec", "winrm"].includes(method)) {
       appendShellError("Method must be psexec, wmiexec, or winrm.");
       return true;
@@ -3369,7 +3372,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/lateral`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method, host }),
+        body: JSON.stringify({ method, host, ...(flags.length ? { debug: true } : {}) }),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
@@ -3454,15 +3457,24 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   }
 
   if (verb === "spawnas") {
-    const parsed = parseShellCredentials(args);
-    if (!parsed) { appendShellError("Usage: /spawnas -i <cred_id> | /spawnas <DOMAIN\\user | user> <password>"); return true; }
+    let debug = false;
+    let credentialArgs = args;
+    if (["-d", "--debug"].includes(args[0])) {
+      debug = true;
+      credentialArgs = args.slice(1);
+    } else if (args.length === 3 && ["-d", "--debug"].includes(args[2])) {
+      debug = true;
+      credentialArgs = args.slice(0, -1);
+    }
+    const parsed = parseShellCredentials(credentialArgs);
+    if (!parsed) { appendShellError("Usage: /spawnas [-d|--debug] -i <cred_id> | /spawnas [-d|--debug] <DOMAIN\\user | user> <password>"); return true; }
     if (!target.sessionId) { appendShellError("Select a Go agent session before spawnas."); return true; }
     appendShellEcho(cmd);
     appendShellOutput("Spawning agent under new identity…");
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/spawnas`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...parsed.credentials, verify: true }),
+        body: JSON.stringify({ ...parsed.credentials, verify: true, debug }),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) { appendShellError(`spawnas failed (${status}): ${data?.error ?? ""}`); return true; }

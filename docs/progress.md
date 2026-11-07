@@ -1,5 +1,47 @@
 # Progress Log
 
+## 2026-11-07 — Separate Go debug agents
+
+- Extend the same explicit debug selection to `spawn` and all three `lateral`
+  methods across CLI, WebUI, REST, MCP, and AI. Local spawn and WMI/WinRM use
+  the sibling debug executable; psexec stages only the separate server debug
+  payload and writes a distinct target filename. Missing debug artifacts fail
+  without normal-payload fallback. Source cleanup traces require a debug source.
+- Pass the lateral target's requested debug state explicitly, including through
+  WinRM detach-to-service, so inherited environment settings cannot enable or
+  disable tracing contrary to the request. Cover both on/off startup selectors.
+- Add `spawnas -i <cred_id> -d` / `--debug` to CLI and WebUI shells and expose
+  the boolean through REST, MCP, and AI tools. Select a separately built debug
+  companion beside the source executable; missing companions fail explicitly.
+- Gate diagnostics behind the `rmmdebug` build tag. Normal executables exclude
+  the logger, runtime crash writer, and checkpoint strings. Debug build tools
+  produce separately named full-agent ZIPs; normal lateral payload selection
+  cannot select these debug artifacts.
+- Record per-PID timestamped lifecycle, identity-boundary, and SCM cleanup
+  checkpoints, including quiet cleanup helpers. Go 1.23+ captures runtime
+  panic/fatal output; diagnostic events exclude arbitrary error text. Raw
+  runtime output can contain sensitive values and is documented accordingly.
+- Document build, companion placement, trace location, and runtime limits in
+  `agent-debug.md`. Normal spawns do not inherit diagnostic opt-in.
+- Cover API/tool flag validation, CLI/WebUI propagation and generation, build
+  isolation, companion selection, secret-free event formatting, panic capture
+  after deferred cleanup, and ordinary-exit records. Native Windows execution
+  of the diagnostic variant remains pending.
+- Validation: full `make check` and expanded `make go-test` pass, including both
+  Go variants, Windows amd64/arm64 builds, and C compile checks. All 111 focused
+  Python tests and 44 WebUI generator/shell tests pass; parity and lint pass.
+  Inspection of actual Windows amd64 binaries confirms normal output omits
+  the debug filename marker, SCM trace marker, and runtime crash writer while
+  the separate debug output contains them.
+- Pre-commit test review added native Windows diagnostic CI for Go 1.21 and
+  Go 1.27, covering both build variants, profile paths, startup selectors, and
+  crash capture. Supported Go runtimes must install the crash sink in the
+  subprocess regression; unavailable capture can no longer bypass that check.
+- Code and security reviews found no blockers. Test review's missing native
+  diagnostic CI coverage is addressed; those Windows jobs remain pending until
+  the pushed workflow runs. Local host vet and both architectures' normal/debug
+  Windows test compilation pass.
+
 ## 2026-11-07 — Session card width
 
 - Remove the reserved action-button column so live and archived session

@@ -405,7 +405,7 @@ class LateralHttpRoutingTests(unittest.TestCase):
         self.assertTrue(payload["verified"])
         handler.server_instance.lateral_move.assert_called_once_with(
             "full-session-id", "psexec", "ws01",
-            verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0,
+            verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, debug=False,
         )
 
     def test_lateral_status_codes(self):
@@ -415,6 +415,7 @@ class LateralHttpRoutingTests(unittest.TestCase):
             ("invalid_method", 400),
             ("invalid_host", 400),
             ("agent_payload_unavailable", 503),
+            ("debug_payload_unavailable", 503),
             ("timeout", 408),
             ("session_killed", 410),
             ("server_stopped", 503),

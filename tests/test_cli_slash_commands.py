@@ -22,6 +22,8 @@ class SlashCommandTests(unittest.TestCase):
         client.health.return_value = (200, {'sessions': 0})
         client.make_token.return_value = (200, {'ok': True})
         client.spawnas.return_value = (200, {'ok': True})
+        client.spawn_session.return_value = (200, {'ok': True})
+        client.lateral_move.return_value = (200, {'ok': True})
         client.runas.return_value = (200, {'ok': True, 'output': 'done'})
         client.creds_del.return_value = (200, {'message': 'deleted'})
         prompt = Mock()
@@ -182,6 +184,44 @@ class SlashCommandTests(unittest.TestCase):
         client.runas.assert_called_once_with('session-id', 'whoami /all', user='alice', password='')
         warn.assert_not_called()
 
+    def test_spawnas_debug_flags_preserve_credentials(self):
+        for command, expected in [
+            ('/spawnas -i cred-123 -d', {'cred_id': 'cred-123', 'debug': True}),
+            ('/spawnas --debug -i cred-123', {'cred_id': 'cred-123', 'debug': True}),
+            ('/spawnas alice pw --debug', {'user': 'alice', 'password': 'pw', 'debug': True}),
+            ('/spawnas -d alice -d', {'user': 'alice', 'password': '-d', 'debug': True}),
+            ('/spawnas alice -d', {'user': 'alice', 'password': '-d'}),
+            ('/spawnas alice --debug', {'user': 'alice', 'password': '--debug'}),
+        ]:
+            with self.subTest(command=command):
+                client, _, warn = self.run_lines([command])
+                client.spawnas.assert_called_once_with('session-id', **expected)
+                warn.assert_not_called()
+
+    def test_spawn_and_lateral_debug_flags(self):
+        for command, method, args, options in [
+            ('/spawn -d', 'spawn_session', ('session-id',), {'debug': True}),
+            ('/spawn --debug session-id', 'spawn_session', ('session-id',), {'debug': True}),
+            ('/spawn session-id', 'spawn_session', ('session-id',), {}),
+            ('/lateral psexec ws01 -d', 'lateral_move', ('session-id', 'psexec', 'ws01'), {'debug': True}),
+            ('/lateral --debug winrm ws01', 'lateral_move', ('session-id', 'winrm', 'ws01'), {'debug': True}),
+            ('/lateral wmiexec ws01', 'lateral_move', ('session-id', 'wmiexec', 'ws01'), {}),
+        ]:
+            with self.subTest(command=command):
+                client, _, warn = self.run_lines([command])
+                getattr(client, method).assert_called_once_with(*args, **options)
+                warn.assert_not_called()
+
+    def test_spawn_and_lateral_invalid_flags_never_send_requests(self):
+        commands = ['/spawn -d --debug', '/spawn --unknown', '/spawn one two',
+                    '/lateral psexec -d', '/lateral psexec --unknown',
+                    '/lateral psexec ws01 -d --debug', '/lateral ssh ws01',
+                    '/lateral psexec ws01 extra']
+        client, _, warn = self.run_lines(commands)
+        client.spawn_session.assert_not_called()
+        client.lateral_move.assert_not_called()
+        self.assertEqual(warn.call_count, len(commands))
+
     def test_invalid_credential_forms_never_send_requests(self):
         lines = [
             '/make_token cred-123', '/spawnas cred-123', '/runas cred-123 whoami',
@@ -264,7 +304,7 @@ class SlashCommandTests(unittest.TestCase):
                 patch.object(rmm_cli, 'say'), patch.object(rmm_cli, 'warn') as warn:
             rmm_cli.run_interactive(client, {'current_session': 'session-id'})
         self.assertEqual(warn.call_count, 3)
-        client.lateral_move.assert_called_once_with('session-id', 'ssh', 'ws01')
+        client.lateral_move.assert_not_called()
 
     def test_uid_dispatches_and_prints_identity_lines(self):
         client = Mock(base_url='http://example.test')

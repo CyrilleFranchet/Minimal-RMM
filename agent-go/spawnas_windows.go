@@ -78,6 +78,7 @@ type spawnasProcessInformation struct {
 
 // spawnasPayload carries a __SPAWNAS__ command's JSON body.
 type spawnasPayload struct {
+	Debug       bool    `json:"debug,omitempty"`
 	SessionID   string  `json:"session_id"`
 	WorkspaceID *string `json:"workspace_id,omitempty"`
 	Domain      string  `json:"domain"`
@@ -436,7 +437,11 @@ func spawnasCommand(command string, cfg *config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve agent executable: %w", err)
 	}
-	envStrings := spawnEnvironment(&childConfig, sessionID)
+	executable, err = resolveDebugAgentExecutable(executable, payload.Debug)
+	if err != nil {
+		return "", err
+	}
+	envStrings := spawnasDebugEnvironment(spawnEnvironment(&childConfig, sessionID), payload.Debug)
 	args := []string{executable}
 
 	pid, err := spawnWithLogonDetached(payload.User, payload.Domain, payload.Password, executable, args, envStrings)

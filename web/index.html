@@ -201,6 +201,9 @@
               <label for="agent-go-stageless" title="Unchecked (default): return a small stage1 launcher (~20 KB) that fetches the Go agent from the server at runtime. Checked: embed the full Go agent in the ZIP directly (no staging server required).">
                 <input type="checkbox" id="agent-go-stageless"> Stageless (full agent in ZIP)
               </label>
+              <label for="agent-go-debug" title="Build a separate diagnostic executable in a full-agent ZIP. Normal builds exclude diagnostic code.">
+                <input type="checkbox" id="agent-go-debug"> Separate debug agent
+              </label>
             </div>
             <div class="agent-gen-actions">
               <button type="button" id="agent-go-build">Compile on server</button>

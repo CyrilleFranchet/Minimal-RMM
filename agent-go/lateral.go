@@ -26,6 +26,7 @@ var embeddedLateralService []byte
 // lateralPayload carries the lateral movement request as a JSON body on the
 // __LATERAL__ beacon command, mirroring __MAKE_TOKEN__.
 type lateralPayload struct {
+	Debug          bool    `json:"debug,omitempty"`
 	Method         string  `json:"method"`
 	Host           string  `json:"host"`
 	SessionID      string  `json:"session_id"`

