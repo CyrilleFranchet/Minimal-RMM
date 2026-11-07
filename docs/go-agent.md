@@ -142,30 +142,39 @@ with the requested ID and owner. `spawnEnvironment` replaces inherited runtime
 connection settings and workspace binding. Bare `__SPAWN__` remains supported
 for legacy direct commands and generates a new identity locally.
 
-On Windows, `startDetachedAgent` tries CreateProcessAsUser, then
-CreateProcessWithTokenW, then CreateProcessWithLogonW with
-LOGON_NETCREDENTIALS_ONLY, then CreateProcessA. The first two use the active
-make_token token. The third uses its credentials retained in agent memory;
-explicit rev2self clears those credential references. Clearing Go strings does
-not guarantee memory zeroization. Credentials never enter child arguments,
-environment, or logs. Without an active token, only CreateProcessA is used.
+On Windows, `startDetachedAgent` calls CreateProcessA exactly once. An active
+make_token thread token does not change the child process identity or transfer
+its network credentials. The API exposes `spawn_method=CreateProcessA` and
+sets `identity_degraded=true` when an active thread token is not propagated.
+The spawn path never enables process privileges or switches creation APIs.
+`dispatchSpawn` records the single attempt, including a Windows failure code.
+`spawnANSI` converts arguments to the system ANSI code page and rejects
+unrepresentable characters. `buildEnvBlock` sorts entries and preserves UTF-16.
 
-`trySpawnAttempts` stops after the first successful launch and aggregates errors
-if every method fails. The last fallback uses the original process identity:
-the API exposes `spawn_method` and `identity_degraded`, and WebUI warns when
-alternate network credentials were lost. Registration and response checks do
-not verify network identity. Parent thread impersonation is restored after the
-cascade when initially active. `/spawnas` changes the local process account.
-`spawnANSI` converts fallback arguments to the system ANSI code page (including
-UTF-8 systems) and rejects unrepresentable characters. `buildEnvBlock` sorts
-entries and preserves UTF-16 surrogate pairs.
+`spawnWithLogonDetached` handles spawnas with CreateProcessWithLogonW and
+explicit username/password credentials. `runWithPipesLogonW` handles runas
+with the same API and captures stdout/stderr. Neither command falls back to
+CreateProcessAsUser, CreateProcessWithTokenW, or thread impersonation. A logon
+failure is returned to the operator; the requested identity is never silently
+replaced with the caller identity. These commands require applicable account
+logon rights and Secondary Logon availability; CreateProcessWithLogonW does
+not support a LocalSystem caller. `make_token` behavior is unchanged.
+`logonCredentialPointers` rejects embedded NULs and supplies a NULL domain when
+none was provided, including UPN usernames. `createInheritablePipe` uses the
+native security-attributes size on both supported 64-bit targets.
+
+Runas retains its 120-second execution deadline. `collectRunasOutput` polls
+available pipe bytes and process completion on one goroutine, preserving stdout,
+stderr, nonzero exit codes, and cancellation errors without a blocking reader.
+Cancellation terminates the immediate command process and waits up to five
+seconds for termination. Descendants are not terminated; a descendant retaining
+the output pipe does not prevent return after the immediate command exits.
 
 The acknowledgment also carries a `spawn diagnostics=` JSON line. The
 `spawnDiagnostics` record contains ordered `spawnAttemptDiagnostic` entries,
-including successful fallback and preceding failures. Numeric Windows errors
+containing the single CreateProcessA attempt. Numeric Windows errors
 are extracted through wrapped errors; messages come from the Windows error
-code rather than raw command/path errors. Credential-unavailable failures have
-an explicit message. Passwords and token handles are never included or logged.
+code rather than raw command/path errors. Passwords and token handles are never included or logged.
 
 The server exposes validated fields under `spawn_diagnostics`. WebUI lists each
 attempt and its error code; the full response includes process identity,
@@ -173,10 +182,9 @@ credential availability, creation flags, token kind (`spawnTokenType`), and
 read-only process/active-token privilege snapshots (`spawnTokenPrivileges`).
 Only SeAssignPrimaryTokenPrivilege, SeIncreaseQuotaPrivilege, and
 SeImpersonatePrivilege are queried. States are enabled, disabled, absent,
-removed, or unknown. Disabled is not equivalent to absent: Windows APIs may
-temporarily enable privileges already held by the caller. Diagnostics do not
-enable privileges or change process creation behavior. A rebuilt agent is
-required; errors discarded by an older run cannot be recovered afterward.
+removed, or unknown. The snapshots are read-only: spawn does not enable
+privileges or change creation APIs. A rebuilt agent is required; errors discarded by an older run cannot be recovered
+afterward.
 
 This changes the Go agent binary and requires rebuilding and
 deploying the agent; updating only the server does not update running agents.
@@ -252,15 +260,19 @@ runs the real thread-token, permanent revocation, proxy-407 challenge, and
 production spawn-dispatch tests on Windows Server 2022. The proxy test checks
 that the standard Go transport does not send ambient credentials in response to
 Negotiate; it does not test an SSPI-enabled proxy transport. `dispatchSpawn`
-selects the actual production API order from `spawnMethods`, allowing host tests
-to exercise early success, fallback, and no-token selection without launching
-agents. `identityBoundaryFailure` records the terminal identity fault.
+invokes the single CreateProcessA implementation supplied through `spawnMethods`,
+allowing host tests to exercise success and failure with and without an active
+token. Native child fixtures also cover runas output, exit-code propagation,
+deadline termination, and pipes retained by descendants without alternate
+credentials. `identityBoundaryFailure` records the terminal identity fault.
 
-The Go agent can adopt another identity for outbound network
-authentication, with the same semantics as `runas /netonly`: spawned
-commands keep the agent's local identity but authenticate on the network
-as `DOMAIN\user`. The agent is never injected into another process, and no
-credential material is written to the agent log.
+The Go agent can adopt another identity for outbound network authentication on
+an impersonating thread, with the same local-versus-network identity distinction
+as `runas /netonly`. Standard spawn uses the process primary token and does not
+inherit a thread's alternate credentials. Operator command children explicitly
+given a token through `applyCommandToken` use a separate creation path. The agent
+is never injected into another process, and no credential material is written
+to the agent log.
 
 Agent-side behavior (`agent-go/make_token.go`,
 `agent-go/make_token_windows.go`):
@@ -278,11 +290,13 @@ Agent-side behavior (`agent-go/make_token.go`,
   with the new network credentials attached. This logon type does not
   validate the credentials, so success does not prove the password is
   correct; verify with a network command.
-- The token is stored in memory (mutex-protected) and applied to
-  subsequent **operator command children** through Go's
-  `SysProcAttr.Token` (`CreateProcessAsUser`). The cloned token keeps the
-  local identity and swaps only the network credentials. Beacon traffic,
-  plugins, and rclone exfiltration keep the agent's original identity.
+- The token is stored in memory (mutex-protected) and impersonated on the
+  calling OS thread. `applyCommandToken` also supplies it to operator command
+  children through Go's `SysProcAttr.Token` (`CreateProcessAsUser`). Standard
+  spawn does not use this helper; spawnas and runas use explicit credentials.
+  The cloned token retains the local identity and supplies different outbound
+  credentials. Beacon HTTP requests temporarily revert thread impersonation;
+  inherited process credentials require separate validation as described above.
 - A second `__MAKE_TOKEN__` replaces the active token (the previous one is
   closed) and the result reports the replacement.
 - `__REV2SELF__` closes the token and returns spawned commands to the
@@ -291,7 +305,7 @@ Agent-side behavior (`agent-go/make_token.go`,
 
 Result contract (used by the server to detect success):
 
-- `token created: <identity>; spawned commands now use this network identity`
+- `token created: <identity>; network operations on this thread use this identity`
 - `token replaced: <identity> (was: <previous>); …`
 - `token reverted: <identity>; spawned commands use the agent identity`
 - Failures answer `Make token failed: …` / `Rev2self failed: …`.

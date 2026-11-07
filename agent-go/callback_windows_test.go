@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -208,8 +209,8 @@ func TestWindowsDetachedSpawn(t *testing.T) {
 		if err != nil || pid <= 0 || method == "" {
 			t.Fatalf("native detached spawn failed: pid=%d method=%s err=%v", pid, method, err)
 		}
-		if !active && (method != "CreateProcessA" || degraded) {
-			t.Fatalf("wrong no-token method: %s", method)
+		if method != "CreateProcessA" || degraded != active {
+			t.Fatalf("spawn changed API or failed to report thread-token isolation: %s degraded=%t", method, degraded)
 		}
 		deadline := time.Now().Add(10 * time.Second)
 		for {
@@ -225,6 +226,119 @@ func TestWindowsDetachedSpawn(t *testing.T) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
+	}
+}
+
+// Invalid credentials must fail rather than launch a child under the caller.
+func TestWindowsExplicitLogonHasNoFallback(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := "RMM-NoSuchUser-" + strings.Repeat("x", 64)
+	pid, err := spawnWithLogonDetached(user, ".", "invalid-fixture-password", executable,
+		[]string{executable, "-test.run=^$"}, os.Environ())
+	if pid != 0 || err == nil || !strings.Contains(err.Error(), "CreateProcessWithLogonW:") {
+		t.Fatalf("spawnas did not preserve the logon failure: pid=%d err=%v", pid, err)
+	}
+	output, err := runWithPipesLogonW(context.Background(), user, ".", "invalid-fixture-password",
+		[]string{executable, "-test.run=^$"}, buildEnvBlock(os.Environ()))
+	if output != "" || err == nil || !strings.Contains(err.Error(), "CreateProcessWithLogonW:") {
+		t.Fatalf("runas did not preserve the logon failure: output=%q err=%v", output, err)
+	}
+}
+
+func TestWindowsLogonCredentialEncoding(t *testing.T) {
+	_, domain, _, err := logonCredentialPointers("fixture@example.invalid", "", "unused")
+	if err != nil || domain != nil {
+		t.Fatalf("UPN requires NULL domain: %p %v", domain, err)
+	}
+	for _, fields := range [][3]string{{"invalid\x00user", ".", "unused"}, {"fixture", "bad\x00domain", "unused"}, {"fixture", ".", "bad\x00password"}} {
+		if _, _, _, err := logonCredentialPointers(fields[0], fields[1], fields[2]); err == nil {
+			t.Fatal("embedded NUL was not rejected")
+		}
+	}
+}
+
+// Run the output collector against harmless child fixtures under our current
+// account, without alternate credentials or a beaconing process.
+func TestWindowsRunasOutputLifecycle(t *testing.T) {
+	if mode := os.Getenv("RMM_RUNAS_OUTPUT_FIXTURE"); mode != "" {
+		fmt.Fprint(os.Stdout, "fixture stdout\n")
+		fmt.Fprint(os.Stderr, "fixture stderr\n")
+		switch mode {
+		case "nonzero":
+			os.Exit(7)
+		case "timeout":
+			time.Sleep(30 * time.Second)
+		case "descendant":
+			child := exec.Command(os.Args[0], "-test.run=^TestWindowsRunasOutputLifecycle$")
+			child.Env = append(os.Environ(), "RMM_RUNAS_OUTPUT_FIXTURE=hold")
+			child.Stdout, child.Stderr = os.Stdout, os.Stderr
+			if err := child.Start(); err != nil {
+				os.Exit(3)
+			}
+		case "hold":
+			time.Sleep(3 * time.Second)
+		}
+		os.Exit(0)
+	}
+	for _, mode := range []string{"success", "nonzero", "timeout", "descendant"} {
+		t.Run(mode, func(t *testing.T) {
+			readH, writeH, err := createInheritablePipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.CloseHandle(readH)
+			outputFile := os.NewFile(uintptr(writeH), "runas-fixture-output")
+			defer outputFile.Close()
+			command := exec.Command(os.Args[0], "-test.run=^TestWindowsRunasOutputLifecycle$")
+			command.Env = append(os.Environ(), "RMM_RUNAS_OUTPUT_FIXTURE="+mode)
+			command.Stdout, command.Stderr = outputFile, outputFile
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer command.Wait()
+			defer command.Process.Kill()
+			outputFile.Close()
+			process, err := syscall.OpenProcess(0x00100000|0x1000|0x0001, false, uint32(command.Process.Pid))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.CloseHandle(process)
+			timeout := 10 * time.Second
+			if mode == "timeout" {
+				timeout = time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			started := time.Now()
+			output, err := collectRunasOutput(ctx, process, readH)
+			if !strings.Contains(output, "fixture stdout") || !strings.Contains(output, "fixture stderr") {
+				t.Fatalf("output lost: %q %v", output, err)
+			}
+			switch mode {
+			case "nonzero":
+				if err == nil || !strings.Contains(err.Error(), "code 7") {
+					t.Fatalf("nonzero exit lost: %v", err)
+				}
+			case "timeout":
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("deadline lost: %v", err)
+				}
+				if state, _, _ := procWaitSingleObject.Call(uintptr(process), 0); state != 0 {
+					t.Fatal("timed out child was not terminated")
+				}
+			case "descendant":
+				if err != nil || time.Since(started) > 2*time.Second {
+					t.Fatalf("collector waited for descendant pipe closure: %v", err)
+				}
+			default:
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

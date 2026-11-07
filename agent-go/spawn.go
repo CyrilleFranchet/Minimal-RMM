@@ -161,60 +161,33 @@ type spawnDiagnostics struct {
 	Attempts             []spawnAttemptDiagnostic `json:"attempts"`
 }
 
-var errSpawnCredentialsUnavailable = errors.New("active logon credentials unavailable")
-
-type spawnAttempt struct {
-	name   string
-	launch func() (int, error)
-}
-
 type spawnMethods struct {
-	asUser, withToken, withLogon, original func() (int, error)
+	original func() (int, error)
 }
 
-// dispatchSpawn is the production Windows method selector, shared with host tests.
+// dispatchSpawn invokes CreateProcessA once and records its result.
 func dispatchSpawn(active bool, methods spawnMethods, diagnostics ...*spawnDiagnostics) (int, string, bool, error) {
-	attempts := []spawnAttempt{}
-	if active {
-		attempts = append(attempts, spawnAttempt{"CreateProcessAsUser", methods.asUser},
-			spawnAttempt{"CreateProcessWithTokenW", methods.withToken},
-			spawnAttempt{"CreateProcessWithLogonW", methods.withLogon})
+	if identityBoundaryFault.Load() {
+		return 0, "", false, errIdentityUnsafe
 	}
-	attempts = append(attempts, spawnAttempt{"CreateProcessA", methods.original})
-	pid, method, err := trySpawnAttempts(attempts, diagnostics...)
-	return pid, method, active && method == "CreateProcessA", err
-}
-
-// trySpawnAttempts stops after the first successful creation to avoid duplicate agents.
-func trySpawnAttempts(attempts []spawnAttempt, diagnostics ...*spawnDiagnostics) (int, string, error) {
-	var failures []error
-	for _, attempt := range attempts {
-		if identityBoundaryFault.Load() {
-			return 0, "", errIdentityUnsafe
-		}
-		pid, err := attempt.launch()
-		if len(diagnostics) > 0 && diagnostics[0] != nil {
-			result := spawnAttemptDiagnostic{Method: attempt.name, Success: err == nil}
-			if err != nil {
-				var code syscall.Errno
-				switch {
-				case errors.As(err, &code):
-					result.ErrorCode, result.Error = uint32(code), code.Error()
-					if code == 0 {
-						result.Error = "process creation failed without a Windows error code"
-					}
-				case errors.Is(err, errSpawnCredentialsUnavailable):
-					result.Error = errSpawnCredentialsUnavailable.Error()
-				default:
-					result.Error = "process creation failed"
+	pid, err := methods.original()
+	if len(diagnostics) > 0 && diagnostics[0] != nil {
+		result := spawnAttemptDiagnostic{Method: "CreateProcessA", Success: err == nil}
+		if err != nil {
+			var code syscall.Errno
+			if errors.As(err, &code) {
+				result.ErrorCode, result.Error = uint32(code), code.Error()
+				if code == 0 {
+					result.Error = "process creation failed without a Windows error code"
 				}
+			} else {
+				result.Error = "process creation failed"
 			}
-			diagnostics[0].Attempts = append(diagnostics[0].Attempts, result)
 		}
-		if err == nil {
-			return pid, attempt.name, nil
-		}
-		failures = append(failures, fmt.Errorf("%s: %w", attempt.name, err))
+		diagnostics[0].Attempts = append(diagnostics[0].Attempts, result)
 	}
-	return 0, "", errors.Join(failures...)
+	if err != nil {
+		return 0, "", false, fmt.Errorf("CreateProcessA: %w", err)
+	}
+	return pid, "CreateProcessA", active, nil
 }

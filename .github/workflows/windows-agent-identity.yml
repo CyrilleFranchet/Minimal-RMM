@@ -63,6 +63,8 @@ jobs:
         shell: pwsh
         run: |
           $tests = 'Test(Callback|ExplicitRev2self|IdentityBoundary'
-          $tests += '|ServerRequest|SpawnFallback|SpawnWithoutToken'
-          $tests += '|WindowsDetachedSpawn)'
+          $tests += '|ServerRequest|SpawnUsesOnlyCreateProcessA'
+          $tests += '|WindowsDetachedSpawn|WindowsExplicitLogonHasNoFallback'
+          $tests += '|WindowsRunasOutputLifecycle'
+          $tests += '|WindowsLogonCredentialEncoding)'
           go test -buildvcs=false -count=1 -v -run $tests .

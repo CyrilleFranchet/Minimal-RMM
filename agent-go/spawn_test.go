@@ -11,29 +11,24 @@ import (
 	"testing"
 )
 
-func TestSpawnDiagnosticsRetainFailuresAfterSuccessfulFallback(t *testing.T) {
-	detail := &spawnDiagnostics{}
-	methods := spawnMethods{
-		asUser: func() (int, error) {
-			return 0, &os.PathError{Op: "fork/exec", Path: "private-path", Err: syscall.Errno(1314)}
-		},
-		withToken: func() (int, error) { return 0, errors.New("private-error-content") },
-		withLogon: func() (int, error) { return 0, errSpawnCredentialsUnavailable },
-		original:  func() (int, error) { return 42, nil },
-	}
-	pid, method, degraded, err := dispatchSpawn(true, methods, detail)
-	if err != nil || pid != 42 || method != "CreateProcessA" || !degraded || len(detail.Attempts) != 4 {
-		t.Fatalf("lost attempt diagnostics: %#v %v", detail, err)
-	}
-	if detail.Attempts[0].ErrorCode != 1314 || detail.Attempts[0].Success {
-		t.Fatal("lost Windows privilege error")
-	}
-	if detail.Attempts[2].Error != errSpawnCredentialsUnavailable.Error() || !detail.Attempts[3].Success {
-		t.Fatal("lost credential availability or success result")
-	}
-	encoded, err := json.Marshal(detail)
-	if err != nil || strings.Contains(string(encoded), "private-") {
-		t.Fatal("diagnostics exposed raw error context")
+func TestSpawnDiagnosticsPreserveSingleAttemptFailure(t *testing.T) {
+	for _, launchErr := range []error{
+		&os.PathError{Op: "fork/exec", Path: "private-path", Err: syscall.Errno(1314)},
+		errors.New("private-error-content"),
+	} {
+		detail := &spawnDiagnostics{}
+		pid, _, _, err := dispatchSpawn(true, spawnMethods{original: func() (int, error) { return 0, launchErr }}, detail)
+		if pid != 0 || !errors.Is(err, launchErr) || len(detail.Attempts) != 1 || detail.Attempts[0].Success {
+			t.Fatalf("lost single-attempt failure: %#v %v", detail, err)
+		}
+		var code syscall.Errno
+		if errors.As(launchErr, &code) && detail.Attempts[0].ErrorCode != uint32(code) {
+			t.Fatal("lost wrapped Windows error code")
+		}
+		encoded, err := json.Marshal(detail)
+		if err != nil || strings.Contains(string(encoded), "private-") {
+			t.Fatal("diagnostics exposed raw error context")
+		}
 	}
 }
 
@@ -168,46 +163,28 @@ func TestSpawnCommandRejectsInvalidOrReusedIdentityBeforeLaunching(t *testing.T)
 	}
 }
 
-func TestSpawnFallbackStopsAtFirstSuccess(t *testing.T) {
-	names := []string{"CreateProcessAsUser", "CreateProcessWithTokenW", "CreateProcessWithLogonW", "CreateProcessA"}
-	for success := range names {
-		calls := []string{}
-		launch := func(index int) func() (int, error) {
-			return func() (int, error) {
-				calls = append(calls, names[index])
-				if index == success {
-					return 42, nil
+func TestSpawnUsesOnlyCreateProcessA(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		for _, launchErr := range []error{nil, syscall.Errno(5), syscall.Errno(1314)} {
+			calls := 0
+			detail := &spawnDiagnostics{}
+			pid, method, degraded, err := dispatchSpawn(active, spawnMethods{original: func() (int, error) {
+				calls++
+				if launchErr != nil {
+					return 0, launchErr
 				}
-				return 0, os.ErrPermission
+				return 42, nil
+			}}, detail)
+			if calls != 1 || len(detail.Attempts) != 1 || detail.Attempts[0].Method != "CreateProcessA" {
+				t.Fatalf("spawn must make exactly one attempt: calls=%d diagnostics=%+v", calls, detail)
+			}
+			if launchErr != nil {
+				if !errors.Is(err, launchErr) || pid != 0 {
+					t.Fatalf("creation failure lost: %d %v", pid, err)
+				}
+			} else if err != nil || pid != 42 || method != "CreateProcessA" || degraded != active {
+				t.Fatalf("unexpected spawn identity: %d %s %t %v", pid, method, degraded, err)
 			}
 		}
-		pid, method, degraded, err := dispatchSpawn(true, spawnMethods{launch(0), launch(1), launch(2), launch(3)})
-		if err != nil || pid != 42 || method != names[success] || len(calls) != success+1 || degraded != (success == 3) {
-			t.Fatalf("wrong fallback behavior: pid=%d method=%s calls=%v degraded=%t err=%v", pid, method, calls, degraded, err)
-		}
-		for i := range calls {
-			if calls[i] != names[i] {
-				t.Fatalf("wrong attempt order: %v", calls)
-			}
-		}
-	}
-}
-
-func TestSpawnWithoutTokenSkipsIdentityMethods(t *testing.T) {
-	forbidden := func() (int, error) { t.Fatal("identity method ran without a token"); return 0, nil }
-	pid, method, degraded, err := dispatchSpawn(false, spawnMethods{forbidden, forbidden, forbidden, func() (int, error) { return 42, nil }})
-	if err != nil || pid != 42 || method != "CreateProcessA" || degraded {
-		t.Fatalf("unexpected default spawn: %d %s %t %v", pid, method, degraded, err)
-	}
-}
-
-func TestSpawnFallbackReportsEveryFailure(t *testing.T) {
-	attempts := []spawnAttempt{
-		{"CreateProcessAsUser", func() (int, error) { return 0, os.ErrPermission }},
-		{"CreateProcessA", func() (int, error) { return 0, os.ErrNotExist }},
-	}
-	pid, method, err := trySpawnAttempts(attempts)
-	if pid != 0 || method != "" || err == nil || !strings.Contains(err.Error(), "CreateProcessAsUser") || !strings.Contains(err.Error(), "CreateProcessA") {
-		t.Fatalf("missing failure details: pid=%d method=%s err=%v", pid, method, err)
 	}
 }

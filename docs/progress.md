@@ -14,6 +14,32 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-07 — One process creation API per command
+
+- Standard spawn invokes CreateProcessA once, regardless of an active make_token.
+  Preserve diagnostics and report unpropagated thread credentials through the
+  existing identity_degraded field. Do not enable privileges or try other APIs.
+- `spawnWithLogonDetached` starts spawnas through CreateProcessWithLogonW;
+  runas calls `runWithPipesLogonW` directly. Remove the process creation cascades,
+  interactive token acquisition, token duplication, and privilege adjustment.
+  Return errors without launching under a different identity.
+- Add host tests for single-attempt dispatch and sanitized errors. Extend native
+  Windows fixtures to require CreateProcessA with an active token and verify
+  spawnas/runas logon failures never fall back. Update Windows CI selection.
+- Review fixes: `collectRunasOutput` preserves the 120-second runas deadline,
+  propagates nonzero child exits, and avoids waiting for descendants to close
+  inherited pipes. Correct SECURITY_ATTRIBUTES sizing on 64-bit Windows and
+  validate UTF-16 credential inputs with a NULL domain for domainless UPNs.
+  Add native output, exit, timeout, pipe-lifetime, and credential encoding tests.
+- Validation: full host Go race tests, host go vet, Windows amd64/arm64 test
+  cross-compilation, and diff whitespace checks pass. Windows-target go vet
+  reports unsafe.Pointer warnings in unchanged PE loader, WMI, and WSMan files.
+  Native Windows runtime fixtures were compiled but not executed on this host.
+- Final review validation: repository Python/API/UI suites and operator parity
+  pass, as do Markdown/YAML lint, make go-test, host race tests, and host vet.
+  Fixed the CI selector's YAML line length before committing. No runtime logs
+  or generated agent executables are included in the commits.
+
 ### 2026-11-07 — PsExec lifecycle review fixes
 
 - Publish and retain exact service/binary cleanup authority as soon as SCM
