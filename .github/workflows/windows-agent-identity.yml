@@ -26,6 +26,12 @@ jobs:
         with:
           go-version-file: agent-go/go.mod
           cache: false
+      - name: Test CMD command quoting
+        working-directory: agent-go
+        shell: pwsh
+        run: |
+          go test -buildvcs=false -count=1 -v `
+            -run '^TestWindowsCMDQuotedCommands$' .
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64
@@ -66,7 +72,6 @@ jobs:
           $tests += '|ServerRequest|SpawnUsesOnlyCreateProcessA'
           $tests += '|WindowsDetachedSpawn|WindowsExplicitLogonHasNoFallback'
           $tests += '|WindowsRunasOutputLifecycle'
-          $tests += '|WindowsCMDQuotedCommands'
           $tests += '|RunasOutputSnapshot'
           $tests += '|WindowsLogonCredentialEncoding'
           $tests += '|WindowsRegistration)'
