@@ -147,6 +147,48 @@ The Go standalone launcher remains a manual-deployment fallback; it is never
 substituted for the dedicated service. Rebuild and redeploy the calling agent
 to obtain the new embedded host.
 
-Builds serialize replacement of the shared service embed through completion of
-the Go compilation. Concurrent amd64 and arm64 builds keep their own service
-architecture; their compiler outputs and archives still use unique paths.
+Each build compiles from its own temporary source snapshot under the build
+directory. The generated service embed is written only to that snapshot; the
+tracked placeholder and the rest of the source checkout remain unchanged.
+Concurrent amd64 and arm64 builds have independent service images and can run in
+parallel. The snapshot is removed after successful builds, compiler failures, or
+timeouts; compiler outputs and archives retain their unique artifact paths.
+The configured build directory must be outside `agent-go`; placing it inside the
+source tree is rejected before creating files to prevent recursive snapshots.
+
+The source directory can be read-only: only the disposable build root is made
+writable. Normal failures and timeouts clean up that snapshot. Forced server or
+host termination can leave scratch directories behind under the artifact
+directory; it cannot overwrite the source placeholder.
+
+### Updating an existing checkout
+
+An older builder can have modified the tracked `agent-go/stage1.bin` or
+`agent-go/lateral-service.bin`. The new code cannot retroactively undo that local
+change before it is pulled. Perform this cleanup once:
+
+1. Stop the old central server and any active agent builds so they cannot rewrite
+   the generated file during the update.
+2. Inspect the affected paths:
+
+   ```bash
+   git status --short -- agent-go/stage1.bin agent-go/lateral-service.bin
+   ```
+
+3. Restore only the generated file reported as modified. For an old checkout
+   blocked by `stage1.bin`:
+
+   ```bash
+   git restore -- agent-go/stage1.bin
+   git pull --ff-only
+   ```
+
+   If the modified file is `lateral-service.bin`, substitute that path in the
+   restore command. Restore both only if both are tracked and modified.
+4. Restart the updated central server using the deployment's existing startup
+   method. Agent builds now use temporary source snapshots and no longer change
+   these tracked files.
+
+No agent rebuild is required just to fix this server-side Git conflict. Avoid a
+repository-wide reset or `git update-index --skip-worktree`: neither corrects the
+old builder's source-tree writes.

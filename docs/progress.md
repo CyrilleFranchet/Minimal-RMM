@@ -14,6 +14,30 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-07 — Keep agent builds out of the source checkout
+
+- Build from a disposable per-request source snapshot under the artifact
+  directory. `_build_go_agent_from_source` writes generated service embeds only
+  into that snapshot, preserving tracked placeholders and source files.
+- Remove the shared embed lock; concurrent architectures have independent
+  compilation inputs. Clean up scratch sources on success, failure, and timeout.
+- Update build isolation regressions to verify the compiled embed, unchanged
+  sources, cleanup, and parallel compilation. Document the one-time cleanup
+  needed when upgrading a checkout already dirtied by the previous builder.
+- Reject build storage inside the source tree before creating files, avoiding
+  recursive snapshots. Full repository checks and deployment regressions pass.
+  A real Windows amd64 build produced a valid executable with every source file
+  unchanged and no scratch sources left behind.
+- Verification found and fixed inherited read-only directory permissions on the
+  snapshot. Only the scratch build root becomes writable; the source mode and
+  tracked placeholder stay unchanged. The new regression failed before the fix.
+- Document exact one-time restore/pull/restart steps, stopping old builds during
+  upgrade, and the scratch-directory residue possible after forced termination.
+- Verification: full repository checks pass. Real staged and stageless Windows
+  amd64 builds both produce executable artifacts, leave all source bytes
+  unchanged, and remove their scratch trees. The read-only regression passes
+  after the permissions fix.
+
 ### 2026-11-07 — Bound waits to the requested process
 
 - Generate staged PowerShell wrappers with Start-Process -PassThru followed by

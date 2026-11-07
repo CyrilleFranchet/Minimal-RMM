@@ -106,7 +106,6 @@ CLIENT_SCRIPT = os.path.join(
 )
 GO_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-go")
 GO_AGENT_BUILD_DIR = os.path.join(LOG_DIR, "agent-builds")
-_GO_AGENT_EMBED_LOCK = threading.Lock()
 AGENT_DEPLOY_DIR = os.path.join(LOG_DIR, "agent-deploy")
 # Workspace-published delivery copies; never an operator-owned plugin store.
 PLUGIN_CACHE_DIR = settings_getenv("RMM_PLUGIN_CACHE_DIR", "").strip() or os.path.join(LOG_DIR, "plugin-cache")
@@ -622,6 +621,24 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
     go_bin = shutil.which("go")
     if not go_bin:
         raise RuntimeError("Go toolchain is not installed on the RMM server")
+    # Keep compiler outputs and generated embeds out of the source checkout.
+    build_storage = os.path.realpath(GO_AGENT_BUILD_DIR)
+    if build_storage == root or build_storage.startswith(root + os.sep):
+        raise ValueError("Go build directory must be outside the Go agent source directory")
+    os.makedirs(build_storage, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="agent-source-", dir=build_storage) as scratch:
+        build_root = os.path.join(scratch, "agent-go")
+        shutil.copytree(root, build_root, ignore=shutil.ignore_patterns(
+            ".git", "*.bin", "*.exe", "*.o", "*.test", "__pycache__"))
+        # copytree preserves source permissions; only the disposable build root
+        # needs write access for its generated service embed.
+        os.chmod(build_root, 0o700)
+        return _build_go_agent_from_source(
+            build_root, go_bin, goos, goarch, agent_config, process_owner, stageless, staging_fn)
+
+
+def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, process_owner, stageless, staging_fn):
+    """Compile and package an agent using one disposable source snapshot."""
     agent_config = agent_config if isinstance(agent_config, dict) else {}
     config_values = {}
     for key in ("base_url", "beacon_secret", "session_id", "http_proxy", "workspace_id"):
@@ -768,50 +785,46 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
                                str(completed_service.stderr or completed_service.stdout or "compiler failure")[-4000:])
         with open(service_path, "rb") as handle:
             service_binary = handle.read()
-    # The shared embed must match this build until the Go compiler consumes it.
-    with _GO_AGENT_EMBED_LOCK:
-        embed_temp = service_embed + "." + build_id
-        with open(embed_temp, "wb") as handle:
-            handle.write(service_binary)
-        os.replace(embed_temp, service_embed)
-        linker_values = {
-            "defaultBaseURLB64": config_values["base_url"],
-            "defaultBeaconSecretB64": config_values["beacon_secret"],
-            "defaultSessionIDB64": config_values["session_id"],
-            "defaultWorkspaceIDB64": config_values["workspace_id"],
-            "defaultHTTPProxyB64": config_values["http_proxy"],
-            "defaultSleepSecondsB64": str(sleep_seconds),
-            "defaultJitterPercentB64": str(jitter_percent),
-        }
-        linker_flags = ["-s", "-w"]
-        if goos == "windows":
-            linker_flags.append("-H=windowsgui")
-        for name, value in linker_values.items():
-            encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
-            linker_flags.extend(["-X", f"main.{name}={encoded}"])
-        ldflags = " ".join(shlex.quote(flag) for flag in linker_flags)
-        try:
-            completed = (process_owner or BuildProcessManager()).run(
-                [
-                    go_bin,
-                    "build",
-                    "-buildvcs=false",
-                    "-trimpath",
-                    "-ldflags",
-                    ldflags,
-                    "-o",
-                    binary_path,
-                    ".",
-                ],
-                cwd=root,
-                env=env,
-                timeout=120,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Go build timed out after 120 seconds") from exc
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "build failed").strip()
-            raise RuntimeError(detail[-4000:])
+    with open(service_embed, "wb") as handle:
+        handle.write(service_binary)
+    linker_values = {
+        "defaultBaseURLB64": config_values["base_url"],
+        "defaultBeaconSecretB64": config_values["beacon_secret"],
+        "defaultSessionIDB64": config_values["session_id"],
+        "defaultWorkspaceIDB64": config_values["workspace_id"],
+        "defaultHTTPProxyB64": config_values["http_proxy"],
+        "defaultSleepSecondsB64": str(sleep_seconds),
+        "defaultJitterPercentB64": str(jitter_percent),
+    }
+    linker_flags = ["-s", "-w"]
+    if goos == "windows":
+        linker_flags.append("-H=windowsgui")
+    for name, value in linker_values.items():
+        encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        linker_flags.extend(["-X", f"main.{name}={encoded}"])
+    ldflags = " ".join(shlex.quote(flag) for flag in linker_flags)
+    try:
+        completed = (process_owner or BuildProcessManager()).run(
+            [
+                go_bin,
+                "build",
+                "-buildvcs=false",
+                "-trimpath",
+                "-ldflags",
+                ldflags,
+                "-o",
+                binary_path,
+                ".",
+            ],
+            cwd=root,
+            env=env,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Go build timed out after 120 seconds") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "build failed").strip()
+        raise RuntimeError(detail[-4000:])
     if is_staged:
         # --- Staged build: C stage1 launcher + Go agent stored as stage2 ---
         # Register the Go agent binary in the staging endpoint so stage1 can

@@ -639,6 +639,18 @@ name inside the archive remains stable for its launcher. Concurrent builds for
 the same target cannot overwrite one another's artifacts or change previously
 returned artifact references.
 
+`build_go_agent` copies source inputs into a disposable directory beneath the
+build-artifact directory. `_build_go_agent_from_source` compiles and packages
+that snapshot, including its generated lateral-service.bin. Existing generated
+binary files are excluded from the copy. The checkout stays unchanged, and
+parallel builds need no shared-embed lock. Scratch sources are removed on success,
+compiler failure, or timeout; downloadable artifacts remain available.
+Only the disposable build root is made writable, so a read-only source directory
+retains its permissions. The build directory must be outside the source tree;
+the builder rejects a nested path before creating files. Forced process or host
+termination can leave scratch directories behind, but does not modify tracked
+source files.
+
 Workspace services forward `agent-builds` and `agent-deploy` artifact downloads
 to the authenticated central server, which owns these generated deployment
 files. Downloaded session data remains workspace-local. Workspace Go build
