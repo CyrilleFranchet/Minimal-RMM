@@ -466,7 +466,9 @@ WinRM binding internals (`wsman_windows.go`):
 Windows CI runs `TestWSMan*` in normal/debug modes: native callback trampoline
 tests, SDK layout checks, synthetic success/error/timeout/late-callback flows,
 and real DLL/session creation without opening a shell. The independent
-`testdata/wsman_layout.c` assertions compile against the Windows SDK. These
+`testdata/wsman_layout.c` assertions compile against the Windows SDK using
+MSVC's C++ parser, which supports the SDK's typed enums; the same fixture
+also compiles as C with MinGW. These
 checks do not establish remote authentication, staging, or detach behavior;
 those still require an authorized Windows lab.
 

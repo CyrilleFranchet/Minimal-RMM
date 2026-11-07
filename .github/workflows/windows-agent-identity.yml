@@ -63,7 +63,7 @@ jobs:
         working-directory: agent-go
         shell: cmd
         run: |
-          cl /nologo /std:c11 /W4 /WX /c testdata\wsman_layout.c ^
+          cl /nologo /TP /std:c++17 /W4 /WX /c testdata\wsman_layout.c ^
             /Fo..\wsman-layout.obj
       - name: Test local WinRM bindings and callback lifecycle
         working-directory: agent-go
