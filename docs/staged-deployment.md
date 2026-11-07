@@ -24,7 +24,11 @@ Copy `stage1.exe` and `run-stage1.ps1` to the target, then run:
 .\run-stage1.ps1
 ```
 
-The wrapper waits for stage1 and prints its exit code: `0` = agent installed and started, `1` = staging failure (check the stage status endpoint below), `2` = stage1 rejected its arguments or has no base URL embedded. The C launcher attaches to a parent console when available and prints diagnostics; service and Explorer launches stay silent. A network failure can also prevent delivery of the status report.
+The wrapper uses the returned process's `WaitForExit()` to wait only for stage1,
+then prints its exit code. It returns while the new agent keeps running; it does
+not use `Start-Process -Wait`, which also waits for descendants.
+
+Exit codes: `0` = agent installed and started, `1` = staging failure (check the stage status endpoint below), `2` = stage1 rejected its arguments or has no base URL embedded. The C launcher attaches to a parent console when available and prints diagnostics; service and Explorer launches stay silent. A network failure can also prevent delivery of the status report.
 
 stage1 connects back to the RMM server over HTTPS, fetches the masked Go agent, decodes it, writes it to the current user's temp directory (`%TEMP%\minimal-rmm-agent.exe` — no administrator rights required), and executes it. The session ID is fixed at build time so the agent registers with a known ID on first beacon.
 

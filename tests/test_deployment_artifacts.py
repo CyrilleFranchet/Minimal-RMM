@@ -14,6 +14,35 @@ from workspace_service import WorkspaceService
 
 
 class DeploymentArtifactTests(unittest.TestCase):
+    def test_staged_wrapper_waits_for_launcher_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._isolated_agent_root(directory)
+
+            def compile_stub(command, **kwargs):
+                Path(command[command.index("-o") + 1]).write_bytes(b"MZfixture")
+                return SimpleNamespace(returncode=0)
+
+            owner = Mock()
+            owner.run.side_effect = compile_stub
+            stage_id = "a" * 32
+            session_id = "wrapper-session-123"
+            with patch.object(server_rmm, "GO_AGENT_DIR", root), \
+                    patch.object(server_rmm, "GO_AGENT_BUILD_DIR", directory), \
+                    patch.object(server_rmm, "LOG_DIR", directory), \
+                    patch.object(server_rmm.shutil, "which", return_value="compiler"):
+                result = server_rmm.build_go_agent(
+                    "windows", "amd64", process_owner=owner,
+                    agent_config={"base_url": "https://listener.example", "session_id": session_id},
+                    staging_fn=lambda _: stage_id)
+            with zipfile.ZipFile(result["path"]) as archive:
+                wrapper = archive.read("run-stage1.ps1").decode()
+            start = next(line for line in wrapper.splitlines() if "Start-Process" in line)
+            self.assertIn("-PassThru", start)
+            self.assertNotRegex(start, r"\s-Wait(?:\s|$)")
+            self.assertIn(f"'--stage','{stage_id}','--session','{session_id}'", start)
+            self.assertEqual(wrapper.count("$proc.WaitForExit()"), 1)
+            self.assertLess(wrapper.index("$proc.WaitForExit()"), wrapper.index("$proc.ExitCode"))
+
     def test_stageless_agent_embeds_dedicated_service_not_normal_stage1(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self._isolated_agent_root(directory)

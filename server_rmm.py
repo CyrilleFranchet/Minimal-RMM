@@ -825,16 +825,16 @@ def build_go_agent(goos: str, goarch: str, agent_config: dict | None = None, pro
         stage1_exe_path = stage1_path
 
         # PowerShell launcher with staging ID and session ID pre-filled.
-        # Start-Process -Wait makes the wrapper synchronous: stage1 is a GUI
-        # binary with no console output, so its exit code is the only local
-        # feedback a manual run gets (0 = agent started, 1 = staging failure
-        # posted to the server, 2 = invalid arguments or base URL).
+        # Wait only for stage1, since Start-Process -Wait also waits for the
+        # long-lived agent that stage1 starts. The process handle provides the
+        # launcher's exit status even when it exits before WaitForExit is called.
         session_id = config_values["session_id"]
         launcher = (
             "$ErrorActionPreference = 'Stop'\n"
             "$stage1 = Join-Path $PSScriptRoot 'stage1.exe'\n"
-            "$proc = Start-Process -FilePath $stage1 -Wait -PassThru "
+            "$proc = Start-Process -FilePath $stage1 -PassThru "
             f"-ArgumentList '--stage','{staging_id}','--session','{session_id}'\n"
+            "$proc.WaitForExit()\n"
             "Write-Host \"stage1 exit code: $($proc.ExitCode)\"\n"
             "if ($proc.ExitCode -eq 0) { Write-Host 'agent installed and started' }\n"
             "elseif ($proc.ExitCode -eq 1) { Write-Host 'staging failed: check the stage status on the server' }\n"
