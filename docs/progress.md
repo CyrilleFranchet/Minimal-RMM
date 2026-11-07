@@ -29,6 +29,29 @@
   both Windows architecture builds, TUN tests, and C compile checks. The
   Windows test binary cross-compiles, and repository Markdown/YAML lint passes.
 
+## 2026-11-07 — Correct native WinRM bindings and callback lifecycle
+
+- Supply the optional credentials and proxy slots in `WSManCreateSession`
+  before the session output pointer. The previous four-argument call used the
+  wrong native signature and could fail with `0x803380ba` before shell creation.
+- Correct all shell/command/close signatures and the seven-argument callback;
+  use real SDK argument structures, receive-result layout, and the
+  `WSManReceiveShellOutput` export. Void APIs report errors through callbacks.
+- Copy native callback values, handle multiple receive callbacks and nonzero
+  command exits, and retain contexts/inputs until synchronous shutdown drains
+  callbacks. Supply close callbacks and close the receive operation before
+  the command, shell, session, and API, including error and timeout paths.
+- Add Windows binding, callback, layout, error, and timeout regression tests,
+  real local DLL/session checks, and Windows SDK C layout assertions. Run the
+  Windows fixtures through CI in normal and debug modes.
+- Preserve default thread credentials. Rebuild and replace the source agent
+  to apply the correction. Native Windows tests and remote lab execution
+  remain pending; host tests and cross-builds cannot verify remote behavior.
+- Validation: `make check` and `make go-test` pass. Normal/debug Windows test
+  binaries cross-compile for amd64 and arm64; independent C SDK layout
+  assertions pass with MinGW. Final code/security/test review found no
+  blocking implementation issue. Windows CI execution is still pending.
+
 ## 2026-11-07 — Remove per-command debug controls
 
 - Remove legacy debug flags, deployment API/tool parameters, companion lookup,

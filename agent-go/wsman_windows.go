@@ -5,102 +5,164 @@ package main
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
 )
 
-// Native WinRM lateral execution through WsmSvc.dll (the WSMan client API
-// that winrs.exe uses), replacing the winrs.exe subprocess. The remote
-// command runs the staged agent with --lateral-detach so it re-registers
-// itself as a local Windows service and exits: the WinRM shell kills its
-// command process tree when the shell closes, while the SCM-started instance
-// runs outside that job object and survives.
-
 const (
 	wsmanShellCmdURI       = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd"
 	wsmanCommandStateDone  = "/CommandState/Done"
-	wsmanDataTypeBinary    = 2
 	wsmanStreamReadLimit   = 128
 	wsmanCompletionTimeout = 30 * time.Second
+	wsmanEndOfOperation    = 1
 )
 
-var (
-	wsmSvcDll                = syscall.NewLazyDLL("WsmSvc.dll")
-	procWSManInitialize      = wsmSvcDll.NewProc("WSManInitialize")
-	procWSManDeinitialize    = wsmSvcDll.NewProc("WSManDeinitialize")
-	procWSManCreateSession   = wsmSvcDll.NewProc("WSManCreateSession")
-	procWSManCloseSession    = wsmSvcDll.NewProc("WSManCloseSession")
-	procWSManCreateShell     = wsmSvcDll.NewProc("WSManCreateShell")
-	procWSManCloseShell      = wsmSvcDll.NewProc("WSManCloseShell")
-	procWSManRunShellCommand = wsmSvcDll.NewProc("WSManRunShellCommand")
-	procWSManCloseCommand    = wsmSvcDll.NewProc("WSManCloseCommand")
-	procWSManReceive         = wsmSvcDll.NewProc("WSManReceive")
-)
+// wsmanCaller isolates native dispatch for Windows ABI regression fixtures.
+type wsmanCaller interface {
+	call(string, ...uintptr) uintptr
+}
+type wsmanNative map[string]*syscall.LazyProc
 
-// wsmanResult captures one asynchronous WSMan completion callback.
+func (n wsmanNative) call(name string, args ...uintptr) uintptr {
+	value, _, _ := n[name].Call(args...)
+	return value
+}
+func loadWSMan() (wsmanNative, error) {
+	dll := syscall.NewLazyDLL("WsmSvc.dll")
+	native := wsmanNative{}
+	for _, name := range []string{
+		"WSManInitialize", "WSManDeinitialize", "WSManCreateSession", "WSManCloseSession",
+		"WSManCreateShell", "WSManCloseShell", "WSManRunShellCommand", "WSManCloseCommand",
+		"WSManReceiveShellOutput", "WSManCloseOperation",
+	} {
+		proc := dll.NewProc(name)
+		if err := proc.Find(); err != nil {
+			return nil, fmt.Errorf("%s unavailable: %w", name, err)
+		}
+		native[name] = proc
+	}
+	return native, nil
+}
+
+// SDK layouts for the supported Windows amd64 and arm64 targets.
+type wsmanShellAsync struct{ context, callback uintptr }
+type wsmanStringSet struct {
+	count  uint32
+	values **uint16
+}
+type wsmanData struct {
+	kind   uint32
+	_      uint32
+	length uint32
+	_      uint32
+	value  uintptr
+}
+type wsmanReceiveData struct {
+	streamID     *uint16
+	streamData   wsmanData
+	commandState *uint16
+	exitCode     uint32
+}
+
+// wsmanResult retains copied values rather than native callback pointers.
 type wsmanResult struct {
-	once  sync.Once
-	done  chan struct{}
-	flags uint32
-	err   uintptr
-	data  uintptr
+	mu          sync.Mutex
+	done        chan struct{}
+	receive     bool
+	finished    bool
+	err         error
+	commandDone bool
+	exitCode    uint32
+}
+type wsmanPending struct {
+	async  wsmanShellAsync
+	result *wsmanResult
 }
 
-func (r *wsmanResult) deliver(flags, err, data uintptr) {
-	r.once.Do(func() {
-		r.flags = uint32(flags)
-		r.err = err
-		r.data = data
-		close(r.done)
-	})
+var wsmanContexts sync.Map
+var wsmanContextID atomic.Uint64
+
+// wsmanScope roots asynchronous inputs through synchronous session teardown,
+// including callbacks that arrive after a local timeout or CloseOperation.
+type wsmanScope struct {
+	pending []*wsmanPending
+	roots   []any
 }
+
+func (s *wsmanScope) keep(value any) { s.roots = append(s.roots, value) }
+func (s *wsmanScope) pendingCall(receive bool) *wsmanPending {
+	result := &wsmanResult{done: make(chan struct{}), receive: receive}
+	context := uintptr(wsmanContextID.Add(1))
+	wsmanContexts.Store(context, result)
+	pending := &wsmanPending{async: wsmanShellAsync{context, wsmanCompletionCallback}, result: result}
+	s.pending = append(s.pending, pending)
+	return pending
+}
+func (s *wsmanScope) release() {
+	for _, pending := range s.pending {
+		wsmanContexts.Delete(pending.async.context)
+	}
+	runtime.KeepAlive(s)
+}
+
+// wsmanCompletion implements all seven WSMAN_SHELL_COMPLETION_FUNCTION slots.
+// Only receive callbacks interpret the response union as receive data.
+func wsmanCompletion(context, flags, errPtr, shell, command, operation, data uintptr) uintptr {
+	value, ok := wsmanContexts.Load(context)
+	if !ok {
+		return 0
+	}
+	result := value.(*wsmanResult)
+	result.mu.Lock()
+	defer result.mu.Unlock()
+	if result.finished {
+		return 0
+	}
+	if errPtr != 0 {
+		code := *(*uint32)(unsafe.Pointer(errPtr))
+		if code != 0 {
+			result.err = fmt.Errorf("WSMan error %d (0x%08x)", code, code)
+		}
+	}
+	if result.err == nil && result.receive && data != 0 {
+		receive := (*wsmanReceiveData)(unsafe.Pointer(data))
+		if strings.HasSuffix(readWSManString(uintptr(unsafe.Pointer(receive.commandState))), wsmanCommandStateDone) {
+			result.commandDone = true
+			result.exitCode = receive.exitCode
+		}
+	}
+	// A stream block or end-of-stream flag alone does not finish a receive.
+	if flags&wsmanEndOfOperation != 0 || result.err != nil || result.commandDone {
+		result.finished = true
+		close(result.done)
+	}
+	return 0
+}
+
+var wsmanCompletionCallback = syscall.NewCallback(wsmanCompletion)
 
 func (r *wsmanResult) wait(timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-r.done:
 		return true
-	case <-time.After(timeout):
+	case <-timer.C:
 		return false
 	}
 }
-
-// wsmanCompletionCallback is the single completion sink; the async struct's
-// operationContext carries the per-call result pointer.
-var wsmanCompletionCallback = syscall.NewCallback(
-	func(operation, flags, errPtr, asyncPtr, data uintptr) uintptr {
-		if asyncPtr == 0 {
-			return 0
-		}
-		context := *(*uintptr)(unsafe.Pointer(asyncPtr))
-		if context != 0 {
-			(*wsmanResult)(unsafe.Pointer(context)).deliver(flags, errPtr, data)
-		}
-		return 0
-	},
-)
-
-// wsmanAsync returns the operationContext and completionFunction argument
-// pair for the by-value WSMAN_SHELL_ASYNC parameter.
-func wsmanAsync(result *wsmanResult) (uintptr, uintptr) {
-	return uintptr(unsafe.Pointer(result)), wsmanCompletionCallback
+func (r *wsmanResult) snapshot() (error, bool, uint32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err, r.commandDone, r.exitCode
 }
 
-func wsmanError(errPtr uintptr) error {
-	if errPtr == 0 {
-		return nil
-	}
-	code := *(*uint32)(unsafe.Pointer(errPtr))
-	if code == 0 {
-		return nil
-	}
-	return fmt.Errorf("WSMan error %d (0x%x)", code, code)
-}
-
-// readWSManString reads a bounded NUL-terminated UTF-16 string from native
-// memory; it only runs on values expected to be command-state URIs.
+// readWSManString copies a bounded command-state URI during its callback.
 func readWSManString(pointer uintptr) string {
 	if pointer == 0 {
 		return ""
@@ -116,138 +178,144 @@ func readWSManString(pointer uintptr) string {
 	return syscall.UTF16ToString(runes)
 }
 
-// wsmanCommandDone inspects a WSMAN_STREAM_DATA completion for the command
-// Done state and its exit code. Binary stream blocks are ignored.
-func wsmanCommandDone(data uintptr) (bool, uint32) {
-	if data == 0 {
-		return false, 0
+// closeHandle uses the mandatory close callback. Enclosing session teardown
+// drains any remaining callbacks if this bounded wait times out.
+func (s *wsmanScope) closeHandle(native wsmanCaller, name string, handle uintptr, timeout time.Duration) error {
+	if handle == 0 {
+		return nil
 	}
-	dataType := *(*uint32)(unsafe.Pointer(data))
-	if dataType == wsmanDataTypeBinary {
-		return false, 0
+	pending := s.pendingCall(false)
+	native.call(name, handle, 0, uintptr(unsafe.Pointer(&pending.async)))
+	if !pending.result.wait(timeout) {
+		return fmt.Errorf("%s timed out", name)
 	}
-	// WSMAN_STREAM_DATA { DWORD type; PCWSTR streamId; union { binaryData,
-	// commandState } } — the command state string sits at offset 16.
-	state := readWSManString(*(*uintptr)(unsafe.Pointer(data + 16)))
-	if !strings.HasSuffix(state, wsmanCommandStateDone) {
-		return false, 0
+	err, _, _ := pending.result.snapshot()
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
-	return true, *(*uint32)(unsafe.Pointer(data + 24))
+	return nil
 }
 
-// winrmCreateProcess runs the staged agent on the target through the native
-// WSMan shell protocol. The command completes once the detach is done, so
-// closing the shell cannot kill a still-running process.
+// winrmCreateProcess uses the native WSMan shell API with default thread
+// credentials. The existing detach command must finish before its shell closes.
 func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string) error {
+	native, err := loadWSMan()
+	if err != nil {
+		return err
+	}
+	return winrmCreateProcessWithAPI(native, host, agentPath, sessionID, workspaceID, serviceName, wsmanCompletionTimeout)
+}
+
+func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration) (resultErr error) {
 	arguments, err := lateralDetachArguments(sessionID, workspaceID, serviceName)
 	if err != nil {
 		return err
 	}
-	var api uintptr
-	if hr, _, _ := procWSManInitialize.Call(0, uintptr(unsafe.Pointer(&api))); hr != 0 {
-		return fmt.Errorf("WSManInitialize failed: 0x%08x", hr)
+	scope := &wsmanScope{}
+	defer scope.release()
+	// Roots outlive deferred CloseSession/Deinitialize, which drain callbacks.
+	utf16 := func(value string) (*uint16, error) {
+		pointer, err := syscall.UTF16PtrFromString(value)
+		if err == nil {
+			scope.keep(pointer)
+		}
+		return pointer, err
 	}
-	defer procWSManDeinitialize.Call(api, 0)
-	connection, err := syscall.UTF16PtrFromString(fmt.Sprintf("http://%s:5985/wsman", host))
+	connection, err := utf16(fmt.Sprintf("http://%s:5985/wsman", host))
 	if err != nil {
 		return err
 	}
-	var session uintptr
-	if hr, _, _ := procWSManCreateSession.Call(api, uintptr(unsafe.Pointer(connection)), 0,
-		uintptr(unsafe.Pointer(&session))); hr != 0 {
-		return fmt.Errorf("WSManCreateSession(%s) failed: 0x%08x", host, hr)
-	}
-	defer procWSManCloseSession.Call(session, 0)
-	uri, err := syscall.UTF16PtrFromString(wsmanShellCmdURI)
+	uri, err := utf16(wsmanShellCmdURI)
 	if err != nil {
 		return err
 	}
-	shellResult := &wsmanResult{done: make(chan struct{})}
-	var shell uintptr
-	shellContext, shellCallback := wsmanAsync(shellResult)
-	if hr, _, _ := procWSManCreateShell.Call(session, 0, uintptr(unsafe.Pointer(uri)), 0, 0,
-		shellContext, shellCallback, uintptr(unsafe.Pointer(&shell))); hr != 0 {
-		return fmt.Errorf("WSManCreateShell failed: 0x%08x", hr)
+	commandLine, err := utf16(agentPath)
+	if err != nil {
+		return err
 	}
-	if !shellResult.wait(wsmanCompletionTimeout) {
+	argumentPointers := make([]*uint16, len(arguments))
+	for i, argument := range arguments {
+		argumentPointers[i], err = utf16(argument)
+		if err != nil {
+			return err
+		}
+	}
+	scope.keep(argumentPointers)
+	argumentSet := &wsmanStringSet{count: uint32(len(argumentPointers)), values: &argumentPointers[0]}
+	scope.keep(argumentSet)
+	var api, session, shell, command, receiveOperation uintptr
+	scope.keep(&api)
+	scope.keep(&session)
+	scope.keep(&shell)
+	scope.keep(&command)
+	scope.keep(&receiveOperation)
+	if code := native.call("WSManInitialize", 0, uintptr(unsafe.Pointer(&api))); code != 0 {
+		return fmt.Errorf("WSManInitialize failed: 0x%08x", code)
+	}
+	defer func() {
+		if code := native.call("WSManDeinitialize", api, 0); code != 0 {
+			resultErr = errors.Join(resultErr, fmt.Errorf("WSManDeinitialize failed: 0x%08x", code))
+		}
+	}()
+	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, 0, 0, uintptr(unsafe.Pointer(&session))); code != 0 {
+		return fmt.Errorf("WSManCreateSession(%s) failed: 0x%08x", host, code)
+	}
+	defer func() {
+		if code := native.call("WSManCloseSession", session, 0); code != 0 {
+			resultErr = errors.Join(resultErr, fmt.Errorf("WSManCloseSession failed: 0x%08x", code))
+		}
+	}()
+	shellCall := scope.pendingCall(false)
+	native.call("WSManCreateShell", session, 0, uintptr(unsafe.Pointer(uri)), 0, 0, 0,
+		uintptr(unsafe.Pointer(&shellCall.async)), uintptr(unsafe.Pointer(&shell)))
+	defer func() {
+		resultErr = errors.Join(resultErr, scope.closeHandle(native, "WSManCloseShell", shell, timeout))
+	}()
+	if !shellCall.result.wait(timeout) {
 		return errors.New("WinRM shell creation timed out")
 	}
-	if err := wsmanError(shellResult.err); err != nil {
+	if err, _, _ := shellCall.result.snapshot(); err != nil {
 		return fmt.Errorf("WinRM shell on %s: %w", host, err)
 	}
 	if shell == 0 {
 		return errors.New("WSManCreateShell returned no shell handle")
 	}
-	defer procWSManCloseShell.Call(shell, 0, 0, 0)
-	commandLine, err := syscall.UTF16PtrFromString(agentPath)
-	if err != nil {
-		return err
-	}
-	argumentPointers := make([]uintptr, 0, len(arguments)+1)
-	for _, argument := range arguments {
-		pointer, err := syscall.UTF16PtrFromString(argument)
-		if err != nil {
-			return err
-		}
-		argumentPointers = append(argumentPointers, uintptr(unsafe.Pointer(pointer)))
-	}
-	argumentPointers = append(argumentPointers, 0) // NULL-terminated array
-	commandResult := &wsmanResult{done: make(chan struct{})}
-	var command uintptr
-	commandContext, commandCallback := wsmanAsync(commandResult)
-	if hr, _, _ := procWSManRunShellCommand.Call(shell, 0, 0, uintptr(unsafe.Pointer(commandLine)),
-		uintptr(unsafe.Pointer(&argumentPointers[0])), 0, commandContext, commandCallback,
-		uintptr(unsafe.Pointer(&command))); hr != 0 {
-		return fmt.Errorf("WSManRunShellCommand failed: 0x%08x", hr)
-	}
-	if !commandResult.wait(wsmanCompletionTimeout) {
+	commandCall := scope.pendingCall(false)
+	native.call("WSManRunShellCommand", shell, 0, uintptr(unsafe.Pointer(commandLine)), uintptr(unsafe.Pointer(argumentSet)), 0,
+		uintptr(unsafe.Pointer(&commandCall.async)), uintptr(unsafe.Pointer(&command)))
+	defer func() {
+		resultErr = errors.Join(resultErr, scope.closeHandle(native, "WSManCloseCommand", command, timeout))
+	}()
+	if !commandCall.result.wait(timeout) {
 		return errors.New("WinRM command creation timed out")
 	}
-	if err := wsmanError(commandResult.err); err != nil {
+	if err, _, _ := commandCall.result.snapshot(); err != nil {
 		return fmt.Errorf("WinRM command on %s: %w", host, err)
 	}
 	if command == 0 {
 		return errors.New("WSManRunShellCommand returned no command handle")
 	}
-	defer procWSManCloseCommand.Call(command, 0, 0, 0)
-	// Receive until the command reports the Done state so closing the shell
-	// cannot kill a still-running detach. Each individual WSManReceive call
-	// waits at most wsmanCompletionTimeout or the remaining deadline time,
-	// whichever is shorter, so a slow target (AV scan, service start delay)
-	// never causes an early exit before the 60s budget is exhausted.
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return errors.New("WinRM detach completion not confirmed within 60s")
-		}
-		wait := wsmanCompletionTimeout
-		if remaining < wait {
-			wait = remaining
-		}
-		receiveResult := &wsmanResult{done: make(chan struct{})}
-		streamID, err := syscall.UTF16PtrFromString("stdout")
-		if err != nil {
-			return err
-		}
-		receiveContext, receiveCallback := wsmanAsync(receiveResult)
-		if hr, _, _ := procWSManReceive.Call(shell, command, 0, 0, uintptr(unsafe.Pointer(streamID)),
-			receiveContext, receiveCallback); hr != 0 {
-			return fmt.Errorf("WSManReceive failed: 0x%08x", hr)
-		}
-		if !receiveResult.wait(wait) {
-			return errors.New("WinRM detach completion not confirmed within 60s")
-		}
-		if err := wsmanError(receiveResult.err); err != nil {
-			return fmt.Errorf("WinRM receive on %s: %w", host, err)
-		}
-		if done, exitCode := wsmanCommandDone(receiveResult.data); done {
-			if exitCode != 0 {
-				return fmt.Errorf("WinRM detach command exited with %d", exitCode)
+	receiveCall := scope.pendingCall(true)
+	// NULL requests all output streams. One receive produces multiple callbacks.
+	native.call("WSManReceiveShellOutput", shell, command, 0, 0, uintptr(unsafe.Pointer(&receiveCall.async)), uintptr(unsafe.Pointer(&receiveOperation)))
+	defer func() {
+		if receiveOperation != 0 {
+			if code := native.call("WSManCloseOperation", receiveOperation, 0); code != 0 {
+				resultErr = errors.Join(resultErr, fmt.Errorf("WSManCloseOperation failed: 0x%08x", code))
 			}
-			return nil
 		}
+	}()
+	if !receiveCall.result.wait(2 * timeout) {
+		return errors.New("WinRM detach completion not confirmed before timeout")
 	}
+	if err, done, exitCode := receiveCall.result.snapshot(); err != nil {
+		return fmt.Errorf("WinRM receive on %s: %w", host, err)
+	} else if !done {
+		return errors.New("WinRM receive ended without command completion")
+	} else if exitCode != 0 {
+		return fmt.Errorf("WinRM detach command exited with %d", exitCode)
+	}
+	return nil
 }
 
 // lateralDetachArguments builds the remote command arguments: the detach

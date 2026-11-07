@@ -429,6 +429,47 @@ passed on Go 1.21 and 1.27 in normal and debug modes. The COM call chain stays o
 and cleanup share the same apartment. `TestWMICreateProcess` exercises local
 process creation and a missing executable's provider error on Windows CI.
 
+The native `WSManCreateSession` binding supplies all six API arguments,
+including null credentials and proxy pointers before the session output
+pointer. Null credentials preserve the current thread's default identity.
+Agents built before this correction can fail locally with `0x803380ba`
+(`ERROR_WSMAN_CLIENT_CREATESESSION_NULL_PARAM`); rebuild and replace the
+source agent to pick up the corrected binding.
+
+The remaining shell bindings use SDK argument ordering, counted
+`WSMAN_COMMAND_ARG_SET` arguments, and pointers to `WSMAN_SHELL_ASYNC`.
+Shell operations return `void`; their callbacks carry operation errors.
+`WSManReceiveShellOutput` requests all streams and can deliver multiple output
+callbacks before command completion. A binary output block can also carry the
+Done state; success requires Done with exit code zero.
+
+WinRM binding internals (`wsman_windows.go`):
+
+- `loadWSMan` resolves every required export before initialization;
+  `wsmanNative.call` implements `wsmanCaller` for native dispatch.
+  `winrmCreateProcessWithAPI` runs the existing command flow through that
+  boundary, allowing fixtures to validate calls without remote execution.
+- `wsmanShellAsync`, `wsmanStringSet`, `wsmanData`, and `wsmanReceiveData`
+  mirror the SDK's 64-bit structures, including union alignment.
+- `wsmanScope.keep`, `pendingCall`, and `release` retain inputs and registered
+  `wsmanPending` callback contexts through synchronous session/API teardown.
+  Context IDs avoid exposing Go object addresses as native callback context.
+- `wsmanCompletion` copies errors, command state, and exit codes while native
+  buffers remain valid. `wsmanResult.wait` and `snapshot` synchronize callback
+  completion and copied values; stream output alone does not complete a wait.
+  `readWSManString` copies bounded command-state strings inside the callback.
+- `wsmanScope.closeHandle` supplies and waits for mandatory close callbacks.
+  Cleanup closes the receive operation, command, shell, session, and API in
+  that order. Local waits are bounded; contexts and inputs remain alive until
+  synchronous shutdown drains any delayed or canceled callbacks.
+
+Windows CI runs `TestWSMan*` in normal/debug modes: native callback trampoline
+tests, SDK layout checks, synthetic success/error/timeout/late-callback flows,
+and real DLL/session creation without opening a shell. The independent
+`testdata/wsman_layout.c` assertions compile against the Windows SDK. These
+checks do not establish remote authentication, staging, or detach behavior;
+those still require an authorized Windows lab.
+
 Result contract: an acknowledged launch answers
 `lateral started: method=<method> host=<host> target session=<id>`; the
 psexec handshake also carries `service=<name> binary=<name>` so cleanup

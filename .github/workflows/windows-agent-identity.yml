@@ -59,6 +59,20 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64
+      - name: Check WinRM layouts against the Windows SDK
+        working-directory: agent-go
+        shell: cmd
+        run: |
+          cl /nologo /std:c11 /W4 /WX /c testdata\wsman_layout.c ^
+            /Fo..\wsman-layout.obj
+      - name: Test local WinRM bindings and callback lifecycle
+        working-directory: agent-go
+        shell: pwsh
+        run: |
+          go test -buildvcs=false -count=1 -v -run '^TestWSMan' .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -buildvcs=false -count=1 -v -tags=rmmdebug -run '^TestWSMan' .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the dedicated service and standalone launcher
         working-directory: agent-go
         shell: cmd
