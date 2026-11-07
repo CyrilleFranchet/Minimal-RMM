@@ -34,6 +34,7 @@ func TestSpawnDiagnosticsPreserveSingleAttemptFailure(t *testing.T) {
 
 // The server accepts only these beacon session identifiers.
 var tokenSafeSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+var randomSessionID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 func TestSpawnSessionIDIsFreshAndTokenSafe(t *testing.T) {
 	first := spawnSessionID("go-1730000000000000000")
@@ -45,27 +46,18 @@ func TestSpawnSessionIDIsFreshAndTokenSafe(t *testing.T) {
 		if !tokenSafeSessionID.MatchString(id) {
 			t.Fatalf("spawn session ID %q is not beacon token safe", id)
 		}
-		if !strings.HasPrefix(id, "go-1730000000000000000-spawn-") {
-			t.Fatalf("spawn session ID %q lost its parent lineage", id)
+		if !randomSessionID.MatchString(id) {
+			t.Fatalf("spawn session ID %q must be random hex without lineage", id)
 		}
 	}
 }
 
-func TestSpawnSessionIDSanitizesAndBoundsParent(t *testing.T) {
-	long := strings.Repeat("a", 200)
-	id := spawnSessionID(long)
-	if !tokenSafeSessionID.MatchString(id) {
-		t.Fatalf("long parent produced invalid spawn session ID %q", id)
-	}
-	if prefix := strings.TrimSuffix(id, strings.TrimPrefix(id, "a")); len(prefix) > 32 {
-		t.Fatalf("parent prefix was not bounded: %q", id)
-	}
-	unsafe := spawnSessionID("../path/../like")
-	if strings.Contains(unsafe, "/") || strings.Contains(unsafe, ".") {
-		t.Fatalf("unsafe parent leaked into spawn session ID %q", unsafe)
-	}
-	if !tokenSafeSessionID.MatchString(unsafe) {
-		t.Fatalf("unsafe parent produced invalid spawn session ID %q", unsafe)
+func TestSpawnSessionIDIsIndependentOfParent(t *testing.T) {
+	for _, parent := range []string{"", strings.Repeat("z", 200), "../path/../like", "parent-session"} {
+		id := spawnSessionID(parent)
+		if !randomSessionID.MatchString(id) {
+			t.Fatalf("parent %q produced non-random-format session ID %q", parent, id)
+		}
 	}
 }
 

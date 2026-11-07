@@ -15,14 +15,14 @@ def _session(session_id="go-1730000000000000000", agent_type="go"):
 class SpawnSessionFlowTests(unittest.TestCase):
     def test_server_selected_go_ids_are_unique_and_skip_live_and_killed_ids(self):
         server = object.__new__(server_rmm.RMMServer)
-        server.sessions = {'go-spawn-' + 'a' * 32: object()}
-        server.killed_sessions = {'go-spawn-' + 'b' * 32}
+        server.sessions = {'a' * 32: object()}
+        server.killed_sessions = {'b' * 32}
         with patch.object(server_rmm.secrets, 'token_hex', side_effect=['a' * 32, 'b' * 32, 'c' * 32]):
-            self.assertEqual(server._new_deployment_id('spawn'), 'go-spawn-' + 'c' * 32)
-        for kind in ('spawn', 'lateral'):
+            self.assertEqual(server._new_deployment_id('spawn'), 'c' * 32)
+        for kind in ('spawn', 'spawnas', 'lateral'):
             first = server._new_deployment_id(kind)
             second = server._new_deployment_id(kind)
-            self.assertRegex(first, rf'^go-{kind}-[0-9a-f]{{32}}$')
+            self.assertRegex(first, r'^[0-9a-f]{32}$')
             self.assertNotEqual(first, second)
 
     def handshake(self):

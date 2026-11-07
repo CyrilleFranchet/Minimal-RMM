@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-07 — Consistent random Go deployment identities
+
+- Use random 32-character hex session IDs for server-selected `spawn`,
+  `spawnas`, and `lateral` deployments and the Go legacy fallback.
+- Preserve registration correlation and existing session IDs; stage1 continues
+  forwarding the ID chosen by the server.
+- Update regression coverage for ID format, uniqueness, and collision handling.
+- Validation: full Go tests, Windows amd64/arm64 cross-builds, MinGW launcher
+  and service builds, Go vet, 126 deployment tests, Python syntax checks,
+  operator parity, WebUI contracts, and Markdown/YAML lint pass. Native
+  Windows runtime validation remains pending.
+
 ## 2026-11-07 — Normalize single-quoted arguments in Go CMD dispatch
 
 - Restore the CMD single-quote convenience missing from the Go agent while

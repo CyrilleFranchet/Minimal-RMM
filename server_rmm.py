@@ -3040,7 +3040,7 @@ class RMMServer:
     def _new_deployment_id(self, kind):
         """Reserve a fresh identity before dispatch so registration is authoritative."""
         while True:
-            session_id = f"go-{kind}-{secrets.token_hex(16)}"
+            session_id = secrets.token_hex(16)
             if session_id not in getattr(self, "sessions", {}) and session_id not in getattr(self, "killed_sessions", set()):
                 return session_id
 

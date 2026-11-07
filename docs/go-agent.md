@@ -638,10 +638,12 @@ lifetime behavior still require a Windows lab.
 
 ### Deployment identity and local workers
 
-The server reserves IDs for new Go deployments before dispatch:
-`go-spawn-<32 hex characters>` and `go-lateral-<32 hex characters>`. This keeps
-the Go prefix while allowing registration to prove deployment independently
-of a lost launch acknowledgment. Existing sessions keep their original IDs.
+The server reserves random 32-character lowercase hex IDs before dispatch for
+`spawn`, `spawnas`, and `lateral`, matching generated Go agents. IDs contain no
+command name or parent identity. Registration still proves deployment
+independently of a lost launch acknowledgment. The Go `derivedSessionID`
+fallback uses 16 cryptographically random bytes in the same hex format for
+legacy commands. Existing sessions keep their original IDs.
 
 The lateral command starts a local bounded worker process, not a Unix fork.
 The Go `fork/exec` error label can also appear on Windows. The worker isolates

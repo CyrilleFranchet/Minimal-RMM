@@ -111,14 +111,14 @@ func TestParseLateralPayloadAppliesDefaultsAndBounds(t *testing.T) {
 	}
 }
 
-func TestDerivedSessionIDTagsStayTokenSafe(t *testing.T) {
-	for _, tag := range []string{"spawn", "lateral"} {
+func TestDerivedSessionIDIsRandomForEveryCommand(t *testing.T) {
+	for _, tag := range []string{"spawn", "spawnas", "lateral"} {
 		id := derivedSessionID("go-1730000000000000000", tag)
 		if !tokenSafeSessionID.MatchString(id) {
 			t.Fatalf("derived %s session ID %q is not beacon token safe", tag, id)
 		}
-		if !strings.Contains(id, "-"+tag+"-") {
-			t.Fatalf("derived session ID %q lost its %s tag", id, tag)
+		if !randomSessionID.MatchString(id) {
+			t.Fatalf("derived session ID %q must be random hex without command tags", id)
 		}
 	}
 }

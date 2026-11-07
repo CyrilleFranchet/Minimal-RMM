@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,27 +12,16 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 )
 
-// derivedSessionID derives a fresh beacon-safe session ID from the parent.
-// The server accepts only [A-Za-z0-9_-] identifiers of 8 to 128 characters,
-// so the parent prefix is sanitized and bounded before the unique suffix.
-func derivedSessionID(parent, tag string) string {
-	var prefix strings.Builder
-	for _, r := range parent {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '_' || r == '-' {
-			prefix.WriteRune(r)
-		}
-		if prefix.Len() >= 32 {
-			break
-		}
+// derivedSessionID generates an independent random identity for legacy commands.
+// Parent and command metadata never become part of the session identifier.
+func derivedSessionID(_, _ string) string {
+	var identity [16]byte
+	if _, err := rand.Read(identity[:]); err != nil {
+		panic(fmt.Errorf("generate session identity: %w", err))
 	}
-	if prefix.Len() == 0 {
-		prefix.WriteString("go")
-	}
-	return fmt.Sprintf("%s-%s-%d", prefix.String(), tag, time.Now().UnixNano())
+	return hex.EncodeToString(identity[:])
 }
 
 // spawnSessionID names the detached second agent started by __SPAWN__.
