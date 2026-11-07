@@ -55,6 +55,9 @@ func TestRegistrationIncludesWorkspaceRoutingID(t *testing.T) {
 				if request.URL.Path != "/register" || request.URL.Query().Get("workspace_id") != workspaceID {
 					t.Fatalf("unexpected registration route: %s", request.URL)
 				}
+				if request.URL.Query().Get("u") != processUserIdentity() {
+					t.Fatal("registration did not report the process identity used by uid")
+				}
 				if _, found := request.URL.Query()["workspace_id"]; found != (workspaceID != "") {
 					t.Fatalf("empty owner should not create a workspace claim: %s", request.URL)
 				}

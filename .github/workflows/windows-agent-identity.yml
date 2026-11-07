@@ -67,5 +67,6 @@ jobs:
           $tests += '|WindowsDetachedSpawn|WindowsExplicitLogonHasNoFallback'
           $tests += '|WindowsRunasOutputLifecycle'
           $tests += '|RunasOutputSnapshot'
-          $tests += '|WindowsLogonCredentialEncoding)'
+          $tests += '|WindowsLogonCredentialEncoding'
+          $tests += '|WindowsRegistration)'
           go test -buildvcs=false -count=1 -v -run $tests .

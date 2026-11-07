@@ -386,7 +386,7 @@ func loadConfig() (*config, error) {
 func register(client *http.Client, cfg *config) error {
 	v := values(cfg)
 	v.Set("h", hostname())
-	v.Set("u", username())
+	v.Set("u", processUserIdentity())
 	v.Set("s", strconv.Itoa(cfg.SleepSeconds))
 	v.Set("j", strconv.Itoa(cfg.JitterPercent))
 	v.Set("sync", "1")

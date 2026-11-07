@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,29 @@ import (
 	"time"
 	"unsafe"
 )
+
+func TestWindowsRegistrationUsesProcessIdentityDespiteInheritedEnvironment(t *testing.T) {
+	expected := processUserIdentity()
+	t.Setenv("USERNAME", "fixture-parent-user")
+	t.Setenv("USER", "fixture-parent-user")
+	t.Setenv("USERDOMAIN", "fixture-parent-domain")
+	if actual := processUserIdentity(); actual != expected {
+		t.Fatalf("process identity depended on inherited environment: got %q want %q", actual, expected)
+	}
+	called := false
+	client := &http.Client{Transport: workspaceBindingTransport(func(request *http.Request) (*http.Response, error) {
+		called = true
+		if user := request.URL.Query().Get("u"); user != expected || strings.Contains(user, "fixture-parent") {
+			t.Fatalf("registration reported inherited parent identity: got %q want %q", user, expected)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader("REGISTERED"))}, nil
+	})}
+	cfg := &config{BaseURL: "https://beacon.example.test", SessionID: "identity-fixture-session"}
+	if err := register(client, cfg); err != nil || !called {
+		t.Fatalf("registration failed: called=%t err=%v", called, err)
+	}
+}
 
 // Exercise the real dedicated C service without fetching or launching any agent.
 // No listener URL is supplied, so the worker reports stage exit 2 through SCM.

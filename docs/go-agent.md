@@ -339,6 +339,18 @@ remains to be validated on a real host.
 
 ### Identity query (`__UID__`)
 
+The WebUI session label is `username@hostname`. Go agents register the process
+account resolved by `processUserIdentity`, including its domain when available,
+so it matches the `agent user:` identity from `/uid`. Inherited USERNAME/USER
+environment values cannot override a successful Windows process-token lookup.
+Environment lookup remains a fallback if the token account cannot be resolved.
+
+`spawnas` creates a new session under the requested account; the parent session
+keeps its original identity. `make_token` changes thread network credentials
+and does not change the process account shown in the label. Rebuild and redeploy
+the agent to get corrected registration metadata: a server/UI update alone
+cannot correct the identity reported by an older running agent.
+
 `__UID__` reports the identity the agent runs under, so operators can
 verify `make_token` and `rev2self` without guessing:
 

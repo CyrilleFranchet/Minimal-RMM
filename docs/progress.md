@@ -14,6 +14,19 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-07 — Report process identity in WebUI session labels
+
+- Register Go agents with processUserIdentity rather than inherited USERNAME or
+  USER environment values. The WebUI label now uses the same process account as
+  /uid, so spawnas children do not retain the parent's displayed username.
+- Add registration-contract coverage and a native Windows regression with
+  deliberately incorrect inherited username/domain values. Include it in CI.
+- Document the account-versus-hostname label and the rebuild/redeploy requirement
+  for agents that already report stale environment metadata.
+- Validation: make go-test, host race tests and vet, Windows amd64/arm64 test
+  cross-compilation, lint, and whitespace checks pass. Native Windows execution
+  of the new inherited environment regression remains pending.
+
 ### 2026-11-07 — Keep agent builds out of the source checkout
 
 - Build from a disposable per-request source snapshot under the artifact
