@@ -1047,6 +1047,15 @@ class Colors:
     BOLD = '\033[1m'
     DIM = '\033[2m'
 
+def normalize_agent_process_name(value):
+    """Accept a bounded executable basename from optional agent metadata."""
+    if not isinstance(value, str) or not value or len(value) > 255:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 or char in "/\\" for char in value):
+        return None
+    return value if value.strip() and value not in {".", ".."} else None
+
+
 class Session:
     def __init__(self, session_id, hostname, username, ip=None):
         self.id = session_id
@@ -1061,6 +1070,8 @@ class Session:
         self.work_dir = None
         self.os_type = "windows"
         self.agent_type = "powershell"
+        self.agent_pid = None
+        self.agent_process_name = None
         self.capabilities = []
         # Workspace ownership is control-plane metadata. Transcript and
         # artifact persistence belongs to the matching workspace service.
@@ -1107,6 +1118,8 @@ class Session:
             "work_dir": self.work_dir,
             "os_type": self.os_type,
             "agent_type": self.agent_type,
+            "agent_pid": self.agent_pid,
+            "agent_process_name": self.agent_process_name,
             "capabilities": list(self.capabilities),
             "workspace_id": self.workspace_id,
             "sleep_seconds": self.sleep_seconds,
@@ -1680,6 +1693,10 @@ class RMMServer:
         if valid_workspace_id(workspace_id):
             session.workspace_id = workspace_id
         session.config_synced = True
+        session.agent_process_name = normalize_agent_process_name(rec.get("agent_process_name"))
+        pid = rec.get("agent_pid")
+        if type(pid) is int and 0 < pid <= 0xFFFFFFFF:
+            session.agent_pid = pid
         return session
 
     def _history_event_count(self, session_id: str) -> int:
@@ -3464,7 +3481,14 @@ class RMMServer:
         agent_type="powershell",
         capabilities=None,
         workspace_id="",
+        agent_pid=None,
+        agent_process_name=None,
     ):
+        agent_process_name = normalize_agent_process_name(agent_process_name)
+        pid_text = str(agent_pid)
+        agent_pid = int(pid_text) if re.fullmatch(r"[0-9]{1,10}", pid_text) else None
+        if agent_pid is not None and not 0 < agent_pid <= 0xFFFFFFFF:
+            agent_pid = None
         workspace_id = str(workspace_id or "").strip()
         if workspace_id and (not valid_workspace_id(workspace_id) or workspace_id not in self.workspace_registry.ids()):
             raise ValueError("unknown or invalid agent workspace")
@@ -3484,6 +3508,8 @@ class RMMServer:
             if session_id not in self.sessions:
                 session = Session(session_id, hostname, username, ip)
                 session.agent_type = (agent_type or "powershell").strip().lower()
+                session.agent_pid = agent_pid
+                session.agent_process_name = agent_process_name
                 session.capabilities = sorted(set(capabilities or []))
                 persisted_record = self._persisted_session_records.get(session_id, {})
                 persisted_workspace = str(persisted_record.get("workspace_id") or "").strip()
@@ -3510,6 +3536,10 @@ class RMMServer:
                 is_new = True
             else:
                 s = self.sessions[session_id]
+                pid_changed = s.agent_pid != agent_pid
+                process_changed = s.agent_process_name != agent_process_name
+                s.agent_pid = agent_pid
+                s.agent_process_name = agent_process_name
                 binding_changed = bool(workspace_id and not s.workspace_id)
                 if binding_changed:
                     s.workspace_id = workspace_id
@@ -3528,7 +3558,7 @@ class RMMServer:
                     s.config_synced = True
                     to_save = s
                 else:
-                    to_save = s if binding_changed else None
+                    to_save = s if binding_changed or pid_changed or process_changed else None
         if is_new and to_save is not None:
             self.backfill_download_artifacts(to_save)
             self._apply_history_meta_to_session(to_save)
@@ -6235,6 +6265,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                     agent_type=agent_type,
                     capabilities=capabilities,
                     workspace_id=qs.get("workspace_id", [""])[0],
+                    agent_pid=qs.get("pid", [None])[0],
+                    agent_process_name=qs.get("process_name", [None])[0],
                 )
             except ValueError:
                 self._respond(403, "AGENT WORKSPACE REJECTED")

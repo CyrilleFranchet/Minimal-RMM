@@ -341,22 +341,29 @@ function canPreviewDownload(entry) {
   return null;
 }
 
-// Keep the full registered identity in data; shorten only local-account display.
+// Preserve the full registered account, including its machine or domain prefix.
 function sessionAccountLabel(session) {
-  const user = String(session?.username || "?").trim() || "?";
-  const host = String(session?.hostname || "").trim().toLowerCase();
-  const split = user.indexOf("\\");
-  if (split < 1) return user;
-  const domain = user.slice(0, split).toLowerCase();
-  const system = ["nt authority", "nt service", "builtin"].includes(domain);
-  if (!system && host && (domain === host || domain === host.split(".")[0])) {
-    return ".\\" + user.slice(split + 1);
-  }
-  return user;
+  return String(session?.username || "?").trim() || "?";
 }
 
 function sessionFullLabel(session) {
   return `${String(session?.username || "?")}@${String(session?.hostname || "?")}`;
+}
+
+function sessionPidLabel(session) {
+  const pid = session?.agent_pid;
+  return Number.isInteger(pid) && pid > 0 && pid <= 0xFFFFFFFF ? `PID: ${pid}` : "";
+}
+
+function sessionProcessLabel(session) {
+  const name = typeof session?.agent_process_name === "string" ? session.agent_process_name : "";
+  const pid = sessionPidLabel(session);
+  return [name, pid].filter(Boolean).join(" · ");
+}
+
+function sessionLiveDetail(session) {
+  const processLabel = sessionProcessLabel(session);
+  return `${session.hostname || "?"} · ${session.id}${processLabel ? ` · ${processLabel}` : ""} · last seen ${formatTime(session.last_seen)}`;
 }
 
 function renderSessionIdentity(session) {
@@ -364,7 +371,8 @@ function renderSessionIdentity(session) {
   const fullTitle = escapeHtml(sessionFullLabel(session)).replaceAll('"', "&quot;");
   const hostTitle = escapeHtml(host).replaceAll('"', "&quot;");
   return `<div class="meta session-account" title="${fullTitle}">${escapeHtml(sessionAccountLabel(session))}</div>
-      <div class="sub session-hostname" title="${hostTitle}">${escapeHtml(host)}</div>`;
+      <div class="sub session-hostname" title="${hostTitle}">${escapeHtml(host)}</div>
+      ${sessionProcessLabel(session) ? `<div class="sub session-pid">${escapeHtml(sessionProcessLabel(session))}</div>` : ""}`;
 }
 
 function artifactAgentLabel(entry) {
@@ -973,8 +981,11 @@ function applySessionsUpdate(sessions) {
   state.sessions = sessions || [];
   updateSessionSidebarMeta();
   if (state.viewMode === "live" && state.selectedId) {
-    if (!state.sessions.some((s) => s.id === state.selectedId)) {
+    const selected = state.sessions.find((s) => s.id === state.selectedId);
+    if (!selected) {
       showEmptyConsole();
+    } else {
+      $("#console-detail").textContent = sessionLiveDetail(selected);
     }
   }
   renderSessionList();
@@ -1217,7 +1228,7 @@ async function selectHistorySession(id) {
   $("#console-title").textContent = sessionAccountLabel(s);
   $("#console-title").title = sessionFullLabel(s);
   const ended = s.ended_at ? formatTime(s.ended_at) : "unknown";
-  $("#console-detail").textContent = `${s.hostname || "?"} · ${id} · archived · ended ${ended}${s.end_reason ? ` (${s.end_reason})` : ""}`;
+  $("#console-detail").textContent = `${s.hostname || "?"} · ${id}${sessionProcessLabel(s) ? ` · ${sessionProcessLabel(s)}` : ""} · archived · ended ${ended}${s.end_reason ? ` (${s.end_reason})` : ""}`;
   shellOutputEl().innerHTML = "";
   updateShellPrompt();
   appendShellMeta(`Archived transcript — ${s.event_count || 0} events`);
@@ -2714,7 +2725,7 @@ async function selectSession(id) {
 
   $("#console-title").textContent = sessionAccountLabel(s);
   $("#console-title").title = sessionFullLabel(s);
-  $("#console-detail").textContent = `${s.hostname || "?"} · ${s.id} · last seen ${formatTime(s.last_seen)}`;
+  $("#console-detail").textContent = sessionLiveDetail(s);
   shellOutputEl().innerHTML = "";
   updateShellPrompt();
   appendShellMeta(`Session ${id.slice(0, 8)} — Enter queue · Ctrl+Enter exec · ↑↓ history · Tab complete`);

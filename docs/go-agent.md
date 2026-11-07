@@ -339,16 +339,13 @@ remains to be validated on a real host.
 
 ### Identity query (`__UID__`)
 
-The WebUI shows the account and hostname separately. `sessionAccountLabel`
-shortens a matching hostname prefix to `.\Administrator`, keeps domain accounts
-such as `ARCHER\Administrator`, and preserves service identities such as
-`NT AUTHORITY\SYSTEM`. Unqualified names and UPNs are left unchanged. Only an
-account prefix matching the reported hostname (or its short name) is shortened.
-`renderSessionIdentity` renders separate account and host rows, while
-`sessionFullLabel` supplies the full registered identity for tooltips. Live and
-archived views use the same formatting; long labels truncate within their row.
-This is display formatting only: registration, stored metadata, and /uid retain
-the full identity. Reload the WebUI to pick up this presentation change.
+The WebUI shows the full registered account and hostname separately.
+`sessionAccountLabel` preserves machine, domain, and service prefixes, including
+`HOST\Administrator` and `NT AUTHORITY\SYSTEM`. `renderSessionIdentity` renders
+separate account and host rows; long accounts wrap rather than losing their
+prefix or being ellipsized. `sessionFullLabel` supplies full identity tooltips.
+Live and archived views use the same formatting. Reload the WebUI to pick up
+this presentation change.
 
 Go agents register the process
 account resolved by `processUserIdentity`, including its domain when available,
@@ -703,3 +700,31 @@ to the authenticated central server, which owns these generated deployment
 files. Downloaded session data remains workspace-local. Workspace Go build
 requests use a 300-second proxy timeout to accommodate the compiler's
 120-second limit and archive generation.
+
+## Agent process identity
+
+The Go agent's `register()` reports its own `os.Getpid()` as the optional `pid`
+registration parameter, and the basename returned by `os.Executable()` as
+`process_name`. This reports the executable actually running the agent, including
+renamed binaries, rather than a presumed build filename or caller-supplied
+argument. Rebuild and redeploy existing Go agents to report these values.
+This identifies the running agent process, including agents launched by stage1;
+the launcher process ID is separate.
+
+The server's `Session` metadata exposes `agent_pid` as a positive 32-bit integer
+or `null`. `register_session()` validates the value and refreshes it on each
+registration; omitted or invalid values clear it without rejecting older agents.
+PID and process-name changes are saved with the session and flow into workspace
+archives. `normalize_agent_process_name()` accepts a nonempty basename of at
+most 255 characters without path separators or ASCII control characters; invalid
+or omitted names become `null`. `Session.agent_process_name` is included in
+session metadata. `_session_from_record()` restores both process fields when
+archiving persisted sessions after a restart.
+
+The WebUI's `sessionPidLabel()` validates PID metadata. `sessionProcessLabel()`
+combines the executable basename and PID, showing either independently when only
+one is known. Live and archived cards and console headers display this label;
+process names are escaped as text. `sessionLiveDetail()` formats the live header,
+which refreshes when session updates arrive. Unknown process fields have no
+label. Archived values describe the process at the time the session was saved.
+Stage1 is a separate launcher and needs no change to report the Go agent's name.

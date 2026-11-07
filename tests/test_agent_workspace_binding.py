@@ -128,6 +128,77 @@ class AgentWorkspaceBindingTests(unittest.TestCase):
 
 
 class AgentRegistrationWorkspaceTests(unittest.TestCase):
+    def test_agent_pid_registration_refresh_and_legacy_values(self):
+        server = self.server()
+        for supplied, expected in [('1234', 1234), (4321, 4321),
+                                   ('4294967295', 4294967295), (None, None),
+                                   ('0', None), ('-1', None), ('4294967296', None),
+                                   ('1.5', None), ('<script>', None), (True, None)]:
+            with self.subTest(supplied=supplied):
+                server.register_session('pid-test-session', 'host', 'user', agent_pid=supplied)
+                self.assertEqual(server.sessions['pid-test-session'].to_dict()['agent_pid'], expected)
+        server.register_session('pid-test-session', 'host', 'user', agent_pid=5678)
+        server.save_session.reset_mock()
+        server.register_session('pid-test-session', 'host', 'user', agent_pid=8765)
+        server.save_session.assert_called_once()
+        self.assertEqual(server.save_session.call_args.args[0].agent_pid, 8765)
+
+    def test_agent_process_name_registration_refresh_and_restore(self):
+        server = self.server()
+        for supplied, expected in [('agent.exe', 'agent.exe'), ('Agent é.exe', 'Agent é.exe'),
+                                   (None, None), ('', None), ('a' * 256, None),
+                                   ('../agent.exe', None), ('C:\\agent.exe', None),
+                                   ('agent\n.exe', None), ('agent\x7f.exe', None),
+                                   (True, None), ('..', None), (' ', None)]:
+            with self.subTest(supplied=supplied):
+                server.register_session('process-test-session', 'host', 'user', agent_process_name=supplied)
+                self.assertEqual(server.sessions['process-test-session'].to_dict()['agent_process_name'], expected)
+        for name in ['renamed.exe', 'other.exe', None]:
+            server.save_session.reset_mock()
+            server.register_session('process-test-session', 'host', 'user', agent_process_name=name)
+            server.save_session.assert_called_once()
+            self.assertEqual(server.save_session.call_args.args[0].agent_process_name, name)
+        record = {'hostname': 'host', 'username': 'HOST\\Administrator',
+                  'agent_pid': 1234, 'agent_process_name': 'renamed.exe'}
+        restored = server._session_from_record('restored-session', record).to_dict()
+        for key in ['username', 'agent_pid', 'agent_process_name']:
+            self.assertEqual(restored[key], record[key])
+
+    def test_http_registration_agent_process_name(self):
+        server = self.server()
+        for suffix, expected in [('&process_name=Agent%20%C3%A9.exe', 'Agent é.exe'),
+                                 ('&process_name=renamed.exe', 'renamed.exe'),
+                                 ('&process_name=..%2Fagent.exe', None), ('', None)]:
+            with self.subTest(suffix=suffix):
+                handler = object.__new__(server_rmm.RMMHandler)
+                handler.path = '/register?id=process-test-session&h=host&u=user&agent=go' + suffix
+                handler.client_address = ('127.0.0.1', 12345)
+                handler._path_allowed = Mock(return_value=True)
+                handler._beacon_authorized = Mock(return_value=True)
+                handler._serve_web = Mock(return_value=False)
+                handler._respond = Mock()
+                handler.server_instance = server
+                handler.do_GET()
+                self.assertEqual(handler._respond.call_args.args[0], 200)
+                self.assertEqual(server.sessions['process-test-session'].to_dict()['agent_process_name'], expected)
+
+    def test_http_registration_agent_pid(self):
+        server = self.server()
+        for suffix, expected in [('&pid=1234', 1234), ('&pid=4321', 4321),
+                                 ('&pid=bad', None), ('&pid=0', None), ('', None)]:
+            with self.subTest(suffix=suffix):
+                handler = object.__new__(server_rmm.RMMHandler)
+                handler.path = '/register?id=pid-test-session&h=host&u=user&agent=go' + suffix
+                handler.client_address = ('127.0.0.1', 12345)
+                handler._path_allowed = Mock(return_value=True)
+                handler._beacon_authorized = Mock(return_value=True)
+                handler._serve_web = Mock(return_value=False)
+                handler._respond = Mock()
+                handler.server_instance = server
+                handler.do_GET()
+                self.assertEqual(handler._respond.call_args.args[0], 200)
+                self.assertEqual(server.sessions['pid-test-session'].to_dict()['agent_pid'], expected)
+
     def server(self):
         server = workspace_fixtures.ServerWorkspaceTests().make_server()
         server.killed_sessions = set()

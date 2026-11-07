@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -52,6 +54,13 @@ func TestRegistrationIncludesWorkspaceRoutingID(t *testing.T) {
 			called := false
 			client := &http.Client{Transport: workspaceBindingTransport(func(request *http.Request) (*http.Response, error) {
 				called = true
+				executable, err := os.Executable()
+				if err != nil || request.URL.Query().Get("process_name") != filepath.Base(executable) {
+					t.Fatal("registration did not report the running executable basename")
+				}
+				if request.URL.Query().Get("pid") != strconv.Itoa(os.Getpid()) {
+					t.Fatal("registration did not report the running Go process PID")
+				}
 				if request.URL.Path != "/register" || request.URL.Query().Get("workspace_id") != workspaceID {
 					t.Fatalf("unexpected registration route: %s", request.URL)
 				}

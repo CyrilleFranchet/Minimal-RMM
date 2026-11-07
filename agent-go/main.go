@@ -391,6 +391,10 @@ func register(client *http.Client, cfg *config) error {
 	v.Set("j", strconv.Itoa(cfg.JitterPercent))
 	v.Set("sync", "1")
 	v.Set("agent", "go")
+	v.Set("pid", strconv.Itoa(os.Getpid()))
+	if executable, err := os.Executable(); err == nil {
+		v.Set("process_name", filepath.Base(executable))
+	}
 	if cfg.WorkspaceID != "" {
 		v.Set("workspace_id", cfg.WorkspaceID)
 	}

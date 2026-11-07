@@ -1,5 +1,33 @@
 # Progress Log
 
+## 2026-11-07 — Go process names and full WebUI accounts
+
+- Register the running Go executable basename and expose `agent_process_name`
+  alongside the PID in live/archive cards and console headers. Validate and
+  refresh process metadata; retain it in workspace archives and restart records.
+- Preserve full machine/domain account prefixes and wrap long sidebar accounts.
+- Stage1 remains a separate launcher; existing agents need rebuilding to report
+  process names. Native Windows and live browser validation remain pending.
+- Validation: 17 registration tests, 17 workspace tests, six identity UI tests,
+  full Go tests/vet, Windows amd64 cross-build, Python/JavaScript syntax,
+  changed-document lint, operator parity, and WebUI contracts passed. The
+  sandbox-blocked redirect regression passed with local loopback access.
+- Code, security, test, and frontend reviews found no blocking issues.
+- Pre-commit verification: full `make check`, workspace tests, Go tests/vet,
+  and Windows amd64 cross-build passed with local test-listener access.
+
+## 2026-11-07 — Go agent PID in session details
+
+- Report the running Go agent PID during registration and expose `agent_pid`
+  in session metadata. Repeated registrations refresh or clear the stored PID.
+- Show known PIDs in live/archive session cards and console headers; refresh
+  the live header on session updates. Older agents remain compatible.
+- Add Go registration, HTTP/server validation, and WebUI rendering regressions.
+- Existing Go deployments require a rebuilt agent to report their PID.
+- Validation: 15 workspace/registration tests, five session identity UI tests,
+  JavaScript syntax, WebUI contracts, operator parity, Go tests/vet, and Windows
+  amd64 cross-build passed. Native Windows and live browser validation pending.
+
 ## 2026-11-07 — Explicit credential ID options
 
 - Require `-i <cred_id>` for CLI and WebUI `make_token`, `spawnas`, `runas`,

@@ -678,7 +678,15 @@ body.sidebar-resizing iframe {
   margin-top: 0.15rem;
 }
 
-.session-item .session-account,
+.session-item .session-account {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.session-item .session-pid {
+  overflow-wrap: anywhere;
+}
+
 .session-item .session-hostname {
   overflow: hidden;
   text-overflow: ellipsis;

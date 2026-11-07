@@ -263,8 +263,16 @@ class WorkspaceStoreTests(unittest.TestCase):
                 "body": "whoami",
             },
         )
+        self.store.sync_sessions([{'id': self.session_id, 'hostname': 'target',
+                                   'username': 'TARGET\\Administrator',
+                                   'agent_pid': 1234, 'agent_process_name': 'renamed-agent.exe'}])
         self.store.sync_sessions([])
-        self.assertEqual(len(self.store.list_history()), 1)
+        history = self.store.list_history()
+        self.assertEqual(len(history), 1)
+        for metadata in [history[0], self.store.history_meta(self.session_id)]:
+            self.assertEqual(metadata['username'], 'TARGET\\Administrator')
+            self.assertEqual(metadata['agent_pid'], 1234)
+            self.assertEqual(metadata['agent_process_name'], 'renamed-agent.exe')
         ok, deleted_id, error = self.store.delete_history(self.session_id)
 
         self.assertTrue(ok)
