@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-07 — Session card width
+
+- Remove the reserved action-button column so live and archived session
+  details use the full card width. Place actions in a separate bottom row,
+  visible without hovering, and allow long metadata to wrap inside the card.
+- CSS-only correction; stage1 and session behavior are unchanged.
+- Validation: WebUI contracts and tests, changed-document lint, and diff
+  whitespace checks passed. The redirect test required local loopback access.
+  Headless Chrome fixtures at 200, 248, and 360 px showed no horizontal
+  overflow or action overlap in live/archive cards, including long accounts.
+  The connected application was not exercised.
+
 ## 2026-11-07 — Go process names and full WebUI accounts
 
 - Register the running Go executable basename and expose `agent_process_name`

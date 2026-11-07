@@ -574,14 +574,11 @@ body.sidebar-resizing iframe {
 }
 
 .session-item .session-item-actions {
-  position: absolute;
-  top: 0.45rem;
-  right: 0.45rem;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.3rem;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease;
+  margin-top: 0.5rem;
 }
 
 .session-item .session-item-actions button {
@@ -590,28 +587,13 @@ body.sidebar-resizing iframe {
   line-height: 1.2;
 }
 
-.session-item:hover .session-item-actions,
-.session-item:focus-within .session-item-actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-
 .session-item.history-item .history-delete {
-  position: absolute;
-  top: 0.45rem;
-  right: 0.45rem;
-  opacity: 0;
-  pointer-events: none;
+  order: 1;
+  align-self: flex-end;
+  margin-top: 0.5rem;
   padding: 0.15rem 0.45rem;
   font-size: 0.65rem;
   line-height: 1.2;
-  transition: opacity 0.15s ease;
-}
-
-.session-item.history-item:hover .history-delete,
-.session-item.history-item:focus-within .history-delete {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .session-item.history-item .id {
@@ -651,7 +633,10 @@ body.sidebar-resizing iframe {
 
 .session-item {
   position: relative;
-  padding: 0.65rem 7.5rem 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
   border-radius: 8px;
   cursor: pointer;
   margin-bottom: 0.25rem;
@@ -697,6 +682,7 @@ body.sidebar-resizing iframe {
   font-size: 0.75rem;
   color: var(--muted);
   margin-top: 0.1rem;
+  overflow-wrap: anywhere;
 }
 
 .session-item .sub-connected {
