@@ -446,11 +446,11 @@ staging or guarantee Kerberos for the whole operation.
   structure with `WSMAN_FLAG_AUTH_KERBEROS` for DNS names and
   `WSMAN_FLAG_AUTH_NEGOTIATE` for IP targets. The native WSMan client
   exposes no direct NTLM flag; IP targets normally negotiate NTLM (Windows
-  can support IP SPNs when explicitly configured). The null user account inside
-  the credentials preserves the implicit thread identity, so `make_token`
-  credentials still apply.
+  can support IP SPNs when explicitly configured). With `make_token` active,
+  WSMan receives the selected username/password explicitly; SMB still uses
+  the captured thread token. Without make_token, WSMan uses thread defaults.
 
-For Negotiate, the agent sets the session-scoped
+For Negotiate with default credentials, the agent sets the session-scoped
 `WSMAN_OPTION_ALLOW_NEGOTIATE_IMPLICIT_CREDENTIALS` DWORD to 1 before
 opening a shell. Failure closes the session and stops execution. The agent
 does not change TrustedHosts, certificate validation, or host-trust policy;
@@ -486,8 +486,8 @@ includes this test in both normal and debug builds.
 The native `WSManCreateSession` binding supplies all six API arguments: an
 authentication-credentials structure selecting the mechanism (see the
 authentication paragraph above) and a null proxy pointer before the session
-output pointer. The null user account inside the credentials preserves the
-current thread's default identity.
+output pointer. The account fields contain selected make_token credentials,
+or remain null when using the current thread's default identity.
 Agents built before this correction can fail locally with `0x803380ba`
 (`ERROR_WSMAN_CLIENT_CREATESESSION_NULL_PARAM`); rebuild and replace the
 source agent to pick up the corrected binding.
@@ -527,6 +527,23 @@ MSVC's C++ parser, which supports the SDK's typed enums; the same fixture
 also compiles as C with MinGW. These
 checks do not establish remote authentication, staging, or detach behavior;
 those still require an authorized Windows lab.
+
+`wsmanError` mirrors the native `WSMAN_ERROR` layout. Failed callbacks copy
+the bounded fault detail into the operator result before native memory expires;
+null details retain the numeric code alone. `TestWSManCallbackCopiesFaultDetail`
+checks this lifetime boundary. Error 1312 indicates an unavailable logon session
+and does not by itself prove invalid target credentials or target rejection.
+`readWSManStringBounded` caps fault details at 4096 UTF-16 code units while
+preserving the shorter bound for command-state strings.
+
+`captureLateralIdentity` snapshots token and credentials under one lock.
+`winrmCredentials` and `lateralPayload.winrmIdentity` are local-only and are
+excluded from JSON. `winrmCreateProcessWithIdentityAPI` validates and roots
+the native account buffers until session teardown, then clears the password
+buffer. Worker completion clears the snapshot's string references. Explicit
+credentials retain Kerberos/Negotiate selection and existing host-trust checks.
+`TestWSManExplicitIdentity` covers credential arguments, empty/Unicode passwords,
+failure paths, and password-buffer cleanup without remote execution.
 
 Before accepting remote authentication changes, validate DNS/Kerberos and
 IP/NTLM connections separately with the agent identity and an alternate

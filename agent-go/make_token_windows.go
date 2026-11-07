@@ -34,7 +34,7 @@ var (
 	storedIdentity   string        // desired operator identity while enabled
 	tokenIdentity    string        // enabled operator identity; callbacks suspend it only on their thread
 	tokenActive      bool          // operator token is enabled, not a statement about every OS thread
-	spawnCredentials struct{ domain, user, password string }
+	spawnCredentials winrmCredentials
 )
 
 // makeTokenAction creates a netonly-style token and immediately impersonates

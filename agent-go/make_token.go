@@ -10,6 +10,10 @@ import (
 var errIdentityUnsafe = errors.New("agent identity state is unsafe")
 var identityBoundaryFault atomic.Bool
 
+// winrmCredentials is a local-only snapshot of credentials already selected by
+// make_token. It must never be serialized, logged, or included in error text.
+type winrmCredentials struct{ domain, user, password string }
+
 // identityBoundaryFailure makes token-boundary failures terminal for this agent.
 func identityBoundaryFailure(err error) error {
 	debugEvent("identity_boundary.failed", err)

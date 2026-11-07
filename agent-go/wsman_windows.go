@@ -77,10 +77,14 @@ type wsmanReceiveData struct {
 	exitCode     uint32
 }
 
-// wsmanAuthCredentials mirrors WSMAN_AUTHENTICATION_CREDENTIALS: the
-// mechanism selects the authentication family while the null user account
-// keeps the implicit thread identity, which carries the active make_token
-// credentials when one is set.
+// wsmanError mirrors WSMAN_ERROR; its strings are valid only in the callback.
+type wsmanError struct {
+	code                              uint32
+	detail, language, machine, plugin *uint16
+}
+
+// wsmanAuthCredentials mirrors WSMAN_AUTHENTICATION_CREDENTIALS. Its account
+// fields hold selected explicit credentials, or remain null for thread defaults.
 type wsmanAuthCredentials struct {
 	mechanism uint32
 	_         uint32
@@ -153,9 +157,13 @@ func wsmanCompletion(context, flags, errPtr, shell, command, operation, data uin
 		return 0
 	}
 	if errPtr != 0 {
-		code := *(*uint32)(unsafe.Pointer(errPtr))
+		fault := (*wsmanError)(unsafe.Pointer(errPtr))
+		code := fault.code
 		if code != 0 {
 			result.err = fmt.Errorf("WSMan error %d (0x%08x)", code, code)
+			if detail := strings.TrimSpace(readWSManStringBounded(uintptr(unsafe.Pointer(fault.detail)), 4096)); detail != "" {
+				result.err = fmt.Errorf("%w: %s", result.err, detail)
+			}
 		}
 	}
 	if result.err == nil && result.receive && data != 0 {
@@ -193,11 +201,17 @@ func (r *wsmanResult) snapshot() (error, bool, uint32) {
 
 // readWSManString copies a bounded command-state URI during its callback.
 func readWSManString(pointer uintptr) string {
+	return readWSManStringBounded(pointer, wsmanStreamReadLimit)
+}
+
+// readWSManStringBounded copies native strings within the callback lifetime,
+// allowing longer fault details while keeping command-state reads short.
+func readWSManStringBounded(pointer uintptr, limit int) string {
 	if pointer == 0 {
 		return ""
 	}
-	runes := make([]uint16, 0, wsmanStreamReadLimit)
-	for i := 0; i < wsmanStreamReadLimit; i++ {
+	runes := make([]uint16, 0, limit)
+	for i := 0; i < limit; i++ {
 		char := *(*uint16)(unsafe.Pointer(pointer + uintptr(i)*2))
 		if char == 0 {
 			break
@@ -225,9 +239,9 @@ func (s *wsmanScope) closeHandle(native wsmanCaller, name string, handle uintptr
 	return nil
 }
 
-// winrmCreateProcess uses the native WSMan shell API with default thread
-// credentials. The existing detach command must finish before its shell closes.
-func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string) error {
+// winrmCreateProcess uses selected explicit credentials when make_token is
+// active, otherwise thread defaults. Detach must finish before the shell closes.
+func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string, identity *winrmCredentials) error {
 	// Initialize the shared COM security policy before WSMan can initialize
 	// it implicitly, so a later WMI command can use thread-token cloaking.
 	runtime.LockOSThread()
@@ -243,10 +257,16 @@ func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, 
 	if err != nil {
 		return err
 	}
-	return winrmCreateProcessWithAPI(native, host, agentPath, sessionID, workspaceID, serviceName, wsmanCompletionTimeout)
+	return winrmCreateProcessWithIdentityAPI(native, host, agentPath, sessionID, workspaceID, serviceName, wsmanCompletionTimeout, identity)
 }
 
 func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration) (resultErr error) {
+	return winrmCreateProcessWithIdentityAPI(native, host, agentPath, sessionID, workspaceID, serviceName, timeout, nil)
+}
+
+// winrmCreateProcessWithIdentityAPI supplies selected make_token credentials
+// explicitly to WSMan; an absent identity retains default thread credentials.
+func winrmCreateProcessWithIdentityAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration, identity *winrmCredentials) (resultErr error) {
 	arguments, err := lateralDetachArguments(sessionID, workspaceID, serviceName)
 	if err != nil {
 		return err
@@ -265,9 +285,35 @@ func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID st
 	if err != nil {
 		return err
 	}
-	// The session selects Kerberos for DNS names and Negotiate for IP
-	// targets; the null user account preserves the implicit thread identity.
+	// Keep mechanism selection separate from the explicit/default credential
+	// source. A netonly thread token alone need not supply reusable WSMan creds.
 	credentials := wsmanAuthCredentials{mechanism: wsmanAuthMechanism(host)}
+	if identity != nil {
+		if identity.user == "" {
+			return errors.New("WinRM selected identity has no username")
+		}
+		user := identity.user
+		if identity.domain != "" {
+			user = identity.domain + `\` + user
+		}
+		username, err := utf16(user)
+		if err != nil {
+			return errors.New("encode WinRM selected username")
+		}
+		password, err := syscall.UTF16FromString(identity.password)
+		if err != nil {
+			return errors.New("encode WinRM selected password")
+		}
+		// This defer runs after native session teardown, before scope release.
+		defer func() {
+			for i := range password {
+				password[i] = 0
+			}
+		}()
+		scope.keep(password)
+		credentials.username = uintptr(unsafe.Pointer(username))
+		credentials.password = uintptr(unsafe.Pointer(&password[0]))
+	}
 	scope.keep(&credentials)
 	uri, err := utf16(wsmanShellCmdURI)
 	if err != nil {
@@ -309,7 +355,7 @@ func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID st
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManCloseSession failed: 0x%08x", code))
 		}
 	}()
-	if credentials.mechanism == wsmanAuthNegotiate {
+	if credentials.mechanism == wsmanAuthNegotiate && identity == nil {
 		// The DWORD union member is at offset 8, shared with binary length.
 		// This enables credentials for this session; host-trust policy remains
 		// enforced by WinRM. Do not change TrustedHosts or certificate checks.

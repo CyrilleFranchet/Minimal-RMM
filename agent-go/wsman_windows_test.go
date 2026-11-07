@@ -31,6 +31,8 @@ func TestWSManSDKLayouts(t *testing.T) {
 		"auth mechanism": {unsafe.Offsetof(wsmanAuthCredentials{}.mechanism), 0},
 		"auth username":  {unsafe.Offsetof(wsmanAuthCredentials{}.username), 8},
 		"auth password":  {unsafe.Offsetof(wsmanAuthCredentials{}.password), 16},
+		"error size":     {unsafe.Sizeof(wsmanError{}), 40},
+		"error detail":   {unsafe.Offsetof(wsmanError{}.detail), 8},
 	}
 	for name, pair := range checks {
 		if pair[0] != pair[1] {
@@ -41,11 +43,34 @@ func TestWSManSDKLayouts(t *testing.T) {
 
 // Invoke the actual Windows callback trampoline, including all seven slots.
 func wsmanTestCallback(async *wsmanShellAsync, flags uintptr, code uint32, data *wsmanReceiveData) {
-	syscall.SyscallN(async.callback, async.context, flags, uintptr(unsafe.Pointer(&code)),
+	fault := wsmanError{code: code}
+	syscall.SyscallN(async.callback, async.context, flags, uintptr(unsafe.Pointer(&fault)),
 		0x111, 0x222, 0x333, uintptr(unsafe.Pointer(data)))
 	runtime.KeepAlive(async)
 	runtime.KeepAlive(data)
-	runtime.KeepAlive(&code)
+	runtime.KeepAlive(&fault)
+}
+
+// Fault strings must be copied before the native callback storage expires.
+func TestWSManCallbackCopiesFaultDetail(t *testing.T) {
+	scope := &wsmanScope{}
+	defer scope.release()
+	pending := scope.pendingCall(false)
+	wantDetail := strings.Repeat("fixture ", 32) + "credential context unavailable"
+	detail, err := syscall.UTF16FromString(wantDetail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fault := wsmanError{code: 1312, detail: &detail[0]}
+	syscall.SyscallN(pending.async.callback, pending.async.context, wsmanEndOfOperation,
+		uintptr(unsafe.Pointer(&fault)), 0, 0, 0, 0)
+	runtime.KeepAlive(&fault)
+	detail[0] = 0
+	runtime.GC()
+	got, _, _ := pending.result.snapshot()
+	if got == nil || !strings.Contains(got.Error(), "WSMan error 1312 (0x00000520): "+wantDetail) {
+		t.Fatalf("fault detail was not copied: %v", got)
+	}
 }
 
 func TestWSManCallbackCopiesValuesAndWaitsForCompletion(t *testing.T) {
@@ -110,6 +135,8 @@ type wsmanFixture struct {
 	wantAuth            uint32
 	wantURL             string
 	implicitCredentials bool
+	wantIdentity        *winrmCredentials
+	passwordBuffer      []uint16
 }
 
 func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
@@ -166,7 +193,23 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 			f.t.Fatal("missing authentication credentials")
 		}
 		credentials := (*wsmanAuthCredentials)(unsafe.Pointer(args[3]))
-		if credentials.username != 0 || credentials.password != 0 {
+		if f.wantIdentity != nil {
+			user := f.wantIdentity.user
+			if f.wantIdentity.domain != "" {
+				user = f.wantIdentity.domain + `\` + user
+			}
+			if credentials.username == 0 || credentials.password == 0 {
+				f.t.Fatal("missing explicit credentials")
+			}
+			if readWSManString(credentials.username) != user || readWSManString(credentials.password) != f.wantIdentity.password {
+				f.t.Fatal("explicit credential mismatch")
+			}
+			encoded, err := syscall.UTF16FromString(f.wantIdentity.password)
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			f.passwordBuffer = unsafe.Slice((*uint16)(unsafe.Pointer(credentials.password)), len(encoded))
+		} else if credentials.username != 0 || credentials.password != 0 {
 			f.t.Fatal("session credentials must keep the implicit thread identity")
 		}
 		wantAuth := f.wantAuth
@@ -181,7 +224,7 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		}
 		output(5, 20)
 	case "WSManSetSessionOption":
-		if f.wantAuth != 0x4 || args[0] != 20 || args[1] != 32 || args[2] == 0 {
+		if f.wantIdentity != nil || f.wantAuth != 0x4 || args[0] != 20 || args[1] != 32 || args[2] == 0 {
 			f.t.Fatal("unexpected implicit-credential session option")
 		}
 		// Read the SDK's DWORD union member independently of wsmanData.
@@ -193,7 +236,7 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		}
 		f.implicitCredentials = true
 	case "WSManCreateShell":
-		if f.wantAuth == 0x4 && !f.implicitCredentials {
+		if f.wantAuth == 0x4 && f.wantIdentity == nil && !f.implicitCredentials {
 			f.t.Fatal("Negotiate shell created before enabling implicit credentials")
 		}
 		if args[0] != 20 || args[1] != 0 || args[3] != 0 || args[4] != 0 || args[5] != 0 {
@@ -373,8 +416,39 @@ func TestWSManImplicitCredentialsOptionFailure(t *testing.T) {
 	}
 }
 
-// Real DLL resolution and session creation are local operations. No shell,
-// remote command, alternate credentials, or running WinRM service is needed.
+// Explicit identity fixtures verify native arguments and password-buffer
+// cleanup without a remote connection or an installed WinRM service.
+func TestWSManExplicitIdentity(t *testing.T) {
+	for _, host := range []string{"lab-host", "10.0.0.8"} {
+		for _, password := range []string{"fixture-password", "", "-unicode-🔒"} {
+			for _, fail := range []string{"", "WSManCreateSession", "WSManCreateShell"} {
+				identity := &winrmCredentials{domain: "LAB", user: "fixture-user", password: password}
+				f := &wsmanFixture{t: t, wantIdentity: identity, wantURL: "http://" + host + ":5985/wsman", fail: fail}
+				if host == "10.0.0.8" {
+					f.wantAuth = 4
+				}
+				workspace := "fixture-workspace"
+				err := winrmCreateProcessWithIdentityAPI(f, host, `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity)
+				if (err != nil) != (fail != "") {
+					t.Fatal("unexpected explicit identity result")
+				}
+				for _, value := range f.passwordBuffer {
+					if value != 0 {
+						t.Fatal("native password buffer was not cleared")
+					}
+				}
+			}
+		}
+	}
+	workspace := "fixture-workspace"
+	f := &wsmanFixture{t: t}
+	err := winrmCreateProcessWithIdentityAPI(f, "lab-host", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, &winrmCredentials{user: "fixture", password: "invalid\x00password"})
+	if err == nil || len(f.calls) != 0 || strings.Contains(err.Error(), "invalid") {
+		t.Fatal("invalid credentials must fail before native calls without echoing input")
+	}
+}
+
+// Real DLL resolution and session configuration do not open a remote shell.
 func TestWSManLocalSession(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

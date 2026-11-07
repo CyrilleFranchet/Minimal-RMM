@@ -34,3 +34,5 @@ SDK_ASSERT(offsetof(WSMAN_AUTHENTICATION_CREDENTIALS, userAccount.password) == 1
 SDK_ASSERT(WSMAN_OPTION_ALLOW_NEGOTIATE_IMPLICIT_CREDENTIALS == 32, "implicit credentials option");
 SDK_ASSERT(WSMAN_DATA_TYPE_DWORD == 4, "DWORD data type");
 SDK_ASSERT(offsetof(WSMAN_DATA, number) == 8, "DWORD union offset");
+SDK_ASSERT(sizeof(WSMAN_ERROR) == 40, "error size");
+SDK_ASSERT(offsetof(WSMAN_ERROR, errorDetail) == 8, "error detail offset");

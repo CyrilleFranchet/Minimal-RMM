@@ -4,8 +4,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -87,13 +89,20 @@ func TestLateralThreadTokenSnapshot(t *testing.T) {
 	}
 	defer rev2selfAction()
 	want := callbackThreadAuthenticationID(t)
-	token, err := captureLateralToken()
+	token, identity, err := captureLateralIdentity(true)
 	if err != nil || token == 0 {
 		t.Fatalf("capture token: %v", err)
 	}
 	defer token.Close()
 	if _, err := rev2selfAction(); err != nil {
 		t.Fatal(err)
+	}
+	if identity == nil || identity.user != "snapshot-fixture" || identity.password != "unused-fixture-password" {
+		t.Fatal("dispatch credentials did not survive revocation")
+	}
+	encoded, err := json.Marshal(lateralPayload{Method: "winrm", winrmIdentity: identity})
+	if err != nil || strings.Contains(string(encoded), "snapshot-fixture") || strings.Contains(string(encoded), "unused-fixture-password") {
+		t.Fatal("local-only credentials entered the wire payload")
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

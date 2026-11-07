@@ -105,7 +105,7 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 			return "", err
 		}
 	case "winrm":
-		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName); err != nil {
+		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName, payload.winrmIdentity); err != nil {
 			return "", err
 		}
 	}
@@ -457,10 +457,11 @@ func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, mo
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	token, err := captureLateralToken()
+	token, identity, err := captureLateralIdentity(payload.Method == "winrm")
 	if err != nil {
 		return "", err
 	}
+	payload.winrmIdentity = identity
 	ch := make(chan lateralResult, 1)
 	progress := make(chan string, 1)
 	go func() {
@@ -469,6 +470,9 @@ func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, mo
 		debugEvent("lateral.worker.start", nil)
 		defer func() {
 			debugEvent("lateral.worker.revert_identity.begin", nil)
+			if identity != nil {
+				*identity = winrmCredentials{}
+			}
 			err := clearIdentity()
 			if token != 0 {
 				_ = token.Close()
@@ -513,18 +517,30 @@ func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, mo
 // captureLateralToken owns a duplicate of the dispatch-time token so replacing
 // or closing the main thread's handle cannot change a queued worker's identity.
 func captureLateralToken() (syscall.Token, error) {
+	token, _, err := captureLateralIdentity(false)
+	return token, err
+}
+
+// captureLateralIdentity captures token and optional WinRM credentials under
+// one lock so an intervening make_token cannot mix identities between protocols.
+func captureLateralIdentity(includeCredentials bool) (syscall.Token, *winrmCredentials, error) {
 	tokenMu.Lock()
 	defer tokenMu.Unlock()
 	if identityBoundaryFault.Load() {
-		return 0, errIdentityUnsafe
+		return 0, nil, errIdentityUnsafe
 	}
 	if !tokenActive || activeToken == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	var handle syscall.Handle
 	process := syscall.Handle(^uintptr(0))
 	if err := syscall.DuplicateHandle(process, syscall.Handle(activeToken), process, &handle, 0, false, 2); err != nil {
-		return 0, fmt.Errorf("capture lateral worker token: %w", err)
+		return 0, nil, fmt.Errorf("capture lateral worker token: %w", err)
 	}
-	return syscall.Token(handle), nil
+	var identity *winrmCredentials
+	if includeCredentials {
+		copy := spawnCredentials
+		identity = &copy
+	}
+	return syscall.Token(handle), identity, nil
 }

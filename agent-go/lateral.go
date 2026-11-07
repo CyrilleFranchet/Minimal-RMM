@@ -34,6 +34,7 @@ type lateralPayload struct {
 	RemoteName     string  `json:"remote_name"`
 	Stage          string  `json:"stage"`
 	TimeoutSeconds float64 `json:"timeout_seconds"`
+	winrmIdentity  *winrmCredentials
 }
 
 var lateralMethods = map[string]bool{

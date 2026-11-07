@@ -1,5 +1,35 @@
 # Progress Log
 
+## 2026-11-07 — Supply selected WinRM credentials explicitly
+
+- When make_token is active, snapshot its credentials and owned token handle
+  under the same identity lock with `captureLateralIdentity`. Use the token for
+  SMB and explicit credentials for WSMan, retaining the pinned-worker model.
+- `winrmCredentials` and the payload's private identity field remain local;
+  JSON cannot serialize them. Clear snapshot references at worker completion.
+- `winrmCreateProcessWithIdentityAPI` roots native credential buffers through
+  session teardown and clears the UTF-16 password afterward. Only the default
+  credential path enables implicit Negotiate. Host-trust policy is unchanged.
+- Add explicit credential fixture cases for IP/DNS, empty/Unicode passwords,
+  native failures, buffer clearing, and invalid-input rejection. Verify token
+  and credential snapshots survive revocation without entering wire payloads.
+- This addresses the unsupported reliance on implicit netonly credentials;
+  live error 1312 still requires a Windows retest to confirm resolution.
+- Validation: full repository checks, uncached Go tests/builds, host vet,
+  SDK assertions, and whitespace checks passed. All four Windows test
+  binaries cross-compiled. Independent review found no concrete blocker;
+  native callback/credential tests and live authentication remain unverified.
+
+## 2026-11-07 — Preserve WinRM authentication fault details
+
+- Investigate live error 1312 after the worker-thread change. The failure now
+  occurs at WSMan shell creation, rather than local child-process creation.
+  Root cause still requires source identity and client-policy evidence.
+- Copy bounded native fault details into operator results using `wsmanError`;
+  retain numeric errors when no detail exists. Add Go/SDK layout assertions
+  and a callback-lifetime test. Do not change credentials or host-trust policy
+  based only on the generic error code.
+
 ## 2026-11-07 — Close worker identity and completion races
 
 - Capture an owned duplicate of the active token under the identity lock
