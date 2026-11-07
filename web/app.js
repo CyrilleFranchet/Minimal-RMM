@@ -3068,9 +3068,20 @@ function renderSpawnResult(data) {
 async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   // Recognize the verb before parsing so malformed quoting cannot escape to the agent.
   if (!cmd.trimStart().startsWith("/")) return false;
+  let echoed = false;
+  const echoCommand = (options) => {
+    if (echoed || !target.isCurrent()) return;
+    appendShellEcho(cmd, options);
+    echoed = true;
+  };
+  const showError = (message) => {
+    if (!target.isCurrent()) return;
+    echoCommand();
+    appendShellError(message);
+  };
   const verb = cmd.trim().split(/\s+/, 1)[0].slice(1).toLowerCase();
   if (!SHELL_META_COMMANDS.includes(verb)) {
-    appendShellError("Unknown internal command. Type / for commands or /help for usage.");
+    showError("Unknown internal command. Type / for commands or /help for usage.");
     return true;
   }
   if (verb === "bloodhound") {
@@ -3091,17 +3102,17 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       if (target.isCurrent()) {
-        appendShellEcho(cmd);
+        echoCommand();
         appendShellLine("output", `<pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>`);
       }
     } catch (error) {
-      if (target.isCurrent()) appendShellError(`${error.message} Usage: /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']`);
+      if (target.isCurrent()) showError(`${error.message} Usage: /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']`);
     }
     return true;
   }
   const words = parseShellWords(cmd, true);
   if (!words.length) {
-    appendShellError("Usage: /help — check command quoting.");
+    showError("Usage: /help — check command quoting.");
     return true;
   }
   const rest = words.slice(1);
@@ -3116,11 +3127,11 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
       else documents.push(args[i + 1]);
     }
     if (!valid || !documents.length || documents.length > 32) {
-      appendShellError('Usage: /embeddings run <profile> --document "C:\\Lab\\documents" [--document <path> ...] (1–32 paths; uses the selected session)');
+      showError('Usage: /embeddings run <profile> --document "C:\\Lab\\documents" [--document <path> ...] (1–32 paths; uses the selected session)');
       return true;
     }
     if (!target.sessionId) {
-      appendShellError("Select a session before running embeddings.");
+      showError("Select a session before running embeddings.");
       return true;
     }
     try {
@@ -3130,26 +3141,26 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
-        appendShellError(data?.error || `HTTP ${status}`);
+        showError(data?.error || `HTTP ${status}`);
         return true;
       }
-      appendShellEcho(cmd, {
+      echoCommand({
         block: true, kind: "pe", meta: "(embeddings queued — waiting for next beacon)",
         matchKeys: [cmd, data.queued].filter(Boolean),
       });
       pollSessionEvents().catch(() => {});
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "Could not queue embeddings.");
+      if (target.isCurrent()) showError(error.message || "Could not queue embeddings.");
     }
     return true;
   }
 
   if (verb === "help" || verb === "?") {
     if (rest.length) {
-      appendShellError("Usage: /help");
+      showError("Usage: /help");
       return true;
     }
-    appendShellEcho(cmd);
+    echoCommand();
     appendShellLine(
       "output",
       `<pre>Local commands:
@@ -3179,11 +3190,11 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
 
   if (verb === "download") {
     if (!rest.length) {
-      appendShellError("Usage: /download <remote_path>");
+      showError("Usage: /download <remote_path>");
       return true;
     }
     const remote = rest.join(" ");
-    appendShellEcho(cmd, {
+    echoCommand({
       block: true,
       kind: "download",
       remotePath: remote,
@@ -3197,11 +3208,11 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   if (verb === "exfil") {
     const parsed = parseExfilShellArgs(rest);
     if (parsed.error) {
-      appendShellError(parsed.error);
+      showError(parsed.error);
       return true;
     }
     const { remote, profile } = parsed;
-    appendShellEcho(cmd, {
+    echoCommand({
       block: true,
       kind: "exfil",
       remotePath: remote,
@@ -3224,10 +3235,10 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
 
   if (verb === "screenshot") {
     if (rest.length) {
-      appendShellError("Usage: /screenshot");
+      showError("Usage: /screenshot");
       return true;
     }
-    appendShellEcho(cmd, {
+    echoCommand({
       block: true,
       kind: "screenshot",
       meta: "(screenshot queued)",
@@ -3239,14 +3250,14 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
 
   if (verb === "pe") {
     if (!rest.length) {
-      appendShellError("Usage: /pe <plugin> [export] [input]");
+      showError("Usage: /pe <plugin> [export] [input]");
       return true;
     }
     const plugin = rest[0];
     const exportName = rest[1] || "Run";
     const pluginInput = rest.length > 2 ? rest.slice(2).join(" ") : "";
     const queued = `__PE_LOAD__ ${plugin} ${exportName}${pluginInput ? ` ${pluginInput}` : ""}`;
-    appendShellEcho(cmd, {
+    echoCommand({
       block: true,
       kind: "pe",
       meta: "(plugin load queued)",
@@ -3259,14 +3270,14 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   if (verb === "spawn") {
     const debug = rest.length === 1 && ["-d", "--debug"].includes(rest[0]);
     if (rest.length && !debug) {
-      appendShellError("Usage: /spawn [-d|--debug] (uses the selected session)");
+      showError("Usage: /spawn [-d|--debug] (uses the selected session)");
       return true;
     }
     if (!target.sessionId) {
-      appendShellError("Select a Go agent session before spawning.");
+      showError("Select a Go agent session before spawning.");
       return true;
     }
-    appendShellEcho(cmd);
+    echoCommand();
     if (target.isCurrent()) {
       appendShellLine("output", "<pre>Spawning detached agent — waiting for the next beacon (this can take a few minutes)…</pre>");
     }
@@ -3276,16 +3287,16 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
-        appendShellError(data?.error || `HTTP ${status}`);
+        showError(data?.error || `HTTP ${status}`);
         return true;
       }
       appendShellLine("output", renderSpawnResult(data));
       if (data.registered === false) {
-        appendShellError("Spawn unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
+        showError("Spawn unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
       }
       pollSessionEvents().catch(() => {});
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "Spawn request failed.");
+      if (target.isCurrent()) showError(error.message || "Spawn request failed.");
     }
     return true;
   }
@@ -3293,14 +3304,14 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   if (verb === "make_token") {
     const parsed = parseShellCredentials(rest);
     if (!parsed) {
-      appendShellError("Usage: /make_token -i <cred_id> | /make_token <DOMAIN\\user | user> <password>");
+      showError("Usage: /make_token -i <cred_id> | /make_token <DOMAIN\\user | user> <password>");
       return true;
     }
     if (!target.sessionId) {
-      appendShellError("Select a Go agent session before creating a network token.");
+      showError("Select a Go agent session before creating a network token.");
       return true;
     }
-    appendShellEcho(cmd);
+    echoCommand();
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/make_token`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3308,42 +3319,42 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
-        appendShellError(data?.error || `HTTP ${status}`);
+        showError(data?.error || `HTTP ${status}`);
         return true;
       }
       pollSessionEvents().catch(() => {});
       if (!data.ok) {
-        appendShellError("make_token failed — inspect the session transcript.");
+        showError("make_token failed — inspect the session transcript.");
       }
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "make_token request failed.");
+      if (target.isCurrent()) showError(error.message || "make_token request failed.");
     }
     return true;
   }
 
   if (verb === "rev2self") {
     if (rest.length) {
-      appendShellError("Usage: /rev2self");
+      showError("Usage: /rev2self");
       return true;
     }
     if (!target.sessionId) {
-      appendShellError("Select a Go agent session first.");
+      showError("Select a Go agent session first.");
       return true;
     }
-    appendShellEcho(cmd);
+    echoCommand();
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/rev2self`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
-        appendShellError(data?.error || `HTTP ${status}`);
+        showError(data?.error || `HTTP ${status}`);
         return true;
       }
       pollSessionEvents().catch(() => {});
-      if (!data.ok) appendShellError("rev2self failed — inspect the session transcript.");
+      if (!data.ok) showError("rev2self failed — inspect the session transcript.");
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "rev2self request failed.");
+      if (target.isCurrent()) showError(error.message || "rev2self request failed.");
     }
     return true;
   }
@@ -3352,20 +3363,20 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     const flags = rest.filter(arg => ["-d", "--debug"].includes(arg));
     const lateralArgs = rest.filter(arg => !["-d", "--debug"].includes(arg));
     if (flags.length > 1 || lateralArgs.length !== 2 || lateralArgs.some(arg => arg.startsWith("-"))) {
-      appendShellError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-d|--debug]");
+      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-d|--debug]");
       return true;
     }
     if (!target.sessionId) {
-      appendShellError("Select a Go agent session before moving laterally.");
+      showError("Select a Go agent session before moving laterally.");
       return true;
     }
     const method = lateralArgs[0].toLowerCase();
     const host = lateralArgs[1];
     if (!["psexec", "wmiexec", "winrm"].includes(method)) {
-      appendShellError("Method must be psexec, wmiexec, or winrm.");
+      showError("Method must be psexec, wmiexec, or winrm.");
       return true;
     }
-    appendShellEcho(cmd);
+    echoCommand();
     if (target.isCurrent()) {
       appendShellLine("output", `<pre>Lateral ${escapeHtml(method)} to ${escapeHtml(host)} — waiting for the next beacon (this can take a few minutes)…</pre>`);
     }
@@ -3376,55 +3387,55 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
-        appendShellError(data?.error || `HTTP ${status}`);
+        showError(data?.error || `HTTP ${status}`);
         return true;
       }
       appendShellLine("output", `<pre>${escapeHtml(data.output || JSON.stringify(data, null, 2))}</pre>`);
       if (!data.registered) {
-        appendShellError("Deployment unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
+        showError("Deployment unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
       }
       pollSessionEvents().catch(() => {});
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "Lateral request failed.");
+      if (target.isCurrent()) showError(error.message || "Lateral request failed.");
     }
     return true;
   }
 
   if (verb === "uid") {
     if (rest.length) {
-      appendShellError("Usage: /uid");
+      showError("Usage: /uid");
       return true;
     }
     if (!target.sessionId) {
-      appendShellError("Select a Go agent session first.");
+      showError("Select a Go agent session first.");
       return true;
     }
-    appendShellEcho(cmd);
+    echoCommand();
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/uid`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
-        appendShellError(data?.error || `HTTP ${status}`);
+        showError(data?.error || `HTTP ${status}`);
         return true;
       }
       pollSessionEvents().catch(() => {});
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "uid request failed.");
+      if (target.isCurrent()) showError(error.message || "uid request failed.");
     }
     return true;
   }
 
   if (verb === "creds") {
-    appendShellEcho(cmd);
+    echoCommand();
     const sub = args[0]?.toLowerCase();
     try {
       if (!sub || sub === "list") {
-        if (args.length > 1) { appendShellError("Usage: /creds list"); return true; }
+        if (args.length > 1) { showError("Usage: /creds list"); return true; }
         const { status, data } = await api("/creds");
         if (!target.isCurrent()) return true;
-        if (status !== 200) { appendShellError(`creds list failed (${status})`); return true; }
+        if (status !== 200) { showError(`creds list failed (${status})`); return true; }
         const creds = data?.creds ?? [];
         if (!creds.length) { appendShellOutput("no credentials stored"); return true; }
         for (const c of creds) {
@@ -3432,26 +3443,26 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
           appendShellOutput(`  ${c.cred_id ?? c.id}  ${identity}`);
         }
       } else if (sub === "add") {
-        if (args.length !== 3 || !args[1]) { appendShellError("Usage: /creds add <domain\\user | user> <password>"); return true; }
+        if (args.length !== 3 || !args[1]) { showError("Usage: /creds add <domain\\user | user> <password>"); return true; }
         const separator = args[1].indexOf("\\");
         const domain = separator < 0 ? "" : args[1].slice(0, separator);
         const user = separator < 0 ? args[1] : args[1].slice(separator + 1);
-        if (!user) { appendShellError("Credential username is required."); return true; }
+        if (!user) { showError("Credential username is required."); return true; }
         const { status, data } = await api("/creds", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain, user, password: args[2] }) });
         if (!target.isCurrent()) return true;
-        if (status !== 200) { appendShellError(`creds add failed (${status}): ${data?.error ?? ""}`); return true; }
+        if (status !== 200) { showError(`creds add failed (${status}): ${data?.error ?? ""}`); return true; }
         appendShellOutput(`stored ${data?.cred_id} (${args[1]})`);
       } else if (sub === "del") {
-        if (args.length !== 3 || args[1] !== "-i" || !args[2]?.trim() || args[2].startsWith("-")) { appendShellError("Usage: /creds del -i <cred_id>"); return true; }
+        if (args.length !== 3 || args[1] !== "-i" || !args[2]?.trim() || args[2].startsWith("-")) { showError("Usage: /creds del -i <cred_id>"); return true; }
         const { status, data } = await api(`/creds/${encodeURIComponent(args[2])}`, { method: "DELETE" });
         if (!target.isCurrent()) return true;
-        if (status !== 200 && status !== 404) { appendShellError(`creds del failed (${status})`); return true; }
+        if (status !== 200 && status !== 404) { showError(`creds del failed (${status})`); return true; }
         appendShellOutput(data?.message ?? (status === 200 ? "deleted" : "not found"));
       } else {
-        appendShellError("Usage: /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt;");
+        showError("Usage: /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt;");
       }
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "creds request failed.");
+      if (target.isCurrent()) showError(error.message || "creds request failed.");
     }
     return true;
   }
@@ -3467,9 +3478,9 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       credentialArgs = args.slice(0, -1);
     }
     const parsed = parseShellCredentials(credentialArgs);
-    if (!parsed) { appendShellError("Usage: /spawnas [-d|--debug] -i <cred_id> | /spawnas [-d|--debug] <DOMAIN\\user | user> <password>"); return true; }
-    if (!target.sessionId) { appendShellError("Select a Go agent session before spawnas."); return true; }
-    appendShellEcho(cmd);
+    if (!parsed) { showError("Usage: /spawnas [-d|--debug] -i <cred_id> | /spawnas [-d|--debug] <DOMAIN\\user | user> <password>"); return true; }
+    if (!target.sessionId) { showError("Select a Go agent session before spawnas."); return true; }
+    echoCommand();
     appendShellOutput("Spawning agent under new identity…");
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/spawnas`, {
@@ -3477,24 +3488,24 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         body: JSON.stringify({ ...parsed.credentials, verify: true, debug }),
       });
       if (!target.isCurrent()) return true;
-      if (status !== 200) { appendShellError(`spawnas failed (${status}): ${data?.error ?? ""}`); return true; }
+      if (status !== 200) { showError(`spawnas failed (${status}): ${data?.error ?? ""}`); return true; }
       // The session event stream renders the agent's launch result.
       if (data?.verify) {
         appendShellOutput(`registered: ${data?.registered ? "yes" : "no"}`);
-        if (data?.registered === false) appendShellError("spawnas registration was not confirmed.");
+        if (data?.registered === false) showError("spawnas registration was not confirmed.");
       }
       pollSessionEvents().catch(() => {});
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "spawnas request failed.");
+      if (target.isCurrent()) showError(error.message || "spawnas request failed.");
     }
     return true;
   }
 
   if (verb === "runas") {
     const parsed = parseShellCredentials(args, true);
-    if (!parsed) { appendShellError("Usage: /runas -i <cred_id> <command...> | /runas <DOMAIN\\user | user> <password> <command...>"); return true; }
-    if (!target.sessionId) { appendShellError("Select a Go agent session before runas."); return true; }
-    appendShellEcho(cmd);
+    if (!parsed) { showError("Usage: /runas -i <cred_id> <command...> | /runas <DOMAIN\\user | user> <password> <command...>"); return true; }
+    if (!target.sessionId) { showError("Select a Go agent session before runas."); return true; }
+    echoCommand();
     appendShellOutput("Running command under new identity…");
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/runas`, {
@@ -3502,10 +3513,10 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         body: JSON.stringify({ ...parsed.credentials, command: parsed.command }),
       });
       if (!target.isCurrent()) return true;
-      if (status !== 200) { appendShellError(`runas failed (${status}): ${data?.error ?? ""}`); return true; }
+      if (status !== 200) { showError(`runas failed (${status}): ${data?.error ?? ""}`); return true; }
       for (const ln of (data?.output ?? "(no output)").split("\n")) appendShellOutput(ln);
     } catch (error) {
-      if (target.isCurrent()) appendShellError(error.message || "runas request failed.");
+      if (target.isCurrent()) showError(error.message || "runas request failed.");
     }
     return true;
   }

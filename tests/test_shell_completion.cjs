@@ -13,7 +13,7 @@ function element() {
   };
 }
 function fixture() {
-  const input = element(), menu = element(), hint = element(), errors = [], calls = [], history = [];
+  const input = element(), menu = element(), hint = element(), errors = [], calls = [], history = [], lines = [];
   const nodes = { '#shell-input': input, '#shell-command-menu': menu, '#shell-completion-hint': hint, '#shell-prompt': element() };
   let lastShellLine = null;
   const context = { document: { createElement: element }, $: key => nodes[key],
@@ -21,10 +21,10 @@ function fixture() {
     getShellHistoryList: () => ['whoami', '/screenshot'], resetShellHistoryNav() {}, resetShellTabCycle() {},
     navigateShellHistory: () => { throw new Error('History must not handle menu navigation'); },
     api: async (...args) => { calls.push(args); return { status: 200, data: {} }; },
-    appendShellError: text => errors.push(text), rememberShellCommand: cmd => {
+    appendShellError: text => { errors.push(text); lines.push({kind: 'error', text}); }, rememberShellCommand: cmd => {
       if (history.at(-1) !== cmd) history.push(cmd);
     },
-    appendShellLine: () => { lastShellLine = element(); return lastShellLine; }, escapeHtml: text => text,
+    appendShellLine: (kind, html) => { lines.push({kind, html}); lastShellLine = element(); return lastShellLine; }, escapeHtml: text => text,
     createCommandBlock() {}, setTimeout() {}, pollSessionEvents: async () => {},
   };
   vm.createContext(context);
@@ -41,7 +41,7 @@ function fixture() {
   context.bindShellInputCompletion();
   const type = value => { input.value = value; input.listeners.input(); };
   const key = value => { let prevented = false; input.listeners.keydown({ key: value, preventDefault() { prevented = true; } }); return prevented; };
-  return { context, input, menu, hint, errors, calls, history, nodes, type, key,
+  return { context, input, menu, hint, errors, calls, history, lines, nodes, type, key,
     get lastShellLine() { return lastShellLine; } };
 }
 test('slash immediately displays commands; typing and backspacing filter live', () => {
@@ -210,6 +210,44 @@ test('failed validation and HTTP requests remain recallable as original input', 
     assert.deepEqual(f.history, [command]);
     assert.deepEqual(f.errors, ['denied']);
   }
+});
+
+test('invalid commands appear once before their error without being queued', async () => {
+  for (const command of ['/unknown', '/spawn -i cred-fixture', '/lateral psexec',
+    '/make_token', '/spawnas "unterminated', '/embeddings run']) {
+    const f = fixture();
+    f.type(command);
+    await f.context.runCommand(false);
+    assert.equal(f.calls.length, 0, command);
+    assert.deepEqual(f.lines.map(line => line.kind), ['echo', 'error'], command);
+    assert.ok(f.lines[0].html.endsWith(command), command);
+    assert.deepEqual(f.history, [command]);
+  }
+  const f = fixture();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    f.type('/unknown');
+    await f.context.runCommand(false);
+  }
+  assert.deepEqual(f.lines.map(line => line.kind), ['echo', 'error', 'echo', 'error']);
+});
+
+test('HTTP rejection keeps a single command echo before the error', async () => {
+  const f = fixture();
+  f.context.api = async () => ({status: 403, data: {error: 'denied'}});
+  f.type('/uid');
+  await f.context.runCommand(false);
+  assert.deepEqual(f.lines.map(line => line.kind), ['echo', 'error']);
+  assert.deepEqual(f.errors, ['denied']);
+});
+
+test('invalid command text uses the existing escaped echo renderer', async () => {
+  const f = fixture();
+  f.context.escapeHtml = text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  f.type('/unknown <img src=x onerror=alert(1)>');
+  await f.context.runCommand(false);
+  assert.match(f.lines[0].html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.ok(!f.lines[0].html.includes('<img'));
+  assert.equal(f.calls.length, 0);
 });
 
 test('panel screenshot/download history is replayable; exfil mode labels are excluded', async () => {

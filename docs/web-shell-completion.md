@@ -20,6 +20,19 @@ use `/exec <command>` for execution with a wait in the CLI.
 
 The slash menu lists matching internal commands. Ordinary shell input retains its history completion hint.
 
+Invalid commands appear in the selected session's transcript before their error
+message. This includes unknown slash commands, malformed quoting, missing
+arguments, and rejected requests. Input rejected during validation uses a plain
+command echo without a pending execution or transfer block. Request failures
+reuse an existing command echo when present. Each submission is shown once,
+including retries. Delayed failures do not appear in a different session after
+switching sessions.
+
+Inside `dispatchShellMetaCommand`, `echoCommand` retains each valid command's
+existing display options and prevents duplicate echoes. `showError` ensures a
+command echo exists, creating a plain echo only when needed, then displays the
+error. Both operations use the captured session target.
+
 ## History sources
 
 1. Submitted shell input (`runCommand`) is saved before validation or network

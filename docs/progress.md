@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-07 — Show invalid WebUI shell commands before errors
+
+- Echo rejected slash input before its error so the transcript retains the
+  command that failed. Preserve successful command/transfer blocks and avoid
+  duplicate echoes after HTTP failures. Invalid input remains local.
+- Cover ordering, repeat submissions, malformed quoting, escaped text, and
+  delayed success/error replies after a session switch. Update embedding-shell
+  failure expectations to a plain echo without a pending execution block.
+- Validation: 40 focused shell/embedding tests, broader WebUI contracts,
+  operator parity, JavaScript syntax, and Markdown lint pass. Frontend quality
+  review found no blocking issues; browser-rendered visual QA was not performed.
+
 ## 2026-11-07 — Fix the native service-deletion panic
 
 - Native Windows CI reproduced a process-ending panic when lazy-loading the

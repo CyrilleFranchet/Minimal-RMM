@@ -29,7 +29,9 @@ test('invalid syntax stays local without queuing or claiming success', async () 
     const f = fixture();
     assert.equal(await f.run(cmd), true);
     assert.equal(f.calls.length, 0, cmd);
-    assert.equal(f.echoes.length, 0);
+    assert.equal(f.echoes.length, 1);
+    assert.equal(f.echoes[0][0], cmd);
+    assert.equal(f.echoes[0][1], undefined);
     assert.match(f.errors[0], /Usage:/);
   }
 });
@@ -39,7 +41,9 @@ test('missing session and API failures do not echo a queued command', async () =
   await missing.run(cmd); assert.equal(missing.calls.length, 0); assert.match(missing.errors[0], /Select a session/);
   for (const response of [{ status: 404, data: { error: 'profile_not_found' } }, new Error('offline')]) {
     const f = fixture(response); await f.run(cmd);
-    assert.equal(f.echoes.length, 0); assert.equal(f.errors.length, 1);
+    assert.equal(f.echoes.length, 1); assert.equal(f.errors.length, 1);
+    assert.equal(f.echoes[0][0], cmd);
+    assert.equal(f.echoes[0][1], undefined);
   }
 });
 test('delayed embedding acknowledgement stays out of the newly selected shell', async () => {
@@ -54,4 +58,20 @@ test('delayed embedding acknowledgement stays out of the newly selected shell', 
   assert.equal(f.calls[0].body.session_ref, 'go-session');
   assert.equal(f.echoes.length, 0);
   assert.equal(f.errors.length, 0);
+});
+
+test('delayed embedding failures cannot echo into a different session', async () => {
+  for (const outcome of ['http-error', 'network-error']) {
+    let resolve, reject;
+    const response = new Promise((done, fail) => { resolve = done; reject = fail; });
+    const f = fixture(response);
+    const operation = f.run('/embeddings run strategy --document C:/Lab');
+    f.context.state.selectedId = 'other-session';
+    f.context.state.selectionGeneration++;
+    if (outcome === 'network-error') reject(new Error('offline'));
+    else resolve({ status: 404, data: { error: 'profile_not_found' } });
+    await operation;
+    assert.equal(f.echoes.length, 0, outcome);
+    assert.equal(f.errors.length, 0, outcome);
+  }
 });
