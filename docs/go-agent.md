@@ -536,6 +536,14 @@ configured deployment tools or the WebUI generator for a ready-to-run artifact.
 The shared router is implemented by `buildCommandInvocation` in
 `agent-go/main.go`.
 
+On Windows, `newCommand` in `platform_windows.go` supplies the CMD command
+line explicitly as `cmd.exe /d /s /c "<body>"`. The outer quotes delimit the
+command tail; quotes inside the operator's command are preserved literally.
+This bypasses Go's default Windows argument escaping, whose backslash-escaped
+quotes are incompatible with CMD. `TestWindowsCMDQuotedCommands` exercises
+quoted arguments, a script path containing spaces, and command operators on
+Windows without changing system state.
+
 | Input | Windows behavior |
 |-------|------------------|
 | Bare command | Runs with `cmd.exe /d /c`; an exact `ls` is normalized to `dir` |

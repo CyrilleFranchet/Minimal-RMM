@@ -36,6 +36,11 @@ func newCommand(name string, args ...string) *exec.Cmd {
 	command := exec.CommandContext(agentContext, name, args...)
 	command.WaitDelay = 2 * time.Second
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	// CMD parses its command tail itself; Go's default argv quoting inserts
+	// backslashes before quotes, which CMD treats as literal characters.
+	if strings.EqualFold(filepath.Base(name), "cmd.exe") && len(args) == 3 && args[0] == "/d" && args[1] == "/c" {
+		command.SysProcAttr.CmdLine = syscall.EscapeArg(name) + ` /d /s /c "` + args[2] + `"`
+	}
 	return command
 }
 

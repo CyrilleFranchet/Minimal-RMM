@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-07 — Preserve quotes in Go Windows CMD commands
+
+- Windows `newCommand` supplies an explicit `/d /s /c` command tail for
+  ordinary CMD invocations, preserving embedded quotes instead of applying
+  Go's incompatible backslash escaping. Stage1 is unrelated to this path.
+- Added harmless Windows runtime regressions for quoted arguments, script
+  paths containing spaces, and shell operators.
+- Windows CI now selects the new CMD runtime regressions explicitly.
+- Validation: `make go-test` passed (host tests, Windows amd64/arm64 builds,
+  and MinGW C launcher/service builds); Windows amd64 tests cross-compiled.
+  Native Windows runtime validation remains pending CI execution.
+
 For current runtime behavior, use the [documentation wiki](README.md) and its
 [architecture overview](architecture.md). This file remains the chronological
 implementation log.

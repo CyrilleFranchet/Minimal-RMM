@@ -66,6 +66,7 @@ jobs:
           $tests += '|ServerRequest|SpawnUsesOnlyCreateProcessA'
           $tests += '|WindowsDetachedSpawn|WindowsExplicitLogonHasNoFallback'
           $tests += '|WindowsRunasOutputLifecycle'
+          $tests += '|WindowsCMDQuotedCommands'
           $tests += '|RunasOutputSnapshot'
           $tests += '|WindowsLogonCredentialEncoding'
           $tests += '|WindowsRegistration)'
