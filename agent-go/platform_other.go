@@ -87,7 +87,7 @@ func runLateralChild([]string) error {
 	return errors.New("lateral movement requires the Windows agent build")
 }
 
-func lateralPsexecGoroutine(ctx context.Context, payload lateralPayload) (string, error) {
+func lateralThreadGoroutine(ctx context.Context, payload lateralPayload) (string, error) {
 	return "", errors.New("lateral movement requires the Windows agent build")
 }
 

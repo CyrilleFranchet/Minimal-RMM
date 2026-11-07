@@ -228,6 +228,17 @@ func (s *wsmanScope) closeHandle(native wsmanCaller, name string, handle uintptr
 // winrmCreateProcess uses the native WSMan shell API with default thread
 // credentials. The existing detach command must finish before its shell closes.
 func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string) error {
+	// Initialize the shared COM security policy before WSMan can initialize
+	// it implicitly, so a later WMI command can use thread-token cloaking.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded); hr != 0 && hr != 1 {
+		return fmt.Errorf("CoInitializeEx for WinRM failed: 0x%08x", hr)
+	}
+	defer procCoUninitialize.Call()
+	if err := initializeWMISecurity(); err != nil {
+		return err
+	}
 	native, err := loadWSMan()
 	if err != nil {
 		return err

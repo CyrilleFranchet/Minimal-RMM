@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-11-07 — Close worker identity and completion races
+
+- Capture an owned duplicate of the active token under the identity lock
+  before starting a lateral worker. Replacement or revocation cannot change
+  the identity chosen for that operation, and the worker closes its own handle.
+- Report final completion only after clearing impersonation and closing the
+  captured handle. Failed cleanup suppresses success, returns the identity
+  boundary error, and keeps the thread pinned until exit for runtime disposal.
+- Reject canceled dispatches before capture and recheck cancellation before
+  invoking the move. Progress acknowledgments remain explicitly nonfinal.
+- Add native token snapshot and injected cleanup-order/failure regressions.
+- Validation: full `make check`, uncached `make go-test`, host vet, SDK layout
+  compilation with warnings as errors, formatting, and whitespace checks passed.
+  Windows amd64/arm64 normal/debug test binaries cross-compiled. Independent
+  review found no remaining production blockers. Native Windows test execution
+  and remote protocol/account verification remain unavailable on this host.
+
+## 2026-11-07 — Use impersonated worker threads for WinRM and WMI
+
+- Route every lateral execution method through the existing pinned worker
+  pattern rather than creating a token-assigned local child for WMI/WinRM.
+  This removes the local process-creation path that produced error 1314.
+- Generalize `lateralThreadGoroutine` and introduce `runLateralThread` for
+  local identity regression coverage without remote execution.
+- Initialize COM security once with dynamic cloaking and apply cloaking to
+  WMI proxies. Establish the same policy before WinRM initializes WSMan;
+  fail closed if process-wide COM security cannot be configured.
+- Preserve callback token suspension/restoration and worker cleanup. Add
+  native Windows identity and deadline tests to the CI selection.
+- Deadlines bound the caller's wait, not native operations; timed-out workers
+  may still complete. Cleanup-retry children and unrelated subprocesses remain.
+- Validation: Go normal/debug tests and Windows builds passed; Windows test
+  binaries cross-compiled for amd64/arm64 in both modes. Repository tests,
+  parity, UI contracts, lint, host vet, and whitespace checks passed. Native
+  Windows identity tests and remote WinRM/WMI execution remain unverified.
+
 ## 2026-11-07 — Complete WinRM authentication review fixes
 
 - Resolve `WSManSetSessionOption` and enable implicit Negotiate credentials

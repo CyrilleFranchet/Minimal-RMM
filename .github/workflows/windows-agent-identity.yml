@@ -35,6 +35,7 @@ jobs:
         shell: pwsh
         run: |
           $tests = '^Test(Debug|SpawnasDebug|SpawnDebug|LateralDebug'
+          $tests += '|LateralThread'
           $tests += '|SpawnEnvironment'
           $tests += '|NormalBuild|WinRMDetach'
           $tests += '|WMIAuthentication|WMICreateProcess)'

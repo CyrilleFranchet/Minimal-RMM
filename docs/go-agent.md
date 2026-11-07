@@ -387,14 +387,23 @@ library — never `wmic.exe`, `winrs.exe`, or a PowerShell wrapper.
 
 Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
 
-- The parent runs the whole move in a bounded `--lateral-child` process
-  (`newBoundedCommand`, default 300 s) so a stuck remote operation can
-  never block the synchronous command loop. The child inherits the
-  active `make_token` identity through `applyCommandToken`, so SMB, SCM,
-  WMI, and WinRM authentication use the alternate credentials; without a
-  token the move uses the agent's own identity and requires local admin
-  rights on the target.
-- Staging (`wmiexec`, `winrm`): the child copies its own executable to
+- `lateralThreadGoroutine` runs every method through `runLateralThread` on a
+  pinned worker, applying the active `make_token` identity before SMB and
+  native execution calls. It clears impersonation before releasing its thread;
+  failed cleanup makes the agent's identity boundary terminal. The calling
+  command thread keeps its own token. No local child process is created for
+  these execution paths, avoiding token-assigned process creation privileges.
+  Without a token, the worker uses the agent's identity.
+- `captureLateralToken` duplicates the selected token under the identity lock
+  before dispatch; replacing or revoking the command thread's handle does not
+  change a queued worker's identity. `runLateralThreadWithCleanup` publishes
+  its final result only after `clearLateralWorkerIdentity` and handle cleanup.
+  Failed cleanup suppresses success and makes the identity boundary terminal.
+- WMI initializes COM security once with dynamic cloaking and applies the
+  same policy to its proxy. WinRM establishes this shared policy before
+  WSMan can initialize it implicitly. Failed initialization stops the command
+  rather than silently using the process identity for WMI authentication.
+- Staging (`wmiexec`, `winrm`): the worker copies the source executable to
   `\\<host>\ADMIN$\System32\<stem>-<random>.exe`. `remote_name` supplies
   the filename stem (default `minimal-rmm-agent.exe`); each deployment adds
   a fresh 128-bit random value encoded as 32 lowercase hexadecimal characters.
@@ -752,14 +761,22 @@ independently of a lost launch acknowledgment. The Go `derivedSessionID`
 fallback uses 16 cryptographically random bytes in the same hex format for
 legacy commands. Existing sessions keep their original IDs.
 
-The lateral command starts a local bounded worker process, not a Unix fork.
-The Go `fork/exec` error label can also appear on Windows. The worker isolates
-blocking remote calls and receives the active command token. Attaching that
-token uses Go's `CreateProcessAsUser` path; Windows error 1314 means the local
-caller lacks a required process-creation privilege. This failure occurs before
-the worker contacts the remote host and does not establish whether remote
-authentication would succeed. The current worker/token implementation is
-unchanged by the shell feedback fixes.
+Lateral execution uses a pinned worker thread for PsExec, WMI, and WinRM.
+Older builds used token-assigned local child processes for WMI and WinRM,
+which could fail with Windows error 1314 before contacting the target.
+Rebuild and replace the source agent to use the thread-based execution path.
+Legacy child entry points and the separate cleanup-retry child remain for
+compatibility; this change covers lateral execution, not arbitrary subprocesses.
+
+The command deadline stops waiting but cannot terminate a blocking native
+operation. A timed-out worker can continue staging or launching remotely;
+check target registration before retrying. Server requests retain the existing
+capture/revert/restore boundary for their actual calling thread.
+`TestLateralThreadIdentity` covers worker logon identity and server-request
+restoration; `TestLateralThreadDeadline` covers an operation outliving its wait.
+`TestLateralThreadTokenSnapshot` verifies token-handle ownership across
+revocation. `TestLateralThreadCleanupFailure` checks final-result ordering and
+failure propagation when worker identity cleanup fails.
 
 ### Cleanup ownership and outcomes
 

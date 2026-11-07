@@ -187,9 +187,8 @@ func reestablishThreadToken() {
 
 // applyCommandToken gives an operator command child the active network
 // identity via SysProcAttr.Token (CreateProcessAsUserW / CreateProcessWithTokenW).
-// This path is used for wmiexec and winrm child processes; psexec uses
-// reestablishThreadToken on its goroutine's thread instead (no privilege
-// requirement). After a call that uses SysProcAttr.Token, call
+// Lateral execution uses pinned worker impersonation instead. After a call
+// that uses SysProcAttr.Token, call
 // reestablishThreadToken to restore the creating goroutine's thread token.
 func applyCommandToken(command *exec.Cmd) {
 	if identityBoundaryFault.Load() {

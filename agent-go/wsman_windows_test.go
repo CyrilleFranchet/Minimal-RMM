@@ -376,6 +376,15 @@ func TestWSManImplicitCredentialsOptionFailure(t *testing.T) {
 // Real DLL resolution and session creation are local operations. No shell,
 // remote command, alternate credentials, or running WinRM service is needed.
 func TestWSManLocalSession(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded); hr != 0 && hr != 1 {
+		t.Fatalf("CoInitializeEx: 0x%x", hr)
+	}
+	defer procCoUninitialize.Call()
+	if err := initializeWMISecurity(); err != nil {
+		t.Fatal(err)
+	}
 	native, err := loadWSMan()
 	if err != nil {
 		t.Fatal(err)
