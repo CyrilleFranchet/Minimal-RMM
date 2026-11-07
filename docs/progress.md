@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-11-07 — Use the documented default-process WinRM path
+
+- Without make_token, pass NULL authentication credentials to WSManCreateSession
+  instead of a non-null structure with empty account fields. The clean worker
+  uses the process identity, with Windows choosing the authentication mechanism.
+- Preserve explicit selected credentials when make_token is active. Enable
+  implicit Negotiate for all default sessions; do not change host-trust policy.
+- Add default-process worker and DNS/IP native-argument regressions and update
+  the local DLL session check. A live retest is still needed for error 1312.
+- The referenced run-on-host script changes beacon sleep and runs broad default
+  commands. It was inspected, not executed. A read-only operator session-list
+  check found no configured API token, preventing live source inspection here.
+- Validation: full repository checks and uncached Go tests/builds passed,
+  Windows amd64/arm64 normal/debug test binaries cross-compiled, and host vet,
+  formatting, and whitespace checks passed. Native Windows execution and the
+  reported authentication failure remain unverified.
+
 ## 2026-11-07 — Supply selected WinRM credentials explicitly
 
 - When make_token is active, snapshot its credentials and owned token handle

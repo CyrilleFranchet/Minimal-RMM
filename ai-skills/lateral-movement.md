@@ -42,7 +42,9 @@ validation. The following execution methods are examples, not a ranked checklist
 Authentication material (password, hash, or ticket) is separate from the
 execution method; possession alone establishes neither permission nor access.
 Agent-side WMI execution selects NTLM for IP literals and Kerberos for DNS
-names; WinRM selects Negotiate for IP literals and Kerberos for DNS names.
+names. With make_token, WinRM selects Negotiate for IP literals and Kerberos
+for DNS names. Without make_token, WinRM uses process-default credentials
+and Windows negotiation; make_token is optional.
 SMB staging and psexec retain Windows negotiation, including possible NTLM
 fallback for DNS names. A DNS target does not guarantee Kerberos for the
 whole operation. WinRM's implicit Negotiate credentials require the target

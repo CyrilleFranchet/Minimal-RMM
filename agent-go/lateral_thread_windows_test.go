@@ -14,6 +14,31 @@ import (
 	"unsafe"
 )
 
+// Without make_token, a clean worker uses the process identity and does not
+// manufacture explicit credentials from the process account's display name.
+func TestLateralThreadDefaultProcessIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := runLateralThread(ctx, lateralPayload{Method: "winrm"}, func(payload lateralPayload, _ func(string)) (string, error) {
+		if payload.winrmIdentity != nil {
+			return "", errors.New("unexpected explicit default credentials")
+		}
+		var token syscall.Token
+		ok, _, queryErr := advapi32.NewProc("OpenThreadToken").Call(^uintptr(1), 0x0008, 1, uintptr(unsafe.Pointer(&token)))
+		if ok != 0 {
+			token.Close()
+			return "", errors.New("default worker retained a thread token")
+		}
+		if queryErr != syscall.Errno(1008) {
+			return "", queryErr
+		}
+		return "process defaults", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestLateralThreadIdentity exercises the actual worker and callback boundary
 // without contacting any remote host or launching a child process.
 func TestLateralThreadIdentity(t *testing.T) {

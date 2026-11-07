@@ -189,11 +189,11 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		if connection != wantURL {
 			f.t.Fatalf("WinRM connection string = %q, want %q", connection, wantURL)
 		}
-		if args[3] == 0 {
-			f.t.Fatal("missing authentication credentials")
-		}
-		credentials := (*wsmanAuthCredentials)(unsafe.Pointer(args[3]))
 		if f.wantIdentity != nil {
+			if args[3] == 0 {
+				f.t.Fatal("missing explicit authentication credentials")
+			}
+			credentials := (*wsmanAuthCredentials)(unsafe.Pointer(args[3]))
 			user := f.wantIdentity.user
 			if f.wantIdentity.domain != "" {
 				user = f.wantIdentity.domain + `\` + user
@@ -209,22 +209,22 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 				f.t.Fatal(err)
 			}
 			f.passwordBuffer = unsafe.Slice((*uint16)(unsafe.Pointer(credentials.password)), len(encoded))
-		} else if credentials.username != 0 || credentials.password != 0 {
-			f.t.Fatal("session credentials must keep the implicit thread identity")
-		}
-		wantAuth := f.wantAuth
-		if wantAuth == 0 {
-			wantAuth = 0x10 // Existing fixtures use the DNS target lab-host.
-		}
-		if credentials.mechanism != wantAuth {
-			f.t.Fatalf("auth mechanism: got 0x%x want 0x%x", credentials.mechanism, wantAuth)
+			wantAuth := f.wantAuth
+			if wantAuth == 0 {
+				wantAuth = 0x10
+			}
+			if credentials.mechanism != wantAuth {
+				f.t.Fatal("explicit authentication mechanism mismatch")
+			}
+		} else if args[3] != 0 {
+			f.t.Fatal("process-default authentication must pass a NULL credential pointer")
 		}
 		if name == f.fail {
 			return 5
 		}
 		output(5, 20)
 	case "WSManSetSessionOption":
-		if f.wantIdentity != nil || f.wantAuth != 0x4 || args[0] != 20 || args[1] != 32 || args[2] == 0 {
+		if f.wantIdentity != nil || args[0] != 20 || args[1] != 32 || args[2] == 0 {
 			f.t.Fatal("unexpected implicit-credential session option")
 		}
 		// Read the SDK's DWORD union member independently of wsmanData.
@@ -236,7 +236,7 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		}
 		f.implicitCredentials = true
 	case "WSManCreateShell":
-		if f.wantAuth == 0x4 && f.wantIdentity == nil && !f.implicitCredentials {
+		if f.wantIdentity == nil && !f.implicitCredentials {
 			f.t.Fatal("Negotiate shell created before enabling implicit credentials")
 		}
 		if args[0] != 20 || args[1] != 0 || args[3] != 0 || args[4] != 0 || args[5] != 0 {
@@ -318,7 +318,7 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 }
 
 func TestWSManNativeBoundaryAndCleanup(t *testing.T) {
-	stages := []string{"", "WSManInitialize", "WSManCreateSession", "WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseOperation", "WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
+	stages := []string{"", "WSManInitialize", "WSManCreateSession", "WSManSetSessionOption", "WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseOperation", "WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
 	for _, stage := range stages {
 		t.Run(fmt.Sprintf("failure_%s", stage), func(t *testing.T) {
 			f := &wsmanFixture{t: t, fail: stage}
@@ -333,7 +333,7 @@ func TestWSManNativeBoundaryAndCleanup(t *testing.T) {
 				}
 			}
 			if stage == "" {
-				expected := []string{"WSManInitialize", "WSManCreateSession", "WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseOperation", "WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
+				expected := []string{"WSManInitialize", "WSManCreateSession", "WSManSetSessionOption", "WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseOperation", "WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
 				if !reflect.DeepEqual(f.calls, expected) {
 					t.Fatalf("cleanup order: %v", f.calls)
 				}
@@ -394,10 +394,27 @@ func TestWSManAuthMechanismFollowsHostForm(t *testing.T) {
 		{"10.0.0.8", 0x4, "http://10.0.0.8:5985/wsman"},
 		{"fd00::8", 0x4, "http://[fd00::8]:5985/wsman"},
 	} {
-		f := &wsmanFixture{t: t, wantAuth: tc.want, wantURL: tc.url}
+		identity := &winrmCredentials{domain: "LAB", user: "fixture", password: "fixture"}
+		f := &wsmanFixture{t: t, wantAuth: tc.want, wantURL: tc.url, wantIdentity: identity}
 		workspace := "fixture-workspace"
-		if err := winrmCreateProcessWithAPI(f, tc.host, `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second); err != nil {
+		if err := winrmCreateProcessWithIdentityAPI(f, tc.host, `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity); err != nil {
 			t.Fatalf("host %s: %v", tc.host, err)
+		}
+	}
+}
+
+// Default credentials must use NULL for both DNS and IP targets; mechanism
+// negotiation then belongs to Windows rather than a partial account structure.
+func TestWSManDefaultProcessIdentity(t *testing.T) {
+	for host, url := range map[string]string{
+		"lab-host": "http://lab-host:5985/wsman",
+		"10.0.0.8": "http://10.0.0.8:5985/wsman",
+		"fd00::8":  "http://[fd00::8]:5985/wsman",
+	} {
+		f := &wsmanFixture{t: t, wantURL: url}
+		workspace := "fixture-workspace"
+		if err := winrmCreateProcessWithAPI(f, host, `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
@@ -479,19 +496,16 @@ func TestWSManLocalSession(t *testing.T) {
 	if session == 0 {
 		t.Fatal("missing session handle")
 	}
-	// The credentials structure must also be accepted by the real client
-	// with the implicit thread identity; session creation stays local.
+	// The real client must also accept the process-default path for an IP URL.
 	connection, err := syscall.UTF16PtrFromString("http://127.0.0.1:5985/wsman")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.KeepAlive(connection)
-	credentials := wsmanAuthCredentials{mechanism: wsmanAuthMechanism("127.0.0.1")}
-	scope.keep(&credentials)
 	var configuredSession uintptr
 	scope.keep(&configuredSession)
-	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, uintptr(unsafe.Pointer(&credentials)), 0, uintptr(unsafe.Pointer(&configuredSession))); code != 0 {
-		t.Fatalf("create session with auth mechanism: 0x%x", code)
+	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, 0, 0, uintptr(unsafe.Pointer(&configuredSession))); code != 0 {
+		t.Fatalf("create session with process defaults: 0x%x", code)
 	}
 	defer native.call("WSManCloseSession", configuredSession, 0)
 	if configuredSession == 0 {

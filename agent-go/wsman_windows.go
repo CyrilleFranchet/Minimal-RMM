@@ -83,8 +83,8 @@ type wsmanError struct {
 	detail, language, machine, plugin *uint16
 }
 
-// wsmanAuthCredentials mirrors WSMAN_AUTHENTICATION_CREDENTIALS. Its account
-// fields hold selected explicit credentials, or remain null for thread defaults.
+// wsmanAuthCredentials mirrors WSMAN_AUTHENTICATION_CREDENTIALS for selected
+// explicit credentials. Default identity uses a NULL structure pointer instead.
 type wsmanAuthCredentials struct {
 	mechanism uint32
 	_         uint32
@@ -92,7 +92,7 @@ type wsmanAuthCredentials struct {
 	password  uintptr
 }
 
-// wsmanAuthMechanism selects the WSMan authentication mechanism from the
+// wsmanAuthMechanism selects the explicit-credential mechanism from the
 // target's written form: Kerberos for DNS names, Negotiate (NTLM against an
 // IP target under default Windows configuration) for IP literals.
 func wsmanAuthMechanism(host string) uint32 {
@@ -347,7 +347,13 @@ func winrmCreateProcessWithIdentityAPI(native wsmanCaller, host, agentPath, sess
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManDeinitialize failed: 0x%08x", code))
 		}
 	}()
-	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, uintptr(unsafe.Pointer(&credentials)), 0, uintptr(unsafe.Pointer(&session))); code != 0 {
+	// NULL is the API's documented default-credential path. A structure is
+	// supplied only when both selected account fields have been populated.
+	var authentication uintptr
+	if identity != nil {
+		authentication = uintptr(unsafe.Pointer(&credentials))
+	}
+	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, authentication, 0, uintptr(unsafe.Pointer(&session))); code != 0 {
 		return fmt.Errorf("WSManCreateSession(%s) failed: 0x%08x", host, code)
 	}
 	defer func() {
@@ -355,7 +361,7 @@ func winrmCreateProcessWithIdentityAPI(native wsmanCaller, host, agentPath, sess
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManCloseSession failed: 0x%08x", code))
 		}
 	}()
-	if credentials.mechanism == wsmanAuthNegotiate && identity == nil {
+	if identity == nil {
 		// The DWORD union member is at offset 8, shared with binary length.
 		// This enables credentials for this session; host-trust policy remains
 		// enforced by WinRM. Do not change TrustedHosts or certificate checks.

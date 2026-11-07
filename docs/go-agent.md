@@ -429,7 +429,7 @@ Modules:
 | `wmiexec` | Native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`, no PowerShell |
 | `winrm` | Native WSMan client (`wsman_windows.go`) through `WsmSvc.dll` — the library `winrs.exe` itself uses: `WSManInitialize`, `WSManCreateSession`, `WSManCreateShell`, `WSManRunShellCommand`, receive until the command's Done state, then close. The remote command runs the agent with `--lateral-detach`, which re-registers itself as a local SCM service and exits: WinRM terminates a shell's process tree when the shell closes, while the SCM-started instance runs outside that job object. No `winrs.exe`, no `wmic.exe` |
 
-WMI and WSMan execution select authentication using the target's written
+WMI and explicit-credential WSMan execution select authentication using the target's written
 form (`lateralHostIsIP` in `lateral.go`). This selection does not govern SMB
 staging or guarantee Kerberos for the whole operation.
 
@@ -442,13 +442,22 @@ staging or guarantee Kerberos for the whole operation.
   with the target's `HOST/<host>` machine-account SPN as the server
   principal, so the connection and proxy use the same identity; IP targets keep
   the null authority and `RPC_C_AUTHN_WINNT` (NTLM).
-- `winrm`: `WSManCreateSession` receives a `WSMAN_AUTHENTICATION_CREDENTIALS`
+- `winrm` with make_token: `WSManCreateSession` receives a `WSMAN_AUTHENTICATION_CREDENTIALS`
   structure with `WSMAN_FLAG_AUTH_KERBEROS` for DNS names and
   `WSMAN_FLAG_AUTH_NEGOTIATE` for IP targets. The native WSMan client
   exposes no direct NTLM flag; IP targets normally negotiate NTLM (Windows
   can support IP SPNs when explicitly configured). With `make_token` active,
   WSMan receives the selected username/password explicitly; SMB still uses
-  the captured thread token. Without make_token, WSMan uses thread defaults.
+  the captured thread token.
+
+Without make_token, `WSManCreateSession` receives a NULL authentication
+pointer, the documented path for the current thread's default credentials.
+The clean worker has no impersonation token and therefore uses the process
+identity. Windows selects the authentication mechanism in this mode; DNS
+does not enforce a Kerberos-only policy. Existing WinRM host-trust policy and
+the logon session's available credentials still determine authentication.
+`TestWSManDefaultProcessIdentity` checks the NULL argument for DNS/IP URLs;
+`TestLateralThreadDefaultProcessIdentity` checks the clean worker identity.
 
 For Negotiate with default credentials, the agent sets the session-scoped
 `WSMAN_OPTION_ALLOW_NEGOTIATE_IMPLICIT_CREDENTIALS` DWORD to 1 before
@@ -486,8 +495,8 @@ includes this test in both normal and debug builds.
 The native `WSManCreateSession` binding supplies all six API arguments: an
 authentication-credentials structure selecting the mechanism (see the
 authentication paragraph above) and a null proxy pointer before the session
-output pointer. The account fields contain selected make_token credentials,
-or remain null when using the current thread's default identity.
+output pointer. Selected make_token credentials populate the account fields;
+default identity uses a NULL authentication pointer, not empty account fields.
 Agents built before this correction can fail locally with `0x803380ba`
 (`ERROR_WSMAN_CLIENT_CREATESESSION_NULL_PARAM`); rebuild and replace the
 source agent to pick up the corrected binding.
