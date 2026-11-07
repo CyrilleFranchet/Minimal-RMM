@@ -143,6 +143,36 @@ test('lateral validates method and posts method and host', async () => {
   assert.deepEqual(f.history, ['/lateral psexec ws01.lab.local']);
 });
 
+test('lateral renders results only through events and preserves registration warnings', async () => {
+  for (const method of ['wmiexec', 'psexec', 'winrm']) {
+    for (const registered of [true, false]) {
+      for (const earlyEvent of [true, false]) {
+        const f = fixture();
+        const result = registered ? `lateral started: method=${method} host=ws01 target session=child`
+          : 'Lateral failed: provider failure';
+        let polls = 0, emitted = false;
+        const emit = () => {
+          if (emitted) return;
+          emitted = true;
+          f.context.appendShellLine('output', `<pre>${result}</pre>`);
+        };
+        f.context.api = async () => {
+          if (earlyEvent) emit();
+          return {status: 200, data: {registered, output: result}};
+        };
+        f.context.pollSessionEvents = async () => { polls++; emit(); };
+        f.type(`/lateral ${method} ws01`);
+        await f.context.runCommand(false);
+        assert.equal(polls, 1);
+        assert.equal(f.lines.filter(line => line.html?.includes(result)).length, 1);
+        assert.equal(f.lines.filter(line => line.html?.includes('waiting for the next beacon')).length, 1);
+        assert.equal(f.errors.length, registered ? 0 : 1);
+        if (!registered) assert.match(f.errors[0], /Deployment unconfirmed/);
+      }
+    }
+  }
+});
+
 test('uid posts directly without arguments', async () => {
   const settle = () => new Promise(resolve => setImmediate(resolve));
   const f = fixture(); f.type('/uid'); await f.context.runCommand(false); await settle();

@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-11-07 — Render lateral results once in the WebUI
+
+- Let session events render lateral agent results, removing the duplicate
+  HTTP-response output. Preserve waiting messages and registration warnings.
+- Cover all three methods, success/failure, and events arriving before or
+  after the HTTP response in the shell regression suite.
+- Validation: 36 shell tests, operator parity, WebUI contracts, JavaScript
+  syntax, and diff whitespace checks pass. The redirect contract test needed
+  an approved rerun to open its loopback listener. Browser visual QA was not run.
+
 ## 2026-11-07 — Store debug traces by session in Windows Temp
 
 - Write debug traces to the Windows installation's `Temp/<session-id>.log`

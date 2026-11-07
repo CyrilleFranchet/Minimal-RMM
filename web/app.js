@@ -3387,7 +3387,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         showError(data?.error || `HTTP ${status}`);
         return true;
       }
-      appendShellLine("output", `<pre>${escapeHtml(data.output || JSON.stringify(data, null, 2))}</pre>`);
+      // The session event stream renders the agent's lateral result once.
       if (!data.registered) {
         showError("Deployment unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
       }

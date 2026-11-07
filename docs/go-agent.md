@@ -472,6 +472,10 @@ also compiles as C with MinGW. These
 checks do not establish remote authentication, staging, or detach behavior;
 those still require an authorized Windows lab.
 
+The WebUI renders the agent result through session events once, while the
+HTTP response supplies registration status. Waiting messages and unconfirmed
+registration warnings remain visible.
+
 Result contract: an acknowledged launch answers
 `lateral started: method=<method> host=<host> target session=<id>`; the
 psexec handshake also carries `service=<name> binary=<name>` so cleanup
