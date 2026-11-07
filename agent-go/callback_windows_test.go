@@ -271,19 +271,50 @@ func TestWindowsRunasOutputLifecycle(t *testing.T) {
 			os.Exit(7)
 		case "timeout":
 			time.Sleep(30 * time.Second)
-		case "descendant":
+		case "descendant", "continuous-descendant":
 			child := exec.Command(os.Args[0], "-test.run=^TestWindowsRunasOutputLifecycle$")
-			child.Env = append(os.Environ(), "RMM_RUNAS_OUTPUT_FIXTURE=hold")
+			childMode := "hold"
+			if mode == "continuous-descendant" {
+				childMode = "write"
+			}
+			child.Env = append(os.Environ(), "RMM_RUNAS_OUTPUT_FIXTURE="+childMode)
 			child.Stdout, child.Stderr = os.Stdout, os.Stderr
 			if err := child.Start(); err != nil {
 				os.Exit(3)
 			}
+			if pidFile := os.Getenv("RMM_RUNAS_WRITER_PIDFILE"); pidFile != "" {
+				if err := os.WriteFile(pidFile, []byte(fmt.Sprint(child.Process.Pid)), 0o600); err != nil {
+					child.Process.Kill()
+					os.Exit(4)
+				}
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					if _, err := os.Stat(pidFile + ".ready"); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						child.Process.Kill()
+						os.Exit(5)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
 		case "hold":
 			time.Sleep(3 * time.Second)
+		case "write":
+			if err := os.WriteFile(os.Getenv("RMM_RUNAS_WRITER_PIDFILE")+".ready", nil, 0o600); err != nil {
+				os.Exit(6)
+			}
+			chunk := []byte(strings.Repeat("descendant output\n", 1024))
+			for {
+				if _, err := os.Stdout.Write(chunk); err != nil {
+					os.Exit(0)
+				}
+			}
 		}
 		os.Exit(0)
 	}
-	for _, mode := range []string{"success", "nonzero", "timeout", "descendant"} {
+	for _, mode := range []string{"success", "nonzero", "timeout", "descendant", "continuous-descendant"} {
 		t.Run(mode, func(t *testing.T) {
 			readH, writeH, err := createInheritablePipe()
 			if err != nil {
@@ -294,6 +325,27 @@ func TestWindowsRunasOutputLifecycle(t *testing.T) {
 			defer outputFile.Close()
 			command := exec.Command(os.Args[0], "-test.run=^TestWindowsRunasOutputLifecycle$")
 			command.Env = append(os.Environ(), "RMM_RUNAS_OUTPUT_FIXTURE="+mode)
+			if mode == "continuous-descendant" {
+				pidFile := filepath.Join(t.TempDir(), "writer.pid")
+				command.Env = append(command.Env, "RMM_RUNAS_WRITER_PIDFILE="+pidFile)
+				t.Cleanup(func() {
+					data, err := os.ReadFile(pidFile)
+					if err != nil {
+						return
+					}
+					var pid uint32
+					if _, err := fmt.Sscan(string(data), &pid); err != nil {
+						t.Error(err)
+						return
+					}
+					process, err := syscall.OpenProcess(0x00100000|0x0001, false, pid)
+					if err == nil {
+						defer syscall.CloseHandle(process)
+						procTerminateProcess.Call(uintptr(process), 1)
+						procWaitSingleObject.Call(uintptr(process), 5000)
+					}
+				})
+			}
 			command.Stdout, command.Stderr = outputFile, outputFile
 			if err := command.Start(); err != nil {
 				t.Fatal(err)
@@ -332,6 +384,10 @@ func TestWindowsRunasOutputLifecycle(t *testing.T) {
 			case "descendant":
 				if err != nil || time.Since(started) > 2*time.Second {
 					t.Fatalf("collector waited for descendant pipe closure: %v", err)
+				}
+			case "continuous-descendant":
+				if err != nil || time.Since(started) > 5*time.Second {
+					t.Fatalf("collector followed continuously writing descendant: %v", err)
 				}
 			default:
 				if err != nil {

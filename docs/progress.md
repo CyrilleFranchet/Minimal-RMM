@@ -14,6 +14,21 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-07 — Bound waits to the requested process
+
+- Generate staged PowerShell wrappers with Start-Process -PassThru followed by
+  the returned process's WaitForExit. Wait for stage1 rather than the long-lived
+  agent it launches, and read the launcher exit code only after it exits.
+- Poll the requested runas process on every output-drain iteration. After its
+  exit, drain only the queued-byte snapshot; continuous descendant output
+  cannot extend the wait or turn a completed command into a deadline failure.
+- Add generated-artifact and native descendant-output regressions. Native
+  Windows runtime execution remains pending on this macOS host.
+- Extract the shared lifecycle into runas_output.go so the always-readable pipe
+  regression runs on the host. It passed 100 race-enabled repetitions. Full
+  repository checks, host race tests and vet, and Windows amd64/arm64 test
+  cross-compilation pass. Include the new regression in native Windows CI.
+
 ### 2026-11-07 — One process creation API per command
 
 - Standard spawn invokes CreateProcessA once, regardless of an active make_token.

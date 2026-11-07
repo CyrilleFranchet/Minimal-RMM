@@ -66,5 +66,6 @@ jobs:
           $tests += '|ServerRequest|SpawnUsesOnlyCreateProcessA'
           $tests += '|WindowsDetachedSpawn|WindowsExplicitLogonHasNoFallback'
           $tests += '|WindowsRunasOutputLifecycle'
+          $tests += '|RunasOutputSnapshot'
           $tests += '|WindowsLogonCredentialEncoding)'
           go test -buildvcs=false -count=1 -v -run $tests .

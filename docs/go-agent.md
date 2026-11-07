@@ -166,6 +166,12 @@ native security-attributes size on both supported 64-bit targets.
 Runas retains its 120-second execution deadline. `collectRunasOutput` polls
 available pipe bytes and process completion on one goroutine, preserving stdout,
 stderr, nonzero exit codes, and cancellation errors without a blocking reader.
+It checks immediate-child completion on every iteration while consuming output.
+Once the child has exited, it snapshots the queued bytes and drains at most that
+snapshot; output subsequently written by descendants is excluded. The portable
+`collectRunasOutputWithOps` implements this lifecycle through `runasOutputOps`,
+with a deterministic host regression for a pipe that never becomes empty and
+native Windows coverage for a continuously writing descendant.
 Cancellation terminates the immediate command process and waits up to five
 seconds for termination. Descendants are not terminated; a descendant retaining
 the output pipe does not prevent return after the immediate command exits.

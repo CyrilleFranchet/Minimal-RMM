@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -224,67 +223,54 @@ func createInheritablePipe() (readH, writeH syscall.Handle, err error) {
 	return readH, writeH, nil
 }
 
-// collectRunasOutput polls available output on one goroutine, so cancellation
-// never races a blocked reader or closes a handle still used by another goroutine.
-// The immediate child exit ends collection even when descendants retain the pipe.
+// collectRunasOutput polls available output and immediate-child completion.
+// After exit it drains only the queued-byte snapshot, never later descendant output.
 func collectRunasOutput(ctx context.Context, process, pipe syscall.Handle) (string, error) {
-	var buf bytes.Buffer
-	tmp := make([]byte, 4096)
-	for {
-		if err := ctx.Err(); err != nil {
+	ops := runasOutputOps{
+		stopped: func() (bool, error) {
+			state, _, waitErr := procWaitSingleObject.Call(uintptr(process), 0)
+			if state == 0 {
+				return true, nil
+			}
+			if state == 258 {
+				return false, nil
+			} // WAIT_TIMEOUT
+			return false, fmt.Errorf("WaitForSingleObject: %w", waitErr)
+		},
+		available: func() (uint32, error) {
+			var available uint32
+			ok, _, pipeErr := procPeekNamedPipe.Call(uintptr(pipe), 0, 0, 0, uintptr(unsafe.Pointer(&available)), 0)
+			if ok == 0 && pipeErr != syscall.ERROR_BROKEN_PIPE {
+				return 0, fmt.Errorf("PeekNamedPipe: %w", pipeErr)
+			}
+			return available, nil
+		},
+		read: func(buffer []byte) (uint32, error) {
+			var n uint32
+			ok, _, readErr := procReadFileK.Call(uintptr(pipe), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), uintptr(unsafe.Pointer(&n)), 0)
+			if ok == 0 {
+				return 0, fmt.Errorf("ReadFile: %w", readErr)
+			}
+			return n, nil
+		},
+		exitCode: func() (uint32, error) {
+			var exitCode uint32
+			if ok, _, exitErr := procGetExitCodeProcess.Call(uintptr(process), uintptr(unsafe.Pointer(&exitCode))); ok == 0 {
+				return 0, fmt.Errorf("GetExitCodeProcess: %w", exitErr)
+			}
+			return exitCode, nil
+		},
+		terminate: func() error {
 			if ok, _, terminateErr := procTerminateProcess.Call(uintptr(process), 1); ok == 0 {
 				if state, _, _ := procWaitSingleObject.Call(uintptr(process), 0); state != 0 {
-					return buf.String(), errors.Join(err, fmt.Errorf("TerminateProcess: %w", terminateErr))
+					return fmt.Errorf("TerminateProcess: %w", terminateErr)
 				}
 			}
 			procWaitSingleObject.Call(uintptr(process), 5000)
-			return buf.String(), err
-		}
-		var available uint32
-		ok, _, pipeErr := procPeekNamedPipe.Call(uintptr(pipe), 0, 0, 0, uintptr(unsafe.Pointer(&available)), 0)
-		if ok == 0 && pipeErr != syscall.ERROR_BROKEN_PIPE {
-			return buf.String(), fmt.Errorf("PeekNamedPipe: %w", pipeErr)
-		}
-		if available != 0 {
-			if available > uint32(len(tmp)) {
-				available = uint32(len(tmp))
-			}
-			var n uint32
-			ok, _, readErr := procReadFileK.Call(uintptr(pipe), uintptr(unsafe.Pointer(&tmp[0])), uintptr(available), uintptr(unsafe.Pointer(&n)), 0)
-			if ok == 0 {
-				return buf.String(), fmt.Errorf("ReadFile: %w", readErr)
-			}
-			buf.Write(tmp[:n])
-			continue
-		}
-		state, _, waitErr := procWaitSingleObject.Call(uintptr(process), 0)
-		if state == 0 {
-			// The child may have written its final bytes between the first peek
-			// and its exit. Once signaled, it cannot add more output itself.
-			ok, _, pipeErr = procPeekNamedPipe.Call(uintptr(pipe), 0, 0, 0, uintptr(unsafe.Pointer(&available)), 0)
-			if ok == 0 && pipeErr != syscall.ERROR_BROKEN_PIPE {
-				return buf.String(), fmt.Errorf("PeekNamedPipe: %w", pipeErr)
-			}
-			if available != 0 {
-				continue
-			}
-			var exitCode uint32
-			if ok, _, exitErr := procGetExitCodeProcess.Call(uintptr(process), uintptr(unsafe.Pointer(&exitCode))); ok == 0 {
-				return buf.String(), fmt.Errorf("GetExitCodeProcess: %w", exitErr)
-			}
-			if exitCode != 0 {
-				return buf.String(), fmt.Errorf("process exited with code %d", exitCode)
-			}
-			return buf.String(), nil
-		}
-		if state != 258 { // WAIT_TIMEOUT
-			return buf.String(), fmt.Errorf("WaitForSingleObject: %w", waitErr)
-		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(10 * time.Millisecond):
-		}
+			return nil
+		},
 	}
+	return collectRunasOutputWithOps(ctx, ops)
 }
 
 // logonCredentialPointers validates UTF-16 inputs and uses NULL domain for UPNs.
