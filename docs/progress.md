@@ -39,6 +39,17 @@ playbook runtime. They are retained as implementation history, not setup advice.
 
 ## Current Status
 
+### 2026-11-07 — Compact session identity labels
+
+- Show account and hostname separately in live/archive lists and console headers.
+  Shorten matching local hostname prefixes to .\ while preserving domain and
+  service account authorities. Keep full identities in escaped tooltips and data.
+- Add truncation for long account/host rows and wrap console details. Add
+  regressions for local, domain, service, legacy, missing, and hostile values.
+- Validation: identity and live/archive rendering tests, WebUI contracts,
+  operator parity, JavaScript syntax, lint, and whitespace checks pass. Code
+  review found no blockers; visual browser validation remains pending.
+
 ### 2026-11-07 — Report process identity in WebUI session labels
 
 - Register Go agents with processUserIdentity rather than inherited USERNAME or

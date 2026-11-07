@@ -678,6 +678,13 @@ body.sidebar-resizing iframe {
   margin-top: 0.15rem;
 }
 
+.session-item .session-account,
+.session-item .session-hostname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-item .sub {
   font-size: 0.75rem;
   color: var(--muted);
@@ -776,6 +783,9 @@ body.sidebar-resizing iframe {
   margin: 0;
   font-size: 1rem;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .console-header-actions {
@@ -801,6 +811,7 @@ body.sidebar-resizing iframe {
   color: var(--muted);
   margin-top: 0.25rem;
   font-family: var(--mono);
+  overflow-wrap: anywhere;
 }
 
 .workspace-tabs {

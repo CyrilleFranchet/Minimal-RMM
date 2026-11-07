@@ -339,7 +339,18 @@ remains to be validated on a real host.
 
 ### Identity query (`__UID__`)
 
-The WebUI session label is `username@hostname`. Go agents register the process
+The WebUI shows the account and hostname separately. `sessionAccountLabel`
+shortens a matching hostname prefix to `.\Administrator`, keeps domain accounts
+such as `ARCHER\Administrator`, and preserves service identities such as
+`NT AUTHORITY\SYSTEM`. Unqualified names and UPNs are left unchanged. Only an
+account prefix matching the reported hostname (or its short name) is shortened.
+`renderSessionIdentity` renders separate account and host rows, while
+`sessionFullLabel` supplies the full registered identity for tooltips. Live and
+archived views use the same formatting; long labels truncate within their row.
+This is display formatting only: registration, stored metadata, and /uid retain
+the full identity. Reload the WebUI to pick up this presentation change.
+
+Go agents register the process
 account resolved by `processUserIdentity`, including its domain when available,
 so it matches the `agent user:` identity from `/uid`. Inherited USERNAME/USER
 environment values cannot override a successful Windows process-token lookup.

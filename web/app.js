@@ -341,6 +341,32 @@ function canPreviewDownload(entry) {
   return null;
 }
 
+// Keep the full registered identity in data; shorten only local-account display.
+function sessionAccountLabel(session) {
+  const user = String(session?.username || "?").trim() || "?";
+  const host = String(session?.hostname || "").trim().toLowerCase();
+  const split = user.indexOf("\\");
+  if (split < 1) return user;
+  const domain = user.slice(0, split).toLowerCase();
+  const system = ["nt authority", "nt service", "builtin"].includes(domain);
+  if (!system && host && (domain === host || domain === host.split(".")[0])) {
+    return ".\\" + user.slice(split + 1);
+  }
+  return user;
+}
+
+function sessionFullLabel(session) {
+  return `${String(session?.username || "?")}@${String(session?.hostname || "?")}`;
+}
+
+function renderSessionIdentity(session) {
+  const host = String(session?.hostname || "?");
+  const fullTitle = escapeHtml(sessionFullLabel(session)).replaceAll('"', "&quot;");
+  const hostTitle = escapeHtml(host).replaceAll('"', "&quot;");
+  return `<div class="meta session-account" title="${fullTitle}">${escapeHtml(sessionAccountLabel(session))}</div>
+      <div class="sub session-hostname" title="${hostTitle}">${escapeHtml(host)}</div>`;
+}
+
 function artifactAgentLabel(entry) {
   const label = String(entry?.agent_label || "").trim();
   if (label) return label;
@@ -1069,7 +1095,7 @@ function renderHistoryList() {
 
     li.innerHTML = `
       <div class="id">${escapeHtml((sessionId || "").slice(0, 8))}<span class="ended-tag">archived</span></div>
-      <div class="meta">${escapeHtml(s.username || "?")}@${escapeHtml(s.hostname || "?")}</div>
+      ${renderSessionIdentity(s)}
       ${connected ? `<div class="sub sub-connected">connected ${escapeHtml(connected)}</div>` : ""}
       <div class="sub">${escapeHtml(String(s.event_count || 0))} events · ended ${escapeHtml(ended)}${escapeHtml(reason)}</div>
     `;
@@ -1188,9 +1214,10 @@ async function selectHistorySession(id) {
   setWorkspaceTab("shell");
   setConsoleReadOnly(true);
 
-  $("#console-title").textContent = `${s.username || "?"}@${s.hostname || "?"}`;
+  $("#console-title").textContent = sessionAccountLabel(s);
+  $("#console-title").title = sessionFullLabel(s);
   const ended = s.ended_at ? formatTime(s.ended_at) : "unknown";
-  $("#console-detail").textContent = `${id} · archived · ended ${ended}${s.end_reason ? ` (${s.end_reason})` : ""}`;
+  $("#console-detail").textContent = `${s.hostname || "?"} · ${id} · archived · ended ${ended}${s.end_reason ? ` (${s.end_reason})` : ""}`;
   shellOutputEl().innerHTML = "";
   updateShellPrompt();
   appendShellMeta(`Archived transcript — ${s.event_count || 0} events`);
@@ -2619,7 +2646,7 @@ function renderSessionList() {
       : "";
     li.innerHTML = `
       <div class="id">${escapeHtml(s.id.slice(0, 8))} <span class="beacon-status ${statusClass(st)}">${escapeHtml(st)}</span></div>
-      <div class="meta">${escapeHtml(s.username)}@${escapeHtml(s.hostname)}</div>
+      ${renderSessionIdentity(s)}
       ${connected ? `<div class="sub sub-connected">connected ${escapeHtml(connected)}</div>` : ""}
       <div class="sub">sleep ${s.sleep_seconds}s · jitter ${s.jitter_percent}% · ${escapeHtml(ago)} ${socksMeta}${tunMeta}</div>
     `;
@@ -2685,8 +2712,9 @@ async function selectSession(id) {
   show($("#console-header"));
   setWorkspaceTab("shell");
 
-  $("#console-title").textContent = `${s.username}@${s.hostname}`;
-  $("#console-detail").textContent = `${s.id} · last seen ${formatTime(s.last_seen)}`;
+  $("#console-title").textContent = sessionAccountLabel(s);
+  $("#console-title").title = sessionFullLabel(s);
+  $("#console-detail").textContent = `${s.hostname || "?"} · ${s.id} · last seen ${formatTime(s.last_seen)}`;
   shellOutputEl().innerHTML = "";
   updateShellPrompt();
   appendShellMeta(`Session ${id.slice(0, 8)} — Enter queue · Ctrl+Enter exec · ↑↓ history · Tab complete`);
@@ -2732,6 +2760,7 @@ function showEmptyConsole() {
   show($("#empty-state"));
   hide($("#console-header"));
   $("#console-title").textContent = "—";
+  $("#console-title").title = "";
   $("#console-detail").textContent = "";
   shellOutputEl().innerHTML = "";
   const input = $("#shell-input");

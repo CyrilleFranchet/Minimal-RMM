@@ -118,6 +118,7 @@ check-agent-deployment:
 
 check-web-contracts:
 	@$(PYTHON) scripts/check_web_contracts.py
+	@node tests/test_session_identity_ui.cjs
 	@node tests/test_spawn_result_ui.cjs
 	@node tests/test_shell_completion.cjs
 	@node tests/test_embeddings_shell.cjs
