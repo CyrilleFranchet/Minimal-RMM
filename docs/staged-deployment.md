@@ -28,13 +28,13 @@ The wrapper uses the returned process's `WaitForExit()` to wait only for stage1,
 then prints its exit code. It returns while the new agent keeps running; it does
 not use `Start-Process -Wait`, which also waits for descendants.
 
-Exit codes: `0` = agent installed and started, `1` = staging failure (check the stage status endpoint below), `2` = stage1 rejected its arguments or has no base URL embedded. The C launcher attaches to a parent console when available and prints diagnostics; service and Explorer launches stay silent. A network failure can also prevent delivery of the status report.
+Exit codes: `0` = agent installed and started, `1` = staging failure, `2` = stage1 rejected its arguments or has no base URL embedded. The C launcher attaches to a parent console when available and prints diagnostics; service and Explorer launches stay silent. It does not POST a status report. For psexec, the service returns the launcher exit code through SCM/RPC.
 
 stage1 connects back to the RMM server over HTTPS, fetches the masked Go agent, decodes it, writes it to the current user's temp directory (`%TEMP%\minimal-rmm-agent.exe` — no administrator rights required), and executes it. The session ID is fixed at build time so the agent registers with a known ID on first beacon.
 
 ### Checking the launcher status
 
-stage1 posts one status line to the staging entry (`stage1 ok: agent installed and started` on success, `stage1 failed: ...` on failure). Read it from the operator API:
+The operator API exposes whether the staging payload was fetched and when it expires. The `status` field remains null for the current C launcher. Older C launchers and the standalone Go fallback can POST a status line (`stage1 ok: agent installed and started` on success, `stage1 failed: ...` on failure); delivery is best effort. Read the entry from the operator API:
 
 ```bash
 # REST

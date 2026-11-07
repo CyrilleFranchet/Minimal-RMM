@@ -40,7 +40,9 @@ sudo apt-get install -y mingw-w64
 3. Verify MZ header.
 4. Write to `%SystemRoot%\System32\minimal-rmm-agent.exe`.
 5. `CreateProcessW` detached: `minimal-rmm-agent.exe --lateral-session <id>`.
-6. `POST {BASE_URL}/tools/stage/{staging_id}` — one-line status for the operator.
+
+For psexec, the service reports the launcher result through SCM/RPC. The
+launcher does not send a separate HTTP status request.
 
 The staging endpoint requires no authentication — the unguessable `staging_id`
 (32 hex chars from `secrets.token_hex(16)`) is the capability token.  The

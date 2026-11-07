@@ -704,8 +704,10 @@ Listener staging (`server_rmm.py`):
   payload masked with a
   SHA-256 counter keystream keyed by the staging identifier
   (`staging_mask`), so the listener never serves an executable file.
-  `POST /tools/stage/<id>` records one stage1 status line, surfaced as
-  `stage_status` in the lateral result.
+  The psexec launcher returns its result through SCM/RPC without a separate
+  HTTP status request. The legacy `POST /tools/stage/<id>` endpoint remains
+  available for older launchers and the standalone Go fallback to report
+  `stage_status`.
 - The routes are capability-authenticated by the 128-bit staging id and
   allowed on the beacon listener without a beacon token; expired or
   already-fetched entries answer 404.

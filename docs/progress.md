@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-11-08 — Remove redundant psexec stage1 status POST
+
+- Remove the C launcher's `reportStatus` helper and HTTP call. The dedicated
+  lateral service already returns the worker result through SCM/RPC.
+- Preserve launcher exit codes and console output.
+- Review: no server wait depends on the status POST. Clarify that current C
+  launchers leave `stage_status` null; legacy launchers and the standalone Go
+  fallback can still populate it.
+- Validation: 59 deployment tests and the Go SCM completion outcome test pass;
+  C launcher and service host cross-compile. Native Windows runtime untested.
+
 ## 2026-11-08 — Clarify native WSMan certificate-bypass limits
 
 - An operator-reported run reached TLS error 12175 with an expired server certificate
