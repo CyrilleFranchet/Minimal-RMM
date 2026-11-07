@@ -27,6 +27,9 @@ const (
 	wsmanAuthKerberos                      = 0x10
 	wsmanAllowNegotiateImplicitCredentials = 32
 	wsmanDataTypeDWORD                     = 4
+	wsmanSkipCACheck                       = 18
+	wsmanSkipCNCheck                       = 19
+	wsmanSkipRevocationCheck               = 31
 )
 
 // wsmanCaller isolates native dispatch for Windows ABI regression fixtures.
@@ -83,8 +86,8 @@ type wsmanError struct {
 	detail, language, machine, plugin *uint16
 }
 
-// wsmanAuthCredentials mirrors WSMAN_AUTHENTICATION_CREDENTIALS for selected
-// explicit credentials. Default identity uses a NULL structure pointer instead.
+// wsmanAuthCredentials mirrors WSMAN_AUTHENTICATION_CREDENTIALS for explicit
+// accounts or an explicitly selected mechanism with implicit credentials.
 type wsmanAuthCredentials struct {
 	mechanism uint32
 	_         uint32
@@ -241,7 +244,7 @@ func (s *wsmanScope) closeHandle(native wsmanCaller, name string, handle uintptr
 
 // winrmCreateProcess uses selected explicit credentials when make_token is
 // active, otherwise thread defaults. Detach must finish before the shell closes.
-func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string, identity *winrmCredentials, useHTTPS bool) error {
+func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string, identity *winrmCredentials, useHTTPS, insecure bool) error {
 	// Initialize the shared COM security policy before WSMan can initialize
 	// it implicitly, so a later WMI command can use thread-token cloaking.
 	runtime.LockOSThread()
@@ -257,7 +260,7 @@ func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, 
 	if err != nil {
 		return err
 	}
-	return winrmCreateProcessWithTransportAPI(native, host, agentPath, sessionID, workspaceID, serviceName, wsmanCompletionTimeout, identity, useHTTPS)
+	return winrmCreateProcessWithTLSAPI(native, host, agentPath, sessionID, workspaceID, serviceName, wsmanCompletionTimeout, identity, useHTTPS, insecure)
 }
 
 func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration) (resultErr error) {
@@ -273,6 +276,15 @@ func winrmCreateProcessWithIdentityAPI(native wsmanCaller, host, agentPath, sess
 // winrmCreateProcessWithTransportAPI selects HTTP/5985 or HTTPS/5986 while
 // leaving native server-certificate and authentication validation enabled.
 func winrmCreateProcessWithTransportAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration, identity *winrmCredentials, useHTTPS bool) (resultErr error) {
+	return winrmCreateProcessWithTLSAPI(native, host, agentPath, sessionID, workspaceID, serviceName, timeout, identity, useHTTPS, false)
+}
+
+// winrmCreateProcessWithTLSAPI scopes optional certificate bypass to this
+// HTTPS session. It never changes machine certificate stores or TrustedHosts.
+func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration, identity *winrmCredentials, useHTTPS, insecure bool) (resultErr error) {
+	if insecure && !useHTTPS {
+		return errors.New("insecure requires winrm HTTPS")
+	}
 	arguments, err := lateralDetachArguments(sessionID, workspaceID, serviceName)
 	if err != nil {
 		return err
@@ -298,6 +310,13 @@ func winrmCreateProcessWithTransportAPI(native wsmanCaller, host, agentPath, ses
 	// Keep mechanism selection separate from the explicit/default credential
 	// source. A netonly thread token alone need not supply reusable WSMan creds.
 	credentials := wsmanAuthCredentials{mechanism: wsmanAuthMechanism(host)}
+	// HTTPS can authenticate the server while Negotiate uses the current
+	// process credentials. This is PowerShell's NegotiateWithImplicitCredential
+	// mode; Default authentication plus option 32 is not equivalent for IP URLs.
+	implicitNegotiate := identity == nil && useHTTPS
+	if implicitNegotiate {
+		credentials.mechanism = wsmanAuthNegotiate
+	}
 	if identity != nil {
 		if identity.user == "" {
 			return errors.New("WinRM selected identity has no username")
@@ -357,10 +376,10 @@ func winrmCreateProcessWithTransportAPI(native wsmanCaller, host, agentPath, ses
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManDeinitialize failed: 0x%08x", code))
 		}
 	}()
-	// NULL is the API's documented default-credential path. A structure is
-	// supplied only when both selected account fields have been populated.
+	// HTTP defaults use NULL. HTTPS process identity explicitly selects
+	// Negotiate with empty account fields; option 32 enables implicit creds.
 	var authentication uintptr
-	if identity != nil {
+	if identity != nil || implicitNegotiate {
 		authentication = uintptr(unsafe.Pointer(&credentials))
 	}
 	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, authentication, 0, uintptr(unsafe.Pointer(&session))); code != 0 {
@@ -371,14 +390,24 @@ func winrmCreateProcessWithTransportAPI(native wsmanCaller, host, agentPath, ses
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManCloseSession failed: 0x%08x", code))
 		}
 	}()
-	if identity == nil {
+	if implicitNegotiate {
 		// The DWORD union member is at offset 8, shared with binary length.
-		// This enables credentials for this session; host-trust policy remains
-		// enforced by WinRM. Do not change TrustedHosts or certificate checks.
+		// This enables credentials for this session independently of the
+		// explicit certificate options below. It does not modify TrustedHosts.
 		option := wsmanData{kind: wsmanDataTypeDWORD, length: 1}
 		if code := native.call("WSManSetSessionOption", session,
 			wsmanAllowNegotiateImplicitCredentials, uintptr(unsafe.Pointer(&option))); code != 0 {
 			return fmt.Errorf("WSManSetSessionOption(implicit Negotiate credentials) failed: 0x%08x", code)
+		}
+		runtime.KeepAlive(&option)
+	}
+	if insecure {
+		// WSMAN_OPTION_SKIP_CA_CHECK, SKIP_CN_CHECK, SKIP_REVOCATION_CHECK.
+		option := wsmanData{kind: wsmanDataTypeDWORD, length: 1}
+		for _, setting := range []uintptr{wsmanSkipCACheck, wsmanSkipCNCheck, wsmanSkipRevocationCheck} {
+			if code := native.call("WSManSetSessionOption", session, setting, uintptr(unsafe.Pointer(&option))); code != 0 {
+				return fmt.Errorf("WSManSetSessionOption(certificate check %d) failed: 0x%08x", setting, code)
+			}
 		}
 		runtime.KeepAlive(&option)
 	}
@@ -392,7 +421,20 @@ func winrmCreateProcessWithTransportAPI(native wsmanCaller, host, agentPath, ses
 		return errors.New("WinRM shell creation timed out")
 	}
 	if err, _, _ := shellCall.result.snapshot(); err != nil {
-		return fmt.Errorf("WinRM shell on %s: %w", host, err)
+		mode := "default"
+		if implicitNegotiate {
+			mode = "implicit-negotiate"
+		} else if identity != nil {
+			mode = "explicit-negotiate"
+			if credentials.mechanism == wsmanAuthKerberos {
+				mode = "explicit-kerberos"
+			}
+		}
+		certificateMode := "verify"
+		if insecure {
+			certificateMode = "skipped"
+		}
+		return fmt.Errorf("WinRM shell on %s (%s; auth=%s; cert=%s): %w", host, scheme, mode, certificateMode, err)
 	}
 	if shell == 0 {
 		return errors.New("WSManCreateShell returned no shell handle")

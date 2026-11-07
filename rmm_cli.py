@@ -238,9 +238,12 @@ class RmmApiClient:
         register_timeout: float = 60,
         verify_timeout: float = 120,
         https: bool = False,
+        insecure: bool = False,
     ):
         if not isinstance(https, bool) or (https and method.strip().lower() != "winrm"):
             raise ValueError("https must be a boolean and is supported only for winrm")
+        if not isinstance(insecure, bool) or (insecure and not https):
+            raise ValueError("insecure must be a boolean and requires WinRM HTTPS")
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/lateral",
@@ -252,6 +255,7 @@ class RmmApiClient:
                 "register_timeout": register_timeout,
                 "verify_timeout": verify_timeout,
                 **({"https": True} if https else {}),
+                **({"insecure": True} if insecure else {}),
             },
             # Worst case: lateral execution wait + registration + two verifications.
             timeout=exec_timeout + register_timeout + 2 * verify_timeout + 30,
@@ -1212,6 +1216,8 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         die("A target hostname or IP address is required", 1)
     if getattr(args, "https", False) and args.method != "winrm":
         die("HTTPS is supported only for winrm", 1)
+    if getattr(args, "insecure", False) and not getattr(args, "https", False):
+        die("--insecure requires --https", 1)
     say(f"Lateral {args.method} to {args.host} (waits for the next beacon)...", err=True)
     code, data = client.lateral_move(
         sid,
@@ -1222,6 +1228,7 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         register_timeout=args.register_timeout,
         verify_timeout=args.verify_timeout,
         **({"https": True} if getattr(args, "https", False) else {}),
+        **({"insecure": True} if getattr(args, "insecure", False) else {}),
     )
     if args.json:
         print_json(data)
@@ -1679,7 +1686,7 @@ Spawn:    /spawn [id]   (same identity; children inherit the source build mode)
           /runas -i <cred_id> <command>   (run command under different identity)
 Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id>
 Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
-Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https]   (HTTPS/5986 for winrm only; inherits source build mode)
+Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure]   (HTTPS/5986 for winrm only; inherits source build mode)
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
 Config:   /rclone-config   (rclone profiles + bootstrap status)
@@ -2252,12 +2259,14 @@ def run_interactive(
             if cmd == "lateral":
                 method = rest[0].lower() if rest else ""
                 flags = [arg for arg in rest[1:] if arg in ("-s", "--https")]
-                targets = [arg for arg in rest[1:] if arg not in ("-s", "--https")]
+                insecure_flags = [arg for arg in rest[1:] if arg in ("-k", "--insecure")]
+                targets = [arg for arg in rest[1:] if arg not in ("-s", "--https", "-k", "--insecure")]
                 if (method not in ("psexec", "wmiexec", "winrm") or
-                        len(targets) != 1 or len(flags) > 1 or
+                        len(targets) != 1 or len(flags) > 1 or len(insecure_flags) > 1 or
+                        (insecure_flags and not flags) or
                         any(arg.startswith("-") for arg in targets) or
                         (flags and method != "winrm")):
-                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https (winrm only)]")
+                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -2265,7 +2274,7 @@ def run_interactive(
                     continue
                 host = targets[0]
                 say(f"Lateral {method} to {host} (waits for the next beacon)...")
-                code, data = client.lateral_move(sid, method, host, **({"https": True} if flags else {}))
+                code, data = client.lateral_move(sid, method, host, **({"https": True} if flags else {}), **({"insecure": True} if insecure_flags else {}))
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"lateral failed ({code})" + (f": {detail}" if detail else ""))
@@ -2913,6 +2922,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_lat.add_argument("host", help="Target hostname or IP address")
     sp_lat.add_argument("--session", default=None, help="Source session ID")
     sp_lat.add_argument("-s", "--https", action="store_true", help="Use HTTPS/5986 with certificate validation (winrm only)")
+    sp_lat.add_argument("-k", "--insecure", action="store_true", help="Skip WinRM server certificate checks (requires --https)")
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")

@@ -32,13 +32,16 @@ class McpResultEncodingTests(unittest.TestCase):
             with patch.object(module, "tool_lateral_move", Mock(return_value='{"ok":true}')) as helper, \
                     patch.object(module, "_client", return_value=object()):
                 arguments = {"session_ref": "source", "method": "winrm", "host": "fixture"}
-                for value in ["true", "false", 0, 1, None]:
-                    with self.subTest(value=value), self.assertRaisesRegex(Exception, "validation error"):
-                        await module.mcp.call_tool("lateral_move", {**arguments, "https": value})
-                    helper.assert_not_called()
+                for field in ["https", "insecure"]:
+                    for value in ["true", "false", 0, 1, None]:
+                        with self.subTest(field=field, value=value), self.assertRaisesRegex(Exception, "validation error"):
+                            await module.mcp.call_tool("lateral_move", {**arguments, "https": True, field: value})
+                        helper.assert_not_called()
                 for value in [True, False]:
                     await module.mcp.call_tool("lateral_move", {**arguments, "https": value})
                     self.assertIs(helper.call_args.kwargs["https"], value)
+                await module.mcp.call_tool("lateral_move", {**arguments, "https": True, "insecure": True})
+                self.assertIs(helper.call_args.kwargs["insecure"], True)
         asyncio.run(run())
 
     def test_real_sdk_tool_schema_is_preserved(self):

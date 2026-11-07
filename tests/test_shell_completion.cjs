@@ -156,6 +156,17 @@ test('WinRM HTTPS flag forwards a boolean and rejects invalid combinations', asy
   }
 });
 
+test('WinRM certificate bypass requires HTTPS and forwards only when selected', async () => {
+  for (const command of ['/lateral winrm target -s -k', '/lateral winrm --insecure --https target']) {
+    const f = fixture(); f.type(command); await f.context.runCommand(false);
+    assert.deepEqual(JSON.parse(f.calls[0][1].body), {method:'winrm',host:'target',https:true,insecure:true});
+  }
+  for (const command of ['/lateral winrm target -k','/lateral psexec target -s -k','/lateral winrm target -s -k -k']) {
+    const f = fixture(); f.type(command); await f.context.runCommand(false);
+    assert.equal(f.calls.length,0); assert.match(f.errors[0],/Usage:/);
+  }
+});
+
 test('lateral renders results only through events and preserves registration warnings', async () => {
   for (const method of ['wmiexec', 'psexec', 'winrm']) {
     for (const registered of [true, false]) {
@@ -515,7 +526,7 @@ test('lateral filters methods, supports clicks, and leaves the host untouched', 
   assert.deepEqual(f.menu.children.map(x => x.textContent), ['/lateral wmiexec', '/lateral winrm']);
   f.menu.children[1].listeners.mousedown({preventDefault() {}});
   assert.equal(f.input.value, '/lateral winrm ');
-  assert.equal(f.hint.textContent, '/lateral winrm <host> [-s|--https]');
+  assert.equal(f.hint.textContent, '/lateral winrm <host> [-s|--https] [-k|--insecure]');
   f.context.getShellHistoryList = () => ['/lateral winrm ws01.old.example'];
   f.type('/lateral winrm ws'); f.key('Tab');
   assert.equal(f.input.value, '/lateral winrm ws');

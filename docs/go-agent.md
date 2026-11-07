@@ -428,6 +428,7 @@ WinRM accepts `-s` / `--https` in the CLI and WebUI shell:
 ```text
 /lateral winrm -s 10.254.100.32
 /lateral winrm 10.254.100.32 -s
+/lateral winrm 10.254.100.32 -s -k
 ```
 
 The standalone CLI uses `lateral winrm <host> -s --session <source-id>`.
@@ -443,8 +444,8 @@ agent to use `-s`; the external API method remains `winrm`.
 
 The private command's `https` boolean reaches
 `winrmCreateProcessWithTransportAPI`, which selects HTTPS/5986 instead of
-HTTP/5985 and brackets IPv6 literals. It does not change the selected account
-or authentication mechanism. Default credentials still use Windows negotiation;
+HTTP/5985 and brackets IPv6 literals. It does not change the selected account.
+HTTPS process identity explicitly selects Negotiate with implicit credentials;
 explicit credentials still select Kerberos for DNS or Negotiate for IP targets.
 There is no HTTP fallback after an HTTPS failure.
 
@@ -453,10 +454,22 @@ the target has a WinRM HTTPS listener and its server certificate is trusted,
 unexpired, and valid for the supplied DNS name or IP address. For an IP URL,
 the certificate must cover that IP. `-s` does not bypass CA, name, or revocation
 checks and does not configure the listener or change machine trust settings.
+Add `-k` / `--insecure` with `-s` to skip the CA, certificate-name, and
+revocation checks for this session. The API/MCP equivalent is `https: true,
+insecure: true`. The bypass requires HTTPS and defaults to false. It does
+not change Windows trust stores or TrustedHosts. Older agents reject the
+distinct internal `winrm_https_insecure` method instead of ignoring the flag.
+`winrmCreateProcessWithTLSAPI` applies the three skip options before opening
+the shell and stops if an option fails. `TestWSManCertificateBypass` checks
+the option values, ordering, failure handling, and rejection without HTTPS.
+Operator errors identify the configured certificate mode as `verify` or `skipped`.
 `TestLateralHTTPSValidation` checks protocol inputs; `TestWSManHTTPSTransport`
 checks transport/authentication combinations, and
 `TestWSManHTTPSFailureDoesNotDowngrade` checks failure propagation without
 retrying through HTTP or changing certificate checks.
+`TestWSManHTTPSFailureMatrix` covers failures at each native API stage for
+implicit and explicit identities, checking callback cleanup, password-buffer
+clearing, and absence of session retries or password disclosure in errors.
 The registered MCP tool uses `StrictBool` for HTTPS; its SDK-boundary test in
 `test_mcp_result_encoding.py` rejects strings, integers, and null before the
 implementation runs. `make check-agent-deployment` includes that test.
@@ -488,20 +501,24 @@ staging or guarantee Kerberos for the whole operation.
   WSMan receives the selected username/password explicitly; SMB still uses
   the captured thread token.
 
-Without make_token, `WSManCreateSession` receives a NULL authentication
-pointer, the documented path for the current thread's default credentials.
+Without make_token over HTTP, `WSManCreateSession` receives a NULL authentication
+pointer for Default authentication. Over HTTPS it receives a Negotiate structure
+with null account fields, together with the implicit-Negotiate option below.
 The clean worker has no impersonation token and therefore uses the process
-identity. Windows selects the authentication mechanism in this mode; DNS
+identity. Negotiate can choose NTLM or Kerberos; DNS
 does not enforce a Kerberos-only policy. Existing WinRM host-trust policy and
 the logon session's available credentials still determine authentication.
-`TestWSManDefaultProcessIdentity` checks the NULL argument for DNS/IP URLs;
+`TestWSManDefaultProcessIdentity` checks the NULL argument for HTTP DNS/IP URLs;
 `TestLateralThreadDefaultProcessIdentity` checks the clean worker identity.
+Shell failures include the configured transport and authentication mode, such
+as `https; auth=implicit-negotiate`. This identifies the selected code path;
+it does not establish that a TLS handshake or authentication succeeded.
 
-For Negotiate with default credentials, the agent sets the session-scoped
+For HTTPS Negotiate with implicit credentials, the agent sets the session-scoped
 `WSMAN_OPTION_ALLOW_NEGOTIATE_IMPLICIT_CREDENTIALS` DWORD to 1 before
-opening a shell. Failure closes the session and stops execution. The agent
-does not change TrustedHosts, certificate validation, or host-trust policy;
-the destination must already satisfy the client's WinRM policy. The fixture
+opening a shell. Failure closes the session and stops execution. Certificate
+validation remains enabled unless `-k` is selected. Machine trust stores and
+TrustedHosts are unchanged. The fixture
 checks the option's ABI, ordering, and failure cleanup, and the local native
 session test checks that the DLL accepts it.
 
@@ -534,7 +551,8 @@ The native `WSManCreateSession` binding supplies all six API arguments: an
 authentication-credentials structure selecting the mechanism (see the
 authentication paragraph above) and a null proxy pointer before the session
 output pointer. Selected make_token credentials populate the account fields;
-default identity uses a NULL authentication pointer, not empty account fields.
+HTTP default identity uses a NULL authentication pointer; HTTPS process identity
+selects Negotiate with null account fields and enables implicit credentials.
 Agents built before this correction can fail locally with `0x803380ba`
 (`ERROR_WSMAN_CLIENT_CREATESESSION_NULL_PARAM`); rebuild and replace the
 source agent to pick up the corrected binding.

@@ -124,19 +124,23 @@ func TestWSManCallbackCopiesErrorAndIgnoresReleasedContexts(t *testing.T) {
 }
 
 type wsmanFixture struct {
-	t                   *testing.T
-	fail                string
-	timeout             string
-	calls               []string
-	contexts            []uintptr
-	asyncs              []*wsmanShellAsync
-	receiveState        string
-	exitCode            uint32
-	wantAuth            uint32
-	wantURL             string
-	implicitCredentials bool
-	wantIdentity        *winrmCredentials
-	passwordBuffer      []uint16
+	t                     *testing.T
+	fail                  string
+	failOption            uintptr
+	timeout               string
+	calls                 []string
+	contexts              []uintptr
+	asyncs                []*wsmanShellAsync
+	receiveState          string
+	exitCode              uint32
+	wantAuth              uint32
+	wantURL               string
+	implicitCredentials   bool
+	wantImplicitNegotiate bool
+	wantCertificateBypass bool
+	certificateOptions    []uintptr
+	wantIdentity          *winrmCredentials
+	passwordBuffer        []uint16
 }
 
 func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
@@ -216,6 +220,14 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 			if credentials.mechanism != wantAuth {
 				f.t.Fatal("explicit authentication mechanism mismatch")
 			}
+		} else if f.wantImplicitNegotiate {
+			if args[3] == 0 {
+				f.t.Fatal("HTTPS process identity must explicitly select Negotiate")
+			}
+			credentials := (*wsmanAuthCredentials)(unsafe.Pointer(args[3]))
+			if credentials.mechanism != 4 || credentials.username != 0 || credentials.password != 0 {
+				f.t.Fatal("expected Negotiate with implicit process credentials")
+			}
 		} else if args[3] != 0 {
 			f.t.Fatal("process-default authentication must pass a NULL credential pointer")
 		}
@@ -224,19 +236,29 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		}
 		output(5, 20)
 	case "WSManSetSessionOption":
-		if f.wantIdentity != nil || args[0] != 20 || args[1] != 32 || args[2] == 0 {
+		certificateOption := args[1] == 18 || args[1] == 19 || args[1] == 31
+		if args[0] != 20 || args[2] == 0 ||
+			(certificateOption && !f.wantCertificateBypass) ||
+			(!certificateOption && (!f.wantImplicitNegotiate || f.wantIdentity != nil || args[1] != 32)) {
 			f.t.Fatal("unexpected implicit-credential session option")
 		}
 		// Read the SDK's DWORD union member independently of wsmanData.
 		if *(*uint32)(unsafe.Pointer(args[2])) != 4 || *(*uint32)(unsafe.Pointer(args[2] + 8)) != 1 {
 			f.t.Fatal("session option must be a DWORD with value 1")
 		}
-		if name == f.fail {
+		if name == f.fail && (f.failOption == 0 || f.failOption == args[1]) {
 			return 5
 		}
-		f.implicitCredentials = true
+		if certificateOption {
+			f.certificateOptions = append(f.certificateOptions, args[1])
+		} else {
+			f.implicitCredentials = true
+		}
 	case "WSManCreateShell":
-		if f.wantIdentity == nil && !f.implicitCredentials {
+		if f.wantCertificateBypass && !reflect.DeepEqual(f.certificateOptions, []uintptr{18, 19, 31}) {
+			f.t.Fatal("certificate bypass was incomplete before shell creation")
+		}
+		if f.wantImplicitNegotiate && !f.implicitCredentials {
 			f.t.Fatal("Negotiate shell created before enabling implicit credentials")
 		}
 		if args[0] != 20 || args[1] != 0 || args[3] != 0 || args[4] != 0 || args[5] != 0 {
@@ -318,7 +340,7 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 }
 
 func TestWSManNativeBoundaryAndCleanup(t *testing.T) {
-	stages := []string{"", "WSManInitialize", "WSManCreateSession", "WSManSetSessionOption", "WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseOperation", "WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
+	stages := []string{"", "WSManInitialize", "WSManCreateSession", "WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseOperation", "WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
 	for _, stage := range stages {
 		t.Run(fmt.Sprintf("failure_%s", stage), func(t *testing.T) {
 			f := &wsmanFixture{t: t, fail: stage}
@@ -333,7 +355,7 @@ func TestWSManNativeBoundaryAndCleanup(t *testing.T) {
 				}
 			}
 			if stage == "" {
-				expected := []string{"WSManInitialize", "WSManCreateSession", "WSManSetSessionOption", "WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseOperation", "WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
+				expected := []string{"WSManInitialize", "WSManCreateSession", "WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseOperation", "WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
 				if !reflect.DeepEqual(f.calls, expected) {
 					t.Fatalf("cleanup order: %v", f.calls)
 				}
@@ -403,8 +425,8 @@ func TestWSManAuthMechanismFollowsHostForm(t *testing.T) {
 	}
 }
 
-// Default credentials must use NULL for both DNS and IP targets; mechanism
-// negotiation then belongs to Windows rather than a partial account structure.
+// HTTP Default authentication uses NULL for both DNS and IP targets. HTTPS
+// process identity is separately tested as explicit implicit-Negotiate mode.
 func TestWSManDefaultProcessIdentity(t *testing.T) {
 	for host, url := range map[string]string{
 		"lab-host": "http://lab-host:5985/wsman",
@@ -421,9 +443,9 @@ func TestWSManDefaultProcessIdentity(t *testing.T) {
 
 // Failed option configuration must close the session without opening a shell.
 func TestWSManImplicitCredentialsOptionFailure(t *testing.T) {
-	f := &wsmanFixture{t: t, fail: "WSManSetSessionOption", wantAuth: 0x4, wantURL: "http://10.0.0.8:5985/wsman"}
+	f := &wsmanFixture{t: t, fail: "WSManSetSessionOption", wantImplicitNegotiate: true, wantURL: "https://10.0.0.8:5986/wsman"}
 	workspace := "fixture-workspace"
-	err := winrmCreateProcessWithAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second)
+	err := winrmCreateProcessWithTransportAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "WSManSetSessionOption") {
 		t.Fatalf("expected option error, got %v", err)
 	}
@@ -496,16 +518,19 @@ func TestWSManLocalSession(t *testing.T) {
 	if session == 0 {
 		t.Fatal("missing session handle")
 	}
-	// The real client must also accept the process-default path for an IP URL.
-	connection, err := syscall.UTF16PtrFromString("http://127.0.0.1:5985/wsman")
+	// Verify the HTTPS implicit-Negotiate configuration against the real DLL.
+	// Session configuration does not open a remote connection or validate TLS.
+	connection, err := syscall.UTF16PtrFromString("https://127.0.0.1:5986/wsman")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.KeepAlive(connection)
 	var configuredSession uintptr
 	scope.keep(&configuredSession)
-	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, 0, 0, uintptr(unsafe.Pointer(&configuredSession))); code != 0 {
-		t.Fatalf("create session with process defaults: 0x%x", code)
+	credentials := wsmanAuthCredentials{mechanism: 4}
+	scope.keep(&credentials)
+	if code := native.call("WSManCreateSession", api, uintptr(unsafe.Pointer(connection)), 0, uintptr(unsafe.Pointer(&credentials)), 0, uintptr(unsafe.Pointer(&configuredSession))); code != 0 {
+		t.Fatalf("create session with implicit Negotiate: 0x%x", code)
 	}
 	defer native.call("WSManCloseSession", configuredSession, 0)
 	if configuredSession == 0 {

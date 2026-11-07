@@ -1,5 +1,45 @@
 # Progress Log
 
+## 2026-11-08 — Add requested per-session WinRM certificate bypass
+
+- Add `-k` / `--insecure` alongside `-s` in CLI/WebUI. Expose strict boolean
+  `insecure` in REST/API/MCP and reject bypass without WinRM HTTPS.
+- Carry a distinct `winrm_https_insecure` wire method so older agents reject
+  unsupported requests. Reject a contradictory explicit false bypass field.
+- `winrmCreateProcessWithTLSAPI` sets native skip-CA, skip-name, and
+  skip-revocation options for this session only. Stop before shell creation
+  if any setting fails. Normal HTTPS continues to validate certificates.
+- Retain the HTTPS process-identity implicit Negotiate correction. Include
+  authentication and certificate mode in operator errors without credentials.
+- Add parser, forwarding, strict MCP, CLI/WebUI, SDK constants, and native
+  option/failure tests. Machine trust stores and TrustedHosts are untouched.
+- Verification: code/security/test/frontend reviews found no further concrete
+  production blockers. Correct stale certificate-validation comments to reflect
+  the explicit bypass. Native Windows TLS/authentication remains unverified.
+
+## 2026-11-07 — Select implicit Negotiate explicitly for HTTPS
+
+- Live HTTPS/IP testing returned 0x803381bb (CannotUseIPAddress). The process
+  identity path selected Default authentication through a NULL credentials
+  pointer while enabling an option intended for Negotiate.
+- Match PowerShell's NegotiateWithImplicitCredential configuration for HTTPS:
+  explicitly select Negotiate with null account fields and set option 32 before
+  shell creation. Keep the process identity, TLS validation, and trust policy.
+- HTTP process defaults still use NULL and no HTTPS-only implicit option.
+  Explicit make_token credentials keep their existing host-based mechanism.
+- Update fixtures to distinguish Default from implicit Negotiate and check the
+  latter's mechanism/account fields plus option ordering for HTTPS/IP/DNS.
+  Update local DLL configuration coverage; live success still needs a retest.
+- Include configured transport/authentication mode in operator shell errors
+  without recording credentials or adding target-agent lifecycle logging.
+- Extend HTTPS failure coverage across native API stages for implicit and
+  explicit identities, asserting no retry, callback leaks, or password retention
+  or disclosure. Fresh review found no further concrete production defects.
+- Validation: full repository checks, uncached Go tests/builds, host vet,
+  lint, formatting, and whitespace checks passed. Windows amd64/arm64 test
+  binaries cross-compiled in normal/debug modes. Review confirmed the source
+  pattern; native Windows execution and successful authentication remain unverified.
+
 ## 2026-11-07 — Add WinRM HTTPS selection
 
 - Add `-s` / `--https` to CLI/WebUI lateral WinRM commands. Accept either

@@ -11,6 +11,15 @@ import rmm_cli
 
 
 class CliDispatchTests(unittest.TestCase):
+    def test_lateral_certificate_bypass_flag(self):
+        client = Mock()
+        client.lateral_move.return_value = (200, {"ok": True})
+        self.invoke(["lateral", "winrm", "target", "-s", "-k", "--session", "source", "--json"], client)
+        self.assertIs(client.lateral_move.call_args.kwargs["insecure"], True)
+        client.reset_mock()
+        with self.assertRaises(SystemExit): self.invoke(["lateral", "winrm", "target", "-k", "--session", "source"], client)
+        client.lateral_move.assert_not_called()
+
     def test_lateral_https_and_explicit_session(self):
         client = Mock()
         client.lateral_move.return_value = (200, {"ok": True})

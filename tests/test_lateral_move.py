@@ -279,6 +279,28 @@ class LateralFlowTests(unittest.TestCase):
         self.assertEqual(request["method"], "winrm_https", "older agents must reject HTTPS instead of ignoring it")
         self.assertIn("-s", self.server.record_operator_action.call_args.args[1])
 
+    def test_certificate_bypass_is_explicit_and_requires_https(self):
+        self.server.lateral_move(self.source.id, "winrm", "target", https=True, insecure=True)
+        request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+        self.assertIs(request["insecure"], True)
+        self.assertEqual(request["method"], "winrm_https_insecure")
+        self.assertIn("-k", self.server.record_operator_action.call_args.args[1])
+        self.server.exec_and_wait.reset_mock()
+        for value in [True, "true", 1, None]:
+            result = self.server.lateral_move(self.source.id, "winrm", "target", insecure=value)
+            self.assertEqual(result, (None, "invalid_insecure"))
+        self.server.exec_and_wait.assert_not_called()
+        import rmm_cli
+        import rmm_tools
+        client = rmm_cli.RmmApiClient("http://fixture", "fixture-token")
+        client.request = Mock(return_value=(200, {}))
+        client.lateral_move("source", "winrm", "target", https=True, insecure=True)
+        self.assertIs(client.request.call_args.args[2]["insecure"], True)
+        with self.assertRaises(ValueError): client.lateral_move("source", "winrm", "target", insecure=True)
+        with patch.object(rmm_tools, "_resolve_session_id", return_value=("source", {})):
+            result = json.loads(rmm_tools.tool_lateral_move(client, "source", "winrm", "target", insecure=True))
+            self.assertEqual(result["error"], "invalid_insecure")
+
     def test_invalid_https_never_stages_or_dispatches(self):
         for method, value in [("psexec", True), ("wmiexec", True), ("winrm", "true"), ("winrm", 1), ("winrm", None)]:
             with self.subTest(method=method, value=value):
@@ -429,6 +451,16 @@ class LateralHttpRoutingTests(unittest.TestCase):
             self.assertEqual(handler._json.call_args.args[0], 400)
             handler.server_instance.lateral_move.assert_not_called()
 
+    def test_insecure_route_validates_and_forwards(self):
+        handler = self._handler("lateral", {"ok": True})
+        self._run(handler, {"method": "winrm", "host": "target", "https": True, "insecure": True})
+        self.assertIs(handler.server_instance.lateral_move.call_args.kwargs["insecure"], True)
+        for value in ["true", 1, None]:
+            handler = self._handler("lateral", {"ok": True})
+            self._run(handler, {"method": "winrm", "host": "target", "https": True, "insecure": value})
+            self.assertEqual(handler._json.call_args.args[0], 400)
+            handler.server_instance.lateral_move.assert_not_called()
+
     def _handler(self, endpoint, result, status="ok"):
         handler = object.__new__(server_rmm.RMMHandler)
         handler._api_authorized = Mock(return_value=True)
@@ -463,6 +495,7 @@ class LateralHttpRoutingTests(unittest.TestCase):
             ("invalid_method", 400),
             ("invalid_host", 400),
             ("invalid_https", 400),
+            ("invalid_insecure", 400),
             ("agent_payload_unavailable", 503),
             ("debug_payload_unavailable", 503),
             ("timeout", 408),

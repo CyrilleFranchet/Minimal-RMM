@@ -2282,7 +2282,7 @@ function updateShellCompletionHint() {
   closeShellCommandMenu();
   const lateralMethod = line.match(/^\s*\/lateral\s+(psexec|wmiexec|winrm)\s/i)?.[1].toLowerCase();
   if (lateralMethod) {
-    hint.textContent = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https]" : ""}`;
+    hint.textContent = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure]" : ""}`;
     hint.classList.remove("hidden");
     return;
   }
@@ -3178,7 +3178,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /make_token -i &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
-  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https]   HTTPS/5986 for winrm only; inherits the source build mode
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure]   HTTPS/5986 for winrm only; inherits the source build mode
   /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
                                    Operate workspace BloodHound; never sent to the agent
 
@@ -3361,10 +3361,12 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
   if (verb === "lateral") {
     const method = (rest[0] || "").toLowerCase();
     const flags = rest.slice(1).filter(arg => ["-s", "--https"].includes(arg));
-    const targets = rest.slice(1).filter(arg => !["-s", "--https"].includes(arg));
-    if (targets.length !== 1 || flags.length > 1 || targets.some(arg => arg.startsWith("-")) ||
+    const insecureFlags = rest.slice(1).filter(arg => ["-k", "--insecure"].includes(arg));
+    const targets = rest.slice(1).filter(arg => !["-s", "--https", "-k", "--insecure"].includes(arg));
+    if (targets.length !== 1 || flags.length > 1 || insecureFlags.length > 1 ||
+        (insecureFlags.length && !flags.length) || targets.some(arg => arg.startsWith("-")) ||
         (flags.length && method !== "winrm")) {
-      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https (winrm only)]");
+      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)]");
       return true;
     }
     if (!target.sessionId) {
@@ -3383,7 +3385,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/lateral`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method, host, ...(flags.length ? { https: true } : {}) }),
+        body: JSON.stringify({ method, host, ...(flags.length ? { https: true } : {}), ...(insecureFlags.length ? { insecure: true } : {}) }),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {

@@ -36,3 +36,6 @@ SDK_ASSERT(WSMAN_DATA_TYPE_DWORD == 4, "DWORD data type");
 SDK_ASSERT(offsetof(WSMAN_DATA, number) == 8, "DWORD union offset");
 SDK_ASSERT(sizeof(WSMAN_ERROR) == 40, "error size");
 SDK_ASSERT(offsetof(WSMAN_ERROR, errorDetail) == 8, "error detail offset");
+SDK_ASSERT(WSMAN_OPTION_SKIP_CA_CHECK == 18, "skip CA option");
+SDK_ASSERT(WSMAN_OPTION_SKIP_CN_CHECK == 19, "skip name option");
+SDK_ASSERT(WSMAN_OPTION_SKIP_REVOCATION_CHECK == 31, "skip revocation option");

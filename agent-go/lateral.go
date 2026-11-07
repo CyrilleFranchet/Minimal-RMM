@@ -35,6 +35,7 @@ type lateralPayload struct {
 	Stage          string  `json:"stage"`
 	TimeoutSeconds float64 `json:"timeout_seconds"`
 	HTTPS          bool    `json:"https,omitempty"`
+	Insecure       bool    `json:"insecure,omitempty"`
 	winrmIdentity  *winrmCredentials
 }
 
@@ -96,7 +97,8 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 	// encoding/json treats null as a no-op for bool fields. Reject it here
 	// rather than silently selecting HTTP for an invalid transport option.
 	var transport struct {
-		HTTPS json.RawMessage `json:"https"`
+		HTTPS    json.RawMessage `json:"https"`
+		Insecure json.RawMessage `json:"insecure"`
 	}
 	if err := json.Unmarshal([]byte(parts[1]), &transport); err != nil {
 		return payload, err
@@ -104,11 +106,20 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 	if strings.TrimSpace(string(transport.HTTPS)) == "null" {
 		return payload, errors.New("https must be a boolean")
 	}
+	if strings.TrimSpace(string(transport.Insecure)) == "null" {
+		return payload, errors.New("insecure must be a boolean")
+	}
 	payload.Method = strings.ToLower(strings.TrimSpace(payload.Method))
 	// The HTTPS wire method is intentionally unknown to older agents. They
 	// must reject it rather than silently ignore https and connect over HTTP.
 	if payload.Method == "winrm_https" {
 		payload.Method, payload.HTTPS = "winrm", true
+	}
+	if payload.Method == "winrm_https_insecure" {
+		if len(transport.Insecure) != 0 && !payload.Insecure {
+			return payload, errors.New("insecure wire method conflicts with certificate validation")
+		}
+		payload.Method, payload.HTTPS, payload.Insecure = "winrm", true, true
 	}
 	payload.Host = strings.Trim(strings.TrimSpace(payload.Host), `\`)
 	payload.RemoteName = strings.TrimSpace(payload.RemoteName)
@@ -120,6 +131,9 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 	}
 	if payload.HTTPS && payload.Method != "winrm" {
 		return payload, errors.New("https is supported only for winrm")
+	}
+	if payload.Insecure && (!payload.HTTPS || payload.Method != "winrm") {
+		return payload, errors.New("insecure requires winrm HTTPS")
 	}
 	if payload.SessionID != "" && !regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`).MatchString(payload.SessionID) {
 		return payload, errors.New("invalid target session id")

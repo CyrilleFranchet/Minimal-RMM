@@ -594,6 +594,7 @@ def lateral_move(
     register_timeout: float = 60,
     verify_timeout: float = 120,
     https: StrictBool = False,
+    insecure: StrictBool = False,
 ) -> str:
     """Start a Go agent on another host and confirm registration. Children inherit the source agent's compiled debug mode. Debug is selected only at build time. A debug source requires a server-side Windows amd64 debug artifact for PsExec; missing required artifacts fail without fallback."""
     return tool_lateral_move(
@@ -606,6 +607,7 @@ def lateral_move(
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
         https=https,
+        insecure=insecure,
     )
 
 

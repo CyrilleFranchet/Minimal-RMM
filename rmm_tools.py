@@ -798,6 +798,7 @@ def tool_lateral_move(
     register_timeout: float = 60,
     verify_timeout: float = 120,
     https: bool = False,
+    insecure: bool = False,
 ) -> str:
     """Start a Go agent on another host through psexec, wmiexec, or winrm."""
     sid, info = _resolve_session_id(client, session_ref)
@@ -813,6 +814,8 @@ def tool_lateral_move(
     if not isinstance(https, bool) or (https and method != "winrm"):
         return _json_result({"ok": False, "error": "invalid_https",
                              "detail": "https must be boolean and is supported only for winrm"})
+    if not isinstance(insecure, bool) or (insecure and not https):
+        return _json_result({"ok": False, "error": "invalid_insecure", "detail": "insecure requires WinRM HTTPS"})
     host = (host or "").strip().strip("\\")
     if not host:
         return _json_result({"ok": False, "error": "invalid_host"})
@@ -825,6 +828,7 @@ def tool_lateral_move(
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
         **({"https": True} if https else {}),
+        **({"insecure": True} if insecure else {}),
     )
     if code == 408:
         return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__LATERAL__"})
@@ -1106,6 +1110,7 @@ TOOL_HANDLERS = {
         float(a.get("register_timeout", 60)),
         float(a.get("verify_timeout", 120)),
         a.get("https", False),
+        a.get("insecure", False),
     ),
     "session_uid": lambda c, a: tool_session_uid(
         c,
@@ -1906,6 +1911,7 @@ OPENAI_TOOLS: list[dict] = [
                     "method": {"type": "string", "enum": ["psexec", "wmiexec", "winrm"]},
                     "host": {"type": "string", "description": "Target hostname or IP address"},
                     "https": {"type": "boolean", "default": False, "description": "WinRM only: HTTPS on port 5986 with server certificate validation; default HTTP/5985."},
+                    "insecure": {"type": "boolean", "default": False, "description": "Skip CA, name and revocation checks for this WinRM HTTPS session. Requires https=true."},
                     "verify": {"type": "boolean", "default": True},
                     "exec_timeout": {"type": "number", "default": 300},
                     "register_timeout": {"type": "number", "default": 60},

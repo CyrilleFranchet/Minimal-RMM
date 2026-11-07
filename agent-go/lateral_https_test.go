@@ -26,3 +26,21 @@ func TestLateralHTTPSValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestLateralInsecureRequiresHTTPS(t *testing.T) {
+	for _, body := range []string{
+		`{"method":"winrm","host":"target","insecure":true}`,
+		`{"method":"psexec","host":"target","https":true,"insecure":true}`,
+		`{"method":"winrm","host":"target","https":true,"insecure":null}`,
+		`{"method":"winrm","host":"target","https":true,"insecure":"true"}`,
+		`{"method":"winrm_https_insecure","host":"target","insecure":false}`,
+	} {
+		if _, err := parseLateralPayload("__LATERAL__\n" + body); err == nil {
+			t.Fatalf("accepted invalid bypass request: %s", body)
+		}
+	}
+	payload, err := parseLateralPayload("__LATERAL__\n" + `{"method":"winrm_https_insecure","host":"target"}`)
+	if err != nil || !payload.HTTPS || !payload.Insecure || payload.Method != "winrm" {
+		t.Fatalf("bypass marker: %+v %v", payload, err)
+	}
+}
