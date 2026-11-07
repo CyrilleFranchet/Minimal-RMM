@@ -22,10 +22,39 @@ var debugLog = struct {
 
 var errDebugCrashUnsupported = errors.New("runtime crash capture requires Go 1.23 or newer")
 
+// debugSessionID resolves startup identity before configuration and preserves generated IDs.
+func debugSessionID() (string, error) {
+	id := envOr("RMM_SESSION_ID", embeddedValue(defaultSessionIDB64))
+	if len(os.Args) > 2 && os.Args[1] == "--lateral-detach" {
+		startup, err := parseLateralStartup(os.Args[2:])
+		if err != nil {
+			return "", err
+		}
+		id = startup.SessionID
+	}
+	if id == "" {
+		id = fmt.Sprintf("go-%d", time.Now().UnixNano())
+		if err := os.Setenv("RMM_SESSION_ID", id); err != nil {
+			return "", err
+		}
+	}
+	if !agentSessionIDPattern.MatchString(id) {
+		return "", errors.New("invalid debug session ID")
+	}
+	return id, nil
+}
+
 // initAgentDebug enables diagnostics for every process compiled in debug mode.
 func initAgentDebug(announce bool) {
-	path := filepath.Join(debugDirectory(), fmt.Sprintf("minimal-rmm-debug-%d.log", os.Getpid()))
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	id, err := debugSessionID()
+	if err != nil {
+		if announce {
+			logf("debug session ID initialization failed")
+		}
+		return
+	}
+	path := filepath.Join(debugDirectory(), id+".log")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		if announce {
 			logf("debug file initialization failed")

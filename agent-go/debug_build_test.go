@@ -143,7 +143,7 @@ func TestNormalBuildExcludesDebugImplementation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		markers := []string{"minimal-rmm-debug-%d.log", "identity_boundary.failed"}
+		markers := []string{"invalid debug session ID", "identity_boundary.failed"}
 		if !strings.HasPrefix(runtime.Version(), "go1.21") && !strings.HasPrefix(runtime.Version(), "go1.22") {
 			markers = append(markers, "runtime/debug.SetCrashOutput")
 		}

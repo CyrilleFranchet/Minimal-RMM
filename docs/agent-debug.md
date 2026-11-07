@@ -61,10 +61,11 @@ continues when a spawned agent itself spawns or deploys another agent.
 
 ## Find the trace
 
-The child writes `minimal-rmm-debug-<PID>.log` in its process account's profile
-under `AppData\Local\Temp`. Use its registered PID or the PID in the spawn
-result. If the account profile cannot be resolved, it falls back to the child's
-`%TEMP%`, which may have been inherited from its parent. The startup message in
+The agent writes `<session-id>.log` in the Windows installation's `Temp`
+directory, normally `C:\Windows\Temp`. Use the session ID shown in the RMM UI.
+Restarts and helpers sharing a session append to the same file; records retain
+their PID so processes can be distinguished. The directory does not depend on
+the process account or inherited `%TEMP%`. The startup message in
 the existing agent log reports the actual path. The debug file is separate from
 the existing `RMM_LOG_FILE` agent log.
 
@@ -93,11 +94,12 @@ collecting the evidence; the files are not automatically uploaded or rotated.
 | Function | Purpose |
 | --- | --- |
 | `rejectCommandDebugOption` | Reject removed deployment JSON overrides before a command can launch an agent |
-| `initAgentDebug` | Create an exclusive per-process trace and install crash capture |
+| `debugSessionID` | Resolve and validate the session filename before configuration, preserving generated IDs and detach target identities |
+| `initAgentDebug` | Append to the session trace and install crash capture |
 | `closeAgentDebug` | Flush/close the event writer while retaining runtime crash capture |
 | `debugEvent` | Write static checkpoints, UTC timestamps, PID, and sanitized error classes |
 | `installDebugCrashOutput` | Use Go 1.23 runtime crash capture or report its absence in older builds |
-| `debugDirectory` | Resolve the Windows process account profile temp directory, with a temp fallback |
+| `debugDirectory` | Resolve the Windows installation's shared Temp directory (host development tests use the host temp directory) |
 | `lateralServiceArguments` | Request the distinct debug target filename from the C service worker |
 
 The normal `debug_disabled.go` build supplies empty diagnostic hooks; compiler

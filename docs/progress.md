@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-07 — Store debug traces by session in Windows Temp
+
+- Write debug traces to the Windows installation's `Temp/<session-id>.log`
+  instead of per-process files in account profiles. Append across restarts and
+  helpers; each diagnostic record retains its PID. Existing file permissions
+  still apply when different accounts share a session.
+- Validate session IDs before using them as filenames. Preserve generated IDs
+  for registration and use the target session during WinRM detach startup.
+- Validate normal/debug Go suites, Windows amd64/arm64 cross-builds, Windows
+  debug test compilation, and C compile checks. Native Windows runtime
+  validation of the new log location remains pending.
+
 ## 2026-11-07 — Correct native WMI COM dispatch
 
 - Correct IWbemClassObject vtable slots for GetMethod (19), SpawnInstance
