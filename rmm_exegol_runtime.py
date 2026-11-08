@@ -54,16 +54,17 @@ LAUNCH_EXITED_MARKER = re.compile(r'^RMM_CE_LAUNCH_EXITED:(\d{1,3})$')
 # drop/create/alter step succeeded. Stopping the services afterward is best
 # effort; the next launch starts them again.
 RESET_COMMAND = ("pkill -f '[B]loodHound-CE/bloodhound' ; sleep 2; "
-                 "sudo -u postgres psql -c 'DROP database bloodhound' 2>>/var/log/rmm-ce-reset.log && "
+                 "service postgresql start >>/var/log/rmm-ce-reset.log 2>&1 && "
+                 "sudo -u postgres psql -c 'DROP DATABASE IF EXISTS bloodhound' 2>>/var/log/rmm-ce-reset.log && "
                  "sudo -u postgres psql -c 'CREATE DATABASE bloodhound;' 2>>/var/log/rmm-ce-reset.log && "
                  "sudo -u postgres psql -c 'ALTER DATABASE bloodhound OWNER TO bloodhound;' 2>>/var/log/rmm-ce-reset.log && "
                  "printf 'RMM_CE_RESET_DONE\\n'; "
                  "neo4j stop >>/var/log/rmm-ce-reset.log 2>&1; "
                  "service postgresql stop >>/var/log/rmm-ce-reset.log 2>&1")
 RESET_DONE_MARKER = 'RMM_CE_RESET_DONE'
-GRAPH_WIPE_COMMAND = ("neo4j stop >>/var/log/rmm-ce-reset.log 2>&1; "
+GRAPH_WIPE_COMMAND = ("neo4j stop >>/var/log/rmm-ce-reset.log 2>&1 && "
                       "if [ -d /var/lib/neo4j/data/databases ]; then "
-                      "rm -rf /var/lib/neo4j/data/databases/* /var/lib/neo4j/data/transactions/* 2>>/var/log/rmm-ce-reset.log; "
+                      "rm -rf /var/lib/neo4j/data/databases/* /var/lib/neo4j/data/transactions/* 2>>/var/log/rmm-ce-reset.log && "
                       "printf 'RMM_CE_GRAPH_WIPED\\n'; else printf 'RMM_CE_GRAPH_MISSING\\n'; fi")
 RESET_TIMEOUT = 180
 
@@ -331,7 +332,7 @@ class ExegolRuntime:
             return None
         try:
             value = json.loads(path.read_text())
-            return value['state'] if value.get('state') in ('dispatched', 'ready') else 'dispatched'
+            return value['state'] if value.get('state') in ('dispatched', 'ready', 'reset_dispatched') else 'dispatched'
         except (OSError, ValueError, KeyError, AttributeError):
             return 'dispatched'
 
@@ -364,6 +365,10 @@ class ExegolRuntime:
         with self.lock:
             if self.stopped.is_set():
                 return self._update(state='blocked', ready=False, error='runtime_stopped')
+            # status() ran outside this critical section: a reset or another
+            # lifecycle pass may have changed the state before we acquired it.
+            if self.snapshot.get('ready') or self.snapshot.get('state') in ('uncertain', 'resetting'):
+                return dict(self.snapshot)
             if self.thread is not None and self.thread.is_alive():
                 return dict(self.snapshot)
             self._update(state='checking', exegol_status='checking', ready=False, error=None, container=None, launch_exit_code=None)
@@ -387,6 +392,8 @@ class ExegolRuntime:
                 return self._update(state='blocked', ready=False, error='runtime_stopped')
             if self.thread is not None and self.thread.is_alive():
                 raise RuntimeErrorCode('bloodhound_startup_in_progress')
+            if self._intent() == 'reset_dispatched':
+                raise RuntimeErrorCode('ce_reset_outcome_uncertain')
             if self.snapshot.get('ready'):
                 raise RuntimeErrorCode('bloodhound_already_ready')
             if self.snapshot.get('state') != 'uncertain':
@@ -418,13 +425,20 @@ class ExegolRuntime:
                 return self._update(state='blocked', ready=False, error='runtime_stopped')
             if self.thread is not None and self.thread.is_alive():
                 raise RuntimeErrorCode('bloodhound_startup_in_progress')
-            self._update(state='resetting', ready=False, error=None, launch_exit_code=None)
+            if self.snapshot.get('state') == 'resetting':
+                raise RuntimeErrorCode('bloodhound_reset_in_progress')
+            self._update(state='resetting', ready=False, error=None, launch_exit_code=None,
+                         credentials_invalidated=False)
         try:
             asyncio.run(asyncio.wait_for(self._reset_ce(bool(clear_graph)), timeout=RESET_TIMEOUT))
         except RuntimeErrorCode as exc:
-            self._update(state='failed', ready=False, error=str(exc))
+            uncertain = self._intent() == 'reset_dispatched'
+            self._update(state='uncertain' if uncertain else 'failed', ready=False,
+                         error='ce_reset_outcome_uncertain' if uncertain else str(exc))
         except Exception as exc:
-            self._update(state='failed', ready=False, error=runtime_failure_code(exc))
+            uncertain = self._intent() == 'reset_dispatched'
+            self._update(state='uncertain' if uncertain else 'failed', ready=False,
+                         error='ce_reset_outcome_uncertain' if uncertain else runtime_failure_code(exc))
         return dict(self.snapshot)
 
     async def _reset_ce(self, clear_graph):
@@ -459,22 +473,35 @@ class ExegolRuntime:
                     raise RuntimeErrorCode('exegol_workspace_identity_mismatch')
                 if configuration() != config:
                     raise RuntimeErrorCode('runtime_configuration_changed')
-                commands = RESET_COMMAND + ('; ' + GRAPH_WIPE_COMMAND if clear_graph else '')
-                arguments = execution_arguments(session.openai_tools, container, commands)
+                arguments = execution_arguments(session.openai_tools, container, RESET_COMMAND)
+                self._save('reset_dispatched')
                 reply = await asyncio.wait_for(session.call_tool(EXEC_TOOL, arguments), timeout=RESET_TIMEOUT)
                 lines = [line.strip() for text in output_strings(reply) for line in text.splitlines()]
                 if RESET_DONE_MARKER not in lines:
                     raise RuntimeErrorCode('ce_reset_command_failed')
-                if clear_graph and 'RMM_CE_GRAPH_WIPED' not in lines:
-                    raise RuntimeErrorCode('ce_reset_command_failed')
+                self._update(credentials_invalidated=True)
+                # The database is already fresh even if optional graph
+                # cleanup fails. Old launch bookkeeping must not prevent
+                # a subsequent ensure from starting the new database.
+                (self.root / 'ce-startup.json').unlink(missing_ok=True)
+                self.verified_configuration = None
+                self.last_probe = 0.0
+                if clear_graph:
+                    if configuration() != config:
+                        raise RuntimeErrorCode('runtime_configuration_changed')
+                    arguments = execution_arguments(session.openai_tools, container, GRAPH_WIPE_COMMAND)
+                    self._save('reset_dispatched')
+                    reply = await asyncio.wait_for(session.call_tool(EXEC_TOOL, arguments), timeout=RESET_TIMEOUT)
+                    lines = [line.strip() for text in output_strings(reply) for line in text.splitlines()]
+                    if 'RMM_CE_GRAPH_WIPED' not in lines:
+                        raise RuntimeErrorCode('ce_reset_command_failed')
+                    (self.root / 'ce-startup.json').unlink(missing_ok=True)
         finally:
             identity_path.unlink(missing_ok=True)
-        (self.root / 'ce-startup.json').unlink(missing_ok=True)
-        self.verified_configuration = None
-        self.last_probe = 0.0
         self.snapshot = dict(required=True, state='blocked', exegol_status='not_checked',
                              mcp_status='not_checked', bloodhound_status='not_checked',
-                             ready=False, exegol_verified_at=None, updated_at=timestamp())
+                             ready=False, exegol_verified_at=None, updated_at=timestamp(),
+                             credentials_invalidated=True)
         append_log(self.root, f"operator reset: CE database cleared (graph {'wiped' if clear_graph else 'kept'})")
 
     def status(self):
@@ -482,6 +509,10 @@ class ExegolRuntime:
         with self.lock:
             if self.stopped.is_set():
                 return self._update(state='blocked', ready=False, error='runtime_stopped')
+            if self.snapshot.get('state') == 'resetting':
+                return dict(self.snapshot)
+            if self._intent() == 'reset_dispatched':
+                return self._update(state='uncertain', ready=False, error='ce_reset_outcome_uncertain')
             if self.verified_configuration is not None:
                 try:
                     unchanged = configuration() == self.verified_configuration
@@ -496,10 +527,15 @@ class ExegolRuntime:
             if self.snapshot['exegol_status'] != 'ready' or time.monotonic() - self.last_probe < PROBE_INTERVAL:
                 return dict(self.snapshot)
             self.last_probe = time.monotonic()
+            observed = dict(self.snapshot)
         try:
             endpoint = configuration()[3]
             availability = probe_ce(endpoint)
             with self.lock:
+                if self.snapshot != observed:
+                    return dict(self.snapshot)
+                if self.snapshot.get('state') == 'resetting':
+                    return dict(self.snapshot)
                 if self.verified_configuration is not None and configuration() != self.verified_configuration:
                     return self._update(state='blocked', ready=False, exegol_status='not_checked',
                                         mcp_status='not_checked', exegol_verified_at=None, container=None,
@@ -527,7 +563,10 @@ class ExegolRuntime:
                 return self._update(state='uncertain' if uncertain else 'failed', ready=False,
                                     bloodhound_status=availability, error=error)
         except (RuntimeErrorCode, OSError):
-            return self._update(state='failed', ready=False, error='runtime_health_failed')
+            with self.lock:
+                if self.snapshot != observed:
+                    return dict(self.snapshot)
+                return self._update(state='failed', ready=False, error='runtime_health_failed')
 
     def stop(self):
         """Cancel further startup steps without stopping CE or resetting its data."""
@@ -556,6 +595,9 @@ class ExegolRuntime:
 
     async def _check_and_start(self):
         """Verify the selected local Exegol namespace and start only its installed CE."""
+        if self._intent() == 'reset_dispatched':
+            self._update(state='uncertain', ready=False, error='ce_reset_outcome_uncertain')
+            return
         config = configuration()
         url, token, container, endpoint = config
         try:

@@ -11,6 +11,9 @@ from rmm_bloodhound import bloodhound_api, validate, WorkflowError
 from rmm_settings import getenv
 
 ACTIONS = {'preflight', 'create', 'collect', 'import', 'status', 'verify', 'query', 'queries', 'report', 'ui', 'health', 'ensure', 'reset', 'auth', 'reset_ce', 'library_search', 'library_get'}
+# ensure() owns its durable, single-flight startup state and refuses to replay
+# uncertain launches. Repeating its relay dispatch is safe, just like health.
+EPHEMERAL_ACTIONS = {'health', 'ensure', 'library_search', 'library_get'}
 
 
 def local_operator_path(method, path):
@@ -108,7 +111,7 @@ class BloodHoundBroker:
         for key, row in list(self.requests.items()):
             age = current - row['created']
             result_age = current - row.get('completed_at', row['created'])
-            if age > 3600 or (row['body'].get('action') in ('health', 'library_search', 'library_get') and row['result'] is not None and result_age > 30):
+            if age > 3600 or (row['body'].get('action') in EPHEMERAL_ACTIONS and row['result'] is not None and result_age > 30):
                 del self.requests[key]
             elif age > 300 and row['result'] is None:
                 row['result'] = (409, {'error': 'workspace_request_uncertain', 'workspace_request_id': key})
@@ -173,8 +176,8 @@ def execute_workspace_request(root, task, operator=None):
             'exegol_mcp_url': getenv('RMM_EXEGOL_MCP_URL', ''),
             'exegol_mcp_token': getenv('RMM_EXEGOL_MCP_TOKEN', ''),
         }
-    if isinstance(task['body'], dict) and task['body'].get('action') in ('health', 'library_search', 'library_get'):
-        # Read-only discovery may repeat and must not fill the durable journal.
+    if isinstance(task['body'], dict) and task['body'].get('action') in EPHEMERAL_ACTIONS:
+        # Repeat-safe discovery must not fill the durable relay journal.
         return bloodhound_api(root, task['body'])
     directory = Path(root) / 'relay-results'
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)

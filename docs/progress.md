@@ -1,5 +1,64 @@
 # Progress Log
 
+## 2026-11-08 — Second BloodHound recovery and concurrency review
+
+- Correct the settings boundary: only the four managed CE credential fields
+  refresh live. Other settings retain startup values until restart. Fix live
+  credential provenance/restart flags and document the pending password setting.
+  The previously reported settings failure exposed this bug; it was not merely
+  an obsolete assertion. Update the separate Go manifest fixture to include
+  the existing `scm_handles.go` source.
+- Prevent ensure/reset races and stale health replies overwriting reset state.
+  Durably mark destructive dispatch uncertainty across restarts; block startup,
+  bootstrap, and new CE operations until an explicit destructive retry. Keep
+  health-triggered auth scheduling nonblocking when the auth lock is held.
+- Expire relayed ensure replies after thirty seconds and avoid per-poll journals;
+  test 400 polls without filling the relay queue. Surface final UI reset errors.
+- Bind uploads to validated bounded bytes and reject changed files. Return
+  detached worker snapshots; clear stale uncertainty flags after definitive
+  ingestion reconciliation; safely reject malformed upload-start envelopes.
+- Validation: final full Python suite passes all 812 tests. `make check` passes
+  including syntax, Go command tests, deployment tests, operator parity, browser
+  contracts, and Markdown/YAML lint. No live CE deployment was available.
+
+## 2026-11-08 — Audit BloodHound management failure and recovery paths
+
+- Persist a pending password before CE mutation; recover accepted changes with
+  lost replies, failed token creation, and failed password changes. Preserve
+  bounded errors and reject malformed endpoint/expiration data. Validate saved
+  tokens on explicit `auth`; repair rejected tokens without rotating on network
+  errors. Refuse managed credential environment overrides that mask saved repairs.
+- Exclude concurrent reset/bootstrap mutations. Report reset storage errors and
+  graph failures truthfully, invalidate credentials once the database resets,
+  start PostgreSQL before reset SQL, and clear obsolete startup intent before
+  optional graph cleanup. Health cannot publish ready during reset.
+- Validate artifacts before creating remote upload jobs. Reject malformed CE
+  responses, graph records, ingestion counters, and artifact metadata safely.
+- Fix browser asynchronous reset polling and workspace-switch races. Include
+  the auth module in the syntax gate. Proxy/library/broker review found no
+  additional confirmed defects.
+- Validation: 98 BloodHound tests and 36 lifecycle tests pass. Syntax, operator
+  parity, browser contracts, and Markdown/YAML lint pass. The full Python run
+  executed 795 tests with two existing failures: Go source-manifest expectation
+  omits `scm_handles.go`; settings test expects saved values to remain absent
+  from `effective`, contrary to existing immediate-refresh behavior. `make check`
+  stops at that Go manifest test. Those code/tests were unchanged by this audit.
+- No RMM/CE container is running locally. Live Exegol startup, CE login,
+  collection/import/query, and destructive reset remain deployment checks.
+
+## 2026-11-08 — Preserve BloodHound passwords when token bootstrap fails
+
+- Reuse the saved admin password before consulting the initial launch banner.
+- Persist password changes immediately after CE accepts them, before login
+  refresh and API token creation can fail. Retry from a saved password even
+  when the launch log is unavailable; fall back on rejected saved credentials.
+- Add regression coverage for token failure/retry, stale credentials after a
+  database reset, and network failures without credential fallback.
+- The reported manual login used `password`; CE requires `secret`, so its
+  401 alone does not establish that the stored admin password is stale.
+- Validation: all 84 BloodHound Python tests pass. Live CE deployment and
+  recovery of any previously lost password remain unverified.
+
 ## 2026-11-08 — Avoid stage2 filename collisions on repeated PsExec deployments
 
 - The launcher previously wrote a fixed payload filename in the target temp

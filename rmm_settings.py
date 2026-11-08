@@ -1,8 +1,9 @@
 """Typed, owner-local process configuration with write-only credentials.
 
 Executable entry points call bootstrap before importing application modules.
-The active snapshot never changes after startup; API writes affect the next
-process start. No configuration values are injected into os.environ.
+API writes affect the next process start, except managed BloodHound
+credentials, which refresh immediately for bootstrap and recovery.
+No configuration values are injected into os.environ.
 """
 from __future__ import annotations
 
@@ -26,6 +27,10 @@ SCHEMA = "minimal-rmm-settings-v1"
 MAX_BYTES = 2 * 1024 * 1024
 _LOCK = threading.RLock()
 _active = None
+LIVE_CREDENTIAL_KEYS = frozenset({
+    'RMM_BLOODHOUND_TOKEN_ID', 'RMM_BLOODHOUND_TOKEN_KEY',
+    'RMM_BLOODHOUND_ADMIN_PASSWORD', 'RMM_BLOODHOUND_PENDING_PASSWORD',
+})
 
 
 def field(label, group, kind="string", default="", *, scopes=("server", "workspace"), secret=False,
@@ -102,6 +107,7 @@ FIELDS = {
     "RMM_BLOODHOUND_TOKEN_ID": field("BloodHound API token ID", "BloodHound", secret=True, scopes=S + W),
     "RMM_BLOODHOUND_TOKEN_KEY": field("BloodHound API token key", "BloodHound", secret=True, scopes=S + W),
     "RMM_BLOODHOUND_ADMIN_PASSWORD": field("BloodHound CE admin password", "BloodHound", secret=True, scopes=S + W),
+    "RMM_BLOODHOUND_PENDING_PASSWORD": field("BloodHound CE pending password change", "BloodHound", secret=True, scopes=S + W),
     "RMM_BLOODHOUND_COLLECTOR": field("BloodHound CE collector executable", "BloodHound", default="bloodhound-ce-python", scopes=S + W),
 }
 
@@ -185,7 +191,7 @@ def _decode_environment(key, raw, scope):
 
 
 class SettingsStore:
-    """Atomic configuration file plus immutable effective startup snapshot."""
+    """Atomic configuration plus startup settings and live CE credentials."""
 
     def __init__(self, path, scope, *, environment=None):
         if scope not in ALL:
@@ -232,12 +238,13 @@ class SettingsStore:
         for key in sorted(keys):
             spec = definition(key, self.scope)
             value = self.effective.get(key, self.default_value(key))
-            pending = saved.get(key) != self.saved_at_start.get(key)
+            baseline = self.effective if key in LIVE_CREDENTIAL_KEYS else self.saved_at_start
+            pending = saved.get(key) != baseline.get(key)
             rows.append({"key": key, **{k: spec[k] for k in ("label", "group", "type", "secret", "choices", "minimum", "maximum")},
                          "value": None if spec["secret"] else value,
                          "saved_value": None if spec["secret"] else saved.get(key),
                          "configured": bool(value), "saved": key in saved,
-                         "source": "command line" if key in self.flags else "environment" if key in self.overrides else "config" if key in self.saved_at_start else "default",
+                         "source": "command line" if key in self.flags else "environment" if key in self.overrides else "config" if key in baseline else "default",
                          "restart_required": pending})
         return {"scope": self.scope, "settings": rows, "restart_required": any(row["restart_required"] for row in rows)}
 
@@ -260,7 +267,7 @@ class SettingsStore:
         return defaults.get(key, definition(key, self.scope)["default"])
 
     def update(self, payload):
-        """Validate an entire patch, atomically save it, and apply it in-process."""
+        """Save a validated patch; refresh only managed CE credentials live."""
         if self.path is None:
             raise SettingsError("internal client configuration is read-only")
         if not isinstance(payload, dict) or set(payload) != {"settings"} or not isinstance(payload["settings"], dict):
@@ -291,14 +298,15 @@ class SettingsStore:
             finally:
                 if os.path.exists(temp):
                     os.unlink(temp)
-            # Startup environment overrides keep precedence, but the process
-            # that saved a value reads it back immediately: a bootstrapped
-            # credential becomes usable in the same session instead of only
-            # after a restart.
-            try:
-                self.effective = {**self._read(), **self.overrides}
-            except SettingsError:
-                pass
+            # CE recovery needs fresh credentials, while unrelated settings
+            # retain the same restart boundary as their initialized consumers.
+            for key in LIVE_CREDENTIAL_KEYS & patch.keys():
+                if key in self.overrides:
+                    self.effective[key] = self.overrides[key]
+                elif key in saved:
+                    self.effective[key] = saved[key]
+                else:
+                    self.effective.pop(key, None)
         return self.snapshot()
 
 

@@ -4,6 +4,45 @@ Audit date: November 3, 2026. This review covers the BloodHound workflow,
 reference library, Exegol lifecycle, and their operator surfaces. It does not
 certify that every unrelated project feature has a dedicated manual WebUI control.
 
+## November 8 browser management follow-up
+
+The second pass passed the final full Python suite (812 tests) and `make check`.
+It corrected the settings restart boundary, durable destructive-reset
+uncertainty, startup/health races, relay monitoring capacity, mutable launch
+replies, stale reconciliation errors, and upload artifact byte consistency.
+The earlier two full-suite failures below are now resolved: the settings
+failure exposed a real boundary bug, and the Go source fixture omitted an
+existing file. Live CE deployment remains unverified.
+
+The wider failure-path review also corrected pending-password recovery,
+stale-token repair, reset exclusion and partial-failure reporting, PostgreSQL
+restart before repeated reset, startup recovery after graph cleanup failure,
+and malformed artifact/CE response handling. Details are in the
+[workflow guide](bloodhound-workflow.md) and [progress log](progress.md).
+The earlier focused validation passed 98 BloodHound and 36 lifecycle tests;
+the second pass above supersedes that checkpoint.
+
+- Both browser reset controls now follow workspace relay acceptance with
+  `result` polling instead of treating HTTP 202 as a failure. The destructive
+  reset request is submitted once; polling never resubmits it.
+- CE reset requests have a bounded timeout and are canceled locally when the
+  workspace connection changes. Delayed replies cannot replace the new
+  workspace's status or start its health polling. Local cancellation does not
+  cancel an already accepted server operation; check status before retrying.
+- Reset controls exclude concurrent browser reset actions. Connection changes
+  release the controls, and stale completions cannot release a newer action.
+- The Python syntax gate now includes `rmm_bloodhound_ce_auth.py`.
+- Continuous relayed `ensure` monitoring no longer retains an hour of completed
+  requests or creates a durable relay journal for each poll. Like `health`, its
+  completed replies expire thirty seconds after completion. Repeated dispatch
+  relies on the runtime's existing single-flight and uncertain-launch guards.
+  A regression simulates 400 polls over more than an hour without exhausting
+  the 128-request queue or creating journal files.
+- Reset controls surface the runtime's failure code from final relay replies
+  and reject explicit `ok: false` responses even if HTTP status is 200.
+- Validation: browser launch/reset tests, three shell dispatch tests, and six
+  localhost proxy tests pass. This does not validate a live CE browser session.
+
 ## Unified workspace follow-up
 
 The repeat failure-path audit also corrected four defects:

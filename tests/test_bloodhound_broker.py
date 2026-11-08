@@ -95,7 +95,7 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(broker.result('alice', request_id)[0], 404)
 
     def test_slow_discovery_retains_reply_for_thirty_seconds_after_completion(self):
-        for action in ('health', 'library_search', 'library_get'):
+        for action in ('health', 'ensure', 'library_search', 'library_get'):
             with self.subTest(action=action), patch('rmm_bloodhound_broker.time.monotonic') as clock:
                 clock.return_value = 100
                 broker = BloodHoundBroker()
@@ -108,6 +108,24 @@ class BrokerTests(unittest.TestCase):
                 self.assertEqual(broker.result('alice', request_id)[0], 200)
                 clock.return_value = 176
                 self.assertEqual(broker.result('alice', request_id)[0], 404)
+
+    def test_continuous_ensure_monitoring_does_not_fill_queue_or_journal(self):
+        broker = BloodHoundBroker()
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch('rmm_bloodhound_broker.time.monotonic') as clock, \
+                patch('rmm_bloodhound_broker.bloodhound_api', return_value=(200, {'runtime': {'state': 'ready'}})) as api:
+            root = Path(temporary) / 'owner'
+            for tick in range(400):
+                clock.return_value = tick * 10
+                code, queued = broker.submit('alice', {'action': 'ensure'})
+                self.assertEqual(code, 202)
+                task = broker.pending('alice')[0]
+                status, payload = execute_workspace_request(root, task)
+                broker.complete('alice', task['id'], {'status': status, 'payload': payload})
+                self.assertEqual(broker.result('alice', queued['workspace_request_id']), (status, payload))
+            self.assertEqual(api.call_count, 400)
+            self.assertLessEqual(len(broker.requests), 4)
+            self.assertFalse(root.exists())
 
     def test_workspace_scope_and_reply_polling(self):
         broker = BloodHoundBroker()

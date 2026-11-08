@@ -51,6 +51,28 @@ class SettingsTests(unittest.TestCase):
                 self.store().update({'settings': {'RMM_WORKSPACES': value}})
             self.assertFalse(self.path.exists())
 
+    def test_ce_credentials_refresh_without_applying_other_pending_settings(self):
+        store = self.store('workspace')
+        snapshot = store.update({'settings': {'RMM_BLOODHOUND_TOKEN_KEY': 'ce-private-test-value',
+            'RMM_BLOODHOUND_UI_PORT': '2031'}})
+        rows = {row['key']: row for row in snapshot['settings']}
+        self.assertEqual(store.effective['RMM_BLOODHOUND_TOKEN_KEY'], 'ce-private-test-value')
+        self.assertNotIn('RMM_BLOODHOUND_UI_PORT', store.effective)
+        self.assertFalse(rows['RMM_BLOODHOUND_TOKEN_KEY']['restart_required'])
+        self.assertEqual(rows['RMM_BLOODHOUND_TOKEN_KEY']['source'], 'config')
+        self.assertTrue(rows['RMM_BLOODHOUND_UI_PORT']['restart_required'])
+        self.assertNotIn('ce-private-test-value', json.dumps(snapshot))
+        store.update({'settings': {'RMM_BLOODHOUND_TOKEN_KEY': None}})
+        self.assertNotIn('RMM_BLOODHOUND_TOKEN_KEY', store.effective)
+
+    def test_live_ce_refresh_preserves_startup_environment_override(self):
+        store = self.store('workspace', {'RMM_BLOODHOUND_TOKEN_KEY': 'startup'})
+        snapshot = store.update({'settings': {'RMM_BLOODHOUND_TOKEN_KEY': 'saved'}})
+        self.assertEqual(store.effective['RMM_BLOODHOUND_TOKEN_KEY'], 'startup')
+        row = next(row for row in snapshot['settings'] if row['key'] == 'RMM_BLOODHOUND_TOKEN_KEY')
+        self.assertTrue(row['restart_required'])
+        self.assertEqual(row['source'], 'environment')
+
     def test_invalid_patch_is_atomic_and_wrong_scope_refused(self):
         store = self.store()
         store.update({"settings": {"RMM_MAX_BODY_BYTES": 65536}})

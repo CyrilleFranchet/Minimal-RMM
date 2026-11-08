@@ -291,6 +291,28 @@ special) through `PUT /api/v2/bloodhound-users/{id}/secret`, logs in again
 with it, and only then mints the token; the stored `RMM_BLOODHOUND_ADMIN_PASSWORD`
 is the final generated password.
 
+`bootstrap_credentials` accepts saved and pending passwords plus persistence
+callbacks. Before changing CE, the workspace saves the candidate in the secret
+`RMM_BLOODHOUND_PENDING_PASSWORD` setting. Retries try that candidate, then the
+saved admin password, then the launch banner. Only rejected credentials permit
+fallback; server errors, malformed replies, and transport failures stop the
+attempt. This recovers both an accepted change whose reply was lost and a
+failed change for which the old password still works. After CE accepts the
+change, the admin password is saved immediately. The pending candidate is
+cleared atomically with the final token/password save.
+
+`bootstrap_ce_credentials` and `reset_ce_credentials` serialize password/token
+updates and destructive resets. Storage failures report
+`ce_credentials_storage_failed` without including paths or secret values.
+The explicit `auth` action checks an existing token against an authenticated
+endpoint; rejected tokens can be replaced using the saved password. Environment
+overrides for tokens or managed passwords prevent local replacement and report
+`ce_credentials_environment_override`; update those startup settings and restart.
+
+When diagnosing login manually, CE requires `login_method: "secret"` and the
+`secret` field in the login JSON. Sending `password` can return 401 even when
+the saved credential is correct.
+
 The bootstrap runs once per process in the background when a `health`, `ui`,
 or `ensure` action observes a ready CE, and can be retried on demand with the
 `auth` action (REST/CLI/MCP), which reports `already_configured` or a bounded
@@ -318,12 +340,35 @@ are then stopped best-effort. The collected neo4j graph survives by default;
 the `clear_graph` option wipes it after neo4j stops. The dispatch runs
 through the same identity-verified MCP channel as the launch, refuses while a
 startup pass is running, and fails closed with `ce_reset_command_failed`
-unless the bounded markers prove the reset ran. After a successful reset, RMM
+before dispatch or `ce_reset_outcome_uncertain` after dispatch unless bounded
+markers prove the reset ran. After a successful reset, RMM
 invalidates every stored CE credential and re-arms the automatic bootstrap:
 the next `ensure` relaunches CE on the fresh database, whose new initial
 admin password is captured automatically and a new token is minted — the
 whole recovery needs no manual configuration. The wrapper's own output stays
 in `/var/log/rmm-ce-reset.log` inside the container.
+
+Concurrent resets are rejected, and health probes cannot publish ready during
+a reset. Graph deletion is dispatched only after the database reset succeeds;
+stop/delete failures report failure. If graph cleanup fails after the database
+was reset, `credentials_invalidated` still clears the obsolete local credentials
+and the API returns HTTP 503. Browser controls poll accepted relay requests and
+ignore delayed responses after a workspace connection change.
+
+Before either destructive dispatch, RMM saves `reset_dispatched` in
+`ce-startup.json`. A lost reply or absent completion marker keeps the outcome
+uncertain across restarts. Health, `ensure`, credential bootstrap, and new CE
+operations remain blocked; the ordinary `reset` action cannot erase this state.
+Inspect the reset log and explicitly retry `reset_ce` to complete recovery.
+This also applies to an uncertain graph wipe, which may still be running.
+Health replies started before a reset cannot overwrite its newer state.
+
+Relayed `ensure` monitoring uses short-lived replies, like health checks, and
+does not accumulate a relay journal; the runtime owns durable startup intent.
+Successful ingestion reconciliation clears obsolete error/pending flags.
+Uploads use bounded bytes matched to their validated hash and length, so a
+changed artifact is refused before upload. Worker launch responses are detached
+snapshots and do not change when a background worker updates its run.
 
 ### Server-side lifecycle logging
 
@@ -485,6 +530,13 @@ POST is never retried automatically. If finalization's response is lost,
 ambiguity remains recorded for operator inspection. Status polls perform one
 HTTP request, not a blocking polling loop; after 30 minutes of pending ingestion
 the run is marked uncertain but can still be reconciled read-only.
+
+Before creating an upload job, the importer revalidates every collected file
+against its saved hash and metadata; it checks each file again before upload.
+Malformed CE JSON envelopes, graph records, and ingestion counters produce
+bounded errors. Boolean or negative counters, or missing required counters,
+cannot establish successful ingestion. Interrupted HTTP bodies report transport
+uncertainty.
 
 CE partial completion, failed files, unknown statuses, and missing job IDs never
 count as verified ingestion. Artifact validation checks CE v6 metadata, counts,

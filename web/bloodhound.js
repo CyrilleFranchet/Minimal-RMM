@@ -13,6 +13,7 @@
   let healthTimer;
   let healthController;
   let launchController;
+  let resetController;
   let healthGeneration = 0;
 
   function message(text) {
@@ -79,9 +80,12 @@
     clearTimeout(healthTimer);
     healthController?.abort();
     launchController?.abort();
+    resetController?.abort();
     launchController = null;
+    resetController = null;
     button.disabled = false;
     resetting = false;
+    if (resetCeButton) resetCeButton.disabled = false;
     if (resetButton) {
       resetButton.disabled = false;
       resetButton.classList.add("hidden");
@@ -192,23 +196,40 @@
   }
 
   async function resetCe() {
-    if (!resetCeButton || resetCeButton.disabled) return;
+    if (!resetCeButton || resetCeButton.disabled || resetting) return;
     if (!window.confirm("Reset BloodHound CE? This clears its database (accounts, API tokens, upload jobs).")) return;
     const clearGraph = window.confirm("Also wipe the collected graph? Cancel to keep it.");
+    const generation = healthGeneration;
+    const controller = new AbortController();
+    resetController = controller;
+    const timeout = setTimeout(() => controller.abort(), 270000);
+    resetting = true;
+    button.disabled = true;
+    if (resetButton) resetButton.disabled = true;
     resetCeButton.disabled = true;
     message("Clearing the BloodHound CE database…");
     try {
-      const result = await window.rmmApi("/bloodhound", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "reset_ce", options: { clear_graph: clearGraph } }),
-      });
-      if (result.status !== 200) throw new Error(result.data?.error || "Cannot reset BloodHound CE.");
+      const result = await operation({ action: "reset_ce", options: { clear_graph: clearGraph } },
+        controller, { remaining: 270 });
+      if (generation !== healthGeneration) return;
+      if (result.status !== 200 || result.data?.ok === false) {
+        throw new Error(result.data?.error || result.data?.runtime?.error || "Cannot reset BloodHound CE.");
+      }
       message("");
       await startHealth();
     } catch (error) {
-      message(`BloodHound CE reset failed: ${error.message || "request failed"}`);
+      if (generation === healthGeneration) {
+        message(`BloodHound CE reset failed: ${error.message || "request failed"}. Check workspace status before retrying.`);
+      }
     } finally {
-      resetCeButton.disabled = false;
+      clearTimeout(timeout);
+      if (resetController === controller) resetController = null;
+      if (generation === healthGeneration) {
+        resetting = false;
+        resetCeButton.disabled = false;
+        button.disabled = false;
+        if (resetButton) resetButton.disabled = false;
+      }
     }
   }
 
@@ -220,15 +241,13 @@
     message("Clearing the stuck BloodHound startup state…");
     const generation = healthGeneration;
     const controller = new AbortController();
+    resetController = controller;
     const timeout = setTimeout(() => controller.abort(), 30000);
     try {
-      const result = await window.rmmApi("/bloodhound", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "reset" }), signal: controller.signal,
-      });
+      const result = await operation({ action: "reset" }, controller, { remaining: 30 });
       if (generation !== healthGeneration) return;
-      if (result.status !== 200) {
-        throw new Error(result.data?.error || "Cannot clear the stuck BloodHound startup state.");
+      if (result.status !== 200 || result.data?.ok === false) {
+        throw new Error(result.data?.error || result.data?.runtime?.error || "Cannot clear the stuck BloodHound startup state.");
       }
       message("");
       resetting = false;
@@ -241,8 +260,9 @@
       }
     } finally {
       clearTimeout(timeout);
-      resetting = false;
+      if (resetController === controller) resetController = null;
       if (generation === healthGeneration) {
+        resetting = false;
         resetButton.disabled = false;
         button.disabled = false;
       }

@@ -22,10 +22,11 @@ function classList() {
 function setup(api, blocked = false) {
   const button = { disabled: false, addEventListener(name, callback) { this[name] = callback; } };
   const resetButton = { disabled: false, classList: classList(), addEventListener(name, callback) { this[name] = callback; } };
+  const resetCeButton = { disabled: false, addEventListener(name, callback) { this[name] = callback; } };
   const status = { textContent: '', classList: classList() };
   const readiness = { textContent: '' };
   const mcpLabel = { textContent: '', dataset: {} }, mcpStatus = {}, mcpHelp = {};
-  const nodes = { 'bloodhound-open': button, 'bloodhound-reset': resetButton, 'bloodhound-status': status, 'bloodhound-readiness': readiness,
+  const nodes = { 'bloodhound-open': button, 'bloodhound-reset': resetButton, 'bloodhound-reset-ce': resetCeButton, 'bloodhound-status': status, 'bloodhound-readiness': readiness,
     'mcp-status-label': mcpLabel, 'exegol-mcp-status': mcpStatus, 'mcp-status-help': mcpHelp };
   const events = [];
   let tab;
@@ -34,17 +35,68 @@ function setup(api, blocked = false) {
       location: { replace(url) { events.push(['navigate', url]); } },
       close() { this.closed = true; } };
   }
-  const window = { open(url) { events.push(['open', url]); tab = blocked ? null : makeTab(); return tab; },
+  const window = { confirm: () => true, open(url) { events.push(['open', url]); tab = blocked ? null : makeTab(); return tab; },
     rmmBloodHoundActions: ['health', 'query', 'result', 'library_search'],
     rmmApi: async (...args) => { events.push(['request', ...args]); return api(...args); } };
   vm.runInNewContext(source, { window, URL, AbortController,
     document: { getElementById: id => nodes[id] || null, createElement: () => ({}) },
     setTimeout(callback, delay) { if (delay === 1000) queueMicrotask(callback); return 1; }, clearTimeout() {} });
-  return { button, resetButton, status, readiness, mcpLabel, mcpStatus, mcpHelp, events, window,
+  return { button, resetButton, resetCeButton, status, readiness, mcpLabel, mcpStatus, mcpHelp, events, window,
     get tab() { return tab; } };
 }
 
 (async () => {
+  const ceResetActions = [];
+  const ceReset = setup(async (_route, options) => {
+    const body = JSON.parse(options.body);
+    ceResetActions.push(body.action);
+    if (body.action === 'reset_ce') {
+      assert.deepEqual(body.options, { clear_graph: true });
+      return { status: 202, data: { workspace_request_id: 'd'.repeat(32) } };
+    }
+    if (body.action === 'result') {
+      assert.equal(body.run_id, 'd'.repeat(32));
+      return { status: 200, data: { runtime: { state: 'blocked' } } };
+    }
+    return { status: 200, data: { runtime: { state: 'ready' } } };
+  });
+  await ceReset.resetCeButton.click();
+  assert.deepEqual(ceResetActions, ['reset_ce', 'result', 'ensure']);
+  assert.equal(ceReset.resetCeButton.disabled, false);
+  assert.equal(ceReset.button.disabled, false);
+
+  for (const action of ['reset', 'reset_ce']) {
+    for (const status of [200, 503]) {
+      const actions = [];
+      const failedReset = setup(async (_route, options) => {
+        const body = JSON.parse(options.body);
+        actions.push(body.action);
+        if (body.action === action) {
+          return { status: 202, data: { workspace_request_id: 'f'.repeat(32) } };
+        }
+        return { status, data: { ok: false, runtime: { state: 'failed', error: 'bloodhound_ce_reset_failed' } } };
+      });
+      await (action === 'reset_ce' ? failedReset.resetCeButton : failedReset.resetButton).click();
+      assert.deepEqual(actions, [action, 'result']);
+      assert.match(failedReset.status.textContent, /bloodhound_ce_reset_failed/);
+      assert.equal(failedReset.button.disabled, false);
+      assert.ok(!failedReset.events.some(event => event[0] === 'open'));
+    }
+  }
+
+  let finishCeReset;
+  const staleCeReset = setup(() => new Promise(resolve => { finishCeReset = resolve; }));
+  const staleCeCall = staleCeReset.resetCeButton.click();
+  assert.equal(staleCeReset.button.disabled, true);
+  staleCeReset.window.stopBloodHoundHealth();
+  assert.equal(staleCeReset.events[0][2].signal.aborted, true);
+  staleCeReset.status.textContent = 'New workspace';
+  finishCeReset({ status: 200, data: {} });
+  await staleCeCall;
+  assert.equal(staleCeReset.status.textContent, 'New workspace');
+  assert.equal(staleCeReset.events.length, 1);
+  assert.equal(staleCeReset.resetCeButton.disabled, false);
+
   let finishOldLaunch;
   const staleLaunch = setup(() => new Promise(resolve => { finishOldLaunch = resolve; }));
   const oldLaunch = staleLaunch.button.click();
@@ -190,13 +242,14 @@ function setup(api, blocked = false) {
     if (body.action === 'health') {
       return { status: 200, data: { runtime: { state: 'uncertain', error: 'inspect_previous_launch' } } };
     }
-    if (body.action === 'reset') return { status: 200, data: { runtime: { state: 'blocked' } } };
+    if (body.action === 'reset') return { status: 202, data: { workspace_request_id: 'e'.repeat(32) } };
+    if (body.action === 'result') return { status: 200, data: { runtime: { state: 'blocked' } } };
     return { status: 200, data: { url: 'http://localhost:1031/launch?ticket=retried' } };
   });
   await retry.button.click();
   assert.equal(retry.resetButton.classList.contains('hidden'), false);
   await retry.resetButton.click();
-  assert.deepEqual(retryActions, ['ui', 'health', 'reset', 'ui']);
+  assert.deepEqual(retryActions, ['ui', 'health', 'reset', 'result', 'ui']);
   assert.equal(retry.events.at(-1)[0], 'navigate');
   assert.equal(retry.events.at(-1)[1], 'http://localhost:1031/launch?ticket=retried');
   assert.equal(retry.resetButton.classList.contains('hidden'), true);

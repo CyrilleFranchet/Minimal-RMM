@@ -45,6 +45,16 @@ class InitialPasswordTests(unittest.TestCase):
 
 
 class CeApiContractTests(unittest.TestCase):
+    def test_request_preserves_size_limit_and_invalid_origin_codes(self):
+        connection = unittest.mock.Mock()
+        connection.getresponse.return_value.read.return_value = b'x' * (ce_auth.MAX_BODY_BYTES + 1)
+        with patch.object(ce_auth.http.client, 'HTTPConnection', return_value=connection):
+            with self.assertRaisesRegex(CeAuthError, 'ce_response_too_large'):
+                ce_auth._request('http://127.0.0.1:1030', 'GET', '/api/version')
+        for origin in ('http://127.0.0.1:bad', 'http://[invalid'):
+            with self.subTest(origin=origin), self.assertRaisesRegex(CeAuthError, 'ce_endpoint_invalid'):
+                bootstrap_credentials(origin)
+
     def test_login_uses_secret_method_and_returns_session_flags(self):
         connection = connection_mock([(200, {'data': {
             'user_id': 'u-1', 'auth_expired': True, 'session_token': 'jwt-opaque'}})])
@@ -55,11 +65,17 @@ class CeApiContractTests(unittest.TestCase):
         self.assertEqual((call[0][0], call[0][1]), ('POST', '/api/v2/login'))
         self.assertEqual(json.loads(call[1]['body']), {'login_method': 'secret',
                                             'username': 'admin', 'secret': 'initialpass_initialpass'})
-        for rejected in (401, 500, 200):
+        for rejected, code in ((401, 'ce_login_rejected'), (500, 'ce_login_failed'),
+                               (200, 'ce_response_invalid')):
             connection = connection_mock([(rejected, {'data': {}})])
             with patch.object(ce_auth.http.client, 'HTTPConnection', return_value=connection):
-                with self.assertRaisesRegex(CeAuthError, 'ce_login_rejected'):
+                with self.assertRaisesRegex(CeAuthError, code):
                     ce_login('http://127.0.0.1:1030', 'admin', 'wrong')
+        connection = connection_mock([(200, {'data': {
+            'user_id': 'u-1', 'auth_expired': 'false', 'session_token': 'jwt-opaque'}})])
+        with patch.object(ce_auth.http.client, 'HTTPConnection', return_value=connection):
+            with self.assertRaisesRegex(CeAuthError, 'ce_response_invalid'):
+                ce_login('http://127.0.0.1:1030', 'admin', 'secret')
 
     def test_password_change_targets_the_self_service_endpoint(self):
         connection = connection_mock([(200, {})])
@@ -107,6 +123,79 @@ class CeApiContractTests(unittest.TestCase):
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_pending_candidate_recovers_a_lost_password_change_reply(self):
+        session = {'session': 'jwt', 'user_id': 'u-1', 'auth_expired': False}
+        with patch.object(ce_auth, 'read_initial_password') as banner, \
+                patch.object(ce_auth, 'ce_login', return_value=session) as login, \
+                patch.object(ce_auth, 'create_api_token', return_value=('id', 'key')):
+            credentials = bootstrap_credentials('http://127.0.0.1:1030',
+                password='old', pending_password='candidate')
+        login.assert_called_once_with('http://127.0.0.1:1030', 'admin', 'candidate')
+        banner.assert_not_called()
+        self.assertEqual(credentials['password'], 'candidate')
+
+    def test_pending_password_is_saved_before_ce_change(self):
+        events = []
+        session = {'session': 'jwt', 'user_id': 'u-1', 'auth_expired': True}
+        def lost_reply(*args):
+            events.append('change')
+            raise CeAuthError('ce_api_unreachable')
+        with patch.object(ce_auth, 'ce_login', return_value=session), \
+                patch.object(ce_auth, 'generate_password', return_value='candidate'), \
+                patch.object(ce_auth, 'change_password', side_effect=lost_reply):
+            with self.assertRaisesRegex(CeAuthError, 'ce_api_unreachable'):
+                bootstrap_credentials('http://127.0.0.1:1030', password='old',
+                    save_pending_password=lambda candidate: events.append(candidate))
+        self.assertEqual(events, ['candidate', 'change'])
+
+    def test_rejected_pending_candidate_reuses_previous_password(self):
+        session = {'session': 'jwt', 'user_id': 'u-1', 'auth_expired': False}
+        with patch.object(ce_auth, 'read_initial_password') as banner, \
+                patch.object(ce_auth, 'ce_login', side_effect=[CeAuthError('ce_login_rejected'), session]) as login, \
+                patch.object(ce_auth, 'create_api_token', return_value=('id', 'key')):
+            credentials = bootstrap_credentials('http://127.0.0.1:1030',
+                password='old', pending_password='candidate')
+        self.assertEqual([call.args[2] for call in login.call_args_list], ['candidate', 'old'])
+        self.assertEqual(credentials['password'], 'old')
+        banner.assert_not_called()
+
+    def test_token_failure_preserves_password_for_retry_without_launch_log(self):
+        saved = []
+        session = {'session': 'jwt', 'user_id': 'u-1', 'auth_expired': False}
+        with patch.object(ce_auth, 'read_initial_password', return_value='initial'), \
+                patch.object(ce_auth, 'ce_login', side_effect=[
+                    {**session, 'auth_expired': True}, session]), \
+                patch.object(ce_auth, 'change_password'), \
+                patch.object(ce_auth, 'generate_password', return_value='Generated_Secret1!'), \
+                patch.object(ce_auth, 'create_api_token', side_effect=CeAuthError('ce_token_creation_failed')):
+            with self.assertRaisesRegex(CeAuthError, 'ce_token_creation_failed'):
+                bootstrap_credentials('http://127.0.0.1:1030', save_password=saved.append)
+        self.assertEqual(saved, ['Generated_Secret1!'])
+        with patch.object(ce_auth, 'read_initial_password') as banner, \
+                patch.object(ce_auth, 'ce_login', return_value=session) as login, \
+                patch.object(ce_auth, 'change_password') as change, \
+                patch.object(ce_auth, 'create_api_token', return_value=('id', 'key')):
+            credentials = bootstrap_credentials('http://127.0.0.1:1030', password=saved[0])
+        banner.assert_not_called()
+        change.assert_not_called()
+        login.assert_called_once_with('http://127.0.0.1:1030', 'admin', saved[0])
+        self.assertEqual(credentials['password'], saved[0])
+
+    def test_rejected_saved_password_falls_back_to_fresh_database_banner(self):
+        session = {'session': 'jwt', 'user_id': 'u-1', 'auth_expired': False}
+        with patch.object(ce_auth, 'read_initial_password', return_value='fresh'), \
+                patch.object(ce_auth, 'ce_login', side_effect=[CeAuthError('ce_login_rejected'), session]), \
+                patch.object(ce_auth, 'create_api_token', return_value=('id', 'key')):
+            credentials = bootstrap_credentials('http://127.0.0.1:1030', password='stale')
+        self.assertEqual(credentials['password'], 'fresh')
+
+    def test_network_failure_does_not_try_another_password(self):
+        with patch.object(ce_auth, 'read_initial_password') as banner, \
+                patch.object(ce_auth, 'ce_login', side_effect=CeAuthError('ce_api_unreachable')):
+            with self.assertRaisesRegex(CeAuthError, 'ce_api_unreachable'):
+                bootstrap_credentials('http://127.0.0.1:1030', password='saved')
+        banner.assert_not_called()
+
     def test_end_to_end_bootstrap_changes_the_expired_password_first(self):
         requests = [
             ('POST', '/api/v2/login', 200, {'data': {'session_token': 'jwt-1', 'user_id': 'u-1', 'auth_expired': True}}),

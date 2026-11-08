@@ -17,6 +17,7 @@ import http.client
 import json
 import re
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 
 CE_LAUNCH_LOG = '/var/log/rmm-bloodhound-ce.log'
@@ -69,7 +70,11 @@ def read_initial_password(log_path: str = CE_LAUNCH_LOG) -> str:
 
 def _origin(origin: str):
     """Validate a CE origin and return its parsed parts."""
-    parsed = urlsplit(origin.rstrip('/'))
+    try:
+        parsed = urlsplit(origin.rstrip('/'))
+        _ = parsed.port
+    except ValueError:
+        raise CeAuthError('ce_endpoint_invalid') from None
     if parsed.scheme not in ('http', 'https') or not parsed.hostname \
             or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
         raise CeAuthError('ce_endpoint_invalid')
@@ -99,7 +104,7 @@ def _request(origin: str, method: str, path: str, payload: dict | None = None,
         return response.status, document
     except (OSError, http.client.HTTPException):
         raise CeAuthError('ce_api_unreachable') from None
-    except ValueError:
+    except json.JSONDecodeError:
         raise CeAuthError('ce_response_invalid') from None
     finally:
         connection.close()
@@ -111,12 +116,17 @@ def ce_login(origin: str, username: str, password: str) -> dict:
         origin, 'POST', CE_LOGIN_PATH,
         {'login_method': 'secret', 'username': username, 'secret': password},
     )
-    if status != 200 or not isinstance(document.get('data'), dict):
+    if status in (401, 403):
         raise CeAuthError('ce_login_rejected')
+    if status != 200:
+        raise CeAuthError('ce_login_failed')
+    if not isinstance(document.get('data'), dict):
+        raise CeAuthError('ce_response_invalid')
     row = document['data']
     session, user_id = row.get('session_token'), row.get('user_id')
-    if not isinstance(session, str) or not session or not isinstance(user_id, str) or not user_id:
-        raise CeAuthError('ce_login_rejected')
+    if not isinstance(session, str) or not session or not isinstance(user_id, str) or not user_id \
+            or not isinstance(row.get('auth_expired', False), bool):
+        raise CeAuthError('ce_response_invalid')
     return {'session': session, 'user_id': user_id,
             'auth_expired': bool(row.get('auth_expired'))}
 
@@ -174,7 +184,10 @@ def endpoint_for(origin: str) -> str:
 
 
 def bootstrap_credentials(origin: str, *, log_path: str = CE_LAUNCH_LOG,
-                          username: str = CE_ADMIN_USER) -> dict[str, str]:
+                          username: str = CE_ADMIN_USER, password: str = '',
+                          save_password: Callable[[str], None] | None = None,
+                          pending_password: str = '',
+                          save_pending_password: Callable[[str], None] | None = None) -> dict[str, str]:
     """Derive CE credentials end to end and return them; never log any value.
 
     CE creates the default admin with an already expired secret, so the first
@@ -183,11 +196,30 @@ def bootstrap_credentials(origin: str, *, log_path: str = CE_LAUNCH_LOG,
     then mints the API token.
     """
     origin = endpoint_for(origin)
-    password = read_initial_password(log_path)
-    login = ce_login(origin, username, password)
+    candidates = list(dict.fromkeys(candidate for candidate in (pending_password, password) if candidate))
+    for candidate in candidates:
+        try:
+            login = ce_login(origin, username, candidate)
+        except CeAuthError as exc:
+            if str(exc) != 'ce_login_rejected':
+                raise
+        else:
+            password = candidate
+            break
+    else:
+        password = read_initial_password(log_path)
+        login = ce_login(origin, username, password)
     if login['auth_expired']:
         new_password = generate_password()
+        # The candidate must survive a lost PUT reply or process exit. Keep
+        # the previous password separately until CE confirms the new one.
+        if save_pending_password is not None:
+            save_pending_password(new_password)
         change_password(origin, login['session'], login['user_id'], password, new_password)
+        # Save immediately after CE accepts the change, before subsequent
+        # login or token requests can fail and discard the usable secret.
+        if save_password is not None:
+            save_password(new_password)
         password = new_password
         login = ce_login(origin, username, password)
         if login['auth_expired']:

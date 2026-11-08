@@ -82,8 +82,11 @@ Connected APIs use `GET/PATCH /api/v1/settings`, and MCP uses `settings`:
 A `null` removes a saved override. Secret fields are write-only in the API.
 Files have owner-only permissions; secrets are not encrypted at rest. Store
 private backups with the owner subtree. Stop/restart the affected service
-through the wrapper after startup-setting changes. Saving updates subsequent
-settings lookups immediately, but does not reinitialize every listener/client.
+through the wrapper after startup-setting changes. Those settings keep their
+startup values until restart. The four managed BloodHound credential fields
+are the exception: they refresh immediately so password changes and token
+recovery work without restarting the workspace. Their provenance and restart
+flags reflect the active credentials; explicit environment overrides still win.
 Re-run `run --docker` after listener changes to regenerate container mappings.
 
 ## Rclone registration and migration
@@ -251,6 +254,7 @@ locations are supplied by the wrapper, regardless of the schema's empty default.
 | `RMM_BLOODHOUND_TOKEN_ID` | S/W | string | `unset; secret` | BloodHound API token ID |
 | `RMM_BLOODHOUND_TOKEN_KEY` | S/W | string | `unset; secret` | BloodHound API token key |
 | `RMM_BLOODHOUND_ADMIN_PASSWORD` | S/W | string | `unset; secret` | BloodHound CE admin password |
+| `RMM_BLOODHOUND_PENDING_PASSWORD` | S/W | string | `unset; secret` | Durable candidate for interrupted password changes |
 | `RMM_BLOODHOUND_COLLECTOR` | S/W | string | `"bloodhound-ce-python"` | BloodHound CE collector executable |
 
 Additional `RMM_PLUGIN_TOKEN_<NAME>` secret settings are source-specific credential references supported in the owner scope. The GitHub source editor stores the reference, never a token value in plugin-sources.json.

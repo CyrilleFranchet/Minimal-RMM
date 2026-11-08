@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from collections import deque
 import hashlib
 import hmac
+import http.client
+import io
 import ipaddress
 import importlib.metadata
 import json
@@ -136,10 +138,13 @@ class BloodHoundClient:
                 raw = response.read(MAX_RESPONSE + 1)
                 if len(raw) > MAX_RESPONSE:
                     raise WorkflowError('bloodhound_response_too_large')
-                return json.loads(raw) if raw else {}
+                document = json.loads(raw) if raw else {}
+                if not isinstance(document, dict):
+                    raise WorkflowError('invalid_bloodhound_response')
+                return document
         except urllib.error.HTTPError as exc:
             raise WorkflowError('bloodhound_http_' + str(exc.code)) from None
-        except (OSError, urllib.error.URLError):
+        except (OSError, urllib.error.URLError, http.client.HTTPException):
             raise WorkflowError('bloodhound_transport_uncertain') from None
         except WorkflowError:
             raise
@@ -151,6 +156,10 @@ class BloodHoundClient:
         result = self.request('POST', '/api/v2/graphs/cypher', json.dumps({'query': query, 'include_properties': True}).encode())
         data = result.get('data')
         if not isinstance(data, dict) or not isinstance(data.get('nodes'), dict) or not isinstance(data.get('edges'), list):
+            raise WorkflowError('unsupported_graph_response')
+        if (not all(isinstance(node, dict) and isinstance(node.get('properties', {}), dict)
+                    for node in data['nodes'].values())
+                or not all(isinstance(edge, dict) for edge in data['edges'])):
             raise WorkflowError('unsupported_graph_response')
         return data
 
@@ -209,7 +218,10 @@ def validate_artifact(path, expected=None):
     """Validate bounded CE JSON or ZIP records without extraction or side effects."""
     if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= MAX_FILE:
         raise WorkflowError('invalid_collection_artifact')
-    raw = path.read_bytes()
+    with path.open('rb') as handle:
+        raw = handle.read(MAX_FILE + 1)
+    if not 0 < len(raw) <= MAX_FILE:
+        raise WorkflowError('invalid_collection_artifact')
     types = set()
     count = 0
     present = set()
@@ -219,10 +231,11 @@ def validate_artifact(path, expected=None):
             data = json.loads(content)
             meta = data['meta']
             rows = data['data']
-            if not isinstance(meta, dict) or not isinstance(rows, list) or meta.get('type') not in {'users', 'groups', 'computers', 'domains', 'gpos', 'ous', 'containers'} or meta.get('count') != len(rows) or meta.get('version') != 6:
+            if not isinstance(meta, dict) or not isinstance(rows, list) or meta.get('type') not in {'users', 'groups', 'computers', 'domains', 'gpos', 'ous', 'containers'} or type(meta.get('count')) is not int or meta['count'] != len(rows) or type(meta.get('version')) is not int or meta['version'] != 6:
                 raise ValueError()
             for row in rows:
-                if not isinstance(row, dict) or not isinstance(row.get('ObjectIdentifier'), str):
+                if (not isinstance(row, dict) or not isinstance(row.get('ObjectIdentifier'), str)
+                        or not isinstance(row.get('Properties', {}), dict)):
                     raise ValueError()
                 if expected:
                     for key in ('source_sid', 'target_sid'):
@@ -236,7 +249,7 @@ def validate_artifact(path, expected=None):
             raise WorkflowError('unsupported_collection_format') from None
     if path.suffix == '.zip':
         try:
-            with zipfile.ZipFile(path) as archive:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
                 entries = archive.infolist()
                 if not entries or len(entries) > 32 or sum(e.file_size for e in entries) > MAX_FILE:
                     raise WorkflowError('oversized_collection_archive')
@@ -360,7 +373,9 @@ class BloodHoundWorkflow:
                 run.update(state=expected, error='worker_start_failed')
                 self.save(run)
                 raise WorkflowError('worker_start_failed') from None
-            return run
+            # The worker owns its mutable run dictionary. Return a detached
+            # persisted snapshot so HTTP serialization cannot race its updates.
+            return self.get(run_id)
 
     def _work(self, run, action):
         """Run a phase without the model request's lifetime or HTTP wait budget."""
@@ -418,6 +433,12 @@ class BloodHoundWorkflow:
 
     def import_artifacts(self, run):
         """Checkpoint every upload, never replaying an ambiguous import automatically."""
+        # Reject locally changed evidence before creating a remote upload job.
+        # Recheck each file again immediately before its upload below.
+        for artifact in run['artifacts']:
+            path = self.root / run['id'] / 'collection' / artifact['name']
+            if validate_artifact(path, run) != artifact:
+                raise WorkflowError('collection_artifact_changed')
         client = self.client_factory()
         run['bloodhound_instance'] = client.endpoint
         run['bloodhound_version'] = client.request('GET', '/api/version').get('data', {})
@@ -426,7 +447,8 @@ class BloodHoundWorkflow:
         run['ingestion'] = 'starting'
         self.save(run)
         result = client.request('POST', '/api/v2/file-upload/start', expected=201)
-        job_id = result.get('data', {}).get('id')
+        data = result.get('data')
+        job_id = data.get('id') if isinstance(data, dict) else None
         if type(job_id) is not int or job_id < 1:
             raise WorkflowError('invalid_upload_job_id')
         run.update(ingestion_id=job_id, ingestion='uploading', uploaded=[])
@@ -436,9 +458,14 @@ class BloodHoundWorkflow:
             checked = validate_artifact(path, run)
             if checked != artifact:
                 raise WorkflowError('collection_artifact_changed')
+            with path.open('rb') as handle:
+                payload = handle.read(MAX_FILE + 1)
+            if (len(payload) != artifact['bytes']
+                    or hashlib.sha256(payload).hexdigest() != artifact['sha256']):
+                raise WorkflowError('collection_artifact_changed')
             run['upload_pending'] = artifact['name']
             self.save(run)
-            client.request('POST', f'/api/v2/file-upload/{job_id}', path.read_bytes(),
+            client.request('POST', f'/api/v2/file-upload/{job_id}', payload,
                            'application/zip' if path.suffix == '.zip' else 'application/json', expected=202)
             run['uploaded'].append(artifact['name'])
             run.pop('upload_pending', None)
@@ -467,9 +494,15 @@ class BloodHoundWorkflow:
             client = self.client_for(run)
             result = client.request('GET', f"/api/v2/file-upload?id=eq:{run['ingestion_id']}&limit=1")
             jobs = result.get('data')
-            if not isinstance(jobs, list) or len(jobs) != 1 or jobs[0].get('id') != run['ingestion_id']:
+            if (not isinstance(jobs, list) or len(jobs) != 1 or not isinstance(jobs[0], dict)
+                    or type(jobs[0].get('id')) is not int or jobs[0]['id'] != run['ingestion_id']):
                 raise WorkflowError('ingestion_job_not_found')
             job = jobs[0]
+            if (type(job.get('status')) is not int
+                    or any(type(job.get(field, 0 if field == 'partial_failed_files' else None)) is not int
+                           or job.get(field, 0) < 0
+                           for field in ('total_files', 'failed_files', 'partial_failed_files'))):
+                raise WorkflowError('invalid_ingestion_job_response')
             state = JOB_STATUS.get(job.get('status'), 'unknown')
             run.update(ingestion=state, ingestion_checked_at=now(),
                        ingestion_files=job.get('total_files'), ingestion_failed_files=job.get('failed_files'),
@@ -482,6 +515,11 @@ class BloodHoundWorkflow:
                 run['state'] = 'ingestion_incomplete'
             elif time.time() - datetime.fromisoformat(run['ingestion_started_at']).timestamp() > 1800:
                 run.update(state='uncertain', error='ingestion_deadline_exceeded')
+            if run['state'] in ('ingested', 'ingestion_incomplete'):
+                # A definitive CE outcome resolves the earlier ambiguous
+                # finalize request; do not report its obsolete transport error.
+                run.pop('end_pending', None)
+                run.pop('error', None)
             self.save(run)
             return run
 
@@ -599,7 +637,7 @@ _STORES_LOCK = threading.Lock()
 
 # One automatic credential bootstrap attempt per process; the credentials
 # themselves never appear in any log line or API response.
-_CE_AUTH_LOCK = threading.Lock()
+_CE_AUTH_LOCK = threading.RLock()
 _CE_AUTH_STATE = {'attempted': False, 'last_error': None}
 
 
@@ -615,11 +653,24 @@ def store_ce_credentials(root, credentials) -> None:
         'RMM_BLOODHOUND_TOKEN_ID': credentials['token_id'],
         'RMM_BLOODHOUND_TOKEN_KEY': credentials['token_key'],
         'RMM_BLOODHOUND_ADMIN_PASSWORD': credentials['password'],
+        'RMM_BLOODHOUND_PENDING_PASSWORD': None,
     }})
 
 
 def bootstrap_ce_credentials(root):
     """Derive and store CE credentials; return a secret-free status code."""
+    from rmm_exegol_runtime import get_runtime
+    with _CE_AUTH_LOCK:
+        snapshot = get_runtime(root).status()
+        if snapshot.get('state') == 'resetting':
+            return 'bloodhound_reset_in_progress'
+        if snapshot.get('error') == 'ce_reset_outcome_uncertain':
+            return 'ce_reset_outcome_uncertain'
+        return _bootstrap_ce_credentials(root)
+
+
+def _bootstrap_ce_credentials(root):
+    """Bootstrap under the auth lock, preserving pending password recovery."""
     from rmm_bloodhound_ce_auth import CeAuthError, bootstrap_credentials
     from rmm_exegol_runtime import append_log, configuration
     try:
@@ -627,12 +678,27 @@ def bootstrap_ce_credentials(root):
     except ValueError:
         return 'ce_endpoint_invalid'
     try:
-        credentials = bootstrap_credentials(origin)
+        store = active_store('workspace', str(Path(root).parent / 'settings.json'))
+        if any(store.overrides.get(key) for key in (*CE_CREDENTIAL_KEYS,
+                'RMM_BLOODHOUND_ADMIN_PASSWORD', 'RMM_BLOODHOUND_PENDING_PASSWORD')):
+            raise CeAuthError('ce_credentials_environment_override')
+        credentials = bootstrap_credentials(
+            origin, password=getenv('RMM_BLOODHOUND_ADMIN_PASSWORD') or '',
+            pending_password=getenv('RMM_BLOODHOUND_PENDING_PASSWORD') or '',
+            save_pending_password=lambda password: store.update(
+                {'settings': {'RMM_BLOODHOUND_PENDING_PASSWORD': password}}),
+            save_password=lambda password: store.update(
+                {'settings': {'RMM_BLOODHOUND_ADMIN_PASSWORD': password}}),
+        )
         store_ce_credentials(root, credentials)
     except CeAuthError as exc:
         _CE_AUTH_STATE['last_error'] = str(exc)
         append_log(root, f'ce auth: bootstrap failed ({exc})')
         return str(exc)
+    except (OSError, ValueError):
+        _CE_AUTH_STATE['last_error'] = 'ce_credentials_storage_failed'
+        append_log(root, 'ce auth: bootstrap failed (ce_credentials_storage_failed)')
+        return 'ce_credentials_storage_failed'
     _CE_AUTH_STATE['last_error'] = None
     append_log(root, 'ce auth: credentials bootstrapped')
     return 'bootstrapped'
@@ -646,10 +712,14 @@ def _schedule_ce_auth_bootstrap(root) -> None:
     whose initial password banner was never captured). An explicit ``auth``
     action retries on demand and reports the bounded failure code.
     """
-    with _CE_AUTH_LOCK:
+    if not _CE_AUTH_LOCK.acquire(blocking=False):
+        return
+    try:
         if _CE_AUTH_STATE['attempted'] or ce_credentials_configured():
             return
         _CE_AUTH_STATE['attempted'] = True
+    finally:
+        _CE_AUTH_LOCK.release()
     def run():
         try:
             bootstrap_ce_credentials(root)
@@ -657,6 +727,24 @@ def _schedule_ce_auth_bootstrap(root) -> None:
             from rmm_exegol_runtime import append_log
             append_log(root, 'ce auth: bootstrap failed (ce_auth_unexpected)')
     threading.Thread(target=run, name='ce-credential-bootstrap', daemon=True).start()
+
+
+def reset_ce_credentials(root, clear_graph=False):
+    """Serialize destructive CE reset with credential bootstrap and invalidation."""
+    from rmm_exegol_runtime import get_runtime, append_log, RuntimeErrorCode
+    if not _CE_AUTH_LOCK.acquire(blocking=False):
+        raise RuntimeErrorCode('bloodhound_auth_or_reset_in_progress')
+    try:
+        snapshot = get_runtime(root).reset_ce(clear_graph)
+        if not snapshot.get('error') or snapshot.get('credentials_invalidated'):
+            active_store('workspace', str(Path(root).parent / 'settings.json')).update(
+                {'settings': {key: None for key in (*CE_CREDENTIAL_KEYS,
+                    'RMM_BLOODHOUND_ADMIN_PASSWORD', 'RMM_BLOODHOUND_PENDING_PASSWORD')}})
+            _CE_AUTH_STATE.update(attempted=False, last_error=None)
+            append_log(root, 'ce auth: stored credentials cleared by CE reset')
+        return snapshot
+    finally:
+        _CE_AUTH_LOCK.release()
 
 
 def bloodhound_api(root, body):
@@ -702,8 +790,19 @@ def bloodhound_api(root, body):
         if action == 'auth':
             if options or body.get('run_id'):
                 raise WorkflowError('unexpected_auth_options')
+            from rmm_exegol_runtime import get_runtime
+            snapshot = get_runtime(root).status()
+            if snapshot.get('state') == 'resetting' or snapshot.get('error') == 'ce_reset_outcome_uncertain':
+                return 503, {'ok': False, 'auth': 'failed',
+                             'error': snapshot.get('error') or 'bloodhound_reset_in_progress'}
             if ce_credentials_configured():
-                return 200, {'ok': True, 'auth': 'already_configured'}
+                try:
+                    BloodHoundClient().request('GET', '/api/v2/file-upload?limit=1')
+                except WorkflowError as exc:
+                    if str(exc) not in ('bloodhound_http_401', 'bloodhound_http_403'):
+                        return 503, {'ok': False, 'auth': 'failed', 'error': str(exc)}
+                else:
+                    return 200, {'ok': True, 'auth': 'already_configured'}
             status = bootstrap_ce_credentials(root)
             if status != 'bootstrapped':
                 return 503, {'ok': False, 'auth': 'failed', 'error': status}
@@ -711,22 +810,16 @@ def bloodhound_api(root, body):
         if action == 'reset_ce':
             if body.get('run_id') or set(options) - {'clear_graph'} or not isinstance(options.get('clear_graph', False), bool):
                 raise WorkflowError('invalid_reset_ce_options')
-            from rmm_exegol_runtime import get_runtime, RuntimeErrorCode as RuntimeResetError
+            from rmm_exegol_runtime import RuntimeErrorCode as RuntimeResetError
+            from rmm_settings import SettingsError
             try:
-                snapshot = get_runtime(root).reset_ce(bool(options.get('clear_graph')))
+                snapshot = reset_ce_credentials(root, bool(options.get('clear_graph')))
             except RuntimeResetError as exc:
                 return 409, {'ok': False, 'error': str(exc)}
-            if not snapshot.get('error'):
-                # A cleared CE database invalidates every stored credential and
-                # re-arms the automatic bootstrap for the next fresh launch.
-                active_store('workspace', str(Path(root).parent / 'settings.json')).update(
-                    {'settings': {key: None for key in
-                                  (*CE_CREDENTIAL_KEYS, 'RMM_BLOODHOUND_ADMIN_PASSWORD')}})
-                with _CE_AUTH_LOCK:
-                    _CE_AUTH_STATE['attempted'] = False
-                from rmm_exegol_runtime import append_log
-                append_log(root, 'ce auth: stored credentials cleared by CE reset')
-            return 200, {'ok': True, 'runtime': snapshot}
+            except (OSError, SettingsError):
+                return 503, {'ok': False, 'error': 'ce_credentials_storage_failed'}
+            code = 503 if snapshot.get('error') else 200
+            return code, {'ok': code == 200, 'runtime': snapshot}
         if action == 'reset':
             if options or body.get('run_id'):
                 raise WorkflowError('unexpected_reset_options')
@@ -742,6 +835,10 @@ def bloodhound_api(root, body):
                 raise WorkflowError('unexpected_options')
             from rmm_exegol_runtime import get_runtime
             snapshot = get_runtime(root).status()
+            if snapshot.get('state') == 'resetting' or snapshot.get('error') == 'ce_reset_outcome_uncertain':
+                return 503, {'ok': False,
+                             'error': snapshot.get('error') or 'bloodhound_reset_in_progress',
+                             'runtime': snapshot}
             if snapshot.get('exegol_status') != 'ready':
                 return 503, {'ok': False, 'error': 'exegol_workspace_not_ready', 'runtime': snapshot}
         key = str(Path(root).resolve())

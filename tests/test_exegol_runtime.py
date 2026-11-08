@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -29,6 +30,7 @@ class RuntimeTests(unittest.TestCase):
         self.launch_exits = None
         self.launch_reply = None
         self.reset_exit = 0
+        self.reset_raises = False
         self.reset_graph_wiped = True
         self.inventory = [{'name': 'lab', 'status': 'running'}]
         self.matching = {'lab'}
@@ -60,12 +62,16 @@ class RuntimeTests(unittest.TestCase):
                         return json.dumps({'output': f'RMM_CE_LAUNCH_EXITED:{owner.launch_exits}\n'})
                     return json.dumps({'output': 'RMM_CE_LAUNCH_RUNNING\n'})
                 if arguments['command'].startswith(RESET_COMMAND):
+                    if owner.reset_raises:
+                        raise TimeoutError('private MCP endpoint')
                     output = 'DROP DATABASE\nCREATE DATABASE\nALTER DATABASE\n'
                     if owner.reset_exit == 0:
                         output += 'RMM_CE_RESET_DONE\n'
                     if GRAPH_WIPE_COMMAND in arguments['command'] and owner.reset_graph_wiped:
                         output += 'RMM_CE_GRAPH_WIPED\n'
                     return json.dumps({'output': output})
+                if arguments['command'] == GRAPH_WIPE_COMMAND:
+                    return json.dumps({'output': 'RMM_CE_GRAPH_WIPED\n' if owner.reset_graph_wiped else ''})
                 nonce = next(owner.root.glob('ce-identity-*')).read_text()
                 host = 'wrong' if owner.wrong_identity or arguments['container_name'] not in owner.matching else 'exegol-lab'
                 output = f'RMM_EXEGOL_ID={nonce}:{host}:net:[123]\n'
@@ -347,21 +353,131 @@ class RuntimeTests(unittest.TestCase):
 
     def test_reset_ce_graph_wipe_is_an_explicit_operator_choice(self):
         self.runtime.reset_ce(clear_graph=True)
-        combined = RESET_COMMAND + '; ' + GRAPH_WIPE_COMMAND
-        self.assertTrue(any(row['command'] == combined for row in self.calls))
+        commands = [row['command'] for row in self.calls]
+        self.assertLess(commands.index(RESET_COMMAND), commands.index(GRAPH_WIPE_COMMAND))
 
-    def test_reset_ce_failure_is_definite_and_keeps_the_durable_intent(self):
+    def test_failed_database_reset_never_wipes_graph(self):
+        self.reset_exit = 1
+        snapshot = self.runtime.reset_ce(clear_graph=True)
+        self.assertEqual(snapshot['error'], 'ce_reset_outcome_uncertain')
+        self.assertFalse(snapshot['credentials_invalidated'])
+        self.assertFalse(any(row.get('command') == GRAPH_WIPE_COMMAND for row in self.calls))
+
+    def test_reset_blocks_second_reset_and_health_probe(self):
+        self.runtime._update(state='resetting', exegol_status='ready', ready=False)
+        with self.assertRaisesRegex(RuntimeErrorCode, 'bloodhound_reset_in_progress'):
+            self.runtime.reset_ce()
+        with patch('rmm_exegol_runtime.probe_ce') as probe:
+            self.assertEqual(self.runtime.status()['state'], 'resetting')
+            self.assertEqual(self.runtime.ensure()['state'], 'resetting')
+        probe.assert_not_called()
+
+    def test_ensure_does_not_start_when_reset_begins_after_status(self):
+        def stale_status():
+            self.runtime._update(state='resetting', ready=False)
+            return {'state': 'failed', 'ready': False}
+        with patch.object(self.runtime, 'status', side_effect=stale_status), \
+                patch('rmm_exegol_runtime.threading.Thread') as thread:
+            self.assertEqual(self.runtime.ensure()['state'], 'resetting')
+        thread.assert_not_called()
+
+    def test_health_result_cannot_restore_readiness_after_completed_reset(self):
+        self.runtime._update(state='ready', exegol_status='ready', ready=True)
+        def reset_while_probing(endpoint):
+            self.runtime._update(state='blocked', exegol_status='not_checked', ready=False)
+            return 'ready'
+        with patch('rmm_exegol_runtime.probe_ce', side_effect=reset_while_probing):
+            self.assertFalse(self.runtime.status()['ready'])
+        self.assertEqual(self.runtime.snapshot['state'], 'blocked')
+        self.assertIsNone(self.runtime._intent())
+
+    def test_health_exception_cannot_overwrite_a_new_reset(self):
+        self.runtime._update(state='ready', exegol_status='ready', ready=True)
+        def reset_while_probing(endpoint):
+            self.runtime._update(state='resetting', ready=False)
+            raise OSError('private endpoint')
+        with patch('rmm_exegol_runtime.probe_ce', side_effect=reset_while_probing):
+            self.assertEqual(self.runtime.status()['state'], 'resetting')
+
+    def test_reset_ce_missing_marker_preserves_destructive_uncertainty(self):
         self.runtime._save('dispatched')
         self.reset_exit = 1
         snapshot = self.runtime.reset_ce()
-        self.assertEqual(snapshot['state'], 'failed')
-        self.assertEqual(snapshot['error'], 'ce_reset_command_failed')
-        self.assertEqual(self.runtime._intent(), 'dispatched')
+        self.assertEqual(snapshot['state'], 'uncertain')
+        self.assertEqual(snapshot['error'], 'ce_reset_outcome_uncertain')
+        self.assertEqual(self.runtime._intent(), 'reset_dispatched')
 
     def test_reset_ce_requires_graph_marker_when_wipe_was_requested(self):
+        self.runtime._save('dispatched')
+        self.runtime.verified_configuration = configuration()
+        self.runtime.last_probe = 100.0
         self.reset_graph_wiped = False
         snapshot = self.runtime.reset_ce(clear_graph=True)
-        self.assertEqual(snapshot['error'], 'ce_reset_command_failed')
+        self.assertEqual(snapshot['error'], 'ce_reset_outcome_uncertain')
+        self.assertTrue(snapshot['credentials_invalidated'])
+        self.assertEqual(self.runtime._intent(), 'reset_dispatched')
+        self.assertIsNone(self.runtime.verified_configuration)
+        self.assertEqual(self.runtime.last_probe, 0.0)
+        self.reset_graph_wiped = True
+        self.runtime.reset_ce(clear_graph=True)
+        with patch('rmm_exegol_runtime.probe_ce', side_effect=['stopped', 'ready']), \
+                patch('rmm_exegol_runtime.READY_TIMEOUT', 1):
+            self.runtime._run()
+        self.assertEqual(self.runtime.snapshot['state'], 'ready')
+
+    def test_lost_reset_reply_blocks_restart_and_requires_explicit_reset_retry(self):
+        self.reset_raises = True
+        snapshot = self.runtime.reset_ce()
+        self.assertEqual(snapshot['error'], 'ce_reset_outcome_uncertain')
+        recovered = ExegolRuntime(self.root)
+        count = len(self.calls)
+        with patch('rmm_exegol_runtime.probe_ce') as probe:
+            self.assertEqual(recovered.status()['error'], 'ce_reset_outcome_uncertain')
+            self.assertEqual(recovered.ensure()['state'], 'uncertain')
+            recovered._run()
+            with self.assertRaisesRegex(RuntimeErrorCode, 'ce_reset_outcome_uncertain'):
+                recovered.reset()
+        probe.assert_not_called()
+        self.assertEqual(len(self.calls), count)
+        self.reset_raises = False
+        self.assertIsNone(recovered.reset_ce().get('error'))
+        self.assertIsNone(recovered._intent())
+
+    def test_reset_command_starts_postgres_on_retry_and_gates_failed_start(self):
+        # Execute only local stand-ins, never the installed service/SQL tools.
+        binary = self.root / 'bin'
+        binary.mkdir()
+        trace = self.root / 'trace'
+        state = self.root / 'postgres-running'
+        for name in ('pkill', 'sleep', 'neo4j'):
+            path = binary / name
+            path.write_text('#!/bin/sh\nexit 0\n')
+            path.chmod(0o700)
+        service = binary / 'service'
+        service.write_text('#!/bin/sh\n'
+            'echo "service $*" >> "$TRACE"\n'
+            'if [ "$2" = start ]; then\n'
+            '  [ "$FAIL_START" = 1 ] && exit 1\n'
+            '  : > "$STATE"\n'
+            'else /bin/rm -f "$STATE"; fi\n')
+        service.chmod(0o700)
+        sudo = binary / 'sudo'
+        sudo.write_text('#!/bin/sh\n'
+            'echo sql >> "$TRACE"\n'
+            '[ -f "$STATE" ]\n')
+        sudo.chmod(0o700)
+        environment = {**os.environ, 'PATH': str(binary), 'TRACE': str(trace), 'STATE': str(state)}
+        command = RESET_COMMAND.replace('/var/log/rmm-ce-reset.log', str(self.root / 'reset.log'))
+        for _ in range(2):
+            reply = subprocess.run(['/bin/sh', '-c', command], env=environment, capture_output=True, text=True)
+            self.assertIn('RMM_CE_RESET_DONE', reply.stdout)
+            self.assertFalse(state.exists())
+        self.assertEqual(trace.read_text().splitlines().count('sql'), 6)
+        trace.write_text('')
+        reply = subprocess.run(['/bin/sh', '-c', command],
+            env={**environment, 'FAIL_START': '1'}, capture_output=True, text=True)
+        self.assertNotIn('RMM_CE_RESET_DONE', reply.stdout)
+        self.assertNotIn('sql', trace.read_text().splitlines())
 
     def test_reset_ce_refuses_while_a_startup_pass_is_running(self):
         from unittest.mock import Mock

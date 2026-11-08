@@ -128,6 +128,24 @@ class WorkflowTests(unittest.TestCase):
             self.store.launch(self.run['id'], 'collect')
             self.assertEqual(work.call_count, 1)
 
+    def test_launch_returns_a_snapshot_separate_from_the_worker(self):
+        entered, release = threading.Event(), threading.Event()
+        def collect(run):
+            entered.set()
+            release.wait(2)
+            run.update(state='collected', collection='complete')
+            run['queries'].append({'id': 'worker-update'})
+            self.store.save(run)
+        with patch.object(self.store, 'collect', side_effect=collect):
+            response = self.store.launch(self.run['id'], 'collect')
+            self.assertTrue(entered.wait(1))
+            release.set()
+            for worker in list(self.store.threads):
+                worker.join(2)
+        self.assertEqual(response['state'], 'collecting')
+        self.assertEqual(response['queries'], [])
+        self.assertEqual(self.store.get(self.run['id'])['state'], 'collected')
+
     def test_phase_order_and_changed_artifact(self):
         with self.assertRaisesRegex(bh.WorkflowError, 'invalid_phase_transition'):
             self.store.launch(self.run['id'], 'import')
@@ -136,6 +154,23 @@ class WorkflowTests(unittest.TestCase):
         path.write_bytes(b'bad')
         with self.assertRaises(bh.WorkflowError):
             self.store.import_artifacts(self.run)
+        self.assertFalse(any(method == 'POST' for method, _, _ in self.client.calls))
+        self.assertFalse(any(path == '/api/v2/file-upload/42' for _, path, _ in self.client.calls))
+
+    def test_artifact_changed_after_validation_is_not_uploaded(self):
+        self.collected()
+        original = bh.validate_artifact
+        calls = 0
+        def validate_then_change(path, expected):
+            nonlocal calls
+            checked = original(path, expected)
+            calls += 1
+            if calls == 2:
+                path.write_bytes(b'changed-after-validation')
+            return checked
+        with patch.object(bh, 'validate_artifact', side_effect=validate_then_change):
+            with self.assertRaisesRegex(bh.WorkflowError, 'collection_artifact_changed'):
+                self.store.import_artifacts(self.run)
         self.assertFalse(any(path == '/api/v2/file-upload/42' for _, path, _ in self.client.calls))
 
     def test_collection_method_cannot_be_overridden(self):
@@ -165,9 +200,31 @@ class WorkflowTests(unittest.TestCase):
             thread.join(2)
         self.assertEqual(self.store.get(self.run['id'])['state'], 'uncertain')
         posts = len([c for c in self.client.calls if c[0] == 'POST'])
-        self.assertEqual(self.store.status(self.run['id'])['state'], 'ingested')
+        reconciled = self.store.status(self.run['id'])
+        self.assertEqual(reconciled['state'], 'ingested')
+        self.assertNotIn('error', reconciled)
+        self.assertNotIn('end_pending', reconciled)
         self.store.launch(self.run['id'], 'import')
         self.assertEqual(len([c for c in self.client.calls if c[0] == 'POST']), posts)
+
+    def test_malformed_upload_start_has_a_bounded_error_and_is_not_replayed(self):
+        self.collected()
+        original = self.client.request
+        def request(method, path, *args, **kwargs):
+            if path.endswith('/start'):
+                self.client.calls.append((method, path, b''))
+                return {'data': []}
+            return original(method, path, *args, **kwargs)
+        with patch.object(self.client, 'request', side_effect=request):
+            self.store.launch(self.run['id'], 'import')
+            for worker in list(self.store.threads):
+                worker.join(2)
+        run = self.store.get(self.run['id'])
+        self.assertEqual(run['state'], 'uncertain')
+        self.assertEqual(run['error'], 'invalid_upload_job_id')
+        self.store.launch(self.run['id'], 'import')
+        self.assertEqual([path for method, path, _ in self.client.calls if method == 'POST'],
+                         ['/api/v2/file-upload/start'])
 
     def test_partial_file_failure_blocks_complete_job(self):
         self.collected()
@@ -178,6 +235,22 @@ class WorkflowTests(unittest.TestCase):
             state = self.store.status(self.run['id'])
         self.assertEqual(state['state'], 'ingestion_incomplete')
         self.assertEqual(state['ingestion_partial_failed_files'], 1)
+
+    def test_malformed_ingestion_cannot_be_accepted_as_complete(self):
+        self.collected()
+        self.store.import_artifacts(self.run)
+        valid = {'id': 42, 'status': 2, 'total_files': 3, 'failed_files': 0}
+        for field, value in (('status', []), ('status', True), ('failed_files', False),
+                             ('failed_files', -1), ('partial_failed_files', None),
+                             ('total_files', '3')):
+            with self.subTest(field=field, value=value), \
+                    patch.object(self.client, 'request', return_value={'data': [{**valid, field: value}]}):
+                with self.assertRaisesRegex(bh.WorkflowError, 'invalid_ingestion_job_response'):
+                    self.store.status(self.run['id'])
+                self.assertEqual(self.store.get(self.run['id'])['state'], 'ingesting')
+        with patch.object(self.client, 'request', return_value={'data': [None]}):
+            with self.assertRaisesRegex(bh.WorkflowError, 'ingestion_job_not_found'):
+                self.store.status(self.run['id'])
 
     def test_missing_objects_and_instance_switch_fail_closed(self):
         self.imported()
@@ -249,6 +322,43 @@ class ValidationTests(unittest.TestCase):
             link.symlink_to(path)
             with self.assertRaises(bh.WorkflowError):
                 bh.validate_artifact(link)
+
+    def test_malformed_collection_properties_have_a_safe_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'domains.json'
+            for properties in (None, [], 'invalid'):
+                path.write_text(json.dumps({'meta': {'type': 'domains', 'count': 1, 'version': 6},
+                                            'data': [{'ObjectIdentifier': SOURCE, 'Properties': properties}]}))
+                with self.assertRaisesRegex(bh.WorkflowError, '^unsupported_collection_format$'):
+                    bh.validate_artifact(path, OPTIONS)
+
+    def test_ce_json_envelopes_and_partial_http_responses_have_safe_errors(self):
+        with patch('rmm_bloodhound.getenv', side_effect=lambda key, default='': {
+                'RMM_BLOODHOUND_TOKEN_ID': 'id', 'RMM_BLOODHOUND_TOKEN_KEY': 'key'}.get(key, default)):
+            client = bh.BloodHoundClient()
+        response = Mock(status=200)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        client.opener = Mock()
+        client.opener.open.return_value = response
+        for raw in (b'[]', b'null', b'"invalid"'):
+            response.read.return_value = raw
+            with self.assertRaisesRegex(bh.WorkflowError, '^invalid_bloodhound_response$'):
+                client.request('GET', '/api/version')
+        response.read.side_effect = bh.http.client.IncompleteRead(b'private-value')
+        with self.assertRaisesRegex(bh.WorkflowError, '^bloodhound_transport_uncertain$'):
+            client.request('GET', '/api/version')
+
+    def test_malformed_graph_records_are_rejected_before_evidence_is_saved(self):
+        with patch('rmm_bloodhound.getenv', side_effect=lambda key, default='': {
+                'RMM_BLOODHOUND_TOKEN_ID': 'id', 'RMM_BLOODHOUND_TOKEN_KEY': 'key'}.get(key, default)):
+            client = bh.BloodHoundClient()
+        for graph in ({'nodes': {'1': None}, 'edges': []},
+                      {'nodes': {'1': {'properties': None}}, 'edges': []},
+                      {'nodes': {}, 'edges': [None]}):
+            with patch.object(client, 'request', return_value={'data': graph}):
+                with self.assertRaisesRegex(bh.WorkflowError, '^unsupported_graph_response$'):
+                    client.graph('fixture')
 
     def test_path_uses_edge_direction_not_array_order(self):
         graph = {'nodes': {'a': {'objectId': SOURCE}, 'b': {'objectId': 'middle'}, 'c': {'objectId': TARGET}},

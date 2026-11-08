@@ -258,6 +258,142 @@ class BloodHoundSurfaceTests(unittest.TestCase):
                     self.assertEqual(set(payload), {'ok', 'auth', 'error'})
                 store.update({'settings': {'RMM_BLOODHOUND_TOKEN_ID': 'id', 'RMM_BLOODHOUND_TOKEN_KEY': 'key'}})
                 before = bootstrap.call_count
-                code, payload = bloodhound_api(root, {'action': 'auth'})
+                with patch('rmm_bloodhound.BloodHoundClient') as client:
+                    code, payload = bloodhound_api(root, {'action': 'auth'})
+                    client.return_value.request.assert_called_once_with('GET', '/api/v2/file-upload?limit=1')
                 self.assertEqual((code, payload['auth']), (200, 'already_configured'))
                 self.assertEqual(bootstrap.call_count, before)
+
+    def test_auth_repairs_rejected_token_but_does_not_rotate_on_transport_failure(self):
+        from rmm_bloodhound import bloodhound_api, WorkflowError
+        with patch('rmm_bloodhound.ce_credentials_configured', return_value=True), \
+                patch('rmm_bloodhound.BloodHoundClient') as client, \
+                patch('rmm_bloodhound.bootstrap_ce_credentials', return_value='bootstrapped') as bootstrap:
+            client.return_value.request.side_effect = WorkflowError('bloodhound_http_401')
+            code, payload = bloodhound_api('/unused', {'action': 'auth'})
+            self.assertEqual((code, payload['auth']), (200, 'bootstrapped'))
+            bootstrap.assert_called_once()
+            bootstrap.reset_mock()
+            client.return_value.request.side_effect = WorkflowError('bloodhound_transport_uncertain')
+            code, payload = bloodhound_api('/unused', {'action': 'auth'})
+            self.assertEqual((code, payload['error']), (503, 'bloodhound_transport_uncertain'))
+            bootstrap.assert_not_called()
+
+    def test_failed_graph_reset_invalidates_credentials_and_returns_failure(self):
+        from rmm_bloodhound import bloodhound_api
+        with tempfile.TemporaryDirectory() as directory:
+            store = rmm_settings.SettingsStore(Path(directory) / 'settings.json', 'workspace', environment={})
+            store.update({'settings': {'RMM_BLOODHOUND_TOKEN_ID': 'id',
+                'RMM_BLOODHOUND_PENDING_PASSWORD': 'pending'}})
+            with patch.object(rmm_settings, '_active', store), patch('rmm_exegol_runtime.get_runtime') as getter:
+                getter.return_value.reset_ce.return_value = {'error': 'graph_wipe_failed', 'credentials_invalidated': True}
+                code, payload = bloodhound_api(Path(directory) / 'bloodhound', {'action': 'reset_ce'})
+                self.assertEqual(code, 503)
+                self.assertFalse(payload['ok'])
+                self.assertFalse(rmm_settings.getenv('RMM_BLOODHOUND_TOKEN_ID'))
+                self.assertFalse(rmm_settings.getenv('RMM_BLOODHOUND_PENDING_PASSWORD'))
+
+    def test_bootstrap_storage_failure_is_bounded(self):
+        from rmm_bloodhound import bootstrap_ce_credentials
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('rmm_exegol_runtime.configuration') as configuration, \
+                patch('rmm_bloodhound.active_store', side_effect=OSError('secret path')):
+            configuration.return_value = (None, None, None, SimpleNamespace(geturl=lambda: 'http://127.0.0.1:1030'))
+            self.assertEqual(bootstrap_ce_credentials(directory), 'ce_credentials_storage_failed')
+
+    def test_bootstrap_refuses_reset_in_progress_or_uncertain_without_mutation(self):
+        from rmm_bloodhound import bootstrap_ce_credentials
+        for snapshot, code in (({'state': 'resetting'}, 'bloodhound_reset_in_progress'),
+                ({'state': 'uncertain', 'error': 'ce_reset_outcome_uncertain'}, 'ce_reset_outcome_uncertain')):
+            with self.subTest(code=code), patch('rmm_exegol_runtime.get_runtime') as runtime, \
+                    patch('rmm_bloodhound._bootstrap_ce_credentials') as bootstrap, \
+                    patch('rmm_bloodhound.active_store') as settings:
+                runtime.return_value.status.return_value = snapshot
+                self.assertEqual(bootstrap_ce_credentials('/unused'), code)
+            bootstrap.assert_not_called()
+            settings.assert_not_called()
+
+    def test_bootstrap_refuses_to_claim_repair_of_environment_token(self):
+        from rmm_bloodhound import bootstrap_ce_credentials
+        for key in ('RMM_BLOODHOUND_TOKEN_ID', 'RMM_BLOODHOUND_TOKEN_KEY',
+                    'RMM_BLOODHOUND_ADMIN_PASSWORD', 'RMM_BLOODHOUND_PENDING_PASSWORD'):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                store = rmm_settings.SettingsStore(Path(directory) / 'settings.json', 'workspace',
+                    environment={key: 'overridden'})
+                with patch.object(rmm_settings, '_active', store), \
+                        patch('rmm_exegol_runtime.configuration') as configuration, \
+                        patch('rmm_bloodhound_ce_auth.bootstrap_credentials') as bootstrap:
+                    configuration.return_value = (None, None, None, SimpleNamespace(geturl=lambda: 'http://127.0.0.1:1030'))
+                    self.assertEqual(bootstrap_ce_credentials(directory), 'ce_credentials_environment_override')
+                    bootstrap.assert_not_called()
+
+    def test_reset_storage_failure_is_bounded(self):
+        from rmm_bloodhound import bloodhound_api
+        with patch('rmm_bloodhound.reset_ce_credentials', side_effect=OSError('secret path')):
+            self.assertEqual(bloodhound_api('/unused', {'action': 'reset_ce'}),
+                (503, {'ok': False, 'error': 'ce_credentials_storage_failed'}))
+
+    def test_reset_during_auth_or_reset_does_not_queue_another_destructive_action(self):
+        import threading
+        from rmm_bloodhound import bloodhound_api, _CE_AUTH_LOCK
+        held = threading.Event()
+        release = threading.Event()
+        def hold_auth():
+            with _CE_AUTH_LOCK:
+                held.set()
+                release.wait(5)
+        worker = threading.Thread(target=hold_auth)
+        worker.start()
+        try:
+            self.assertTrue(held.wait(2))
+            with patch('rmm_exegol_runtime.get_runtime') as getter:
+                self.assertEqual(bloodhound_api('/unused', {'action': 'reset_ce'}),
+                    (409, {'ok': False, 'error': 'bloodhound_auth_or_reset_in_progress'}))
+                getter.assert_not_called()
+        finally:
+            release.set()
+            worker.join(2)
+
+    def test_automatic_auth_scheduler_does_not_block_or_enqueue_behind_auth(self):
+        import threading
+        from rmm_bloodhound import _schedule_ce_auth_bootstrap, _CE_AUTH_LOCK, _CE_AUTH_STATE
+        held, release, returned = threading.Event(), threading.Event(), threading.Event()
+        def hold_auth():
+            with _CE_AUTH_LOCK:
+                held.set()
+                release.wait(5)
+        def schedule():
+            _schedule_ce_auth_bootstrap('/unused')
+            returned.set()
+        owner = threading.Thread(target=hold_auth)
+        caller = threading.Thread(target=schedule)
+        owner.start()
+        try:
+            self.assertTrue(held.wait(2))
+            with patch.dict(_CE_AUTH_STATE, {'attempted': False}), \
+                    patch('rmm_bloodhound.threading.Thread') as background:
+                caller.start()
+                self.assertTrue(returned.wait(1), 'health scheduler blocked behind authentication')
+                background.assert_not_called()
+                self.assertFalse(_CE_AUTH_STATE['attempted'])
+        finally:
+            release.set()
+            owner.join(2)
+            if caller.ident is not None:
+                caller.join(2)
+
+    def test_ce_operations_refuse_active_and_uncertain_reset(self):
+        from rmm_bloodhound import bloodhound_api
+        for snapshot in ({'state': 'resetting', 'exegol_status': 'ready'},
+                         {'state': 'uncertain', 'error': 'ce_reset_outcome_uncertain', 'exegol_status': 'ready'}):
+            for action in ('auth', 'create', 'collect', 'import', 'verify', 'query'):
+                with self.subTest(snapshot=snapshot, action=action), \
+                        patch('rmm_exegol_runtime.get_runtime') as getter, \
+                        patch('rmm_bloodhound.BloodHoundClient') as client, \
+                        patch('rmm_bloodhound.BloodHoundWorkflow') as workflow:
+                    getter.return_value.status.return_value = snapshot
+                    code, payload = bloodhound_api('/unused', {'action': action})
+                    self.assertEqual(code, 503)
+                    self.assertIn(payload['error'], ('bloodhound_reset_in_progress', 'ce_reset_outcome_uncertain'))
+                    client.assert_not_called()
+                    workflow.assert_not_called()
