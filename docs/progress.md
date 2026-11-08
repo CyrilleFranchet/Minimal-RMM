@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-11-08 — Unblock AI chat after stop/reset submission conflicts
+
+- Treat HTTP 409 on job submission as a definitive rejection, clear the
+  unresolved request, and unlock chat instead of polling for a nonexistent job.
+- Explain that the previous worker may still be stopping. Preserve the server
+  concurrency guard and unknown-outcome recovery for transport failures.
+- Add browser regression coverage for Stop, Reset, conflict, polling, and a
+  successful new submission once the worker exits.
+- Follow-up: invalidate old polls at reset and submission, disable submission
+  during reset, and match unresolved requests before considering other jobs.
+  Ignore submission replies from an earlier chat generation.
+  Delayed-poll and unrelated-active-job regression checks pass, along with
+  all 18 backend job tests.
+- Validation: AI job UI recovery, operation details, JavaScript syntax, and
+  operator parity pass. The full browser contract gate and Markdown lint pass;
+  the redirect test requires localhost binding outside the sandbox.
+
 ## 2026-11-08 — Second BloodHound recovery and concurrency review
 
 - Correct the settings boundary: only the four managed CE credential fields

@@ -133,6 +133,14 @@ recovers that transcript on reconnect, including in workspace mode. Ordinary
 workspace chat storage remains local, while reconnectable execution results
 are stored in the central job database. Reset dismisses completed jobs so old
 results do not repopulate cleared chat; active jobs prevent reset.
+After Stop, the interrupted worker may still be exiting even when Reset
+succeeds. A new submission can receive HTTP 409 during that interval. The UI
+reports that rejection and keeps chat available so the operator can try again
+after the worker exits. A conflict does not enter unknown-submission recovery.
+Reset disables submission until the server responds and invalidates earlier
+polls. Starting a new submission also invalidates earlier polls, so delayed
+responses cannot restore cleared jobs or overwrite the pending request.
+Recovery matches an unresolved submission by its request ID.
 See [Background AI jobs](ai-background-jobs.md) for API, storage, and restart
 semantics. Server restart interrupts work without automatically replaying it.
 

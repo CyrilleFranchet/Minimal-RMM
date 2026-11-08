@@ -83,6 +83,62 @@ function setup(api) {
   await stopButton.onclick();
   assert.equal(stopPath, '/ai/jobs/stop-job/cancel');
   assert.equal(stopUi.test.state().sending, false);
+  // Stop is terminal in storage while its worker can still be exiting after reset.
+  let rejectSubmission = true;
+  let acceptedBody;
+  stopUi.window.rmmApi = async (path, options = {}) => {
+    if (options.method === 'DELETE') return { status: 200, data: { ok: true } };
+    if (options.method === 'POST') {
+      acceptedBody = JSON.parse(options.body);
+      return rejectSubmission
+        ? { status: 409, data: { error: 'ai_job_conflict' } }
+        : { status: 202, data: { job: { id: 'next-job', request_id: acceptedBody.request_id, session_id: 'a', status: 'running' } } };
+    }
+    return { status: 200, data: { jobs: [] } };
+  };
+  await stopUi.test.resetAiChatForCurrentSession();
+  await stopUi.test.sendAiMessage('Continue after reset');
+  assert.equal(stopUi.test.state().sending, false, 'a rejected submission must unlock chat');
+  assert.equal(stopUi.test.jobState('a').request_id, undefined, '409 is not an unresolved submission');
+  assert.match(stopUi.nodes.get('#ai-job-status').textContent, /previous task is still running or stopping/);
+  await stopUi.test.refreshAiJob('a', stopUi.test.state().token);
+  assert.equal(stopUi.test.state().sending, false, 'polling must not lock chat after rejection');
+  assert.equal(stopUi.nodes.get('#ai-chat-input').disabled, false);
+  assert.equal(stopUi.nodes.get('#ai-chat-reset-btn').disabled, false);
+  rejectSubmission = false;
+  await stopUi.test.sendAiMessage('Try again');
+  assert.equal(stopUi.test.jobState('a').job_id, 'next-job', 'a new submission succeeds after the worker exits');
+  let finishPoll;
+  let finishReset;
+  const raceUi = setup(async () => ({ status: 200, data: { messages: [], jobs: [] } }));
+  await raceUi.test.syncAiChatWithSession('a');
+  raceUi.window.rmmApi = (path, options = {}) => options.method === 'DELETE'
+    ? new Promise(resolve => { finishReset = resolve; })
+    : new Promise(resolve => { finishPoll = resolve; });
+  const stalePoll = raceUi.test.refreshAiJob('a', raceUi.test.state().token);
+  const reset = raceUi.test.resetAiChatForCurrentSession();
+  assert.equal(raceUi.nodes.get('#ai-send-btn').disabled, true, 'reset excludes new submissions until DELETE completes');
+  finishReset({ status: 200, data: { ok: true } });
+  await reset;
+  finishPoll({ status: 200, data: { jobs: [{ id: 'stale', session_id: 'a', status: 'running' }] } });
+  await stalePoll;
+  assert.equal(raceUi.test.state().sending, false, 'pre-reset polling cannot restore a running job');
+  assert.equal(raceUi.test.jobState('a').job_id, undefined);
+
+  let finishPost;
+  raceUi.window.rmmApi = (path, options = {}) => options.method === 'POST'
+    ? new Promise(resolve => { finishPost = resolve; })
+    : new Promise(resolve => { finishPoll = resolve; });
+  const previousPoll = raceUi.test.refreshAiJob('a', raceUi.test.state().token);
+  const sending = raceUi.test.sendAiMessage('New request');
+  const requestBeforePoll = raceUi.test.jobState('a').request_id;
+  finishPoll({ status: 200, data: { jobs: [{ id: 'old', request_id: 'old-request', session_id: 'a', status: 'interrupted' }] } });
+  await previousPoll;
+  assert.equal(raceUi.test.state().sending, true, 'pre-submission polling cannot unlock a pending POST');
+  assert.equal(raceUi.test.jobState('a').request_id, requestBeforePoll);
+  finishPost({ status: 409, data: { error: 'ai_job_conflict' } });
+  await sending;
+  assert.equal(raceUi.test.state().sending, false);
   const calls = [];
   let jobs = [];
   let failPost = true;
@@ -113,6 +169,10 @@ function setup(api) {
   await ui.test.refreshAiJob('a', ui.test.state().token);
   assert.equal(ui.test.state().sending, true, 'an older task cannot resolve unknown submission');
   assert.equal(ui.test.state().history.length, 1, 'old completion must not replace unresolved user turn');
+  jobs = [{ id: 'unrelated', request_id: 'other-request', session_id: 'a', status: 'running' }];
+  await ui.test.refreshAiJob('a', ui.test.state().token);
+  assert.equal(ui.test.jobState('a').request_id, request.request_id, 'another active job cannot replace the unresolved request');
+  assert.equal(ui.test.jobState('a').job_id, undefined);
   const retry = ui.nodes.get('#ai-job-status').children[0];
   assert.equal(retry.textContent, 'Retry the same submission');
   await ui.test.refreshAiJob('a', ui.test.state().token);

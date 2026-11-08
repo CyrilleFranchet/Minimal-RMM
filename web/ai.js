@@ -523,8 +523,8 @@
       for (const item of jobs) window.rmmAiOperationDetails?.remember(item);
       jobs.sort((a, b) => jobCreatedAt(b) - jobCreatedAt(a));
       const unresolvedRequest = saved.request_id && !saved.job_id;
-      const job = jobs.find((item) => ["queued", "running"].includes(item.status))
-        || (unresolvedRequest ? jobs.find((item) => item.request_id === saved.request_id) : jobs[0]);
+      const job = unresolvedRequest ? jobs.find((item) => item.request_id === saved.request_id)
+        : jobs.find((item) => ["queued", "running"].includes(item.status)) || jobs[0];
       if (job) {
         displayAiJob(job, sessionId, token);
       } else if (saved.request_id && !saved.job_id) {
@@ -592,11 +592,13 @@
   async function resetAiChatForCurrentSession() {
     if (sending) return;
     const sessionId = loadedChatSessionId;
-    const token = chatLoadToken;
     const label = sessionId ? `session ${sessionId.slice(0, 8)}` : "this chat";
     if (!confirm(`Clear the AI chat for ${label}? This cannot be undone.`)) {
       return;
     }
+    clearTimeout(jobPollTimer);
+    const token = ++chatLoadToken;
+    setJobBusy(true);
 
     if (window.rmmApi && (window.rmmState?.token || window.RMM_WORKSPACE_MODE)) {
       try {
@@ -606,13 +608,18 @@
         });
         if (status !== 200) throw new Error("Reset rejected");
       } catch {
-        if (currentChat(sessionId, token)) appendChatMessage("error", "Failed to clear AI chat on server. A task may still be active.");
+        if (currentChat(sessionId, token)) {
+          appendChatMessage("error", "Failed to clear AI chat on server. A task may still be active.");
+          await refreshAiJob(sessionId, token);
+        }
         return;
       }
     }
 
     saveJobState(sessionId, { reset_at: Date.now() });
+    if (pendingSubmission?.sessionId === sessionId) pendingSubmission = null;
     if (!currentChat(sessionId, token)) return;
+    setJobBusy(false);
     window.rmmAiOperationDetails?.reset();
     chatHistory = [];
     renderChatLog();
@@ -664,7 +671,8 @@
     chatHistory.push({ role: "user", content: text.trim() });
     appendChatMessage("user", text.trim());
 
-    const token = chatLoadToken;
+    clearTimeout(jobPollTimer);
+    const token = ++chatLoadToken;
     const input = $("#ai-chat-input");
     setJobBusy(true);
     if (input) input.value = "";
@@ -695,16 +703,20 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (!currentChat(sessionId, token)) return;
       if ([200, 202].includes(status) && data.job) {
         saveJobState(sessionId, { ...jobState(sessionId), job_id: data.job.id });
         if (pendingSubmission?.body.request_id === body.request_id) pendingSubmission = null;
         displayAiJob(data.job, sessionId, token);
-      } else if (status >= 400 && status < 500 && ![408, 409].includes(status)) {
+      } else if (status >= 400 && status < 500 && status !== 408) {
         saveJobState(sessionId, { reset_at: jobState(sessionId).reset_at });
         if (pendingSubmission?.body.request_id === body.request_id) pendingSubmission = null;
         if (!currentChat(sessionId, token)) return;
+        clearTimeout(jobPollTimer);
         setJobBusy(false);
-        showJobStatus("Task was not accepted: " + (data.detail || data.error || `HTTP ${status}`));
+        showJobStatus(status === 409 && data.error === "ai_job_conflict"
+          ? "Task was not accepted because a previous task is still running or stopping. Wait for it to finish, then send your message again."
+          : "Task was not accepted: " + (data.detail || data.error || `HTTP ${status}`));
       } else {
         throw new Error("Submission outcome unknown");
       }
