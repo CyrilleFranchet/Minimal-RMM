@@ -1903,7 +1903,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "lateral_move",
-            "description": "Start a Go agent on another host through a live Go agent session, using psexec, wmiexec, or winrm. The agent stages its own binary on the target's ADMIN$ share and starts it with a fresh session ID; make_token first to use alternate credentials. The call waits for the target session to register without sending additional verification commands; report verified=false instead of resubmitting. Requires an agent binary built with embedded connection settings and admin rights on the target.",
+            "description": "Start a Go agent on another host through a live Go agent session, using psexec, wmiexec, or winrm. WinRM transfers and launches the agent entirely through the authenticated WinRM session, without SMB or ADMIN$; the target requires Windows PowerShell. WMI stages the agent over ADMIN$; psexec stages its dedicated service host over ADMIN$. Each starts a fresh session ID; make_token first to use alternate credentials. The call waits for the target session to register without sending additional verification commands; report verified=false instead of resubmitting. Requires an agent binary built with embedded connection settings and admin rights on the target.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -417,6 +417,9 @@ func identityLabel(domain, user string) string {
 // spawnasCommand handles __SPAWNAS__: spawn a new agent copy under a different
 // process identity using CreateProcessWithLogonW.
 func spawnasCommand(command string, cfg *config) (string, error) {
+	if memoryHosted() {
+		return "", errMemoryHosted
+	}
 	payload, err := parseSpawnasPayload(command)
 	if err != nil {
 		return "", err

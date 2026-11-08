@@ -62,6 +62,19 @@ type lateralResult struct {
 	err    error
 }
 
+// memoryHostedEnv marks an agent that the WinRM receiver loaded into its
+// PowerShell host process instead of starting it from an on-disk executable.
+const memoryHostedEnv = "RMM_IN_MEMORY"
+
+// errMemoryHosted explains why a self-relaunching operation cannot run from
+// an in-memory session: os.Executable() and os.Args[0] name the host process.
+var errMemoryHosted = errors.New("this session is loaded in memory; the operation requires an on-disk agent deployment")
+
+// memoryHosted reports whether this instance runs inside its loader host.
+func memoryHosted() bool {
+	return os.Getenv(memoryHostedEnv) == "1"
+}
+
 // awaitLateralResult preserves acknowledged artifacts when the command expires.
 func awaitLateralResult(ctx context.Context, results <-chan lateralResult, progress <-chan string) (string, error) {
 	select {

@@ -25,13 +25,6 @@ var errDebugCrashUnsupported = errors.New("runtime crash capture requires Go 1.2
 // debugSessionID resolves startup identity before configuration and preserves generated IDs.
 func debugSessionID() (string, error) {
 	id := envOr("RMM_SESSION_ID", embeddedValue(defaultSessionIDB64))
-	if len(os.Args) > 2 && os.Args[1] == "--lateral-detach" {
-		startup, err := parseLateralStartup(os.Args[2:])
-		if err != nil {
-			return "", err
-		}
-		id = startup.SessionID
-	}
 	if id == "" {
 		id = fmt.Sprintf("go-%d", time.Now().UnixNano())
 		if err := os.Setenv("RMM_SESSION_ID", id); err != nil {

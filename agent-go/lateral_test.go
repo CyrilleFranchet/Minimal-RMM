@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -195,6 +196,23 @@ func TestLateralCleanupCommandRequiresWindowsBuild(t *testing.T) {
 func TestEmbeddedLateralServicePlaceholderIsDetected(t *testing.T) {
 	if bytes.HasPrefix(embeddedLateralService, []byte("MZ")) && len(embeddedLateralService) < 1024 {
 		t.Fatalf("unexpectedly small embedded lateral service binary: %d bytes", len(embeddedLateralService))
+	}
+}
+
+func TestMemoryHostedDetectionAndSpawnGuard(t *testing.T) {
+	for _, value := range []string{"", "0", "off"} {
+		t.Setenv(memoryHostedEnv, value)
+		if memoryHosted() {
+			t.Fatalf("%q must not report an in-memory session", value)
+		}
+	}
+	t.Setenv(memoryHostedEnv, "1")
+	if !memoryHosted() {
+		t.Fatal("RMM_IN_MEMORY=1 must report an in-memory session")
+	}
+	cfg := &config{BaseURL: "http://127.0.0.1:8787", BeaconSecret: "s", SessionID: "go-test"}
+	if _, err := spawnAgentWithIdentity(cfg, "go-child-123"); !errors.Is(err, errMemoryHosted) {
+		t.Fatalf("in-memory session must refuse to relaunch itself: %v", err)
 	}
 }
 

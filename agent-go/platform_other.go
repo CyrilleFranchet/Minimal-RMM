@@ -95,9 +95,9 @@ func runLateralCleanupChild([]string) error {
 	return errors.New("lateral movement requires the Windows agent build")
 }
 
-func runLateralDetach([]string) error {
-	return errors.New("lateral movement requires the Windows agent build")
-}
+// stopHeldWinRMShells is the non-Windows no-op for the shutdown seam that
+// closes WinRM shells held open for in-memory deployments.
+func stopHeldWinRMShells() {}
 
 func newBoundedCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
 	command := exec.CommandContext(ctx, name, args...)

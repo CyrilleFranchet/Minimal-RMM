@@ -210,13 +210,3 @@ func TestDebugSessionLogAppends(t *testing.T) {
 		t.Fatalf("session log did not append: %s", data)
 	}
 }
-
-func TestDebugDetachUsesTargetSessionID(t *testing.T) {
-	previous := os.Args
-	os.Args = []string{"agent", "--lateral-detach", "--lateral-session", "target-session"}
-	t.Cleanup(func() { os.Args = previous })
-	t.Setenv("RMM_SESSION_ID", "source-session")
-	if id, err := debugSessionID(); err != nil || id != "target-session" {
-		t.Fatalf("detach log identity = %q, %v", id, err)
-	}
-}

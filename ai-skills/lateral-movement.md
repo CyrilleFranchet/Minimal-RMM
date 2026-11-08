@@ -45,11 +45,18 @@ Agent-side WMI execution selects NTLM for IP literals and Kerberos for DNS
 names. With make_token, WinRM selects Negotiate for IP literals and Kerberos
 for DNS names. Without make_token, WinRM uses process-default credentials
 and Windows negotiation; make_token is optional.
-SMB staging and psexec retain Windows negotiation, including possible NTLM
+WMI's SMB staging and psexec retain Windows negotiation, including possible NTLM
 fallback for DNS names. A DNS target does not guarantee Kerberos for the
 whole operation. WinRM's implicit Negotiate credentials require the target
 to satisfy the client's existing host-trust policy. Changing the host form
 alone does not establish access to a workgroup host.
+Agent-side `lateral winrm` transfers the binary entirely through
+WinRM and loads it in memory on the target; do not require `ADMIN$`, test
+SMB as a prerequisite, or substitute an SMB copy for this method. Nothing
+is written to the target's disk, and no local service is created. The
+target requires Windows PowerShell with `Add-Type` available (full language
+mode); the deployed session lives only as long as the source agent keeps
+the WinRM shell open.
 Actions requiring existing target control are not substitutes for reaching it.
 
 Execution surface matters: commands launched through the Windows agent use

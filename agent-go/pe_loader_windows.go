@@ -70,6 +70,9 @@ func loadPluginPE(client *http.Client, cfg *config, url, exportName, input strin
 // caller owns cancellation so a long-lived pivot child cannot outlive the
 // beacon process during shutdown.
 func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, url, exportName, input string) (result string, resultErr error) {
+	if memoryHosted() {
+		return "", errMemoryHosted
+	}
 	if runtime.GOARCH != "amd64" {
 		return "", errors.New("PE plugins require the windows/amd64 agent build")
 	}

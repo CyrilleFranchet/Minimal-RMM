@@ -3,15 +3,121 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 	"unsafe"
 )
+
+// wsmanFixtureArgs is the neutral argument set the ABI fixtures pass through
+// the counted WSMAN_STRING_SET; the fixture asserts it is echoed unchanged.
+var wsmanFixtureArgs = []string{"--lateral-session", "fixture-session"}
+
+// The same session carries receiver startup, byte packets, and EOF. A held
+// deployment keeps its handles open; send failures cannot report success and
+// must tear the session down.
+func TestWSManDeploymentTransferAndHold(t *testing.T) {
+	payload := bytes.Repeat([]byte{0, 127, 128, 255}, winrmTransferChunkSize)
+	digest := sha256.Sum256(payload)
+	for _, scenario := range []string{"success", "send_failure", "send_timeout", "source_truncated", "source_grew"} {
+		t.Run(scenario, func(t *testing.T) {
+			defer stopHeldWinRMShells()
+			f := &wsmanFixture{t: t, deployment: true}
+			input := payload
+			switch scenario {
+			case "send_failure":
+				f.fail = "WSManSendShellInput"
+			case "send_timeout":
+				f.timeout = "WSManSendShellInput"
+			case "source_truncated":
+				input = input[:len(input)-1]
+			case "source_grew":
+				input = append(append([]byte(nil), input...), 1)
+			}
+			transfer := &winrmTransfer{source: bytes.NewReader(input), size: int64(len(payload)), binarySize: int64(len(payload)), binaryDigest: fmt.Sprintf("%x", digest)}
+			receiverArgs := []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", "Zml4dHVyZQ=="}
+			err := winrmExecuteWithTLSAPI(f, "lab-host", winrmReceiverCommandPath, receiverArgs, time.Millisecond, nil, false, false, transfer, true)
+			if (err == nil) != (scenario == "success") {
+				t.Fatalf("unexpected deployment result: %v", err)
+			}
+			if scenario == "success" {
+				if !bytes.Equal(f.sent, payload) || !f.sentEOF || f.commands != 1 {
+					t.Fatal("binary transfer, EOF, or command count mismatch")
+				}
+				for _, name := range []string{"WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"} {
+					if slices.Contains(f.calls, name) {
+						t.Fatalf("held deployment closed %s", name)
+					}
+				}
+				winrmHeldShells.Lock()
+				held := len(winrmHeldShells.shells)
+				winrmHeldShells.Unlock()
+				if held != 1 {
+					t.Fatal("successful transfer did not hold the shell open")
+				}
+			} else {
+				winrmHeldShells.Lock()
+				held := len(winrmHeldShells.shells)
+				winrmHeldShells.Unlock()
+				if held != 0 {
+					t.Fatal("failed transfer held a shell open")
+				}
+				for _, name := range []string{"WSManCloseCommand", "WSManCloseSession", "WSManDeinitialize"} {
+					if !slices.Contains(f.calls, name) {
+						t.Fatalf("failed transfer skipped teardown step %s", name)
+					}
+				}
+			}
+			for _, handle := range f.sendOperations {
+				closed := 0
+				for _, candidate := range f.closedOperations {
+					if candidate == handle {
+						closed++
+					}
+				}
+				if closed != 1 {
+					t.Fatalf("input operation %d closed %d times", handle, closed)
+				}
+			}
+			for _, context := range f.contexts {
+				if _, ok := wsmanContexts.Load(context); ok {
+					t.Fatal("deployment leaked native callback context")
+				}
+			}
+		})
+	}
+}
+
+// Held shells close in reverse order at shutdown, through the same native
+// boundary the fixture asserts.
+func TestWinRMHeldShellsCloseAtShutdown(t *testing.T) {
+	f := &wsmanFixture{t: t, deployment: true}
+	payload := bytes.Repeat([]byte{1, 2, 3}, 100)
+	digest := sha256.Sum256(payload)
+	transfer := &winrmTransfer{source: bytes.NewReader(payload), size: int64(len(payload)), binarySize: int64(len(payload)), binaryDigest: fmt.Sprintf("%x", digest)}
+	receiverArgs := []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", "Zml4dHVyZQ=="}
+	if err := winrmExecuteWithTLSAPI(f, "lab-host", winrmReceiverCommandPath, receiverArgs, time.Millisecond, nil, false, false, transfer, true); err != nil {
+		t.Fatal(err)
+	}
+	stopHeldWinRMShells()
+	want := []string{"WSManCloseCommand", "WSManCloseShell", "WSManCloseSession", "WSManDeinitialize"}
+	tail := f.calls[len(f.calls)-len(want):]
+	if !slices.Equal(tail, want) {
+		t.Fatalf("held-shell teardown order: %v", f.calls)
+	}
+	for _, context := range f.contexts {
+		if _, ok := wsmanContexts.Load(context); ok {
+			t.Fatal("held-shell teardown leaked callback context")
+		}
+	}
+}
 
 func TestWSManSDKLayouts(t *testing.T) {
 	// Independently checked against wsman.h by testdata/wsman_layout.c.
@@ -136,12 +242,19 @@ type wsmanFixture struct {
 	exitCode              uint32
 	wantAuth              uint32
 	wantURL               string
+	wantArgs              []string
 	implicitCredentials   bool
 	wantImplicitNegotiate bool
 	wantCertificateBypass bool
 	certificateOptions    []uintptr
 	wantIdentity          *winrmCredentials
 	passwordBuffer        []uint16
+	deployment            bool
+	commands              int
+	sent                  []byte
+	sentEOF               bool
+	sendOperations        []uintptr
+	closedOperations      []uintptr
 }
 
 func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
@@ -152,6 +265,7 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		"WSManCreateShell": 8, "WSManRunShellCommand": 7, "WSManReceiveShellOutput": 6,
 		"WSManCloseOperation": 2, "WSManCloseCommand": 3, "WSManCloseShell": 3,
 		"WSManSetSessionOption": 3,
+		"WSManSendShellInput":   8,
 	}
 	if len(args) != arities[name] {
 		f.t.Fatalf("%s has %d arguments, want %d", name, len(args), arities[name])
@@ -274,10 +388,15 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		output(7, 30)
 		complete(6, nil)
 	case "WSManRunShellCommand":
+		f.commands++
 		if args[0] != 30 || args[1] != 0 || args[4] != 0 {
 			f.t.Fatal("command arguments shifted")
 		}
-		if readWSManString(args[2]) != `C:\Program Files\fixture.exe` {
+		wantCommand := `C:\Program Files\fixture.exe`
+		if f.deployment {
+			wantCommand = winrmReceiverCommandPath
+		}
+		if readWSManString(args[2]) != wantCommand {
 			f.t.Fatal("missing command path")
 		}
 		set := (*wsmanStringSet)(unsafe.Pointer(args[3]))
@@ -286,9 +405,18 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		for i, value := range values {
 			actual[i] = readWSManString(uintptr(unsafe.Pointer(value)))
 		}
-		expected := []string{"--lateral-detach", "--lateral-session", "fixture-session", "--workspace-id", "fixture-workspace", "--service-name", "fixture-service"}
-		if !reflect.DeepEqual(actual, expected) {
-			f.t.Fatalf("bad counted argument set: %q", actual)
+		if f.deployment {
+			if len(actual) != 5 || actual[0] != "-NoLogo" || actual[1] != "-NoProfile" || actual[2] != "-NonInteractive" || actual[3] != "-EncodedCommand" || actual[4] == "" {
+				f.t.Fatalf("bad receiver arguments: %q", actual)
+			}
+		} else {
+			expected := f.wantArgs
+			if expected == nil {
+				expected = []string{"--lateral-session", "fixture-session"}
+			}
+			if !reflect.DeepEqual(actual, expected) {
+				f.t.Fatalf("bad counted argument set: %q", actual)
+			}
 		}
 		output(6, 40)
 		complete(5, nil)
@@ -304,6 +432,24 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		state, _ := syscall.UTF16PtrFromString(wsmanShellCmdURI + stateName)
 		data := &wsmanReceiveData{commandState: state, streamData: wsmanData{kind: 2}, exitCode: f.exitCode}
 		complete(4, data)
+	case "WSManSendShellInput":
+		if args[0] != 30 || args[1] != 40 || args[2] != 0 || readWSManString(args[3]) != "stdin" || args[5] > 1 {
+			f.t.Fatal("send arguments shifted")
+		}
+		data := (*wsmanData)(unsafe.Pointer(args[4]))
+		if data.kind != 2 || data.length > winrmTransferChunkSize {
+			f.t.Fatal("input must be bounded binary data")
+		}
+		if data.length != 0 {
+			f.sent = append(f.sent, unsafe.Slice((*byte)(unsafe.Pointer(data.value)), int(data.length))...)
+		}
+		operation := uintptr(60 + len(f.sendOperations))
+		output(7, operation)
+		f.sendOperations = append(f.sendOperations, operation)
+		complete(6, nil)
+		if args[5] == 1 && f.timeout != name && f.fail != name {
+			f.sentEOF = true
+		}
 	case "WSManCloseCommand", "WSManCloseShell":
 		expected := uintptr(40)
 		if name == "WSManCloseShell" {
@@ -314,9 +460,14 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		}
 		complete(2, nil)
 	case "WSManCloseOperation", "WSManCloseSession", "WSManDeinitialize":
+		if name == "WSManCloseOperation" {
+			f.closedOperations = append(f.closedOperations, args[0])
+		}
 		expected := map[string]uintptr{"WSManCloseOperation": 50, "WSManCloseSession": 20, "WSManDeinitialize": 10}[name]
 		if args[0] != expected || args[1] != 0 {
-			f.t.Fatal("cleanup arguments shifted")
+			if name != "WSManCloseOperation" || args[0] < 60 || args[1] != 0 {
+				f.t.Fatal("cleanup arguments shifted")
+			}
 		}
 		// Pending state must survive cancellation and session teardown.
 		runtime.GC()
@@ -348,8 +499,7 @@ func TestWSManNativeBoundaryAndCleanup(t *testing.T) {
 	for _, stage := range stages {
 		t.Run(fmt.Sprintf("failure_%s", stage), func(t *testing.T) {
 			f := &wsmanFixture{t: t, fail: stage}
-			workspace := "fixture-workspace"
-			err := winrmCreateProcessWithAPI(f, "lab-host", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second)
+			err := winrmCreateProcessWithAPI(f, "lab-host", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second)
 			if (err != nil) != (stage != "") {
 				t.Fatalf("stage=%s err=%v", stage, err)
 			}
@@ -369,8 +519,7 @@ func TestWSManNativeBoundaryAndCleanup(t *testing.T) {
 	for _, stage := range []string{"WSManCreateShell", "WSManRunShellCommand", "WSManReceiveShellOutput", "WSManCloseCommand", "WSManCloseShell"} {
 		t.Run("timeout_"+stage, func(t *testing.T) {
 			f := &wsmanFixture{t: t, timeout: stage}
-			workspace := "fixture-workspace"
-			err := winrmCreateProcessWithAPI(f, "lab-host", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Millisecond)
+			err := winrmCreateProcessWithAPI(f, "lab-host", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Millisecond)
 			if err == nil || !strings.Contains(err.Error(), "time") {
 				t.Fatalf("timeout was lost: %v", err)
 			}
@@ -397,8 +546,7 @@ func TestWSManReceiveRequiresSuccessfulDone(t *testing.T) {
 	} {
 		t.Run(fixture.message, func(t *testing.T) {
 			f := &wsmanFixture{t: t, receiveState: fixture.state, exitCode: fixture.exit}
-			workspace := "fixture-workspace"
-			err := winrmCreateProcessWithAPI(f, "lab-host", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second)
+			err := winrmCreateProcessWithAPI(f, "lab-host", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second)
 			if err == nil || !strings.Contains(err.Error(), fixture.message) {
 				t.Fatalf("unexpected result: %v", err)
 			}
@@ -422,8 +570,7 @@ func TestWSManAuthMechanismFollowsHostForm(t *testing.T) {
 	} {
 		identity := &winrmCredentials{domain: "LAB", user: "fixture", password: "fixture"}
 		f := &wsmanFixture{t: t, wantAuth: tc.want, wantURL: tc.url, wantIdentity: identity}
-		workspace := "fixture-workspace"
-		if err := winrmCreateProcessWithIdentityAPI(f, tc.host, `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity); err != nil {
+		if err := winrmCreateProcessWithIdentityAPI(f, tc.host, `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, identity); err != nil {
 			t.Fatalf("host %s: %v", tc.host, err)
 		}
 	}
@@ -438,8 +585,7 @@ func TestWSManDefaultProcessIdentity(t *testing.T) {
 		"fd00::8":  "http://[fd00::8]:5985/wsman",
 	} {
 		f := &wsmanFixture{t: t, wantURL: url}
-		workspace := "fixture-workspace"
-		if err := winrmCreateProcessWithAPI(f, host, `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second); err != nil {
+		if err := winrmCreateProcessWithAPI(f, host, `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -448,8 +594,7 @@ func TestWSManDefaultProcessIdentity(t *testing.T) {
 // Failed option configuration must close the session without opening a shell.
 func TestWSManImplicitCredentialsOptionFailure(t *testing.T) {
 	f := &wsmanFixture{t: t, fail: "WSManSetSessionOption", wantImplicitNegotiate: true, wantURL: "https://10.0.0.8:5986/wsman"}
-	workspace := "fixture-workspace"
-	err := winrmCreateProcessWithTransportAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, nil, true)
+	err := winrmCreateProcessWithTransportAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "WSManSetSessionOption") {
 		t.Fatalf("expected option error, got %v", err)
 	}
@@ -470,8 +615,7 @@ func TestWSManExplicitIdentity(t *testing.T) {
 				if host == "10.0.0.8" {
 					f.wantAuth = 4
 				}
-				workspace := "fixture-workspace"
-				err := winrmCreateProcessWithIdentityAPI(f, host, `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity)
+				err := winrmCreateProcessWithIdentityAPI(f, host, `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, identity)
 				if (err != nil) != (fail != "") {
 					t.Fatal("unexpected explicit identity result")
 				}
@@ -483,9 +627,8 @@ func TestWSManExplicitIdentity(t *testing.T) {
 			}
 		}
 	}
-	workspace := "fixture-workspace"
 	f := &wsmanFixture{t: t}
-	err := winrmCreateProcessWithIdentityAPI(f, "lab-host", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, &winrmCredentials{user: "fixture", password: "invalid\x00password"})
+	err := winrmCreateProcessWithIdentityAPI(f, "lab-host", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, &winrmCredentials{user: "fixture", password: "invalid\x00password"})
 	if err == nil || len(f.calls) != 0 || strings.Contains(err.Error(), "invalid") {
 		t.Fatal("invalid credentials must fail before native calls without echoing input")
 	}

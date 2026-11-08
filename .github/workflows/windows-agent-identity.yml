@@ -71,9 +71,10 @@ jobs:
         working-directory: agent-go
         shell: pwsh
         run: |
-          go test -buildvcs=false -count=1 -v -run '^TestWSMan' .
+          $tests = '^Test(WSMan|WinRM|PrepareWinRM|MemoryHosted)'
+          go test -buildvcs=false -count=1 -v -run $tests .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go test -buildvcs=false -count=1 -v -tags=rmmdebug -run '^TestWSMan' .
+          go test -buildvcs=false -count=1 -v -tags=rmmdebug -run $tests .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the dedicated service and standalone launcher
         working-directory: agent-go

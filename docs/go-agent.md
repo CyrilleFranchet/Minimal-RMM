@@ -403,12 +403,20 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   same policy to its proxy. WinRM establishes this shared policy before
   WSMan can initialize it implicitly. Failed initialization stops the command
   rather than silently using the process identity for WMI authentication.
-- Staging (`wmiexec`, `winrm`): the worker copies the source executable to
+- SMB staging (`wmiexec`): the worker copies the source executable to
   `\\<host>\ADMIN$\System32\<stem>-<random>.exe`. `remote_name` supplies
   the filename stem (default `minimal-rmm-agent.exe`); each deployment adds
   a fresh 128-bit random value encoded as 32 lowercase hexadecimal characters.
   The name must be a simple `.exe` filename because it becomes part of the
   service command line.
+- WinRM transfers the source executable through the authenticated WSMan
+  session to a PowerShell receiver, verifies the length and SHA-256 of both
+  the in-band loader and the executable, and loads the agent **in memory**
+  inside the receiver: no SMB share, no separate HTTP download, and no file
+  agent executable written to the target's disk. `Add-Type` can create
+  compiler scratch files in `%TEMP%`. The receiver keeps the shell open for the
+  agent's lifetime. See [WinRM transfer](winrm-transfer.md) for failure
+  handling, lifetime, and validation.
 - The target copy starts with `--lateral-session <id>`, a fresh beacon-safe ID reserved by the server before dispatch.
   The source workspace is passed as `--workspace-id <id>` (the internal `-`
   sentinel explicitly clears an embedded owner);
@@ -416,6 +424,9 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   operator environment, so the staged binary must carry **embedded
   connection settings** (build it with the server's `use_server_config`);
   the session ID and workspace binding are passed on the command line.
+  The WinRM in-memory receiver instead sets `RMM_SESSION_ID` and
+  `RMM_AGENT_WORKSPACE_ID` environment variables in the host process before
+  starting the agent thread, plus the `RMM_IN_MEMORY` capability marker.
 - The agent is service-aware (`service_windows.go`): when the SCM starts
   it, `StartServiceCtrlDispatcher` connects, the beacon loop runs as the
   service body, and `SERVICE_CONTROL_STOP` stops it cleanly. Normal
@@ -486,13 +497,13 @@ implementation runs. `make check-agent-deployment` includes that test.
 |--------|-----------|
 | `psexec` | Two-stage RemCom-style deployment: push the dedicated lateral service host to `ADMIN$`, start it as a demand-start service; its linked stage1 worker fetches the masked stage2 agent payload from the listener's staging endpoint, decodes it in memory, installs and starts the agent, then stops. The calling agent waits for successful service completion and removes the temporary service and host binary itself; the server cleanup command is only a retry path when that immediate cleanup stays pending |
 | `wmiexec` | Native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`, no PowerShell |
-| `winrm` | Native WSMan client (`wsman_windows.go`) through `WsmSvc.dll` — the library `winrs.exe` itself uses: `WSManInitialize`, `WSManCreateSession`, `WSManCreateShell`, `WSManRunShellCommand`, receive until the command's Done state, then close. The remote command runs the agent with `--lateral-detach`, which re-registers itself as a local SCM service and exits: WinRM terminates a shell's process tree when the shell closes, while the SCM-started instance runs outside that job object. No `winrs.exe`, no `wmic.exe` |
+| `winrm` | Native WSMan client through `WsmSvc.dll`: create an authenticated session and shell, run a Windows PowerShell receiver, stream a framed payload (loader source + agent binary) with `WSManSendShellInput`, verify each half's length and SHA-256, then load the agent **in memory**: one `VirtualAlloc(PAGE_EXECUTE_READWRITE)` image, a full PE32+ amd64 mapping (sections, relocations, imports, TLS), and a detached `CreateThread` on the entry point. The agent executable is not staged on disk; `Add-Type` can create compiler scratch files in `%TEMP%`. Native runtime validation remains outstanding. The source keeps the shell open for the deployment's lifetime; the in-memory session cannot spawn, spawnas, lateral, load PE plugins, or install persistence (guarded with a clear error). Transfer and launch both use WinRM; no SMB, WMI, `winrs.exe`, or `wmic.exe` |
 
 WMI and explicit-credential WSMan execution select authentication using the target's written
 form (`lateralHostIsIP` in `lateral.go`). This selection does not govern SMB
 staging or guarantee Kerberos for the whole operation.
 
-- `psexec` and SMB staging for every method retain Windows negotiation.
+- `psexec` and WMI's SMB staging retain Windows negotiation.
   DNS targets may fall back to NTLM when Kerberos is unavailable. Client
   policy, existing connections, and SPN configuration affect negotiation.
 - `wmiexec`: DNS names pass the `kerberos:HOST/<host>` authority as an
@@ -506,8 +517,8 @@ staging or guarantee Kerberos for the whole operation.
   `WSMAN_FLAG_AUTH_NEGOTIATE` for IP targets. The native WSMan client
   exposes no direct NTLM flag; IP targets normally negotiate NTLM (Windows
   can support IP SPNs when explicitly configured). With `make_token` active,
-  WSMan receives the selected username/password explicitly; SMB still uses
-  the captured thread token.
+  WSMan receives the selected username/password explicitly for both transfer
+  and launch. WinRM does not open an SMB connection.
 
 Without make_token over HTTP, `WSManCreateSession` receives a NULL authentication
 pointer for Default authentication. Over HTTPS it receives a Negotiate structure
@@ -641,8 +652,9 @@ register under the source workspace and reports `registered` and the legacy
 `POST /api/v1/sessions/{id}/lateral`, CLI `lateral` and `/lateral`,
 WebUI `/lateral`, MCP `lateral_move`. Requirements and caveats: Go agent
 Windows build with embedded connection settings, admin rights on the
-target (or a `make_token` identity with them), `ADMIN$` reachable for
-staging, and WinRM on port 5985 or HTTPS/5986 with `-s`. Live
+target (or a `make_token` identity with them). WMI and PsExec require `ADMIN$`
+for staging. WinRM requires Windows PowerShell on the target and WinRM on
+port 5985 or HTTPS/5986 with `-s`; it does not require SMB. Live
 behavior of every module remains to be validated on real hosts.
 
 `exec_timeout` bounds the server response wait. For PsExec, the agent's worker

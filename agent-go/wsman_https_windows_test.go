@@ -28,8 +28,7 @@ func TestWSManHTTPSTransport(t *testing.T) {
 			if tc.host != "lab-host" {
 				f.wantAuth = 4
 			}
-			workspace := "fixture-workspace"
-			if err := winrmCreateProcessWithTransportAPI(f, tc.host, `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity, tc.secure); err != nil {
+			if err := winrmCreateProcessWithTransportAPI(f, tc.host, `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, identity, tc.secure); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -40,8 +39,7 @@ func TestWSManHTTPSTransport(t *testing.T) {
 // certificate checks. The fixture rejects all unexpected session options.
 func TestWSManHTTPSFailureDoesNotDowngrade(t *testing.T) {
 	f := &wsmanFixture{t: t, wantURL: "https://10.0.0.8:5986/wsman", fail: "WSManCreateShell", wantImplicitNegotiate: true}
-	workspace := "fixture-workspace"
-	err := winrmCreateProcessWithTransportAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, nil, true)
+	err := winrmCreateProcessWithTransportAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, nil, true)
 	if err == nil || !strings.Contains(err.Error(), "WSMan error") {
 		t.Fatalf("expected native failure, got %v", err)
 	}
@@ -79,8 +77,7 @@ func TestWSManHTTPSFailureMatrix(t *testing.T) {
 					identity = &winrmCredentials{domain: "LAB", user: "fixture", password: "never-echo-fixture-secret"}
 					f.wantIdentity = identity
 				}
-				workspace := "fixture-workspace"
-				err := winrmCreateProcessWithTransportAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity, true)
+				err := winrmCreateProcessWithTransportAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, identity, true)
 				if err == nil {
 					t.Fatal("native failure reported success")
 				}
@@ -125,8 +122,7 @@ func TestWSManCertificateBypass(t *testing.T) {
 				identity = &winrmCredentials{user: "fixture", password: "fixture"}
 				f.wantIdentity = identity
 			}
-			workspace := "fixture-workspace"
-			err := winrmCreateProcessWithTLSAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity, true, true)
+			err := winrmCreateProcessWithTLSAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, identity, true, true)
 			if (err != nil) != (failure != 0) {
 				t.Fatalf("bypass option %d: %v", failure, err)
 			}
@@ -140,8 +136,7 @@ func TestWSManCertificateBypass(t *testing.T) {
 		}
 	}
 	f := &wsmanFixture{t: t}
-	workspace := "fixture-workspace"
-	if err := winrmCreateProcessWithTLSAPI(f, "target", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, nil, false, true); err == nil || len(f.calls) != 0 {
+	if err := winrmCreateProcessWithTLSAPI(f, "target", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, nil, false, true); err == nil || len(f.calls) != 0 {
 		t.Fatal("HTTP bypass must fail before native calls")
 	}
 }
@@ -152,8 +147,7 @@ func TestWSManPartialCertificateBypassPreservesTLSFailure(t *testing.T) {
 	identity := &winrmCredentials{user: "fixture", password: "fixture"}
 	f := &wsmanFixture{t: t, wantURL: "https://10.0.0.8:5986/wsman", wantAuth: 4,
 		wantIdentity: identity, wantCertificateBypass: true, fail: "WSManCreateShell", faultCode: 12175}
-	workspace := "fixture-workspace"
-	err := winrmCreateProcessWithTLSAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, "fixture-session", &workspace, "fixture-service", time.Second, identity, true, true)
+	err := winrmCreateProcessWithTLSAPI(f, "10.0.0.8", `C:\Program Files\fixture.exe`, wsmanFixtureArgs, time.Second, identity, true, true)
 	if err == nil || !strings.Contains(err.Error(), "WSMan error 12175") || !strings.Contains(err.Error(), "cert=skip-ca-cn-revocation") {
 		t.Fatalf("partial certificate bypass obscured native TLS failure: %v", err)
 	}

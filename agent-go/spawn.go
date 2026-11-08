@@ -133,6 +133,9 @@ func spawnCommand(command string, cfg *config) (string, error) {
 
 // spawnAgentWithIdentity starts the validated child under its selected identity.
 func spawnAgentWithIdentity(cfg *config, sessionID string) (string, error) {
+	if memoryHosted() {
+		return "", errMemoryHosted
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("resolve agent executable: %w", err)

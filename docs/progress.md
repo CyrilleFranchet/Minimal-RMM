@@ -1,5 +1,53 @@
 # Progress Log
 
+## 2026-11-08 — WinRM documentation review
+
+- Correct the blanket no-disk-write claim: the agent executable is not staged
+  on disk, but `Add-Type` can create compiler scratch files in `%TEMP%`.
+- Mark in-memory runtime behavior as intended and unvalidated; host tests and
+  cross-builds do not establish successful native Windows operation.
+- This review covers documentation accuracy only; the injection and lateral
+  execution implementation has not been repaired or approved for merge.
+
+## 2026-11-08 — Load the WinRM lateral agent in memory
+
+- Replace the WinRM receiver's disk staging (`System32` partial file,
+  promotion, and `--lateral-detach` service registration) with an in-memory
+  load: the receiver streams a framed payload over the authenticated WSMan
+  stdin channel — the UTF-8 C# loader source, then the agent executable,
+  each with exact length and SHA-256 — and compiles the loader with
+  `Add-Type`.
+- The loader follows the classic injection pattern requested by the
+  operator: one `VirtualAlloc(PAGE_EXECUTE_READWRITE)` image, a copy of the
+  received bytes mapped as a full PE32+ amd64 image (sections, base
+  relocations, imports, and TLS slot patched into the fresh thread's TEB —
+  a Go binary is a PE, not raw shellcode), then a detached `CreateThread`
+  on the entry point. The agent executable is not staged on disk; `Add-Type`
+  can create compiler scratch files in `%TEMP%`.
+- Keep the loader on the stdin channel instead of the `-EncodedCommand`
+  parameter so the receiver command stays at ~2.6 KB, below the WinRS
+  8191-character limit (the embedded-loader variant measured 15.7 KB).
+- Lifetime: the WinRM shell job kills the receiver tree when the shell
+  closes, so the source now holds the successful deployment's native
+  handles open (`winrmHeldShell` registry) and closes them only at agent
+  shutdown (`stopHeldWinRMShells`). The deployed session lives as long as
+  its source agent and dies with a target reboot; no WMI, SCM, or named
+  pipes are involved.
+- In-memory sessions run inside `powershell.exe`, so the agent refuses
+  `spawn`, `spawnas`, `lateral`, PE plugins, and persistence install with a
+  clear error (guarded by the `RMM_IN_MEMORY` marker set by the receiver)
+  instead of relaunching the host binary.
+- Delete the now-dead `--lateral-detach` entry point
+  (`runLateralDetach`, `lateralDetachArguments`, `scmStartService`,
+  partial-file cleanup) and its debug-log branch.
+- Validation: host Go tests pass including portable PowerShell receiver
+  runtime failures (loader truncation/corruption, agent truncation,
+  digest mismatch, oversized input) and `Add-Type` compilation of the
+  loader; Windows amd64/arm64 normal and debug builds compile; the full
+  Python lateral/CLI/MCP suites pass (wire format unchanged, so no server
+  or parity changes were needed). Native PE mapping on a real Windows
+  target remains outstanding lab validation.
+
 ## 2026-11-08 — Unblock AI chat after stop/reset submission conflicts
 
 - Treat HTTP 409 on job submission as a definitive rejection, clear the
