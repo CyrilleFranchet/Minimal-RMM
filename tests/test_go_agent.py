@@ -33,6 +33,7 @@ class GoAgentTests(unittest.TestCase):
                 "lateral_results.go",
                 "lateral_windows.go",
                 "service_windows.go",
+                "scm_handles.go",
                 "uid.go",
                 "wmi_windows.go",
                 "wsman_windows.go",
