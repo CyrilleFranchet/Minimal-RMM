@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-11-08 — Reuse PsExec SCM handles through cleanup
+
+- A source-agent trace showed three consecutive SCM opens taking about 21
+  seconds each after startup; status queries and deletion took milliseconds.
+- Retain the manager and service handles from creation through completion and
+  deletion. Remove the duplicate stop check from immediate cleanup, and close
+  retained handles before removing the binary. Preserve standalone cleanup
+  retries, timeout behavior, worker identity, and other service start callers.
+- Update the native service fixture to poll/delete with retained handles and
+  check closure before binary removal. Native Windows execution and measured
+  latency improvement require a rebuilt source agent and a lab retest.
+- Validation: `make go-test` and Markdown lint pass. Windows amd64/arm64 test
+  binaries cross-compile in normal/debug modes. Windows vet reports identical
+  pre-existing unsafe-pointer warnings on HEAD and the modified tree.
+- Review fix: propagate native close errors instead of silently forgetting
+  failed handles or reporting successful cleanup. Preserve failed handles for
+  another close attempt. Add portable tests for deletion/close ordering,
+  idempotent closure, combined errors, and retrying only failed handles.
+
 ## 2026-11-08 — Remove redundant psexec stage1 status POST
 
 - Remove the C launcher's `reportStatus` helper and HTTP call. The dedicated

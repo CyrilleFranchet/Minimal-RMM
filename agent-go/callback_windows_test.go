@@ -70,17 +70,25 @@ func TestDedicatedLateralServiceProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer scmDeleteService("", name)
-	startErr := scmStartService("", name, buildWindowsCmdLine([]string{path}), false)
+	handles, startErr := scmStartServiceRetained("", name, buildWindowsCmdLine([]string{path}), false)
 	if errors.Is(startErr, syscall.Errno(1053)) {
 		t.Fatal("dedicated host did not perform the SCM handshake")
 	}
-	err := waitStage1Stopped("", name, 10*time.Second)
+	if startErr != nil {
+		t.Fatal(startErr)
+	}
+	defer handles.close()
+	err := waitStage1ServiceStopped(handles.service, 10*time.Second)
 	if err == nil || !strings.Contains(err.Error(), "Windows 1066, stage 2") {
 		t.Fatalf("worker result was not reported through SCM: start=%v stop=%v", startErr, err)
 	}
-	if _, err := scmDeleteService("", name); err != nil {
+	if deleted, err := handles.delete(); err != nil || !deleted {
 		t.Fatal(err)
 	}
+	if handles.service != 0 || handles.manager != 0 {
+		t.Fatal("retained handles must close before removing the service binary")
+	}
+	handles.close() // Deferred close must also remain harmless after deletion.
 	if err := removeStoppedLauncher(path); err != nil {
 		t.Fatal(err)
 	}
