@@ -30,7 +30,7 @@ not use `Start-Process -Wait`, which also waits for descendants.
 
 Exit codes: `0` = agent installed and started, `1` = staging failure, `2` = stage1 rejected its arguments or has no base URL embedded. The C launcher attaches to a parent console when available and prints diagnostics; service and Explorer launches stay silent. It does not POST a status report. For psexec, the service returns the launcher exit code through SCM/RPC.
 
-stage1 connects back to the RMM server over HTTPS, fetches the masked Go agent, decodes it, writes it to the current user's temp directory (`%TEMP%\minimal-rmm-agent.exe` — no administrator rights required), and executes it. The session ID is fixed at build time so the agent registers with a known ID on first beacon.
+stage1 connects back to the RMM server over HTTPS, fetches the masked Go agent, decodes it, creates `%TEMP%\minimal-rmm-agent-<session_id>.exe` without overwriting an existing executable, and launches it. No administrator rights are required. The session ID is fixed at build time so the agent registers with a known ID on first beacon. Reusing a deployment with the same session ID and existing payload file fails instead of replacing it; fresh lateral deployments receive distinct session IDs.
 
 ### Checking the launcher status
 
@@ -106,7 +106,7 @@ Applied in 32-byte blocks over the entire binary. Implemented in both `server_rm
 |---|---|
 | `server_rmm.py` | `build_go_agent()`: `is_staged` branch returns stage1 ZIP; build handler passes `staging_fn` with the 24-hour build TTL (`STAGING_BUILD_TTL_SECONDS`); `create_staging(payload, ttl_seconds)`; `staging_info()` + `GET /api/v1/agent/go/stage/{id}` status endpoint |
 | `agent-go/stage1/c/stage1.c` | C launcher: WinHTTP fetch with HTTP status check, staging mask decode, write to `%TEMP%` (no elevation), launch, `stage1 ok:/stage1 failed:` status lines |
-| `agent-go/stage1/main.go` | Go stage1 (fallback): same temp-directory write path and status lines |
+| `agent-go/stage1/main.go` | Go stage1 (fallback): `writeStagePayload()` creates a session-specific executable exclusively; failed writes remove the partial file; retains status POSTs |
 | `mcp_rmm_server.py` | `build_go_agent()`: `stageless` parameter; `stage_status()` tool |
 | `rmm_tools.py` | OPENAI_TOOLS schemas: `stageless`, `stage_status`; `build_go_agent` handler forwards `stageless` |
 | `rmm_cli.py` | `--stageless` argparse help; `agent go-stage <staging_id>` status command |

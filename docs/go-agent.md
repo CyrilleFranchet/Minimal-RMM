@@ -689,6 +689,11 @@ Dedicated lateral service (`agent-go/lateral-service/c/service.c`):
   stage2 over HTTP, decodes it, writes it to the service account's temp directory,
   launches the agent, and exits. The full agent is not copied over SMB on this
   path. WMI and WinRM retain their separate full-agent deployment paths.
+- Stage1 creates a distinct payload file for each target session:
+  `minimal-rmm-agent-<session_id>.exe` (or
+  `minimal-rmm-agent-debug-<session_id>.exe` for the C debug variant). Existing
+  files are never overwritten, so repeated lateral deployments do not collide
+  with the executable of an agent already running on the same target.
 - PsExec retains the original SCM connection and service handle through startup,
   completion polling, and deletion. `scmStartServiceRetained` transfers ownership
   to `scmServiceHandles`; its `close` method releases the service before the

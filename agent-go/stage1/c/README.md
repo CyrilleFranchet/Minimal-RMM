@@ -38,8 +38,8 @@ sudo apt-get install -y mingw-w64
 1. `GET {BASE_URL}/tools/stage/{staging_id}` — returns XOR-masked PE.
 2. Decode: SHA-256 counter keystream seeded by `staging_id` (32-byte blocks).
 3. Verify MZ header.
-4. Write to `%SystemRoot%\System32\minimal-rmm-agent.exe`.
-5. `CreateProcessW` detached: `minimal-rmm-agent.exe --lateral-session <id>`.
+4. Create `%TEMP%\minimal-rmm-agent-<session_id>.exe` without overwriting an existing file (the C debug variant uses `minimal-rmm-agent-debug-<session_id>.exe`).
+5. Launch that executable detached with `--lateral-session <id>`.
 
 For psexec, the service reports the launcher result through SCM/RPC. The
 launcher does not send a separate HTTP status request.

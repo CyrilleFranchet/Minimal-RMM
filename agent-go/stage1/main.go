@@ -124,8 +124,8 @@ func runStage(cfg stageConfig) error {
 	// Write the agent to the temp directory instead of System32: a manual
 	// launcher run then needs no administrator rights, and the psexec path
 	// runs as SYSTEM, whose temp directory is writable as well.
-	agentPath := filepath.Join(os.TempDir(), "minimal-rmm-agent.exe")
-	if err := os.WriteFile(agentPath, payload, 0700); err != nil {
+	agentPath, err := writeStagePayload(os.TempDir(), cfg.SessionID, payload)
+	if err != nil {
 		return fmt.Errorf("install stage2: %w", err)
 	}
 	child := exec.Command(agentPath, "--lateral-session", cfg.SessionID)
@@ -135,6 +135,26 @@ func runStage(cfg stageConfig) error {
 	}
 	go func() { _ = child.Wait() }()
 	return nil
+}
+
+// writeStagePayload installs a session-specific executable without overwriting
+// an earlier deployment. The session ID must use the validated wire alphabet.
+func writeStagePayload(directory, sessionID string, payload []byte) (string, error) {
+	if !stagingTokenPattern.MatchString(sessionID) {
+		return "", errors.New("invalid target session id")
+	}
+	path := filepath.Join(directory, "minimal-rmm-agent-"+sessionID+".exe")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
+	if err != nil {
+		return "", err
+	}
+	_, writeErr := file.Write(payload)
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 // reportStageStatus delivers one best-effort status line to the staging

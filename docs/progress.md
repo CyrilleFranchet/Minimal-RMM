@@ -1,5 +1,18 @@
 # Progress Log
 
+## 2026-11-08 — Avoid stage2 filename collisions on repeated PsExec deployments
+
+- The launcher previously wrote a fixed payload filename in the target temp
+  directory. A second deployment could attempt to replace a running agent's
+  executable and fail with the generic stage1 failure code.
+- Give C and Go stage1 payloads session-specific filenames and create them
+  exclusively. Keep the C debug prefix. Leave existing agent files untouched.
+- Add regression tests proving distinct sessions install independently, a
+  repeated session cannot overwrite its payload, and legacy files survive.
+- Validation: `make go-test` passes, including normal/debug host tests, Windows
+  amd64/arm64 builds, and C launcher/service cross-builds. Native Windows
+  reproduction and repeat-deployment success remain unverified.
+
 ## 2026-11-08 — Reuse PsExec SCM handles through cleanup
 
 - A source-agent trace showed three consecutive SCM opens taking about 21

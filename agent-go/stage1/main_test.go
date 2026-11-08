@@ -2,8 +2,39 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+func TestStagePayloadDeploymentsDoNotOverwriteEachOther(t *testing.T) {
+	directory := t.TempDir()
+	legacy := filepath.Join(directory, "minimal-rmm-agent.exe")
+	if err := os.WriteFile(legacy, []byte("existing agent"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range []string{"first-session", "second-session"} {
+		payload := []byte("MZ payload for " + session)
+		path, err := writeStagePayload(directory, session, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writeStagePayload(directory, session, []byte("replacement")); !os.IsExist(err) {
+			t.Fatalf("repeat deployment overwrote an existing executable: %v", err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(data, payload) {
+			t.Fatalf("original payload was changed: %q %v", data, err)
+		}
+	}
+	data, err := os.ReadFile(legacy)
+	if err != nil || string(data) != "existing agent" {
+		t.Fatalf("legacy agent was overwritten: %q %v", data, err)
+	}
+	if _, err := writeStagePayload(directory, "../escape", nil); err == nil {
+		t.Fatal("invalid session path accepted")
+	}
+}
 
 func TestStageMaskRoundTrip(t *testing.T) {
 	payload := append([]byte("MZ\x90\x00"), bytes.Repeat([]byte("stage2 payload bytes"), 512)...)

