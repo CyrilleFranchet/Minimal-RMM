@@ -242,6 +242,7 @@ locations are supplied by the wrapper, regardless of the schema's empty default.
 | `RMM_EXEGOL_MCP_URL` | S/W | string | `unset` | Exegol MCP URL |
 | `RMM_EXEGOL_MCP_TOKEN` | S/W | string | `unset; secret` | Exegol MCP token |
 | `RMM_EXEGOL_CONTAINER` | S/W | string | `unset` | Optional Exegol container override (automatic discovery when empty) |
+| `RMM_EXEGOL_EXECUTION_TIMEOUT` | S/W | integer | `3600` | Durable Exegol command deadline in seconds (1–86400); see [execution tracking](exegol-executions.md) |
 
 ## BloodHound
 

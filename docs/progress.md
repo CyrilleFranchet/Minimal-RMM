@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-11-18 — Verify durable Exegol execution on Linux and real MCP HTTP
+
+- A fresh audit found and repaired three issues: execution-store SQLite
+  connections now close after every transaction, repeated status heartbeats
+  coalesce so long-running jobs retain their original tool/evidence record,
+  and supervisor output drains finish short writes instead of dropping bytes.
+- Added regressions for connection closure/rollback, more than 500 heartbeats
+  followed by cancellation and late-result retention, short output writes,
+  and writes that make no progress.
+- The unchanged supervisor suite passes all 20 tests in a disposable Debian
+  Linux container, including process-group cleanup. The host AI suite passes
+  200 tests with one Linux-only skip; parity, syntax, lint, and both AI UI
+  checks pass.
+- Added opt-in `make check-exegol-execution-integration`: production RMM stdio
+  plus MCP HTTP sessions execute the actual supervisor through Docker exec,
+  covering lost launch acknowledgment and reconnect without replay, running
+  command cancellation, deadlines, output framing, and cleanup. The fixture
+  uses no lab targets; it does not replace validation of a deployed Exegol
+  endpoint.
+
+## 2026-11-18 — Durable Exegol playbook commands
+
+- Wrap AI container commands in a detached Exegol-side supervisor, using short
+  MCP requests for launch, status, output paging, and explicit cancellation.
+- Persist owner-scoped execution handles before dispatch and reuse unresolved
+  matching commands instead of launching duplicates after a lost response.
+- Keep prerequisite/lifecycle MCP probes unchanged. Document the execution
+  deadline, private stores, recovery tools, and restart/cancellation limits in
+  `docs/exegol-executions.md`.
+- Validation: `make check-ai check-parity test` passes (197 Python tests,
+  including one Linux-only skip on macOS, and both AI UI checks); `make lint`
+  and `git diff --check` pass. Code, security, and test reviews cover response
+  framing, launch-lock contention, lost status responses, and request bounds.
+  Native Linux/Exegol process-group validation remains a deployment check.
+
 ## 2026-11-18 — Purge workspace credentials
 
 - `/creds purge` and standalone `creds purge` remove all credentials in the

@@ -308,6 +308,7 @@ def run_with_mcp_session(
     exegol_enabled: bool | None = None,
     exegol_mcp_url: str | None = None,
     exegol_mcp_token: str | None = None,
+    execution_progress: Callable[[dict], None] | None = None,
 ) -> T:
     enabled, exegol_url, exegol_token = resolve_exegol_mcp_config(
         enabled=exegol_enabled,
@@ -318,7 +319,10 @@ def run_with_mcp_session(
     async def _run() -> T:
         backends: list[Any] = [McpRmmSession(rmm_base_url, rmm_token, extra_headers)]
         if enabled:
-            backends.append(McpHttpSession(exegol_url, exegol_token))
+            from rmm_exegol_execution import DurableExegolBackend, execution_scope
+            scope = execution_scope(rmm_base_url, rmm_token, extra_headers, exegol_url, exegol_token)
+            backends.append(DurableExegolBackend(McpHttpSession(exegol_url, exegol_token), scope,
+                                                progress=execution_progress))
 
         if len(backends) == 1:
             session: McpBackend = backends[0]

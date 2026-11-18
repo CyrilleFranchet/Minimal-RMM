@@ -5,13 +5,13 @@ WORKSPACE_ID ?= default
 
 PY_MODULES := rmm_settings.py rmm_plugin_sources.py rmm_plugin_releases.py rmm_embeddings.py server_rmm.py rmm_cli.py rmm_socks.py rmm_ws.py rmm_tun.py rmm_tools.py rmm_rclone.py \
 	rmm_deployment.py rmm_workspace_migration.py \
-	mcp_rmm_server.py rmm_mcp_client.py rmm_ai.py rmm_ai_skill_context.py rmm_ai_context.py rmm_ai_skills.py rmm_ai_concurrency.py rmm_ai_jobs.py rmm_run_on_host.py rmm_kill_host_sessions.py \
+	mcp_rmm_server.py rmm_mcp_client.py rmm_exegol_execution.py rmm_exegol_supervisor.py rmm_ai.py rmm_ai_skill_context.py rmm_ai_context.py rmm_ai_skills.py rmm_ai_concurrency.py rmm_ai_jobs.py rmm_run_on_host.py rmm_kill_host_sessions.py \
 	rmm_workspace.py workspace_pivot.py workspace_service.py rmm_asset_store.py rmm_profile.py rmm_bloodhound.py rmm_bloodhound_ce_auth.py rmm_bloodhound_broker.py rmm_bloodhound_proxy.py rmm_exegol_runtime.py rmm_bloodhound_library.py scripts/import_bloodhound_library.py
 
 MD_SCAN := find . -type f -name '*.md' -not -path './.git/*' -not -path '*/.venv/*'
 YAML_SCAN := find . -type f \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*' -not -path '*/.venv/*'
 
-.PHONY: help install-lint lint-md lint-yaml lint test check-ai check-cli check-agent-deployment check-agent-commands check-parity check-web-contracts check check-exegol-mcp go-test tun-build workspace-service docker-build docker-up
+.PHONY: help install-lint lint-md lint-yaml lint test check-ai check-cli check-agent-deployment check-agent-commands check-parity check-web-contracts check check-exegol-mcp check-exegol-execution-integration go-test tun-build workspace-service docker-build docker-up
 
 help:
 	@printf "Available targets:\n"
@@ -27,6 +27,7 @@ help:
 	@printf "  make check-web-contracts  WebUI completion and configuration contracts\n"
 	@printf "  make check         test + check-parity + lint\n"
 	@printf "  make check-exegol-mcp  Validate a live Exegol MCP endpoint (needs RMM_EXEGOL_MCP_URL); not part of 'check'\n"
+	@printf "  make check-exegol-execution-integration  Test real MCP HTTP against RMM_TEST_EXEGOL_CONTAINER\n"
 	@printf "                         pass ARGS=\"--config PATH\" or ARGS=\"--data-dir PATH\" to point at a saved workspace config\n"
 	@printf "  make go-test       Cross-build the Go agent and test the pivot components\n"
 	@printf "  make check-agent-commands  Test Go command routing and CMD quote normalization\n"
@@ -108,6 +109,8 @@ check-cli:
 	@$(PYTHON) -m unittest discover -s tests -p 'test_cli*.py'
 
 check-ai:
+	@$(PYTHON) -m unittest discover -s tests -p 'test_exegol_execution.py'
+	@$(PYTHON) -m unittest discover -s tests -p 'test_exegol_supervisor.py'
 	@$(PYTHON) -m unittest discover -s tests -p 'test_ai*.py'
 	@$(PYTHON) -m unittest discover -s tests -p 'test_rmm_ai*.py'
 	@$(PYTHON) -m unittest discover -s tests -p 'test_*embedding*.py'
@@ -137,3 +140,7 @@ check: test check-agent-commands check-ai check-cli check-agent-deployment check
 
 check-exegol-mcp:
 	@$(PYTHON) scripts/check_exegol_mcp.py $(ARGS)
+
+check-exegol-execution-integration:
+	@test -n "$(RMM_TEST_EXEGOL_CONTAINER)" || (echo "Set RMM_TEST_EXEGOL_CONTAINER to a disposable rmm-exegol-test-* container with Python 3 and zsh."; exit 1)
+	@RMM_TEST_EXEGOL_CONTAINER="$(RMM_TEST_EXEGOL_CONTAINER)" $(PYTHON) -m unittest tests.test_exegol_http_integration -v

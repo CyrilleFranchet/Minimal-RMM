@@ -114,7 +114,7 @@ def _safe_progress(event):
     if not isinstance(event, dict):
         return {}
     clean = {}
-    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status", "backend", "call_id", "artifact_id", "arguments_artifact_id"):
+    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status", "backend", "call_id", "artifact_id", "arguments_artifact_id", "execution_id"):
         value = event.get(key)
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", value):
             clean[key] = value
@@ -387,11 +387,21 @@ class AIJobManager:
             if isinstance(scope, str) and re.fullmatch(r"[a-f0-9]{64}", scope):
                 with self._db:
                     self._db.execute("UPDATE ai_jobs SET evidence_scope=? WHERE id=?", (scope, job_id))
-            activity.append({**_safe_activity(event), "timestamp": timestamp})
+            clean = _safe_activity(event)
+            heartbeat = (clean.get('phase') == 'exegol_execution' and activity
+                         and clean.get('execution_id')
+                         and {key: value for key, value in activity[-1].items() if key != 'timestamp'} == clean)
+            if heartbeat:
+                # Keep active tool starts and their evidence references available
+                # while a long execution emits otherwise identical status polls.
+                activity[-1] = {**clean, 'timestamp': timestamp}
+            else:
+                activity.append({**clean, 'timestamp': timestamp})
             with self._db:
                 self._db.execute(
-                    "UPDATE ai_jobs SET progress=?, activity=?, activity_total=activity_total+1, updated_at=? WHERE id=? AND state=?",
-                    (json.dumps(_safe_progress(event)), json.dumps(activity[-500:]), timestamp, job_id, row["state"]),
+                    "UPDATE ai_jobs SET progress=?, activity=?, activity_total=activity_total+?, updated_at=? WHERE id=? AND state=?",
+                    (json.dumps(_safe_progress(event)), json.dumps(activity[-500:]), 0 if heartbeat else 1,
+                     timestamp, job_id, row["state"]),
                 )
             if late_observation:
                 raise JobInterrupted("Job was interrupted; the dispatched call's final observation was retained.")

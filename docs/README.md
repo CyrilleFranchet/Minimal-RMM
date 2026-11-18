@@ -101,6 +101,7 @@ historical notes in `progress.md`.
 | BloodHound CE collection, ingestion, and candidate paths | [BloodHound workflow](bloodhound-workflow.md) |
 | BloodHound technical validation and operator parity | [Audit findings](bloodhound-technical-audit.md) |
 | Validate a live Exegol MCP endpoint (deployment/dev diagnostic) | [Exegol MCP verification](exegol-mcp-verification.md) |
+| Recover long Exegol commands after MCP timeouts | [Durable Exegol executions](exegol-executions.md) |
 | Move legacy standalone storage into a workspace | [Migration guide](workspace-migration.md) |
 | Legacy skill asset API (no automatic chat loading) | [Operator-managed assets](operator-assets.md) |
 | Per-session chat persistence | [AI chat memory](web-ai-chat-memory.md) |

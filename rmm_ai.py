@@ -696,6 +696,7 @@ def _run_ai_chat_mcp(
             exegol_enabled=exegol_mcp_enabled,
             exegol_mcp_url=exegol_mcp_url,
             exegol_mcp_token=exegol_mcp_token,
+            execution_progress=progress,
         )
     except Exception as e:
         if connected:

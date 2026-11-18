@@ -155,6 +155,49 @@ class OperationActivityTests(unittest.TestCase):
         self.assertEqual(final['activity'][0]['round'], 5)
         self.assertNotIn('secret', json.dumps(final['activity']))
 
+    def test_long_execution_heartbeats_preserve_start_evidence_and_late_cancel_observation(self):
+        started, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        scope = 'd' * 64
+        async def execute(name, args):
+            for _ in range(505):
+                progress({'phase': 'exegol_execution', 'execution_id': 'e' * 32,
+                          'status': 'running', 'backend': 'exegol'})
+            started.set()
+            await asyncio.to_thread(release.wait, 3)
+            return 'late collection result'
+        def run(report):
+            nonlocal progress
+            progress = report
+            progress({'phase': 'context_ready', 'context_scope': scope})
+            dispatcher = ContextDispatcher(execute, ContextWindow(scope=scope))
+            asyncio.run(run_tool_batch([{'name': 'execute_command_in_container',
+                'arguments': {'command': 'private long collection'}}], dispatcher, progress=progress))
+        progress = None
+        job, _ = self.manager.submit(owner='operator', session_id='session', request_id='long-polls', run=run)
+        self.assertTrue(started.wait(3))
+        active = self.manager.get(job['id'], 'operator')
+        tool_start = next(item for item in active['activity'] if item.get('phase') == 'tool')
+        evidence = self.manager.read_evidence(job['id'], 'operator', tool_start['arguments_artifact_id'])
+        self.assertEqual(json.loads(evidence['content'])['command'], 'private long collection')
+        self.assertEqual(sum(item.get('phase') == 'exegol_execution' for item in active['activity']), 1)
+        self.assertEqual(active['activity_omitted'], 0)
+        self.manager.cancel(job['id'], 'operator')
+        with self.assertRaises(JobInterrupted):
+            progress({'phase': 'exegol_execution', 'execution_id': 'e' * 32,
+                      'status': 'running', 'backend': 'exegol'})
+        release.set()
+        for worker in list(self.manager._threads):
+            worker.join(3)
+            self.assertFalse(worker.is_alive())
+        final = self.manager.get(job['id'], 'operator')
+        self.assertEqual(final['status'], 'interrupted')
+        event = final['activity'][-1]
+        self.assertEqual((event['phase'], event['status'], event['call_id']),
+                         ('tool', 'completed', tool_start['call_id']))
+        self.assertEqual(self.manager.read_evidence(job['id'], 'operator', event['artifact_id'])['content'],
+                         'late collection result')
+
     @unittest.skipUnless(_PY311, "ExceptionGroup is a Python 3.11+ builtin")
     def test_evidence_page_validation_and_group_cycles_are_bounded(self):
         self.assertIsNone(self.manager.read_evidence('missing', 'operator', '../escape'))

@@ -288,6 +288,18 @@ the command succeeded. An exception marks `outcome_unknown`: a remote command
 may still have executed. A job that stops or restarts with only a running event
 also has an unresolved outcome; nothing is automatically replayed.
 
+AI calls to Exegol's `execute_command_in_container` use a
+[durable execution adapter](exegol-executions.md). A safe `exegol_execution`
+checkpoint records its execution ID before launch, and periodic status checks
+keep the AI worker responsive to job interruption. A lost response leaves that
+handle available for inspection; it does not trigger a command retry. Other
+external tools retain their native execution semantics.
+Identical consecutive execution-status heartbeats update their existing
+activity entry rather than consuming the 500-event history. State transitions
+remain separate events, and every heartbeat still checks job interruption.
+This preserves the active tool start and its evidence references for late
+observations even when a command runs for more than 500 polling intervals.
+
 Canceling a job does not discard a later response from an already-started call.
 `AIJobManager._progress` retains a matching call's terminal observation and
 evidence references even after interruption, then stops the worker at that
