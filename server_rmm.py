@@ -163,8 +163,15 @@ def staging_mask(payload: bytes, staging_id: str) -> bytes:
     return bytes(masked)
 
 
-def latest_go_agent_binary(debug: bool = False) -> str | None:
-    """Newest raw Windows amd64 agent of exactly the requested build variant."""
+def latest_go_agent_binary(debug: bool = False, workspace_id: str | None = None) -> str | None:
+    """Newest raw Windows amd64 agent of exactly the requested build variant.
+
+    With workspace_id, only artifacts whose build recorded that exact
+    workspace owner are eligible: a lateral deployment must never promote
+    another workspace's embedded owner through the staged binary. Builds
+    without readable ownership metadata are skipped when a filter is
+    requested.
+    """
     if not os.path.isdir(GO_AGENT_BUILD_DIR):
         return None
     best, best_mtime = None, -1.0
@@ -181,11 +188,38 @@ def latest_go_agent_binary(debug: bool = False) -> str | None:
             if not os.path.isfile(path):
                 continue
             mtime = os.path.getmtime(path)
+            if mtime > best_mtime:
+                if workspace_id is not None and go_build_workspace(name) != workspace_id:
+                    continue
+                best, best_mtime = path, mtime
         except OSError:
             continue
-        if mtime > best_mtime:
-            best, best_mtime = path, mtime
     return best
+
+
+def go_build_workspace(binary_name: str) -> str | None:
+    """Workspace owner recorded next to a raw agent build, or None.
+
+    Ownership travels in the {build_id}.json sidecar written at build time;
+    a missing or malformed record means the artifact's owner is unknown and
+    it must not be selected for a workspace-filtered deployment.
+    """
+    build_id = binary_name.split("-", 1)[0]
+    if not re.fullmatch(r"[0-9a-f]{32}", build_id):
+        return None
+    try:
+        with open(safe_join_under(GO_AGENT_BUILD_DIR, f"{build_id}.json"), "r", encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    owner = record.get("workspace_id")
+    if owner is None:
+        return None
+    if not isinstance(owner, str) or (owner != "" and not valid_workspace_id(owner)):
+        return None
+    return owner
 TUN_HELPER = settings_getenv("RMM_TUN_HELPER", "").strip() or os.path.join(SERVER_TOOLS_DIR, "rmm-tun")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
@@ -836,6 +870,14 @@ def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, proces
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "build failed").strip()
         raise RuntimeError(detail[-4000:])
+    # Record the raw binary's workspace owner next to it so later psexec
+    # staging can select an artifact bound to the requesting session's
+    # workspace instead of the newest matching variant of any owner.
+    write_atomic_bytes(
+        safe_join_under(GO_AGENT_BUILD_DIR, f"{build_id}.json"),
+        json.dumps({"workspace_id": config_values["workspace_id"], "goos": goos,
+                    "goarch": goarch, "debug": bool(debug)}).encode("utf-8"),
+    )
     if is_staged:
         # --- Staged build: C stage1 launcher + Go agent stored as stage2 ---
         # Register the Go agent binary in the staging endpoint so stage1 can
@@ -3331,9 +3373,12 @@ class RMMServer:
         target_id = self._new_deployment_id("lateral")
         stage_id = ""
         if method == "psexec":
-            # The listener stages the current agent build; stage1 fetches it
-            # with the staging reference as its only capability.
-            agent_binary = latest_go_agent_binary(debug=True) if debug else latest_go_agent_binary()
+            # The listener stages the agent build that belongs to the source
+            # session's workspace; stage1 fetches it with the staging
+            # reference as its only capability.
+            owner = getattr(session, "workspace_id", None) or ""
+            agent_binary = (latest_go_agent_binary(debug=True, workspace_id=owner) if debug
+                            else latest_go_agent_binary(workspace_id=owner))
             if not agent_binary:
                 return None, "debug_payload_unavailable" if debug else "agent_payload_unavailable"
             try:

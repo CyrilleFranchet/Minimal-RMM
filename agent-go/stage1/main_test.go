@@ -76,3 +76,43 @@ func TestParseStageArgs(t *testing.T) {
 		t.Fatalf("valid arguments must parse: %v", err)
 	}
 }
+
+// stage1 must forward the requesting workspace on the target launch so a
+// deployed agent never depends on the staged artifact's embedded owner.
+func TestParseStageArgsWorkspaceBinding(t *testing.T) {
+	cfg, err := parseStageArgs([]string{
+		"--stage", "0123456789abcdef", "--session", "go-target-lateral-1",
+		"--base-url", "http://127.0.0.1:8787", "--workspace-id", "team.lab-1",
+	})
+	if err != nil || !cfg.WorkspaceSet || cfg.WorkspaceID != "team.lab-1" {
+		t.Fatalf("workspace binding was not parsed: %+v %v", cfg, err)
+	}
+	cfg, err = parseStageArgs([]string{
+		"--stage", "0123456789abcdef", "--session", "go-target-lateral-1",
+		"--base-url", "http://127.0.0.1:8787", "--workspace-id", "-",
+	})
+	if err != nil || !cfg.WorkspaceSet || cfg.WorkspaceID != "-" {
+		t.Fatalf("cleared workspace binding must parse as '-': %+v %v", cfg, err)
+	}
+	cfg, err = parseStageArgs([]string{
+		"--stage", "0123456789abcdef", "--session", "go-target-lateral-1",
+		"--base-url", "http://127.0.0.1:8787",
+	})
+	if err != nil || cfg.WorkspaceSet {
+		t.Fatalf("absent workspace binding must stay unset: %+v %v", cfg, err)
+	}
+	for _, value := range []string{"../team", "team lab", "-extra"} {
+		if _, err := parseStageArgs([]string{
+			"--stage", "0123456789abcdef", "--session", "go-target-lateral-1",
+			"--base-url", "http://127.0.0.1:8787", "--workspace-id", value,
+		}); err == nil {
+			t.Fatalf("invalid workspace %q was accepted", value)
+		}
+	}
+	if _, err := parseStageArgs([]string{
+		"--stage", "0123456789abcdef", "--session", "go-target-lateral-1",
+		"--base-url", "http://127.0.0.1:8787", "--workspace-id", "a", "--workspace-id", "b",
+	}); err == nil {
+		t.Fatal("duplicate workspace binding was accepted")
+	}
+}

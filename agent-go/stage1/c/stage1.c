@@ -18,6 +18,7 @@
  * Arguments:
  *   --stage   <32-char hex staging id>
  *   --session <target session id>
+ *   --workspace-id <workspace id or '-'> (forwarded to the target launch)
  *   --debug-stage-filename 1 (internal service worker filename selection)
  *
  * Flow:
@@ -29,6 +30,7 @@
  *   3. Verify MZ header
  *   4. Create %TEMP%\minimal-rmm-agent-<session>.exe without overwriting
  *   5. CreateProcessW detached with --lateral-session <id>
+ *      [--workspace-id <id>|-]
  *
  * Diagnostics: when started from a console (cmd.exe), stage1 attaches to the
  * parent console and prints its progress and errors; SCM and Explorer
@@ -108,6 +110,25 @@ static int validStagingID(const wchar_t *id) {
         n++;
     }
     return n >= 8 && n <= 128;
+}
+
+/* Workspace binding alphabet: same as the agent's agentWorkspaceIDPattern.
+ * A value of exactly L"-" explicitly clears the embedded workspace on the
+ * target launch. */
+static int validWorkspaceID(const wchar_t *id) {
+    int n = 0;
+    if (id[0] == L'-' && id[1] == L'\0') return 1;
+    if (!(id[0] >= L'0' && id[0] <= L'9') &&
+        !(id[0] >= L'a' && id[0] <= L'z') &&
+        !(id[0] >= L'A' && id[0] <= L'Z')) return 0;
+    while (id[n]) {
+        wchar_t c = id[n];
+        if (!(c >= L'0' && c <= L'9') && !(c >= L'a' && c <= L'z') &&
+            !(c >= L'A' && c <= L'Z') && c != L'_' && c != L'.' && c != L'-')
+            return 0;
+        n++;
+    }
+    return n >= 1 && n <= 64;
 }
 
 /* Convert wide string to newly-HeapAlloc'd narrow string (ASCII-safe). */
@@ -299,6 +320,7 @@ static const char *doStage(HINTERNET hSession,
                             const wchar_t *stagePath,
                             const wchar_t *stageIDW,
                             const wchar_t *sessionIDW,
+                            const wchar_t *workspaceIDW,
                             BOOL debugAgent) {
     /* 1. Fetch the masked stage2 payload */
     DWORD payloadLen = 0, httpStatus = 0;
@@ -373,12 +395,22 @@ static const char *doStage(HINTERNET hSession,
     HeapFree(GetProcessHeap(), 0, payload);
     if (!writeOk || written != payloadLen) return "failed to write agent binary (incomplete)";
 
-    /* 5. Launch the session-specific agent detached. */
-    wchar_t cmdLine[MAX_PATH + 192];
+    /* 5. Launch the session-specific agent detached. The workspace binding
+     * travels explicitly so the target never depends on the workspace
+     * embedded in the staged artifact. '-' clears the embedded default. */
+    wchar_t cmdLine[MAX_PATH + 320];
     lstrcpyW(cmdLine, L"\"");
     lstrcatW(cmdLine, agentPath);
     lstrcatW(cmdLine, L"\" --lateral-session ");
     lstrcatW(cmdLine, sessionIDW);
+    if (workspaceIDW && workspaceIDW[0]) {
+        if (lstrlenW(cmdLine) + 16 + lstrlenW(workspaceIDW) >=
+            (int)(sizeof(cmdLine) / sizeof(cmdLine[0]))) {
+            return "agent launch command too long";
+        }
+        lstrcatW(cmdLine, L" --workspace-id ");
+        lstrcatW(cmdLine, workspaceIDW);
+    }
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -425,9 +457,12 @@ static int runLauncher(void) {
 
     wchar_t stageID[256]   = {0};
     wchar_t sessionID[256] = {0};
+    wchar_t workspaceID[80] = {0};
     wchar_t customURL[2048] = {0};
     BOOL debugAgent = FALSE;
     BOOL invalidDebugAgent = FALSE;
+    BOOL workspaceSet = FALSE;
+    BOOL invalidWorkspace = FALSE;
 
     for (int i = 1; i + 1 < argc; i += 2) {
         if (lstrcmpW(argv[i], L"--stage") == 0)
@@ -436,6 +471,14 @@ static int runLauncher(void) {
             lstrcpynW(sessionID, argv[i + 1], 255);
         else if (lstrcmpW(argv[i], L"--base-url") == 0)
             lstrcpynW(customURL, argv[i + 1], 2047);
+        else if (lstrcmpW(argv[i], L"--workspace-id") == 0) {
+            if (workspaceSet || !validWorkspaceID(argv[i + 1])) {
+                invalidWorkspace = TRUE;
+            } else {
+                workspaceSet = TRUE;
+                lstrcpynW(workspaceID, argv[i + 1], 79);
+            }
+        }
         else if (lstrcmpW(argv[i], L"--debug-stage-filename") == 0) {
             if (lstrcmpW(argv[i + 1], L"1") != 0) invalidDebugAgent = TRUE;
             else debugAgent = TRUE;
@@ -445,6 +488,10 @@ static int runLauncher(void) {
 
     if (invalidDebugAgent) {
         consolePrint("stage1: --debug-stage-filename requires 1");
+        return 2;
+    }
+    if (invalidWorkspace) {
+        consolePrint("stage1: invalid or duplicate --workspace-id");
         return 2;
     }
 
@@ -498,7 +545,8 @@ static int runLauncher(void) {
     }
 
     const char *err = doStage(hSession, host, port, secFlag,
-                               stagePath, stageID, sessionID, debugAgent);
+                               stagePath, stageID, sessionID,
+                               workspaceSet ? workspaceID : NULL, debugAgent);
     char statusMsg[320];
     if (err) {
         lstrcpyA(statusMsg, "stage1 failed: ");

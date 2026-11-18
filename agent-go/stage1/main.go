@@ -7,7 +7,10 @@
 // masked stage2 payload from the RMM staging endpoint, decodes it in
 // memory (the payload is never a downloaded executable file), installs the
 // agent as a plain visible process, reports one status line, and stops so
-// the operator can remove the service and this binary.
+// the operator can remove the service and this binary. A --workspace-id
+// argument is forwarded on the target launch, so the deployed agent
+// registers under the requesting workspace instead of whatever workspace is
+// embedded in the staged artifact.
 package main
 
 import (
@@ -32,10 +35,16 @@ var defaultBaseURLB64 string
 
 var stagingTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 
+// stageWorkspaceIDPattern mirrors the agent's workspace alphabet. A binding
+// of "-" explicitly clears the embedded workspace on the target launch.
+var stageWorkspaceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
 type stageConfig struct {
-	BaseURL   string
-	StageID   string
-	SessionID string
+	BaseURL      string
+	StageID      string
+	SessionID    string
+	WorkspaceID  string
+	WorkspaceSet bool
 }
 
 func embeddedValue(value string) string {
@@ -62,6 +71,13 @@ func parseStageArgs(args []string) (stageConfig, error) {
 			cfg.SessionID = strings.TrimSpace(args[i+1])
 		case "--base-url":
 			cfg.BaseURL = strings.TrimRight(strings.TrimSpace(args[i+1]), "/")
+		case "--workspace-id":
+			value := args[i+1]
+			if cfg.WorkspaceSet || (value != "-" && !stageWorkspaceIDPattern.MatchString(value)) {
+				return cfg, errors.New("invalid or duplicate workspace id")
+			}
+			cfg.WorkspaceSet = true
+			cfg.WorkspaceID = value
 		default:
 			return cfg, fmt.Errorf("unknown argument %s", args[i])
 		}
@@ -128,7 +144,13 @@ func runStage(cfg stageConfig) error {
 	if err != nil {
 		return fmt.Errorf("install stage2: %w", err)
 	}
-	child := exec.Command(agentPath, "--lateral-session", cfg.SessionID)
+	// Propagate the requesting workspace explicitly: the target must never
+	// depend on the embedded workspace of whatever artifact the server staged.
+	launchArgs := []string{"--lateral-session", cfg.SessionID}
+	if cfg.WorkspaceSet {
+		launchArgs = append(launchArgs, "--workspace-id", cfg.WorkspaceID)
+	}
+	child := exec.Command(agentPath, launchArgs...)
 	child.Env = append(os.Environ(), "RMM_BASE_URL="+cfg.BaseURL)
 	if err := child.Start(); err != nil {
 		return fmt.Errorf("start stage2: %w", err)

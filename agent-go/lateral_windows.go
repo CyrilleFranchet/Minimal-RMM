@@ -108,6 +108,11 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 		localPath := `C:\Windows\System32\` + binaryName
 		agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
 		if err := wmiCreateProcess(payload.Host, agentCommand); err != nil {
+			// The staged executable belongs to this deployment only: remove it
+			// instead of leaving an untracked artifact on the target.
+			if rollbackErr := os.Remove(sharePath); rollbackErr != nil && !os.IsNotExist(rollbackErr) {
+				return "", errors.Join(err, fmt.Errorf("rollback staged agent on %s: %w", payload.Host, rollbackErr))
+			}
 			return "", err
 		}
 	case "winrm":
@@ -115,7 +120,10 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 		if err != nil {
 			return "", fmt.Errorf("resolve agent executable: %w", err)
 		}
-		if err := winrmDeployAgent(payload.Host, self, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure); err != nil {
+		// One transfer-wide deadline bounds the built-in WinRM waits instead
+		// of restarting a full per-operation budget for every packet.
+		deadline := time.Now().Add(time.Duration(payload.TimeoutSeconds * float64(time.Second)))
+		if err := winrmDeployAgent(payload.Host, self, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure, deadline); err != nil {
 			return "", err
 		}
 	}
@@ -145,11 +153,18 @@ func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binar
 		return "", fmt.Errorf("stage lateral service on %s: %w", payload.Host, err)
 	}
 	localPath := `C:\Windows\System32\` + binaryName
-	binPath := buildWindowsCmdLine(append([]string{localPath}, lateralServiceArguments(payload.Stage, targetSession, cfg.BaseURL)...))
+	binPath := buildWindowsCmdLine(append([]string{localPath}, lateralServiceArguments(payload.Stage, targetSession, cfg.BaseURL, payload.WorkspaceID)...))
 	// The service is not marked for deletion here; this caller removes it
 	// below once the linked worker has completed successfully.
 	handles, err := scmStartServiceRetained(payload.Host, serviceName, binPath, false)
 	if err != nil {
+		// SCM creation or startup failed before any cleanup ownership record
+		// existed: remove the staged launcher now instead of leaving an
+		// untracked artifact on the target. An unstarted service is already
+		// marked for deletion inside scmStartServiceRetained.
+		if rollbackErr := removeStoppedLauncher(sharePath); rollbackErr != nil && !os.IsNotExist(rollbackErr) {
+			return "", errors.Join(err, fmt.Errorf("rollback staged launcher on %s: %w", payload.Host, rollbackErr))
+		}
 		return "", err
 	}
 	defer handles.close()
@@ -311,11 +326,22 @@ func scmStartServiceRetained(host, serviceName, binPath string, markForDeletion 
 	}
 	handles.service = service
 	started, _, callErr := procStartServiceW.Call(service, 0, 0)
+	startErr := serviceStartOutcome(started != 0, callErr)
 	if markForDeletion {
 		procDeleteService.Call(service)
+	} else if startErr != nil {
+		// A created service that cannot start is an untracked artifact: mark
+		// it for deletion while this handle still owns it, before the
+		// deferred close releases the ownership needed for deletion.
+		if deleted, _, deleteErr := procDeleteService.Call(service); deleted == 0 {
+			debugEvent("scm.start.start_failed.delete_service.failed", deleteErr)
+			startErr = errors.Join(startErr, fmt.Errorf("delete created service on %s: %w", host, deleteErr))
+		} else {
+			debugEvent("scm.start.start_failed.delete_service.complete", nil)
+		}
 	}
-	if err := serviceStartOutcome(started != 0, callErr); err != nil {
-		return nil, fmt.Errorf("start service on %s: %w", host, err)
+	if startErr != nil {
+		return nil, fmt.Errorf("start service on %s: %w", host, startErr)
 	}
 	retained = true
 	return handles, nil
@@ -473,13 +499,15 @@ func removeStoppedLauncher(path string) error {
 // The goroutine's thread impersonation is independent of the main goroutine's
 // thread token; the main goroutine's impersonation state is not affected.
 func lateralThreadGoroutine(ctx context.Context, payload lateralPayload) (string, error) {
-	return runLateralThread(ctx, payload, lateralMoveWithProgress)
+	return runLateralThreadWithCleanup(ctx, payload, lateralMoveWithProgress, clearLateralWorkerIdentity, func() {
+		releaseLateralHost(payload.Host)
+	})
 }
 
 // runLateralThread scopes impersonation to a pinned worker. The injected move
 // supports local identity tests without remote execution.
 func runLateralThread(ctx context.Context, payload lateralPayload, move func(lateralPayload, func(string)) (string, error)) (string, error) {
-	return runLateralThreadWithCleanup(ctx, payload, move, clearLateralWorkerIdentity)
+	return runLateralThreadWithCleanup(ctx, payload, move, clearLateralWorkerIdentity, nil)
 }
 
 // clearLateralWorkerIdentity removes impersonation before thread reuse.
@@ -492,12 +520,20 @@ func clearLateralWorkerIdentity() error {
 
 // runLateralThreadWithCleanup keeps final completion behind identity cleanup;
 // the cleanup seam permits failure and ordering tests without corrupting tokens.
-func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, move func(lateralPayload, func(string)) (string, error), clearIdentity func() error) (string, error) {
+// workerDone runs inside the pinned worker's deferred completion, so a claim
+// or other per-host reservation is released exactly once the native work has
+// finished, even when the caller already returned on its own deadline.
+func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, move func(lateralPayload, func(string)) (string, error), clearIdentity func() error, workerDone func()) (string, error) {
+	if workerDone == nil {
+		workerDone = func() {}
+	}
 	if err := ctx.Err(); err != nil {
+		workerDone()
 		return "", err
 	}
 	token, identity, err := captureLateralIdentity(payload.Method == "winrm")
 	if err != nil {
+		workerDone()
 		return "", err
 	}
 	payload.winrmIdentity = identity
@@ -508,6 +544,9 @@ func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, mo
 		result := lateralResult{}
 		debugEvent("lateral.worker.start", nil)
 		defer func() {
+			if workerDone != nil {
+				workerDone()
+			}
 			debugEvent("lateral.worker.revert_identity.begin", nil)
 			if identity != nil {
 				*identity = winrmCredentials{}

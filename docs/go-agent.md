@@ -662,7 +662,13 @@ budget subtracts the source beacon sleep plus maximum jitter and 15 seconds,
 capped at half the total timeout, to reserve delivery and response time. WMI and
 WinRM receive the unchanged timeout, including fractional seconds. Delayed or
 offline agents can still exceed the server wait. An HTTP timeout does not cancel
-queued or running target work.
+queued or running target work: the Go deadline ends the operator's wait, not
+blocking SMB, SCM, or COM calls. Because a worker can still be progressing after
+a timeout, the agent keeps a per-host in-flight claim; an immediate retry to the
+same host fails with a busy error until the first worker fully completes, so one
+timeout cannot stack two deployments. WinRM applies one transfer-wide deadline to
+session setup, every input packet, and the loader readiness wait, instead of a
+fresh per-operation budget for each step.
 
 Workspace `operator_proxy_timeout` uses the requested command wait plus a
 30-second margin for identity actions, and the execution wait plus registration
@@ -718,6 +724,12 @@ Dedicated lateral service (`agent-go/lateral-service/c/service.c`):
   (including worker failure), `lateralCleanupStopped` removes artifacts without
   another status check or SCM connection. Timeouts and query failures leave
   artifacts for the separate ownership-checked cleanup retry.
+- Failure paths never leave untracked artifacts. A service created by
+  `scmStartServiceRetained` that fails to start is marked for deletion on the
+  retained handle before the error close, and `lateralPsexecMove` removes the
+  staged launcher binary from ADMIN$ when SCM creation or startup fails — those
+  failures occur before the acknowledged cleanup ownership record exists. WMI
+  removes its copied executable when `Win32_Process.Create` fails.
 - This avoids three redundant SCM connection attempts after startup. In an
   observed trace, each consumed about 21 seconds. The initial connection may
   still incur Windows RPC/TCP fallback latency; this change does not alter
@@ -726,9 +738,21 @@ Dedicated lateral service (`agent-go/lateral-service/c/service.c`):
 Listener staging (`server_rmm.py`):
 
 - `lateral_move(method=psexec)` stages the newest raw Windows agent
-  build (`latest_go_agent_binary`, produced by `build_go_agent`) and
+  build belonging to the source session's workspace
+  (`latest_go_agent_binary`, produced by `build_go_agent`, which records
+  each raw binary's workspace owner in a `{build_id}.json` sidecar) and
   passes the staging reference in the `__LATERAL__` command. Without a
-  staged build the call fails with `agent_payload_unavailable`.
+  workspace-owned staged build the call fails with
+  `agent_payload_unavailable` (or `debug_payload_unavailable` when the
+  source session runs a debug build): artifacts owned by another
+  workspace or builds without an ownership record are never selected, so
+  the staged payload cannot make the target register under a foreign
+  embedded owner.
+- The staged launcher's service command line carries `--workspace-id`:
+  stage1 (Go and C) forwards the requesting workspace on the target
+  launch, so a PsExec deployment registers under the same explicit
+  binding as WMI and WinRM instead of depending on the artifact's
+  embedded workspace.
 - Staging entries are in-memory and single-use. Lateral-move staging
   expires after 600 seconds; staged ZIP builds
   (`build_go_agent`, see `docs/staged-deployment.md`) use the 24-hour

@@ -1,5 +1,52 @@
 # Progress Log
 
+## 2026-11-18 — Repair lateral deployment lifecycle bugs
+
+- **PsExec preserves workspace ownership.** `lateral_move(psexec)` no longer
+  stages the newest matching artifact of any owner: every raw agent build now
+  records `{build_id}.json` workspace metadata (`build_go_agent`), and
+  `latest_go_agent_binary(debug, workspace_id)` selects only artifacts bound to
+  the source session's workspace (unbound or foreign-owned builds are skipped).
+  The stage1 launch command now carries `--workspace-id` end to end — wire
+  payload to the service command line (`lateralServiceArguments`), the C
+  (`stage1.c`) and Go (`agent-go/stage1`) launchers, and the detached target
+  process — so a PsExec deployment registers under the same explicit binding as
+  WMI and WinRM and never depends on the staged artifact's embedded owner.
+- **Failure paths no longer leave untracked artifacts.** PsExec removes the
+  staged launcher binary from ADMIN$ when SCM creation or startup fails, and a
+  service created by `scmStartServiceRetained` that fails to start is marked
+  for deletion on the retained handle before the error close. WMI removes its
+  copied executable when `Win32_Process.Create` fails. These failures occur
+  before the acknowledged cleanup ownership record exists, so the immediate
+  rollback is the only artifact lifecycle guarantee on those paths.
+- **Timeouts no longer stack deployments.** The Go deadline still bounds
+  waiting only — blocking SMB/SCM/COM calls cannot be canceled — but the agent
+  now keeps a per-host in-flight claim released by the pinned worker's own
+  completion (`lateralCommand`/`runLateralThreadWithCleanup`), so an immediate
+  retry to the same host fails with `errLateralHostBusy` instead of creating a
+  second deployment while the first still progresses. WinRM applies one
+  transfer-wide deadline (`winrmTransfer.deadline`, `winrmWaitBudget`) to
+  session setup, every input packet, and the loader readiness wait, instead of
+  a fresh 30-second budget per operation.
+- **WinRM acknowledgment follows loader readiness.** The receiver prints
+  `RMM_LOADER_READY` to stdout after `Add-Type`, digest checks, and PE
+  mapping, before blocking on the agent thread; the sender starts its receive
+  before streaming and acknowledges only after the marker
+  (`wsmanResult.waitLoaderReady`). A receiver that throws, exits, or ends its
+  stream first fails the deployment and tears the session down. Registration
+  remains the operational confirmation; the AMD64-only loader still gates
+  arm64 WinRM deployment support, pending native validation.
+- Tests: Python suites for lateral move, debug deployment, workspace
+  binding, and build artifacts cover the workspace-filtered selection and its
+  fallbacks; Go host tests cover the claim lifecycle, service arguments, and
+  the WinRM wait budget/marker composition; Windows-only fixtures cover the
+  receiver-ready hold path (`receiver_not_ready` fails closed) and the worker
+  releasing its host claim after a caller deadline. Host Go tests
+  (normal/debug), Windows amd64/arm64 cross-builds, the MinGW stage1/service
+  compile checks, and the lateral/deployment Python suites pass.
+- Native Windows loader and deployment validation remains outstanding lab
+  work, as previously recorded.
+
 ## 2026-11-08 — WinRM documentation review
 
 - Correct the blanket no-disk-write claim: the agent executable is not staged

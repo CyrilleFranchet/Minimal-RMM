@@ -38,6 +38,32 @@ func TestLateralDeadlinePreservesAcknowledgedCleanup(t *testing.T) {
 	}
 }
 
+func TestLateralHostClaimGuardsOneDeploymentAtATime(t *testing.T) {
+	host := "busy-lateral-host"
+	if err := claimLateralHost(host); err != nil {
+		t.Fatal(err)
+	}
+	err := claimLateralHost(host)
+	if !errors.Is(err, errLateralHostBusy) || !strings.Contains(err.Error(), host) {
+		t.Fatalf("a retry while the first worker may still run must fail closed: %v", err)
+	}
+	if err := claimLateralHost("other-lateral-host"); err != nil {
+		t.Fatalf("an independent host must not be blocked by another claim: %v", err)
+	}
+	releaseLateralHost(host)
+	if err := claimLateralHost(host); err != nil {
+		t.Fatalf("a completed worker must free its host claim: %v", err)
+	}
+	releaseLateralHost(host)
+	// Release is idempotent and never strands a host in-flight.
+	releaseLateralHost(host)
+	if err := claimLateralHost(host); err != nil {
+		t.Fatalf("releasing an unclaimed host broke later deployments: %v", err)
+	}
+	releaseLateralHost(host)
+	releaseLateralHost("other-lateral-host")
+}
+
 func TestCleanupRequiresExactAcknowledgedArtifacts(t *testing.T) {
 	request := lateralPayload{Method: "psexec", Host: "ownership-test-host", SessionID: "srv-owned-session", RemoteName: "lab-agent.exe"}
 	suffix := strings.Repeat("ab", 16)

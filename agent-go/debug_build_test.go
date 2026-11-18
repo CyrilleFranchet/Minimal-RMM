@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -79,7 +80,7 @@ func TestLateralDebugPayloadAndServiceArguments(t *testing.T) {
 	if _, err := parseLateralStartup(strings.Fields(command)[1:]); err != nil {
 		t.Fatal(err)
 	}
-	args := lateralServiceArguments("stage-fixture", "session-fixture", "https://listener.invalid/a path")
+	args := lateralServiceArguments("stage-fixture", "session-fixture", "https://listener.invalid/a path", nil)
 	if len(args) < 6 || args[5] != "https://listener.invalid/a path" {
 		t.Fatalf("listener URL split before Windows quoting: %q", args)
 	}
@@ -94,6 +95,35 @@ func TestLateralDebugPayloadAndServiceArguments(t *testing.T) {
 		if _, err := parseLateralStartup(append([]string{"--lateral-session", "session-fixture"}, flags...)); err == nil {
 			t.Fatalf("removed or worker-only debug flags accepted by agent startup: %q", flags)
 		}
+	}
+}
+
+// stage1 service arguments must carry the requesting workspace explicitly so
+// the deployed agent does not depend on the staged artifact's embedded owner.
+func TestLateralServiceArgumentsPreserveWorkspace(t *testing.T) {
+	var debugTail []string
+	if agentDebugBuild {
+		debugTail = []string{"--debug-stage-filename", "1"}
+	}
+	owner := "team.lab-1"
+	want := append([]string{"--stage", "stage-fixture", "--session", "session-fixture",
+		"--base-url", "https://listener.invalid", "--workspace-id", owner}, debugTail...)
+	args := lateralServiceArguments("stage-fixture", "session-fixture", "https://listener.invalid", &owner)
+	if !slices.Equal(args, want) {
+		t.Fatalf("stage1 launch lost the workspace binding: %q", args)
+	}
+	want[7] = "-"
+	if args = lateralServiceArguments("stage-fixture", "session-fixture", "https://listener.invalid",
+		func(v string) *string { return &v }("")); !slices.Equal(args, want) {
+		t.Fatalf("cleared workspace binding must travel as '-': %q", args)
+	}
+	want = append([]string{"--stage", "stage-fixture", "--session", "session-fixture",
+		"--base-url", "https://listener.invalid"}, debugTail...)
+	if args = lateralServiceArguments("stage-fixture", "session-fixture", "https://listener.invalid", nil); !slices.Equal(args, want) {
+		t.Fatalf("absent workspace binding must not add empty arguments: %q", args)
+	}
+	if startup, err := parseLateralStartup([]string{"--lateral-session", "session-fixture", "--workspace-id", owner}); err != nil || startup.WorkspaceID != owner {
+		t.Fatalf("target startup rejected the propagated workspace: %v", err)
 	}
 }
 

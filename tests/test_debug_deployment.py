@@ -1,5 +1,6 @@
 """Verify deployment inherits compiled mode and rejects obsolete runtime controls."""
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -44,19 +45,34 @@ class DebugDeploymentTests(unittest.TestCase):
                     self.assertNotIn("debug", json.loads(command.split("\n", 1)[1]))
         server.create_staging.assert_not_called()
 
-    def test_psexec_uses_exact_source_variant_without_normal_fallback(self):
+    def test_psexec_uses_exact_source_variant_and_workspace_owner(self):
         server = self._server()
         server.resolve_session.return_value.agent_debug = True
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(server_rmm, "GO_AGENT_BUILD_DIR", directory):
-            normal = Path(directory, "id-minimal-rmm-agent-windows-amd64.exe")
+            normal = Path(directory, f"{'1' * 32}-minimal-rmm-agent-windows-amd64.exe")
             normal.write_bytes(b"MZnormal")
             self.assertEqual(server.lateral_move("source-session", "psexec", "target"),
                              (None, "debug_payload_unavailable"))
             server.create_staging.assert_not_called()
             server.exec_and_wait.assert_not_called()
-            diagnostic = Path(directory, "id-minimal-rmm-agent-debug-windows-amd64.exe")
+            diagnostic = Path(directory, f"{'2' * 32}-minimal-rmm-agent-debug-windows-amd64.exe")
             diagnostic.write_bytes(b"MZdebug")
+            one, two, three, four = "1" * 32, "2" * 32, "3" * 32, "4" * 32
+
+            def metadata(build_id, owner):
+                return json.dumps({"workspace_id": owner, "goos": "windows",
+                                   "goarch": "amd64", "debug": build_id == two})
+
+            normal.with_name(f"{one}.json").write_text(metadata(one, "alice"))
+            diagnostic.with_name(f"{two}.json").write_text(metadata(two, "alice"))
+            foreign = Path(directory, f"{three}-minimal-rmm-agent-debug-windows-amd64.exe")
+            foreign.write_bytes(b"MZother-workspace")
+            foreign.with_name(f"{three}.json").write_text(metadata(three, "bob"))
+            newest = foreign.stat().st_mtime + 60
+            os.utime(foreign, (newest, newest))
+            # The newest artifact is foreign-owned; selection must prefer the
+            # exact build variant bound to the source session's workspace.
             for build_debug, expected in ((False, b"MZnormal"), (True, b"MZdebug")):
                 server.resolve_session.return_value.agent_debug = build_debug
                 result, status = server.lateral_move("source-session", "psexec", "target")
@@ -65,9 +81,29 @@ class DebugDeploymentTests(unittest.TestCase):
                 self.assertEqual(server.create_staging.call_args.args, (expected,))
                 command = server.exec_and_wait.call_args.args[1]
                 self.assertNotIn("debug", json.loads(command.split("\n", 1)[1]))
+
+            # None of the requesting workspace's artifacts exist: a foreign
+            # owner's build is never a fallback, and builds without recorded
+            # ownership are skipped even when they are the newest.
             normal.unlink()
-            self.assertIsNone(server_rmm.latest_go_agent_binary())
-            self.assertEqual(server_rmm.latest_go_agent_binary(debug=True), str(diagnostic))
+            diagnostic.unlink()
+            server.resolve_session.return_value.agent_debug = True
+            self.assertEqual(server.lateral_move("source-session", "psexec", "target"),
+                             (None, "debug_payload_unavailable"))
+            server.resolve_session.return_value.agent_debug = False
+            self.assertEqual(server.lateral_move("source-session", "psexec", "target"),
+                             (None, "agent_payload_unavailable"))
+            unbound = Path(directory, f"{four}-minimal-rmm-agent-windows-amd64.exe")
+            unbound.write_bytes(b"MZunbound")
+            newest = unbound.stat().st_mtime + 120
+            os.utime(unbound, (newest, newest))
+            self.assertEqual(server.lateral_move("source-session", "psexec", "target"),
+                             (None, "agent_payload_unavailable"))
+            # Unfiltered selection keeps its historical newest-artifact rule.
+            self.assertEqual(server_rmm.latest_go_agent_binary(), str(unbound))
+            self.assertEqual(server_rmm.latest_go_agent_binary(debug=True), str(foreign))
+            self.assertIsNone(server_rmm.latest_go_agent_binary(workspace_id="alice"))
+            self.assertIsNone(server_rmm.latest_go_agent_binary(debug=True, workspace_id="alice"))
 
     def test_unreadable_debug_payload_has_no_normal_fallback(self):
         server = self._server()
@@ -75,9 +111,9 @@ class DebugDeploymentTests(unittest.TestCase):
         with patch.object(server_rmm, "latest_go_agent_binary", return_value="missing-debug.exe") as latest:
             self.assertEqual(server.lateral_move("source-session", "psexec", "target"),
                              (None, "debug_payload_unavailable"))
-            latest.assert_called_once_with(debug=True)
-            server.exec_and_wait.assert_not_called()
-            server.create_staging.assert_not_called()
+        latest.assert_called_once_with(debug=True, workspace_id="alice")
+        server.exec_and_wait.assert_not_called()
+        server.create_staging.assert_not_called()
 
     def test_rest_rejects_every_obsolete_debug_value_before_deployment(self):
         handler = object.__new__(server_rmm.RMMHandler)

@@ -1,5 +1,6 @@
 """Workspace ownership survives artifact generation and agent registration."""
 import base64
+import json
 from pathlib import Path
 import shlex
 import tempfile
@@ -75,6 +76,11 @@ class AgentWorkspaceBindingTests(unittest.TestCase):
             self.assertIn(embedded, ldflags)
             self.assertEqual(result['workspace_id'], 'alice')
             self.assertNotIn('alice-secret', str(result))
+            # The raw binary keeps a machine-readable owner record so later
+            # psexec staging can select workspace-bound artifacts only.
+            build_id = result['filename'].rsplit('-', 1)[1].removesuffix('.zip')
+            record = json.loads(Path(directory, f'{build_id}.json').read_text())
+            self.assertEqual(record['workspace_id'], 'alice')
             with zipfile.ZipFile(result['path']) as archive:
                 launcher = archive.read('run-agent.ps1').decode()
                 self.assertIn("$env:RMM_AGENT_WORKSPACE_ID = 'alice'", launcher)

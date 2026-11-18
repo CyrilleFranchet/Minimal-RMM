@@ -21,15 +21,19 @@ import (
 var wsmanFixtureArgs = []string{"--lateral-session", "fixture-session"}
 
 // The same session carries receiver startup, byte packets, and EOF. A held
-// deployment keeps its handles open; send failures cannot report success and
-// must tear the session down.
+// deployment keeps its handles open only after the receiver proves loader
+// readiness with its marker; send failures, missing readiness, and source
+// changes cannot report success and must tear the session down.
 func TestWSManDeploymentTransferAndHold(t *testing.T) {
 	payload := bytes.Repeat([]byte{0, 127, 128, 255}, winrmTransferChunkSize)
 	digest := sha256.Sum256(payload)
-	for _, scenario := range []string{"success", "send_failure", "send_timeout", "source_truncated", "source_grew"} {
+	for _, scenario := range []string{"success", "receiver_not_ready", "send_failure", "send_timeout", "source_truncated", "source_grew"} {
 		t.Run(scenario, func(t *testing.T) {
 			defer stopHeldWinRMShells()
 			f := &wsmanFixture{t: t, deployment: true}
+			if scenario == "success" {
+				f.receiveMarker = winrmLoaderReadyMarker
+			}
 			input := payload
 			switch scenario {
 			case "send_failure":
@@ -46,6 +50,11 @@ func TestWSManDeploymentTransferAndHold(t *testing.T) {
 			err := winrmExecuteWithTLSAPI(f, "lab-host", winrmReceiverCommandPath, receiverArgs, time.Millisecond, nil, false, false, transfer, true)
 			if (err == nil) != (scenario == "success") {
 				t.Fatalf("unexpected deployment result: %v", err)
+			}
+			if scenario == "receiver_not_ready" {
+				if err == nil || !strings.Contains(err.Error(), "loader readiness") {
+					t.Fatalf("missing readiness failure: %v", err)
+				}
 			}
 			if scenario == "success" {
 				if !bytes.Equal(f.sent, payload) || !f.sentEOF || f.commands != 1 {
@@ -98,7 +107,7 @@ func TestWSManDeploymentTransferAndHold(t *testing.T) {
 // Held shells close in reverse order at shutdown, through the same native
 // boundary the fixture asserts.
 func TestWinRMHeldShellsCloseAtShutdown(t *testing.T) {
-	f := &wsmanFixture{t: t, deployment: true}
+	f := &wsmanFixture{t: t, deployment: true, receiveMarker: winrmLoaderReadyMarker}
 	payload := bytes.Repeat([]byte{1, 2, 3}, 100)
 	digest := sha256.Sum256(payload)
 	transfer := &winrmTransfer{source: bytes.NewReader(payload), size: int64(len(payload)), binarySize: int64(len(payload)), binaryDigest: fmt.Sprintf("%x", digest)}
@@ -229,6 +238,40 @@ func TestWSManCallbackCopiesErrorAndIgnoresReleasedContexts(t *testing.T) {
 	wsmanTestCallback(&pending.async, wsmanEndOfOperation, 0, nil)
 }
 
+// Deployment acknowledgment requires loader readiness: the marker wins over
+// a finished receive, receiver failure, or the transfer deadline.
+func TestWSManWaitLoaderReady(t *testing.T) {
+	stream, _ := syscall.UTF16PtrFromString("stdout")
+	state, _ := syscall.UTF16PtrFromString(wsmanShellCmdURI + wsmanCommandStateDone)
+	marker := []byte(winrmLoaderReadyMarker)
+	transfer := &winrmTransfer{deadline: time.Now().Add(5 * time.Second)}
+
+	scope := &wsmanScope{}
+	defer scope.release()
+	pending := scope.pendingCall(true)
+	data := &wsmanReceiveData{
+		streamID: stream, commandState: state,
+		streamData: wsmanData{kind: 2, value: uintptr(unsafe.Pointer(&marker[0])), length: uint32(len(marker))},
+	}
+	wsmanTestCallback(&pending.async, wsmanEndOfOperation, 0, data)
+	runtime.KeepAlive(marker)
+	if err := pending.result.waitLoaderReady(transfer, time.Second); err != nil {
+		t.Fatalf("marker output must prove loader readiness: %v", err)
+	}
+
+	pending = scope.pendingCall(true)
+	// A completed receiver that never printed the marker failed its script.
+	wsmanTestCallback(&pending.async, wsmanEndOfOperation, 0, &wsmanReceiveData{commandState: state})
+	if err := pending.result.waitLoaderReady(transfer, time.Second); err == nil || !strings.Contains(err.Error(), "loader readiness") {
+		t.Fatalf("missing marker must fail the deployment: %v", err)
+	}
+
+	pending = scope.pendingCall(true)
+	if err := pending.result.waitLoaderReady(&winrmTransfer{deadline: time.Now().Add(50 * time.Millisecond)}, time.Second); err == nil || !strings.Contains(err.Error(), "transfer deadline") {
+		t.Fatalf("a deadline before readiness must not acknowledge: %v", err)
+	}
+}
+
 type wsmanFixture struct {
 	t                     *testing.T
 	fail                  string
@@ -239,6 +282,7 @@ type wsmanFixture struct {
 	contexts              []uintptr
 	asyncs                []*wsmanShellAsync
 	receiveState          string
+	receiveMarker         string
 	exitCode              uint32
 	wantAuth              uint32
 	wantURL               string
@@ -431,7 +475,20 @@ func (f *wsmanFixture) call(name string, args ...uintptr) uintptr {
 		}
 		state, _ := syscall.UTF16PtrFromString(wsmanShellCmdURI + stateName)
 		data := &wsmanReceiveData{commandState: state, streamData: wsmanData{kind: 2}, exitCode: f.exitCode}
-		complete(4, data)
+		if f.receiveMarker != "" {
+			// The receiver's loader readiness marker travels as stdout;
+			// keep its buffers alive through the synchronous callback.
+			stream, _ := syscall.UTF16PtrFromString("stdout")
+			marker := []byte(f.receiveMarker)
+			data.streamID = stream
+			data.streamData.value = uintptr(unsafe.Pointer(&marker[0]))
+			data.streamData.length = uint32(len(marker))
+			complete(4, data)
+			runtime.KeepAlive(marker)
+			runtime.KeepAlive(data)
+		} else {
+			complete(4, data)
+		}
 	case "WSManSendShellInput":
 		if args[0] != 30 || args[1] != 40 || args[2] != 0 || readWSManString(args[3]) != "stdin" || args[5] > 1 {
 			f.t.Fatal("send arguments shifted")

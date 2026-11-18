@@ -109,14 +109,15 @@ func wsmanAuthMechanism(host string) uint32 {
 
 // wsmanResult retains copied values rather than native callback pointers.
 type wsmanResult struct {
-	mu          sync.Mutex
-	done        chan struct{}
-	receive     bool
-	finished    bool
-	err         error
-	commandDone bool
-	exitCode    uint32
-	output      string
+	mu           sync.Mutex
+	done         chan struct{}
+	outputSignal chan struct{}
+	receive      bool
+	finished     bool
+	err          error
+	commandDone  bool
+	exitCode     uint32
+	output       string
 }
 type wsmanPending struct {
 	async  wsmanShellAsync
@@ -135,7 +136,7 @@ type wsmanScope struct {
 
 func (s *wsmanScope) keep(value any) { s.roots = append(s.roots, value) }
 func (s *wsmanScope) pendingCall(receive bool) *wsmanPending {
-	result := &wsmanResult{done: make(chan struct{}), receive: receive}
+	result := &wsmanResult{done: make(chan struct{}), outputSignal: make(chan struct{}, 1), receive: receive}
 	context := uintptr(wsmanContextID.Add(1))
 	wsmanContexts.Store(context, result)
 	pending := &wsmanPending{async: wsmanShellAsync{context, wsmanCompletionCallback}, result: result}
@@ -182,6 +183,12 @@ func wsmanCompletion(context, flags, errPtr, shell, command, operation, data uin
 				length = 4096 - len(result.output)
 			}
 			result.output += string(unsafe.Slice((*byte)(unsafe.Pointer(stream.value)), length))
+			// Progress listeners wake on each retained block; the marker
+			// wait below reads result.output directly.
+			select {
+			case result.outputSignal <- struct{}{}:
+			default:
+			}
 		}
 		if strings.HasSuffix(readWSManString(uintptr(unsafe.Pointer(receive.commandState))), wsmanCommandStateDone) {
 			result.commandDone = true
@@ -212,6 +219,51 @@ func (r *wsmanResult) snapshot() (error, bool, uint32) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.err, r.commandDone, r.exitCode
+}
+
+// waitLoaderReady blocks until the receiver emits the loader readiness marker
+// on stdout, its receive finishes first, or the transfer deadline passes. The
+// receiver never completes on success — it blocks forever on the agent
+// thread — so a finished receive means the script threw or the stream ended:
+// both are deployment failures.
+func (r *wsmanResult) waitLoaderReady(transfer *winrmTransfer, perOperation time.Duration) error {
+	deadline := time.Now().Add(perOperation)
+	if transfer != nil && !transfer.deadline.IsZero() {
+		deadline = transfer.deadline
+	}
+	for {
+		r.mu.Lock()
+		output, finished := r.output, r.finished
+		r.mu.Unlock()
+		if strings.Contains(output, winrmLoaderReadyMarker) {
+			debugEvent("winrm.transfer.loader_ready", nil)
+			return nil
+		}
+		if finished {
+			err, done, exitCode := r.snapshot()
+			switch {
+			case err != nil:
+				return fmt.Errorf("WinRM receiver failed before loader readiness: %w", err)
+			case done:
+				return fmt.Errorf("WinRM receiver exited with %d before loader readiness: %s", exitCode, strings.TrimSpace(output))
+			default:
+				return fmt.Errorf("WinRM receiver stream ended before loader readiness: %s", strings.TrimSpace(output))
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("WinRM loader readiness not confirmed before the transfer deadline: %s", strings.TrimSpace(output))
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-r.done:
+			timer.Stop()
+		case <-r.outputSignal:
+			timer.Stop()
+		case <-timer.C:
+			return fmt.Errorf("WinRM loader readiness not confirmed before the transfer deadline: %s", strings.TrimSpace(output))
+		}
+	}
 }
 
 // readWSManString copies a bounded command-state URI during its callback.
@@ -257,9 +309,11 @@ func (s *wsmanScope) closeHandle(native wsmanCaller, name string, handle uintptr
 // winrmDeployAgent streams the local executable through WSMan and starts it
 // in memory inside the receiver, using the same authentication and TLS
 // policy for transfer and launch. The receiver maps the received bytes into
-// a PAGE_EXECUTE_READWRITE allocation and starts the agent on a detached
-// thread; the WinRM shell must then stay open for the agent's lifetime.
-func winrmDeployAgent(host, sourcePath, sessionID string, workspaceID *string, identity *winrmCredentials, useHTTPS, insecure bool) error {
+// a PAGE_EXECUTE_READWRITE allocation, prints the loader readiness marker,
+// and starts the agent on a detached thread; the WinRM shell must then stay
+// open for the agent's lifetime. The whole transfer — session setup, input
+// packets, and the readiness wait — shares one deadline.
+func winrmDeployAgent(host, sourcePath, sessionID string, workspaceID *string, identity *winrmCredentials, useHTTPS, insecure bool, deadline time.Time) error {
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return fmt.Errorf("open local agent for WinRM: %w", err)
@@ -269,6 +323,10 @@ func winrmDeployAgent(host, sourcePath, sessionID string, workspaceID *string, i
 	if err != nil {
 		return fmt.Errorf("prepare WinRM transfer: %w", err)
 	}
+	if deadline.IsZero() {
+		deadline = time.Now().Add(wsmanCompletionTimeout)
+	}
+	transfer.deadline = deadline
 	// Initialize the shared COM security policy before WSMan can initialize
 	// it implicitly, so a later WMI command can use thread-token cloaking.
 	runtime.LockOSThread()
@@ -325,8 +383,9 @@ var winrmHeldShells = struct {
 	shells []*winrmHeldShell
 }{}
 
-// holdWinRMShell keeps a completed transfer's native handles open; closing
-// them would terminate the receiver process tree and the in-memory agent.
+// holdWinRMShell keeps a loader-ready deployment's native handles open;
+// closing them would terminate the receiver process tree and the in-memory
+// agent.
 func holdWinRMShell(deployment *winrmHeldShell) {
 	winrmHeldShells.Lock()
 	defer winrmHeldShells.Unlock()
@@ -355,8 +414,9 @@ func stopHeldWinRMShells() {
 
 // winrmExecuteWithTLSAPI shares the session policy between process-only ABI
 // fixtures and the production transfer-and-hold path. When hold is set, a
-// successful transfer moves the native handles into the held-shell registry
-// instead of tearing the session down: the receiver never completes.
+// successful transfer and receiver loader-readiness confirmation move the
+// native handles into the held-shell registry instead of tearing the
+// session down: the receiver never completes on a successful deployment.
 func winrmExecuteWithTLSAPI(native wsmanCaller, host, commandPath string, arguments []string, timeout time.Duration, identity *winrmCredentials, useHTTPS, insecure bool, transfer *winrmTransfer, hold bool) (resultErr error) {
 	if insecure && !useHTTPS {
 		return errors.New("insecure requires winrm HTTPS")
@@ -497,7 +557,9 @@ func winrmExecuteWithTLSAPI(native wsmanCaller, host, commandPath string, argume
 		}
 		resultErr = errors.Join(resultErr, scope.closeHandle(native, "WSManCloseShell", shell, timeout))
 	}()
-	if !shellCall.result.wait(timeout) {
+	if shellBudget, budgetErr := winrmWaitBudget(transfer, timeout); budgetErr != nil {
+		return budgetErr
+	} else if !shellCall.result.wait(shellBudget) {
 		return errors.New("WinRM shell creation timed out")
 	}
 	if err, _, _ := shellCall.result.snapshot(); err != nil {
@@ -528,8 +590,10 @@ func winrmExecuteWithTLSAPI(native wsmanCaller, host, commandPath string, argume
 }
 
 // runCommand keeps all asynchronous arguments rooted until session teardown.
-// A held deployment returns true after the transfer completes so the caller
-// can keep the native handles open; failed transfers tear down normally.
+// A held deployment returns true after the transfer completes AND the
+// receiver confirms the loader readiness marker, so the caller can keep the
+// native handles open for a proven deployment; failed transfers tear down
+// normally.
 func (scope *wsmanScope) runCommand(native wsmanCaller, shell uintptr, commandLine *uint16, argumentSet *wsmanStringSet, host string, timeout time.Duration, transfer *winrmTransfer, hold bool, deployment *winrmHeldShell) (held bool, resultErr error) {
 	var command, receiveOperation uintptr
 	scope.keep(&command)
@@ -549,7 +613,9 @@ func (scope *wsmanScope) runCommand(native wsmanCaller, shell uintptr, commandLi
 	commandCall := scope.pendingCall(false)
 	native.call("WSManRunShellCommand", shell, 0, uintptr(unsafe.Pointer(commandLine)), uintptr(unsafe.Pointer(argumentSet)), 0,
 		uintptr(unsafe.Pointer(&commandCall.async)), uintptr(unsafe.Pointer(&command)))
-	if !commandCall.result.wait(timeout) {
+	if commandBudget, budgetErr := winrmWaitBudget(transfer, timeout); budgetErr != nil {
+		return false, budgetErr
+	} else if !commandCall.result.wait(commandBudget) {
 		return false, errors.New("WinRM command creation timed out")
 	}
 	if err, _, _ := commandCall.result.snapshot(); err != nil {
@@ -559,11 +625,29 @@ func (scope *wsmanScope) runCommand(native wsmanCaller, shell uintptr, commandLi
 		return false, errors.New("WSManRunShellCommand returned no command handle")
 	}
 	if hold {
-		// The receiver maps the agent in memory and never completes; there
-		// is no command result to receive. The shell stays open in the
-		// held-shell registry once the last input packet is acknowledged.
+		// The receiver never completes on success: its script blocks on the
+		// agent thread. The receive below collects the loader readiness
+		// marker printed after Add-Type and PE mapping, so acknowledging the
+		// deployment no longer precedes loader readiness.
+		receiveCall = scope.pendingCall(true)
+		native.call("WSManReceiveShellOutput", shell, command, 0, 0, uintptr(unsafe.Pointer(&receiveCall.async)), uintptr(unsafe.Pointer(&receiveOperation)))
 		if err := scope.sendInput(native, shell, command, transfer, timeout); err != nil {
 			return false, err
+		}
+		if err := receiveCall.result.waitLoaderReady(transfer, timeout); err != nil {
+			// The receive operation is closed by the deferred teardown below
+			// together with the command and session: a deployment without a
+			// proven loader must not survive.
+			return false, err
+		}
+		if receiveOperation != 0 {
+			// The readiness marker is the only receiver output this
+			// deployment needs; release the receive operation while holding
+			// the shell and session open for the agent's lifetime.
+			if code := native.call("WSManCloseOperation", receiveOperation, 0); code != 0 {
+				return false, fmt.Errorf("close WinRM receive operation: 0x%08x", code)
+			}
+			receiveOperation = 0
 		}
 		deployment.command = command
 		return true, nil
@@ -624,12 +708,19 @@ func (scope *wsmanScope) sendInput(native wsmanCaller, shell, command uintptr, t
 		}
 		native.call("WSManSendShellInput", shell, command, 0, uintptr(unsafe.Pointer(stdin)), uintptr(unsafe.Pointer(data)), eof,
 			uintptr(unsafe.Pointer(&pending.async)), uintptr(unsafe.Pointer(operation)))
-		completed := pending.result.wait(timeout)
+		budget, budgetErr := winrmWaitBudget(transfer, timeout)
+		completed := false
+		if budgetErr == nil {
+			completed = pending.result.wait(budget)
+		}
 		var closeErr error
 		if *operation != 0 {
 			if code := native.call("WSManCloseOperation", *operation, 0); code != 0 {
 				closeErr = fmt.Errorf("close WinRM input operation: 0x%08x", code)
 			}
+		}
+		if budgetErr != nil {
+			return errors.Join(budgetErr, closeErr)
 		}
 		if !completed {
 			return errors.Join(errors.New("WinRM agent input timed out"), closeErr)

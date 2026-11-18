@@ -140,6 +140,50 @@ func TestLateralThreadTokenSnapshot(t *testing.T) {
 	}
 }
 
+// The per-host claim is released by the pinned worker's deferred completion,
+// not the caller's deadline: an immediate retry must find the host busy while
+// the first deployment is still progressing, and free it once work ends.
+func TestLateralClaimOutlivesCallerDeadlineAndFollowsWorker(t *testing.T) {
+	payload := lateralPayload{Method: "winrm", Host: "claim-deadline-host"}
+	if err := claimLateralHost(payload.Host); err != nil {
+		t.Fatal(err)
+	}
+	hold := make(chan struct{})
+	worker := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	go func() {
+		defer close(worker)
+		if _, err := runLateralThreadWithCleanup(ctx, payload, func(lateralPayload, func(string)) (string, error) {
+			<-hold
+			return "late fixture", nil
+		}, func() error { return nil }, func() { releaseLateralHost(payload.Host) }); err != nil {
+			t.Errorf("worker failed: %v", err)
+		}
+	}()
+	select {
+	case <-worker:
+		close(hold)
+		t.Fatal("worker returned before its move completed")
+	default:
+	}
+	if err := claimLateralHost(payload.Host); !errors.Is(err, errLateralHostBusy) {
+		close(hold)
+		releaseLateralHost(payload.Host)
+		t.Fatalf("an in-flight worker did not hold its host claim: %v", err)
+	}
+	close(hold)
+	select {
+	case <-worker:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not complete after its move returned")
+	}
+	if err := claimLateralHost(payload.Host); err != nil {
+		t.Fatalf("worker completion did not release the claim: %v", err)
+	}
+	releaseLateralHost(payload.Host)
+}
+
 // TestLateralThreadCleanupFailure verifies that completion waits for cleanup
 // and cannot report success after failing to clear the worker identity.
 func TestLateralThreadCleanupFailure(t *testing.T) {
@@ -156,7 +200,7 @@ func TestLateralThreadCleanupFailure(t *testing.T) {
 			close(entered)
 			<-release
 			return cleanupErr
-		})
+		}, nil)
 		result <- lateralResult{output, err}
 	}()
 	select {

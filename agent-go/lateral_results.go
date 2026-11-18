@@ -12,13 +12,27 @@ import (
 
 const defaultLateralServiceName = "MinimalRmmAgent"
 
-// lateralServiceArguments selects a separate target filename for debug stage2 agents.
-func lateralServiceArguments(stage, session, baseURL string) []string {
+// lateralServiceArguments preserves the requesting workspace for stage1's
+// target launch and selects a separate target filename for debug stage2 agents.
+func lateralServiceArguments(stage, session, baseURL string, workspace *string) []string {
 	args := []string{"--stage", stage, "--session", session, "--base-url", baseURL}
+	if workspace != nil {
+		args = append(args, "--workspace-id", lateralWorkspaceArgument(*workspace))
+	}
 	if agentDebugBuild {
 		args = append(args, "--debug-stage-filename", "1")
 	}
 	return args
+}
+
+// lateralWorkspaceArgument maps a workspace binding to its wire form: an
+// explicitly cleared binding travels as '-' so an empty value cannot be
+// dropped by command-line argument parsing downstream.
+func lateralWorkspaceArgument(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 // launcherFailure records a completed worker failure, which is safe to clean up.

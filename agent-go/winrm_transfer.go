@@ -5,15 +5,39 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
 const winrmTransferChunkSize = 32 * 1024
 const winrmTransferMaxSize = 128 * 1024 * 1024
+
+// winrmLoaderReadyMarker is the receiver's stdout proof that Add-Type
+// compiled the loader, both integrity digests matched, and the PE image was
+// mapped. The sender waits for it before acknowledging the deployment.
+const winrmLoaderReadyMarker = "RMM_LOADER_READY"
+
+// winrmWaitBudget bounds one native wait by both the per-operation cap and
+// the remaining transfer-wide deadline. A zero deadline keeps the previous
+// per-operation behavior for ABI fixtures.
+func winrmWaitBudget(transfer *winrmTransfer, perOperation time.Duration) (time.Duration, error) {
+	if transfer == nil || transfer.deadline.IsZero() {
+		return perOperation, nil
+	}
+	remaining := time.Until(transfer.deadline)
+	if remaining <= 0 {
+		return 0, errors.New("WinRM transfer deadline exceeded before the operation completed")
+	}
+	if remaining < perOperation {
+		return remaining, nil
+	}
+	return perOperation, nil
+}
 
 // winrmTransfer describes the framed stdin payload sent to the receiver: the
 // UTF-8 loader source followed by the agent executable. Both halves carry
@@ -27,6 +51,9 @@ type winrmTransfer struct {
 	loaderDigest string
 	binarySize   int64
 	binaryDigest string
+	// deadline bounds the whole transfer; a zero value keeps per-operation
+	// waits so ABI fixtures stay independent of a live clock.
+	deadline time.Time
 }
 
 // prepareWinRMTransfer hashes the local executable before streaming it. A
@@ -216,6 +243,9 @@ WaitForSingleObject(h,0xFFFFFFFF);}
 // source agent keeps the WinRM session open for the deployment's lifetime.
 // Nothing is written to disk on the target: the loader source and the agent
 // bytes stay in memory, and the mapped image is the only executable copy.
+// Before blocking on the agent thread, the receiver prints the loader
+// readiness marker so the sender acknowledges only after Add-Type, the
+// integrity checks, and the PE mapping succeeded.
 func winrmStage1Script(sessionID string, workspaceID *string, transfer *winrmTransfer) string {
 	workspace := "$null"
 	if workspaceID != nil {
@@ -234,10 +264,13 @@ Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString($l))
 $b=[L]::Receive($s,%d,%s)
 $e=[L]::Map($b)
 if($e -eq [IntPtr]::Zero){throw 'agent image mapping failed'}
+[Console]::Out.Write(%s)
+[Console]::Out.Flush()
 [L]::Run($e)`, transfer.loaderSize, transfer.loaderSize, transfer.loaderSize,
 		winrmPowerShellLiteral(transfer.loaderDigest),
 		winrmPowerShellLiteral(sessionID), workspace,
-		transfer.binarySize, winrmPowerShellLiteral(transfer.binaryDigest))
+		transfer.binarySize, winrmPowerShellLiteral(transfer.binaryDigest),
+		winrmPowerShellLiteral(winrmLoaderReadyMarker))
 }
 
 // winrmReceiverArguments builds the shell command that runs the stage1

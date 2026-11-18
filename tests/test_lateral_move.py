@@ -149,6 +149,10 @@ class LateralFlowTests(unittest.TestCase):
             self.assertEqual(self.call(), (None, "agent_payload_unavailable"))
         self.server.exec_and_wait.assert_not_called()
 
+    def test_psexec_selects_an_artifact_bound_to_the_source_workspace(self):
+        self.call()
+        self.assertEqual(server_rmm.latest_go_agent_binary.call_args.kwargs, {"workspace_id": "alice"})
+
     def test_stage_status_is_surfaced(self):
         stage_ids = []
 

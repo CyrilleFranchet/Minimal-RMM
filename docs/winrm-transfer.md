@@ -10,7 +10,10 @@ this behavior; existing agent binaries retain their previous implementation.
 This implementation has not passed native Windows deployment validation.
 Compilation and mocked transport tests do not establish that the mapped agent
 starts, registers, or supports normal operations. The behavior below describes
-the intended design, pending that validation.
+the intended design, pending that validation. The loader explicitly accepts
+AMD64 PE32+ images (`0x8664`), so successful arm64 cross-compilation does not
+establish WinRM deployment support on arm64 targets; amd64-only validation is
+intentional until native arm64 loader validation exists.
 
 ## Requirements and transport
 
@@ -55,6 +58,15 @@ The loader then follows the classic injection pattern:
 3. `CreateThread` on the entry point as a detached thread, then block the
    receiver forever on that thread.
 
+Before blocking, the receiver prints the loader readiness marker
+(`RMM_LOADER_READY`) to stdout. The sender starts a receive call before
+streaming and waits for that marker after the last input packet, so the
+`lateral started` acknowledgment now confirms that `Add-Type` compiled the
+loader, both digests matched, and the PE image was mapped — not merely that
+the transfer's packets were accepted. A receiver that throws, exits, or ends
+its stream before the marker fails the deployment and tears the session down.
+Registration remains the operational confirmation of a working deployment.
+
 The receiver sets `RMM_SESSION_ID`, `RMM_AGENT_WORKSPACE_ID`, and
 `RMM_IN_MEMORY` in its own process before starting the thread, so the agent
 registers under the target session and workspace.
@@ -95,18 +107,33 @@ binary itself is never on disk.
 
 | Symbol | Responsibility |
 | --- | --- |
-| `winrmTransfer` | Framed stdin payload: loader + executable, with per-half lengths and SHA-256 |
+| `winrmTransfer` | Framed stdin payload: loader + executable, with per-half lengths and SHA-256, plus the transfer-wide deadline |
+| `winrmWaitBudget` | Bound one native wait by both the per-operation cap and the remaining transfer deadline |
 | `prepareWinRMTransfer` | Validate the local regular file, hash both halves, and build the framed reader |
 | `winrmStage1CSharp` | The in-memory loader: stdin receive, digest check, PE mapping, detached thread |
 | `winrmStage1Script` | The receiver PowerShell script: stream reads, digest checks, `Add-Type`, launch |
 | `winrmReceiverArguments` | Encode the receiver as the `-EncodedCommand` argument of Windows PowerShell |
 | `winrmEncodedCommand` | Encode the receiver as UTF-16LE Base64 for PowerShell |
 | `winrmPowerShellLiteral` | Quote values as PowerShell data |
+| `winrmLoaderReadyMarker` | The receiver's stdout proof of loader compilation and PE mapping |
 | `winrmDeployAgent` | Open the local executable and initialize native WSMan deployment |
 | `winrmExecuteWithTLSAPI` | Share existing authentication/TLS setup between fixtures and deployment |
-| `wsmanScope.runCommand` | Run the receiver, stream the framed payload, and hold or tear down |
+| `wsmanResult.waitLoaderReady` | Block until the readiness marker, a receiver failure, or the transfer deadline |
+| `wsmanScope.runCommand` | Run the receiver, stream the framed payload, confirm loader readiness, and hold or tear down |
 | `wsmanScope.sendInput` | Send bounded binary stdin packets and explicit end of input |
 | `winrmHeldShell` / `stopHeldWinRMShells` | Keep successful deployments' handles open until agent shutdown |
+
+## Deadlines
+
+One deadline bounds the whole WinRM deployment: session setup, every input
+packet, and the loader readiness wait each consume a slice of the lateral
+move's `timeout_seconds` rather than restarting a fresh 30-second budget per
+operation. When the deadline expires before the marker, the deployment fails,
+the receiver's session is torn down, and no held shell remains. Blocking
+native calls already in flight cannot be interrupted, but no further
+operation is issued and the next deployment attempt is not stacked on a
+target host whose earlier worker may still be progressing (see the per-host
+in-flight claim in `docs/go-agent.md`).
 
 ## Validation
 
