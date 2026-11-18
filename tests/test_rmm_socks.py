@@ -1,7 +1,10 @@
 """Focused tests for the server-side SOCKS relay state machine."""
 
 import base64
+import socket
 import struct
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -51,6 +54,169 @@ class RecordingDatagramSocket:
 
     def sendto(self, payload, address):
         self.sent.append((bytes(payload), address))
+
+
+class ObservedReadSocket:
+    """Use a real socket while making an idle receive deterministic in tests."""
+
+    def __init__(self, sock, hold_read=False):
+        self.socket = sock
+        self.read_entered = threading.Event()
+        self.release_read = threading.Event()
+        if not hold_read:
+            self.release_read.set()
+
+    def recv(self, size):
+        self.read_entered.set()
+        if not self.release_read.wait(3):
+            raise AssertionError('test did not release the idle read')
+        return self.socket.recv(size)
+
+    def __getattr__(self, name):
+        return getattr(self.socket, name)
+
+
+class SocksFullDuplexTests(unittest.TestCase):
+    """Verify real full-duplex sockets cannot block each other through an idle read."""
+
+    def setUp(self):
+        self.bridges = []
+        self.sockets = []
+        self.readers = []
+        self.threads = []
+        self.errors = []
+
+    def tearDown(self):
+        for bridge in self.bridges:
+            with bridge.lock:
+                bridge._running = False
+        for reader in self.readers:
+            reader.release_read.set()
+        for sock in self.sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        for bridge in self.bridges:
+            bridge.stop()
+        for thread in self.threads:
+            thread.join(2)
+            self.assertFalse(thread.is_alive(), 'relay worker did not stop')
+        for sock in self.sockets:
+            sock.close()
+        self.assertEqual(self.errors, [])
+
+    def start_worker(self, target, *args):
+        finished = threading.Event()
+        def run():
+            try:
+                target(*args)
+            except BaseException as error:
+                self.errors.append(error)
+            finally:
+                finished.set()
+        thread = threading.Thread(target=run, daemon=True)
+        self.threads.append(thread)
+        thread.start()
+        return finished
+
+    def start_relay(self, hold_read=False):
+        local, peer = socket.socketpair()
+        peer.settimeout(2)
+        self.sockets.extend([local, peer])
+        observed = ObservedReadSocket(local, hold_read)
+        self.readers.append(observed)
+        bridge = SessionSocksBridge('full-duplex', '127.0.0.1', 0)
+        self.bridges.append(bridge)
+        bridge._running = True
+        bridge.submit_responses([{'op': 'ok', 'id': 'connection'}])
+        tunnel = bridge.tunnels['connection']
+        self.assertTrue(bridge._attach_client(tunnel, observed))
+        reader_finished = self.start_worker(bridge._relay_local_to_remote, tunnel)
+        self.assertTrue(observed.read_entered.wait(2))
+        return bridge, tunnel, peer, observed, reader_finished
+
+    @staticmethod
+    def response(payload):
+        return {'op': 'data', 'id': 'connection', 'data_b64': base64.b64encode(payload).decode()}
+
+    def test_ready_response_does_not_wait_for_idle_client_read(self):
+        bridge, _, peer, observed, _ = self.start_relay(hold_read=True)
+        done = self.start_worker(bridge.submit_responses, [self.response(b'ready-response')])
+        self.assertTrue(done.wait(.5), 'ready response was blocked behind the idle client read')
+        self.assertFalse(observed.release_read.is_set(), 'read remained blocked during delivery')
+        self.assertEqual(peer.recv(64), b'ready-response')
+
+    def test_bidirectional_payloads_preserve_byte_order(self):
+        bridge, _, peer, _, _ = self.start_relay()
+        upstream = b''.join(bytes([index]) * 300 for index in range(1, 25))
+        downstream = b''.join(bytes([index]) * 200 for index in range(25, 49))
+        sent = self.start_worker(bridge.submit_responses,
+                                 [self.response(downstream[offset:offset + 200])
+                                  for offset in range(0, len(downstream), 200)])
+        peer.sendall(upstream)
+        received = bytearray()
+        while len(received) < len(downstream):
+            chunk = peer.recv(len(downstream) - len(received))
+            self.assertTrue(chunk, 'relay closed before downstream data completed')
+            received.extend(chunk)
+        self.assertEqual(bytes(received), downstream)
+        self.assertTrue(sent.wait(2))
+        queued = bytearray()
+        deadline = time.monotonic() + 2
+        while len(queued) < len(upstream) and time.monotonic() < deadline:
+            for task in bridge.fetch_tasks_for_pull():
+                if task['op'] == 'send':
+                    queued.extend(base64.b64decode(task['data_b64']))
+            if len(queued) < len(upstream):
+                time.sleep(.005)
+        self.assertEqual(bytes(queued), upstream)
+
+    def test_remote_close_can_interrupt_idle_reader(self):
+        bridge, _, peer, _, reader_done = self.start_relay()
+        closed = self.start_worker(bridge.submit_responses, [{'op': 'closed', 'id': 'connection'}])
+        self.assertTrue(closed.wait(.5), 'remote close waited for the client read timeout')
+        self.assertTrue(reader_done.wait(2), 'reader did not stop after remote close')
+        self.assertEqual(peer.recv(1), b'')
+        self.assertNotIn('connection', bridge.tunnels)
+
+    def test_stop_can_interrupt_idle_reader(self):
+        bridge, _, peer, _, reader_done = self.start_relay()
+        stopped = self.start_worker(bridge.stop)
+        self.assertTrue(stopped.wait(.5), 'bridge stop waited for the client read timeout')
+        self.assertTrue(reader_done.wait(2), 'reader did not stop after bridge stop')
+        self.assertEqual(peer.recv(1), b'')
+        self.assertEqual(bridge.tunnels, {})
+
+    def test_response_write_failure_closes_idle_reader_without_deadlock(self):
+        bridge, _, peer, observed, reader_done = self.start_relay()
+        with patch.object(observed, 'sendall', side_effect=OSError('fixture write failure')):
+            failed = self.start_worker(bridge.submit_responses, [self.response(b'ready-response')])
+            self.assertTrue(failed.wait(.5), 'failed write could not close the idle reader')
+        self.assertTrue(reader_done.wait(2), 'reader did not stop after write failure')
+        self.assertEqual(peer.recv(1), b'')
+        self.assertNotIn('connection', bridge.tunnels)
+
+    def test_concurrent_response_writers_remain_serialized(self):
+        bridge, _, peer, observed, _ = self.start_relay(hold_read=True)
+        barrier = threading.Barrier(3)
+        payloads = [bytes([value]) * 96 for value in (65, 66, 67)]
+        def fragmented_send(payload):
+            for offset in range(0, len(payload), 8):
+                observed.socket.sendall(payload[offset:offset + 8])
+                time.sleep(.001)
+        def write(payload):
+            barrier.wait(2)
+            bridge.submit_responses([self.response(payload)])
+        with patch.object(observed, 'sendall', side_effect=fragmented_send):
+            done = [self.start_worker(write, payload) for payload in payloads]
+            received = bytearray()
+            while len(received) < 288:
+                chunk = peer.recv(288 - len(received))
+                self.assertTrue(chunk, 'relay closed before concurrent writes completed')
+                received.extend(chunk)
+            self.assertTrue(all(event.wait(2) for event in done))
+        self.assertCountEqual([bytes(received[offset:offset + 96]) for offset in range(0, 288, 96)], payloads)
 
 
 class SocksBridgeTests(unittest.TestCase):

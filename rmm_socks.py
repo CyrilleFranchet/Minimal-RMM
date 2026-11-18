@@ -843,7 +843,6 @@ class SessionSocksBridge:
     def _relay_local_to_remote(self, tunnel: dict[str, Any]) -> None:
         client_sock = tunnel["client"]
         conn_id = tunnel["id"]
-        client_lock = tunnel.get("client_lock")
         client_sock.settimeout(1.0)
         try:
             while True:
@@ -851,11 +850,10 @@ class SessionSocksBridge:
                     if not self._running or conn_id not in self.tunnels:
                         break
                 try:
-                    if client_lock:
-                        with client_lock:
-                            data = client_sock.recv(SOCKS_CHUNK)
-                    else:
-                        data = client_sock.recv(SOCKS_CHUNK)
+                    # TCP reads and writes must progress independently. The
+                    # client lock serializes writers and close/attach handling;
+                    # holding it during an idle recv starves ready responses.
+                    data = client_sock.recv(SOCKS_CHUNK)
                 except socket.timeout:
                     continue
                 if not data:

@@ -64,6 +64,34 @@ agent acknowledges them.
 The public SOCKS agent plugins bound target connect time to 20 seconds and
 retain response batches across transient HTTP POST failures.
 
+TCP forwarding is full duplex. The local reader may block waiting for another
+request without holding the tunnel's `client_lock`; that lock serializes
+response writes, client attachment, and socket shutdown. Sharing it with a
+blocking read would prevent an already available response from reaching a
+waiting client, adding one-second timeout stalls or longer lock starvation.
+This also affects the private SOCKS listener used by the TUN frontend.
+
+`make check-pivot` covers idle-reader response delivery, byte ordering, remote
+close, manager shutdown, and write failures, plus a real loopback SOCKS5
+handshake and 50 request/response exchanges. It uses local fixtures and does
+not contact a target network. The `PivotRoundTripTests` fixture's `agent_echo`
+worker returns the existing connect/send/close protocol through real response
+delivery; mixed payload sizes cross the relay's 16 KiB chunk boundary.
+`ObservedReadSocket` wraps a real socket and exposes read-entry/release events
+for the deterministic idle-reader regression. `SocksFullDuplexTests` uses
+`start_relay` to attach that socket, `start_worker` to observe bounded worker
+completion, and `response` to encode fixture transport replies. These tests
+also verify concurrent response writers remain serialized and that remote
+close, stop, and write failures finish without waiting for another request.
+On macOS, an already blocked receive can wake only when its existing one-second
+socket timeout expires after shutdown/close; reader cleanup has a two-second
+allowance, separate from the shorter response-writer and close-operation
+completion checks. This does not serialize response delivery behind reads.
+The wire protocol, agent plugins, central beacon behavior, and route ownership
+are unchanged; no matching agent-side update is required for this local
+reader-lock fix. Restart the owning workspace service to load the updated
+relay, then recreate its active SOCKS/TUN pivots.
+
 ## Manage active relays
 
 The **Pivots** tab refreshes the global pivot inventory from `GET /api/v1/socks` and

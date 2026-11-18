@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-11-18 — Prevent idle readers from stalling SOCKS/TUN responses
+
+- A partial `ldeep users` capture exposed long LDAP response pauses; a local
+  socket-pair reproduction showed that the reader held `client_lock` during
+  its blocking receive while the response writer waited for the same lock.
+- Remove receive-side use of that lock while preserving serialized response
+  writes, client attachment, and cleanup. The shared workspace SOCKS/TUN relay
+  changes no task protocol, beacon behavior, or agent-side plugin contract.
+- Add full-duplex, ordering, close, and failure regressions and a real loopback
+  SOCKS5 round-trip test. Both independent response-delivery regressions were
+  demonstrated failing before the implementation change.
+- Add `make check-pivot` to the standard check target so relay and shutdown
+  regressions run in the normal repository gate. The full `make check` passes,
+  including all 47 pivot/lifecycle tests; three Linux runs each pass 21 tests
+  and 50 loopback round trips. Code, security, and test reviews found no blockers.
+- All six new concurrency regressions also pass 100 consecutive iterations
+  (600 cases), without failures or hung threads. A final full check passes in
+  the working checkout with the separate diagnostic UI changes preserved.
+
 ## 2026-11-18 — Show Exegol execution details in diagnostics
 
 - Preserve the validated execution ID in the operation-details timeline and

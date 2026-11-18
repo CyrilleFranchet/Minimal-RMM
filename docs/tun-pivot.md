@@ -123,6 +123,11 @@ python rmm_cli.py tun list
 python rmm_cli.py tun stop SESSION
 ```
 
+The private listener uses the same full-duplex TCP relay as ordinary SOCKS5.
+Its local reader does not hold the response-writer lock during a blocking
+receive, so LDAP replies can be delivered while the client waits for them.
+See [SOCKS relay behavior and checks](web-socks.md#agent-plugin-lifecycle).
+
 The external `tun.dll` completes target TCP CONNECT attempts independently. A
 filtered port can remain in flight without delaying the response for a
 successful port from the same poll batch. Replace the plugin artifact and
