@@ -81,6 +81,7 @@ REQUIRED_MCP_TOOLS = frozenset({
     "creds_add",
     "creds_del",
     "creds_list",
+    "creds_purge",
     "spawnas",
     "runas",
 })
@@ -151,6 +152,7 @@ TOOL_CLIENT_METHOD: dict[str, str] = {
     "creds_add": "creds_add",
     "creds_del": "creds_del",
     "creds_list": "creds_list",
+    "creds_purge": "creds_purge",
     "spawnas": "spawnas",
     "runas": "runas",
 }

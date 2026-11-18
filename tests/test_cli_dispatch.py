@@ -107,6 +107,12 @@ class CliDispatchTests(unittest.TestCase):
         self.invoke(['creds', 'del', '-i', 'cred-123', '--json'], client)
         client.creds_del.assert_called_once_with('cred-123')
 
+    def test_creds_purge_dispatch(self):
+        client = Mock()
+        client.creds_purge.return_value = (200, {'ok': True, 'deleted': 2})
+        self.invoke(['creds', 'purge', '--json'], client)
+        client.creds_purge.assert_called_once_with()
+
     def test_stored_credential_validation_prevents_requests(self):
         cases = [['creds', 'del', 'cred-123'], ['creds', 'del', '-i', '']]
         for command in ('make-token', 'spawnas', 'runas'):

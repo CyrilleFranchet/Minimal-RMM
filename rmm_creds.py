@@ -118,6 +118,16 @@ def creds_del(workspace_dir: str, cred_id: str) -> dict[str, Any]:
 
 
 @_store_operation
+def creds_purge(workspace_dir: str) -> dict[str, Any]:
+    """Remove every credential in one workspace and return the deleted count."""
+    with _lock:
+        creds = _load(workspace_dir)
+        deleted = len(creds)
+        _save(workspace_dir, {})
+    return {"ok": True, "deleted": deleted}
+
+
+@_store_operation
 def creds_list(workspace_dir: str) -> dict[str, Any]:
     """List all stored credentials. Passwords are omitted."""
     with _lock:

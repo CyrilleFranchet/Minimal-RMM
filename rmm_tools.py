@@ -879,6 +879,14 @@ def tool_creds_del(client: RmmApiClient, cred_id: str) -> str:
     return _json_result(data)
 
 
+def tool_creds_purge(client: RmmApiClient) -> str:
+    """Remove all credentials from the authenticated workspace."""
+    code, data = client.creds_purge()
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    return _json_result(data)
+
+
 def tool_creds_list(client: RmmApiClient) -> str:
     """List stored workspace credentials (labels only, no passwords)."""
     code, data = client.creds_list()
@@ -1124,6 +1132,7 @@ TOOL_HANDLERS = {
         password=a.get("password", ""),
     ),
     "creds_del": lambda c, a: tool_creds_del(c, a["cred_id"]),
+    "creds_purge": lambda c, a: tool_creds_purge(c),
     "creds_list": lambda c, a: tool_creds_list(c),
     "spawnas": lambda c, a: tool_spawnas(
         c,
@@ -1962,6 +1971,14 @@ OPENAI_TOOLS: list[dict] = [
                 "properties": {"cred_id": {"type": "string"}},
                 "required": ["cred_id"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "creds_purge",
+            "description": "Remove all credentials from the authenticated workspace; returns the deleted count.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {

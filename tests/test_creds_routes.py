@@ -26,6 +26,53 @@ class CredentialRoutingTests(unittest.TestCase):
             self.assertTrue(rmm_creds.creds_del(first, result["cred_id"])["ok"])
             self.assertIsNone(rmm_creds.creds_resolve(first, result["cred_id"]))
 
+    def test_purge_is_atomic_scoped_and_repeatable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = os.path.join(directory, "a"), os.path.join(directory, "b")
+            ids = [rmm_creds.creds_add(first, "LAB", user, "secret")["cred_id"]
+                   for user in ("alice", "bob")]
+            other = rmm_creds.creds_add(second, "LAB", "carol", "secret")["cred_id"]
+            self.assertEqual(rmm_creds.creds_purge(first), {"ok": True, "deleted": 2})
+            self.assertEqual(rmm_creds.creds_list(first)["creds"], [])
+            for cred_id in ids:
+                self.assertIsNone(rmm_creds.creds_resolve(first, cred_id))
+            self.assertIsNotNone(rmm_creds.creds_resolve(second, other))
+            self.assertEqual(rmm_creds.creds_purge(first), {"ok": True, "deleted": 0})
+            self.assertEqual(os.stat(os.path.join(first, "creds.json")).st_mode & 0o777, 0o600)
+
+    def test_purge_write_failure_preserves_store(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rmm_creds.creds_add(directory, "", "alice", "secret")
+            path = Path(directory) / "creds.json"
+            original = path.read_bytes()
+            with patch.object(rmm_creds.os, "replace", side_effect=OSError):
+                self.assertEqual(rmm_creds.creds_purge(directory),
+                                 {"ok": False, "error": "credential_store_unavailable"})
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_purge_requires_authentication(self):
+        handler = object.__new__(server_rmm.RMMHandler)
+        handler._api_authorized = Mock(return_value=False)
+        handler._api_unauthorized = Mock()
+        with patch.object(rmm_creds, "creds_purge") as purge:
+            self.assertTrue(handler._handle_api_delete("/api/v1/creds"))
+            handler._api_unauthorized.assert_called_once_with()
+            purge.assert_not_called()
+
+    def test_purge_route(self):
+        handler = object.__new__(server_rmm.RMMHandler)
+        handler._api_authorized = Mock(return_value=True)
+        handler._workspace_scope = Mock(return_value="test-workspace")
+        handler._json = Mock()
+        handler.server_instance = SimpleNamespace()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(server_rmm, "plugin_directory", return_value=directory):
+            rmm_creds.creds_add(directory, "", "alice", "secret")
+            self.assertTrue(handler._handle_api_delete("/api/v1/creds"))
+            self.assertEqual(handler._json.call_args.args, (200, {"ok": True, "deleted": 1}))
+            handler._handle_api_delete("/api/v1/creds")
+            self.assertEqual(handler._json.call_args.args, (200, {"ok": True, "deleted": 0}))
+
     def test_corrupt_store_is_preserved_and_reports_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "creds.json"
@@ -35,6 +82,7 @@ class CredentialRoutingTests(unittest.TestCase):
                     lambda: rmm_creds.creds_add(directory, "", "alice", "pw"),
                     lambda: rmm_creds.creds_del(directory, "cred-bad"),
                     lambda: rmm_creds.creds_list(directory),
+                    lambda: rmm_creds.creds_purge(directory),
                 ):
                     self.assertEqual(operation(), {"ok": False, "error": "credential_store_unavailable"})
                     self.assertEqual(path.read_text(), content)
@@ -85,6 +133,7 @@ class CredentialRoutingTests(unittest.TestCase):
             lambda: handler._handle_api_post("/api/v1/creds", {"user": "alice"}),
             lambda: handler._handle_api_get("/api/v1/creds", {}),
             lambda: handler._handle_api_delete("/api/v1/creds/cred-123"),
+            lambda: handler._handle_api_delete("/api/v1/creds"),
         ]
         for operation in operations:
             operation()

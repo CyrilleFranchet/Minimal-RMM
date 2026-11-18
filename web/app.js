@@ -2146,7 +2146,7 @@ function getShellCompletionCandidates(line) {
   if (/^\/lateral\s/i.test(q)) return [];
   if (/^\/creds\s+\S*$/i.test(q)) {
     const prefix = q.trim().split(/\s+/)[1] || "";
-    return ["list", "add", "del"].filter(sub => sub.startsWith(prefix.toLowerCase()))
+    return ["list", "add", "del", "purge"].filter(sub => sub.startsWith(prefix.toLowerCase()))
       .map(sub => `/creds ${sub}`);
   }
   if (/^\/creds\s/i.test(q)) return [];
@@ -3174,7 +3174,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /spawn                           Spawn a detached second Go agent; inherits the source build mode
   /spawnas -i &lt;cred_id&gt; | /spawnas &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Spawn under another identity; inherits the source build mode
   /runas -i &lt;cred_id&gt; &lt;command&gt; | /runas &lt;DOMAIN\\user | user&gt; &lt;password&gt; &lt;command&gt;      Run a command under a different process identity (cascade)
-  /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt;   Manage workspace credentials
+  /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt; | /creds purge   Manage workspace credentials
   /make_token -i &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
@@ -3455,6 +3455,12 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         if (!target.isCurrent()) return true;
         if (status !== 200) { showError(`creds add failed (${status}): ${data?.error ?? ""}`); return true; }
         appendShellOutput(`stored ${data?.cred_id} (${args[1]})`);
+      } else if (sub === "purge") {
+        if (args.length !== 1) { showError("Usage: /creds purge"); return true; }
+        const { status, data } = await api("/creds", { method: "DELETE" });
+        if (!target.isCurrent()) return true;
+        if (status !== 200) { showError(`creds purge failed (${status})`); return true; }
+        appendShellOutput(`deleted ${data?.deleted ?? 0} credentials`);
       } else if (sub === "del") {
         if (args.length !== 3 || args[1] !== "-i" || !args[2]?.trim() || args[2].startsWith("-")) { showError("Usage: /creds del -i <cred_id>"); return true; }
         const { status, data } = await api(`/creds/${encodeURIComponent(args[2])}`, { method: "DELETE" });
@@ -3462,7 +3468,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         if (status !== 200 && status !== 404) { showError(`creds del failed (${status})`); return true; }
         appendShellOutput(data?.message ?? (status === 200 ? "deleted" : "not found"));
       } else {
-        showError("Usage: /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt;");
+        showError("Usage: /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt; | /creds purge");
       }
     } catch (error) {
       if (target.isCurrent()) showError(error.message || "creds request failed.");

@@ -113,6 +113,7 @@ from rmm_tools import (
     tool_creds_add,
     tool_creds_del,
     tool_creds_list,
+    tool_creds_purge,
     tool_spawnas,
     tool_runas,
 )
@@ -630,6 +631,12 @@ def creds_add(user: str, domain: str = "", password: str = "") -> str:
 def creds_del(cred_id: str) -> str:
     """Remove a credential entry from the workspace store by cred_id."""
     return tool_creds_del(_client(), cred_id)
+
+
+@mcp.tool()
+def creds_purge() -> str:
+    """Remove all stored credentials in the authenticated workspace."""
+    return tool_creds_purge(_client())
 
 
 @mcp.tool()

@@ -504,6 +504,7 @@ Run **`python rmm_cli.py`** with no arguments for an **interactive console** (li
 | `make-token -i <cred_id>` or `make-token <identity> <password>` | Create a `runas /netonly` style network identity using a stored credential or direct credentials |
 | `spawnas -i <cred_id>` | Start a Go agent copy under a stored identity; inherits [build-level debug](docs/agent-debug.md); direct credentials use `--user` and `--password` |
 | `runas -i <cred_id> <command>` | Run a command under a stored identity; direct credentials use `--user` and `--password` |
+| `creds purge` | Remove all credentials in the authenticated workspace and report the deleted count |
 | `creds del -i <cred_id>` | Remove a stored workspace credential; positional IDs are rejected |
 | `rev2self [--session ID]` | Revert a Go agent session to its own network identity |
 | `lateral <psexec\|wmiexec\|winrm> <host> [--session ID] [--no-verify]` | Start a Go agent on another host; inherits the source build mode |

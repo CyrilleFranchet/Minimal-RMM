@@ -408,7 +408,7 @@ test('creds dispatches list, add and delete with literal credential arguments', 
 });
 
 test('creds rejects missing and extra arguments without requests', async () => {
-  for (const command of ['/creds list extra', '/creds add alice', '/creds add alice pass extra', '/creds del', '/creds del id extra']) {
+  for (const command of ['/creds purge extra', '/creds list extra', '/creds add alice', '/creds add alice pass extra', '/creds del', '/creds del id extra']) {
     const f = fixture();
     await f.context.dispatchShellMetaCommand(command);
     assert.equal(f.calls.length, 0, command);
@@ -419,7 +419,7 @@ test('creds rejects missing and extra arguments without requests', async () => {
 test('creds completes subcommands and displays argument hints without credential history', () => {
   const f = fixture();
   f.type('/creds ');
-  assert.deepEqual(f.menu.children.map(x => x.textContent), ['/creds list', '/creds add', '/creds del']);
+  assert.deepEqual(f.menu.children.map(x => x.textContent), ['/creds list', '/creds add', '/creds del', '/creds purge']);
   f.type('/creds a');
   f.key('Tab');
   assert.equal(f.input.value, '/creds add ');
@@ -561,3 +561,18 @@ for (const status of [200, 400]) {
     assert.equal(f.input.value, 'whoami');
   });
 }
+
+
+test('creds purge uses DELETE and reports counts or failures', async () => {
+  for (const [status, deleted] of [[200, 2], [200, 0], [503, null]]) {
+    const f = fixture(), output = [];
+    f.context.api = async (...args) => { f.calls.push(args); return {status, data: {deleted}}; };
+    f.context.appendShellOutput = text => output.push(text);
+    await f.context.dispatchShellMetaCommand('/creds purge');
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0][0], '/creds');
+    assert.equal(f.calls[0][1].method, 'DELETE');
+    if (status === 200) assert.deepEqual(output, [`deleted ${deleted} credentials`]);
+    else { assert.equal(output.length, 0); assert.match(f.errors[0], /creds purge failed/); }
+  }
+});

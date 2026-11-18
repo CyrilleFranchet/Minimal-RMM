@@ -278,6 +278,9 @@ class RmmApiClient:
     def creds_del(self, cred_id: str):
         return self.request("DELETE", f"/api/v1/creds/{cred_id}")
 
+    def creds_purge(self):
+        return self.request("DELETE", "/api/v1/creds")
+
     def creds_list(self):
         return self.request("GET", "/api/v1/creds")
 
@@ -1127,6 +1130,17 @@ def cmd_creds_del(client: RmmApiClient, state: dict, args):
     say(data.get("message") or ("deleted" if code == 200 else "not found"))
 
 
+def cmd_creds_purge(client: RmmApiClient, state: dict, args):
+    """Purge the current workspace credential store."""
+    code, data = client.creds_purge()
+    if args.json:
+        print_json(data)
+        return
+    if code != 200:
+        die(f"creds purge failed ({code})", 1)
+    say(f"deleted {data.get('deleted', 0)} credentials")
+
+
 def cmd_creds_list(client: RmmApiClient, state: dict, args):
     code, data = client.creds_list()
     if args.json:
@@ -1684,7 +1698,7 @@ Remote:   <command> or /run <command>  (queue) | /exec <command>  (wait) | /pers
 Spawn:    /spawn [id]   (same identity; children inherit the source build mode)
           /spawnas -i <cred_id>   (different identity; children inherit the source build mode)
           /runas -i <cred_id> <command>   (run command under different identity)
-Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id>
+Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id> | /creds purge
 Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
 Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure]   (HTTPS/5986 for winrm only; inherits source build mode)
           -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
@@ -1746,7 +1760,7 @@ class RmmCliCompleter:
             return None
 
         if cmd == "creds" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
-            matches = [sub for sub in ("list", "add", "del") if sub.startswith(text.lower())]
+            matches = [sub for sub in ("list", "add", "del", "purge") if sub.startswith(text.lower())]
             return matches[state_index] + " " if state_index < len(matches) else None
 
         if cmd == "lateral" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
@@ -1802,7 +1816,7 @@ class RmmCliPTKCompleter(_PTCompleterBase):
 
         if cmd == "creds" and (len(parts) == 1 or (len(parts) == 2 and not line.endswith(" "))):
             prefix = parts[1] if len(parts) == 2 else ""
-            for sub in ("list", "add", "del"):
+            for sub in ("list", "add", "del", "purge"):
                 if sub.startswith(prefix.lower()):
                     yield Completion(sub + " ", start_position=-len(prefix))
             return
@@ -2342,6 +2356,15 @@ def run_interactive(
                             else:
                                 cred_identity = (cred_domain + "\\" + cred_user) if cred_domain else cred_user
                                 say(f"stored {data.get('cred_id')} ({cred_identity})")
+                elif sub_cmd == "purge":
+                    if len(sub_rest) != 1:
+                        warn("Usage: /creds purge")
+                        continue
+                    code, data = client.creds_purge()
+                    if code != 200:
+                        warn(f"creds purge failed ({code})")
+                    else:
+                        say(f"deleted {data.get('deleted', 0)} credentials")
                 elif sub_cmd == "del":
                     if (len(sub_rest) != 3 or sub_rest[1] != "-i" or
                             not sub_rest[2].strip() or sub_rest[2].startswith("-")):
@@ -2353,7 +2376,7 @@ def run_interactive(
                         else:
                             say(data.get("message") or ("deleted" if code == 200 else "not found"))
                 else:
-                    warn("Usage: /creds list | /creds add <identity> <password> | /creds del -i <cred_id>")
+                    warn("Usage: /creds list | /creds add <identity> <password> | /creds del -i <cred_id> | /creds purge")
                 continue
             if cmd == "spawnas":
                 try:
@@ -2883,6 +2906,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp_creds_del_p = sp_creds_sub.add_parser("del", parents=[shared], help="Remove a stored credential")
     sp_creds_del_p.add_argument("-i", dest="cred_id", required=True, help="Credential ID")
     sp_creds_del_p.set_defaults(func=cmd_creds_del)
+    sp_creds_purge_p = sp_creds_sub.add_parser("purge", parents=[shared], help="Remove all workspace credentials")
+    sp_creds_purge_p.set_defaults(func=cmd_creds_purge)
     sp_creds_list_p = sp_creds_sub.add_parser("list", parents=[shared], help="List stored credentials (no passwords)")
     sp_creds_list_p.set_defaults(func=cmd_creds_list)
 

@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-18 — Purge workspace credentials
+
+- `/creds purge` and standalone `creds purge` remove all credentials in the
+  authenticated workspace and report the deleted count. Other workspaces remain intact.
+- `DELETE /api/v1/creds` invokes `creds_purge`, which loads and clears the store
+  under its existing lock with atomic replacement. Corrupt stores remain unchanged.
+- `RmmApiClient.creds_purge`, `cmd_creds_purge`, `tool_creds_purge`, and MCP
+  `creds_purge` expose the same operation; completion and help include the command.
+- Follow-up verification exercises the registered MCP tool through the real API
+  client and documents every invocation and failure contract in `mcp-parity.md`.
+  All 61 focused Python tests and 41 WebUI shell tests pass.
+
 ## 2026-11-18 — Clear the WebUI shell prompt on submission
 
 - `runCommand` clears the submitted input before awaiting meta-command dispatch,

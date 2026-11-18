@@ -25,6 +25,23 @@ class McpSchemaTests(unittest.TestCase):
 
 @unittest.skipUnless(mcp_available(), 'MCP dependencies are not installed')
 class McpResultEncodingTests(unittest.TestCase):
+    def test_registered_creds_purge_calls_collection_delete(self):
+        import mcp_rmm_server as module
+        from rmm_cli import RmmApiClient
+
+        async def run():
+            client = RmmApiClient('http://example.test', 'fixture-token')
+            client.request = Mock(return_value=(200, {'ok': True, 'deleted': 2}))
+            with patch.object(module, '_client', return_value=client):
+                tools = await module.mcp.list_tools()
+                tool = next(tool for tool in tools if tool.name == 'creds_purge')
+                schema = mcp_tool_to_openai(tool)['function']['parameters']
+                self.assertEqual(schema.get('properties', {}), {})
+                result = await module.mcp.call_tool('creds_purge', {})
+                self.assertIn('"deleted": 2', str(result))
+                client.request.assert_called_once_with('DELETE', '/api/v1/creds')
+        asyncio.run(run())
+
     def test_registered_lateral_https_is_strict_boolean(self):
         import mcp_rmm_server as module
 

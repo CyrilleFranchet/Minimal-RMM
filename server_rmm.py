@@ -6179,14 +6179,15 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
         if parts and parts[0] == "embeddings":
             return self._handle_embeddings("DELETE", parts)
-        if len(parts) == 2 and parts[0] == "creds":
-            # DELETE /api/v1/creds/{cred_id} — remove a credential entry.
+        if parts == ["creds"] or (len(parts) == 2 and parts[0] == "creds"):
+            # DELETE collection purges the workspace; an ID removes one entry.
             owner = self._workspace_scope()
             if not owner:
                 self._json(403, {"error": "workspace_auth_required"})
                 return True
             workspace_dir = plugin_directory(owner)
-            result = _rmm_creds.creds_del(workspace_dir, urllib.parse.unquote(parts[1]))
+            result = (_rmm_creds.creds_purge(workspace_dir) if len(parts) == 1 else
+                      _rmm_creds.creds_del(workspace_dir, urllib.parse.unquote(parts[1])))
             self._json(503 if result.get("error") == "credential_store_unavailable" else 200 if result.get("ok") else 404, result)
             return True
         if len(parts) == 2 and parts[0] == "plugin-sources":

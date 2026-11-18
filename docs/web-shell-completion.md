@@ -81,7 +81,7 @@ These commands are handled in the browser instead of being sent to the agent she
 | `/uid` | `POST …/uid` | Shows the identity used by the selected Go agent (process user + active network identity) |
 | `/lateral <psexec\|wmiexec\|winrm> <host>` | `POST …/lateral` | Starts a Go agent on another host through the requested method; the request confirms registration without extra probe commands (see `docs/go-agent.md`) |
 | `/bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
-| `/creds <add \| del \| list> [domain\user] [password]` | `GET/POST/DELETE …/creds` | Manage the workspace credential store; `add` returns a `cred_id`; `del` takes a `cred_id`; `list` shows all stored credentials by ID |
+| `/creds <add \| del \| list \| purge> [arguments]` | `GET/POST/DELETE …/creds` | Manage workspace credentials; `del -i <cred_id>` removes one entry; `purge` removes all entries in the authenticated workspace |
 | `/spawnas -i <cred_id>` | `POST …/spawnas` | Spawn a new agent copy under a different process identity using the cascade (`CreateProcessAsUser → CreateProcessWithTokenW → CreateProcessWithLogonW → CreateProcessA`); accepts a credential store ID or inline `domain\user password` |
 | `/runas -i <cred_id> <command>` | `POST …/runas` | Run a shell command on the selected Go session under a different process identity using the same cascade; accepts a credential store ID or inline `domain\user password` |
 
@@ -181,7 +181,9 @@ combining an ID with direct credentials is rejected.
 `/creds` and `/creds list` list workspace credentials. `/creds add <domain\user | user> <password>`
 splits the identity into the API's domain and user fields; quote passwords with
 spaces, or use `''` for an empty password. `/creds del -i <cred_id>` removes an entry.
-Extra arguments are rejected. The command menu completes `list`, `add`, and `del`;
+`/creds purge` removes all credentials in the authenticated workspace and reports
+the deleted count. It takes no arguments. An empty store returns zero.
+Extra arguments are rejected. The command menu completes `list`, `add`, `del`, and `purge`;
 after selection, argument hints show the required values. Credential arguments
 are excluded from history-based completion suggestions.
 

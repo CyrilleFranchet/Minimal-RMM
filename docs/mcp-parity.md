@@ -62,8 +62,8 @@ Workspace transcript pagination uses local IDs instead; CLI `record_exec_cursor`
 does not advance its local cursor using a central execution ID. This avoids
 skipping history after migration or a central restart.
 
-The parity registry checks 55 shared MCP/AI tool names and their API-client
-mapping. It does not prove that all 55 have dedicated manual browser controls.
+The parity registry checks shared MCP/AI tool names and their API-client
+mapping. It does not prove that every tool has dedicated manual browser controls.
 The sixteen BloodHound actions have explicit manual CLI and WebUI controls;
 other workflows use their documented UI controls or shared AI tools.
 
@@ -71,6 +71,35 @@ other workflows use their documented UI controls or shared AI tools.
 deployment/administration utilities. They are intentionally not operator API,
 WebUI, or MCP actions: they create process configuration and migrate stopped
 service storage before those APIs are running.
+
+## Credential purge
+
+| Surface | Invocation |
+| --- | --- |
+| REST | `DELETE /api/v1/creds` |
+| Standalone CLI | `python rmm_cli.py creds purge` (optional `--json`) |
+| Interactive CLI | `/creds purge` |
+| WebUI shell | `/creds purge` |
+| MCP / shared AI tool | `creds_purge` with `{}` arguments |
+
+CLI and MCP use `RmmApiClient.creds_purge`; the WebUI calls the same
+authenticated API directly.
+The API requires workspace scope; administrator authentication alone is
+insufficient. The operation removes every stored credential in that workspace
+without prompting and returns `{"ok": true, "deleted": 2}` (example count).
+Other workspaces are unaffected. Repeating the operation on an empty store
+returns zero; CLI and WebUI display `deleted 0 credentials`.
+
+The store loads and clears entries under one lock and replaces `creds.json`
+atomically. Invalid stores and replacement failures return HTTP 503 with
+`credential_store_unavailable`; the existing store remains unchanged.
+Responses contain counts rather than identities or passwords. This removes
+stored records; it does not revoke credentials or undo an agent's active identity.
+
+`tests/test_mcp_result_encoding.py` exercises the registered MCP tool through
+the API client. Credential API, CLI, and WebUI regression coverage lives in
+`test_creds_routes.py`, `test_cli_dispatch.py`, `test_cli_slash_commands.py`,
+and `test_shell_completion.cjs` under `tests/`.
 
 ## BloodHound CE workflow
 
