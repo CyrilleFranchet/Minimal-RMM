@@ -299,6 +299,15 @@ activity entry rather than consuming the 500-event history. State transitions
 remain separate events, and every heartbeat still checks job interruption.
 This preserves the active tool start and its evidence references for late
 observations even when a command runs for more than 500 polling intervals.
+Execution metadata includes the validated execution ID, supervisor action
+(`prepare`, `start`, `status`, or `cancel`), observed state, captured output
+byte count, observed signed exit code when available, and a fixed supervisor
+error code when present. Continuing polls update the latest byte count in the
+same entry. The operation-details timeline and Copy diagnostics export retain
+these fields and distinguish execution states from tool-call response states.
+Raw commands, output, and exception messages still require explicit protected
+evidence reads and are excluded from diagnostic exports. Existing jobs show
+only the metadata recorded by the service version that executed them.
 
 Canceling a job does not discard a later response from an already-started call.
 `AIJobManager._progress` retains a matching call's terminal observation and

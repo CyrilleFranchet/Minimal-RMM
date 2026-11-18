@@ -114,10 +114,22 @@ def _safe_progress(event):
     if not isinstance(event, dict):
         return {}
     clean = {}
-    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status", "backend", "call_id", "artifact_id", "arguments_artifact_id", "execution_id"):
+    for key in ("phase", "tool", "status", "tool_path", "mcp_status", "exegol_status", "backend", "call_id", "artifact_id", "arguments_artifact_id"):
         value = event.get(key)
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", value):
             clean[key] = value
+    execution_id = event.get('execution_id')
+    if isinstance(execution_id, str) and re.fullmatch(r'[a-f0-9]{32}', execution_id):
+        clean['execution_id'] = execution_id
+    if event.get('phase') == 'exegol_execution':
+        if event.get('execution_action') in ('prepare', 'start', 'status', 'cancel'):
+            clean['execution_action'] = event['execution_action']
+        code = event.get('exit_code')
+        if type(code) is int and -(2**31) <= code < 2**31:
+            clean['exit_code'] = code
+        if event.get('error_code') in ('output_limit_exceeded', 'supervisor_failed', 'termination_unconfirmed',
+                                       'supervisor_unavailable', 'supervisor_launch_failed'):
+            clean['error_code'] = event['error_code']
     for key in ("round", "tool_count", "step", "context_compactions", "duration_ms", "output_bytes"):
         value = event.get(key)
         ceiling = 2**53 - 1 if key in ("duration_ms", "output_bytes") else 1000000
@@ -390,7 +402,8 @@ class AIJobManager:
             clean = _safe_activity(event)
             heartbeat = (clean.get('phase') == 'exegol_execution' and activity
                          and clean.get('execution_id')
-                         and {key: value for key, value in activity[-1].items() if key != 'timestamp'} == clean)
+                         and {key: value for key, value in activity[-1].items() if key not in ('timestamp', 'output_bytes')}
+                         == {key: value for key, value in clean.items() if key != 'output_bytes'})
             if heartbeat:
                 # Keep active tool starts and their evidence references available
                 # while a long execution emits otherwise identical status polls.

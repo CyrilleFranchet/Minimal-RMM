@@ -62,7 +62,18 @@ SQLite handles until garbage collection.
 Commands and outputs stay in protected AI evidence and remote execution
 files, not the safe activity metadata. Safe `exegol_execution` checkpoints
 record the execution ID before launch and on subsequent observations.
-Identical consecutive execution heartbeats update the existing activity entry
+They also retain the supervisor action, observed output byte count, signed
+exit code when known, and allowlisted supervisor error code. The WebUI keeps
+these safe fields in expanded activity and Copy diagnostics. Execution states
+use execution-specific labels, so `completed` identifies the supervised
+command's completion rather than a generic tool response. Older execution IDs
+already retained by the API become visible when the updated UI loads; action,
+exit, output-size, and error fields require observations from the updated
+service. Commands and raw output remain in explicitly loaded evidence.
+The WebUI's `executionMetadata` helper validates the hexadecimal handle,
+supervisor-action and error-code enums, signed exit-code bounds, and output
+counter before projecting them into snapshots and copied diagnostics.
+Consecutive execution heartbeats with the same state and action update the existing activity entry
 instead of appending another. This keeps the active tool's start/evidence
 references available during long commands while still checking interruption
 on every poll and retaining meaningful state transitions.

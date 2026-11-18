@@ -141,5 +141,62 @@ const job = { id: 'job-1', session_id: 'session-1', status: 'running', created_a
   assert(!contains('stale-tool'), 'late refresh response cannot repopulate old scope');
   document.body.children[0].close();
   assert.equal(timers.size, 0, 'native Escape/close lifecycle cancels refresh');
+  api.reset();
+  const executionId = 'a'.repeat(32);
+  const executionJob = { id: 'execution-job', status: 'running',
+    progress: { phase: 'exegol_execution', backend: 'exegol', status: 'running', execution_id: executionId,
+      execution_action: 'status', exit_code: 0, output_bytes: 0, command: 'hidden-execution-secret' },
+    activity: [{ timestamp: '2026-11-18T12:00:00Z', phase: 'exegol_execution', backend: 'exegol',
+      status: 'running', execution_id: executionId, execution_action: 'status', output_bytes: 23,
+      command: 'hidden-execution-secret', output: 'hidden-execution-secret', error: 'hidden-execution-secret' }] };
+  api.show(executionJob);
+  assert(contains(`Execution ${executionId}`), 'execution ID is visible without expanding the event');
+  assert(contains('Execution running'), 'supervisor running state is distinct from a tool call starting');
+  await find('button', 'Copy diagnostics').click();
+  let executionCopy = JSON.parse(copied);
+  assert.equal(executionCopy.progress.execution_id, executionId);
+  assert.equal(executionCopy.progress.backend, 'exegol');
+  assert.equal(executionCopy.progress.execution_action, 'status');
+  assert.equal(executionCopy.progress.exit_code, 0, 'zero exit code survives projection');
+  assert.equal(executionCopy.progress.output_bytes, 0, 'zero captured output survives projection');
+  assert.equal(executionCopy.activity[0].execution_id, executionId);
+  assert.equal(executionCopy.activity[0].output_bytes, 23);
+  assert(!copied.includes('hidden-execution-secret'), 'execution details never export command, output, or raw errors');
+  const executionDetails = all().find(node => node.tag === 'details');
+  executionDetails.open = true;
+  executionDetails.children[0].focus();
+  api.remember({ ...executionJob, activity: [{ ...executionJob.activity[0], timestamp: '2026-11-18T12:00:02Z' }] });
+  assert(all().some(node => node.tag === 'details' && node.open), 'execution heartbeat refresh preserves expanded detail');
+  assert.equal(document.activeElement.dataset.event, executionDetails.children[0].dataset.event,
+    'execution heartbeat refresh preserves summary focus');
+  for (const [state, expected] of Object.entries({ prepared: 'Execution prepared', starting: 'Execution starting',
+    completed: 'Execution completed', failed: 'Execution failed', timed_out: 'Execution deadline exceeded',
+    cancelled: 'Execution cancelled', outcome_unknown: 'Execution outcome unknown', not_found: 'Execution record not found' })) {
+    api.remember({ ...executionJob, activity: [{ ...executionJob.activity[0], status: state,
+      exit_code: -9, error_code: 'termination_unconfirmed' }] });
+    assert(contains(expected), `${state} has an execution-specific label`);
+    await find('button', 'Copy diagnostics').click();
+    executionCopy = JSON.parse(copied);
+    assert.equal(executionCopy.activity[0].exit_code, -9, 'signal exit codes survive projection');
+    assert.equal(executionCopy.activity[0].error_code, 'termination_unconfirmed');
+  }
+  for (const invalid of [
+    { execution_id: '../escape', execution_action: 'run arbitrary command', error_code: 'hidden-execution-secret', exit_code: null, output_bytes: -1 },
+    { execution_id: 'A'.repeat(32), execution_action: '<script>', error_code: '<script>', exit_code: true, output_bytes: Infinity },
+    { execution_id: executionId + 'a', execution_action: 'unknown', error_code: 'unknown', exit_code: 2147483648, output_bytes: Number.MAX_SAFE_INTEGER + 1 },
+    { execution_id: null, execution_action: null, error_code: null, exit_code: -2147483649, output_bytes: 1.5 },
+    { execution_id: 123, execution_action: {}, error_code: {}, exit_code: '0', output_bytes: true },
+  ]) {
+    api.remember({ ...executionJob, progress: { phase: 'exegol_execution', ...invalid },
+      activity: [{ phase: 'exegol_execution', ...invalid }] });
+    await find('button', 'Copy diagnostics').click();
+    executionCopy = JSON.parse(copied);
+    for (const key of ['execution_id', 'execution_action', 'error_code', 'exit_code', 'output_bytes']) {
+      assert(!(key in executionCopy.progress), `invalid progress ${key} excluded`);
+      assert(!(key in executionCopy.activity[0]), `invalid activity ${key} excluded`);
+    }
+    assert(!copied.includes('hidden-execution-secret'));
+  }
+  api.reset();
   console.log('AI operation details checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

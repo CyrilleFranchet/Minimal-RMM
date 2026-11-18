@@ -89,6 +89,11 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.backend.store.get(result['execution_id'])['state'], 'completed')
         self.assertEqual([r['action'] for r in self.raw.calls], ['start', 'status'])
         self.assertTrue(self.raw.closed)
+        completed = self.events[-1]
+        self.assertEqual(completed['execution_id'], result['execution_id'])
+        self.assertEqual(completed['execution_action'], 'status')
+        self.assertEqual(completed['exit_code'], 0)
+        self.assertEqual(completed['output_bytes'], len(b'fixture output\n'))
 
     async def test_lost_start_response_recovers_without_duplicate_launch_after_reconnect(self):
         self.raw.lose_start = True
@@ -174,6 +179,8 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             result = json.loads(await self.backend.call_tool('execute_command_in_container', args))
             self.assertEqual((result['state'], result['exit_code']), (state, code))
             self.assertEqual(result.get('error'), error)
+            self.assertEqual(self.events[-1].get('error_code'), error)
+            self.assertEqual(self.events[-1].get('exit_code'), code)
 
     async def test_long_execution_polls_without_more_model_calls(self):
         self.raw.statuses = ['running', 'running', 'completed']

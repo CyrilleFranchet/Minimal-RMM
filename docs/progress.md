@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-11-18 — Show Exegol execution details in diagnostics
+
+- Preserve the validated execution ID in the operation-details timeline and
+  copied diagnostic JSON; the previous WebUI projection silently dropped it.
+- Record safe supervisor actions, signed exit codes, output byte counts, and
+  allowlisted error codes, with execution-specific status labels. Raw commands
+  and output remain available only through explicitly loaded evidence.
+- Coalesce continuing execution polls even as output grows, preserving the
+  original tool start and evidence references for long-running commands.
+
 ## 2026-11-18 — Verify durable Exegol execution on Linux and real MCP HTTP
 
 - A fresh audit found and repaired three issues: execution-store SQLite

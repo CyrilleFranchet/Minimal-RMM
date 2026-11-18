@@ -14,7 +14,7 @@ _PY311 = sys.version_info >= (3, 11)
 
 from rmm_ai_context import ContextDispatcher, ContextWindow
 from rmm_ai_concurrency import run_tool_batch
-from rmm_ai_jobs import AIJobManager, JobInterrupted, _failure_diagnostics
+from rmm_ai_jobs import AIJobManager, JobInterrupted, _failure_diagnostics, _safe_activity
 
 
 class OperationActivityTests(unittest.TestCase):
@@ -103,6 +103,26 @@ class OperationActivityTests(unittest.TestCase):
         final = self.finish(run)
         self.assertEqual(final['activity'][-1]['output_bytes'], len(output.encode()))
 
+    def test_execution_details_are_persisted_and_sanitized_without_raw_output(self):
+        def run(progress):
+            progress({'phase': 'exegol_execution', 'execution_id': 'a' * 32, 'status': 'timed_out',
+                      'execution_action': 'status', 'exit_code': -9, 'output_bytes': 42,
+                      'error_code': 'termination_unconfirmed', 'command': 'private-command',
+                      'output': 'private-output', 'error': 'private-error'})
+            return {'ok': True}
+        final = self.finish(run)
+        event = final['activity'][-1]
+        for key, value in [('execution_id', 'a' * 32), ('execution_action', 'status'),
+                           ('exit_code', -9), ('output_bytes', 42), ('error_code', 'termination_unconfirmed')]:
+            self.assertEqual(event[key], value)
+            self.assertEqual(final['progress'][key], value)
+        self.assertNotIn('private-', json.dumps(final))
+        for invalid in ({'execution_id': 'not-a-handle'}, {'exit_code': True}, {'exit_code': 2**31},
+                        {'exit_code': -(2**31) - 1}, {'exit_code': '-9'},
+                        {'execution_action': 'private-command'}, {'error_code': 'private-error'}):
+            clean = _safe_activity({'phase': 'exegol_execution', **invalid})
+            self.assertNotIn(next(iter(invalid)), clean)
+
     def test_cancel_retains_late_response_without_admitting_new_work(self):
         started, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
@@ -160,9 +180,9 @@ class OperationActivityTests(unittest.TestCase):
         self.addCleanup(release.set)
         scope = 'd' * 64
         async def execute(name, args):
-            for _ in range(505):
+            for index in range(505):
                 progress({'phase': 'exegol_execution', 'execution_id': 'e' * 32,
-                          'status': 'running', 'backend': 'exegol'})
+                          'status': 'running', 'backend': 'exegol', 'output_bytes': index})
             started.set()
             await asyncio.to_thread(release.wait, 3)
             return 'late collection result'
@@ -181,6 +201,7 @@ class OperationActivityTests(unittest.TestCase):
         evidence = self.manager.read_evidence(job['id'], 'operator', tool_start['arguments_artifact_id'])
         self.assertEqual(json.loads(evidence['content'])['command'], 'private long collection')
         self.assertEqual(sum(item.get('phase') == 'exegol_execution' for item in active['activity']), 1)
+        self.assertEqual(active['activity'][-1]['output_bytes'], 504)
         self.assertEqual(active['activity_omitted'], 0)
         self.manager.cancel(job['id'], 'operator')
         with self.assertRaises(JobInterrupted):

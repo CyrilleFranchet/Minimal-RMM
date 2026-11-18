@@ -10,6 +10,23 @@
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : undefined;
   const timestamp = value => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : undefined;
   const statuses = { running: "Call started", completed: "Response received", outcome_unknown: "Outcome unknown", failed: "Failed" };
+  const executionStatuses = { prepared: "Execution prepared", starting: "Execution starting", running: "Execution running",
+    completed: "Execution completed", failed: "Execution failed", timed_out: "Execution deadline exceeded",
+    cancelled: "Execution cancelled", outcome_unknown: "Execution outcome unknown", not_found: "Execution record not found" };
+  const executionActions = new Set(["prepare", "start", "status", "cancel"]);
+  const executionErrors = new Set(["output_limit_exceeded", "supervisor_failed", "termination_unconfirmed",
+    "supervisor_unavailable", "supervisor_launch_failed"]);
+
+  function executionMetadata(value) {
+    const safe = {};
+    if (typeof value?.execution_id === "string" && /^[a-f0-9]{32}$/.test(value.execution_id)) safe.execution_id = value.execution_id;
+    if (value?.phase !== "exegol_execution") return safe;
+    if (executionActions.has(value?.execution_action)) safe.execution_action = value.execution_action;
+    if (Number.isSafeInteger(value?.exit_code) && value.exit_code >= -2147483648 && value.exit_code <= 2147483647) safe.exit_code = value.exit_code;
+    if (executionErrors.has(value?.error_code)) safe.error_code = value.error_code;
+    if (count(value?.output_bytes) !== undefined) safe.output_bytes = value.output_bytes;
+    return safe;
+  }
 
   function diagnostics(value) {
     return (Array.isArray(value) ? value : []).slice(0, 32).map(item => ({
@@ -21,12 +38,13 @@
 
   function snapshot(job) {
     const progress = {};
-    for (const key of ["phase", "status", "tool", "tool_path", "mcp_status", "exegol_status"]) {
+    for (const key of ["phase", "status", "tool", "tool_path", "backend", "mcp_status", "exegol_status"]) {
       if (label(job.progress?.[key])) progress[key] = label(job.progress[key]);
     }
     for (const key of ["round", "step", "context_compactions"]) {
       if (count(job.progress?.[key]) !== undefined) progress[key] = job.progress[key];
     }
+    Object.assign(progress, executionMetadata(job.progress));
     return {
       id: label(job.id), session_id: label(job.session_id), status: label(job.status),
       created_at: timestamp(job.created_at), started_at: timestamp(job.started_at),
@@ -40,6 +58,7 @@
         for (const key of ["round", "duration_ms", "output_bytes"]) {
           if (count(event[key]) !== undefined) safe[key] = event[key];
         }
+        Object.assign(safe, executionMetadata(event));
         if (Array.isArray(event.arguments_keys)) safe.arguments_keys = event.arguments_keys.map(label).filter(Boolean).slice(0, 50);
         if (event.diagnostics) safe.diagnostics = { exception_chain: diagnostics(event.diagnostics.exception_chain) };
         return safe;
@@ -115,14 +134,18 @@
       const terminal = !["queued", "running"].includes(job.status);
       const ended = new Set(job.activity.filter(event => event.status !== "running").map(event => event.call_id).filter(Boolean));
       job.activity.forEach((event, index) => {
-        const eventKey = `${event.call_id || "event"}/${event.status || ""}/${event.timestamp || index}`;
+        const eventKey = event.phase === "exegol_execution" && event.execution_id
+          ? `${event.execution_id}/${event.execution_action || ""}/${event.status || ""}/${index}`
+          : `${event.call_id || "event"}/${event.status || ""}/${event.timestamp || index}`;
         const item = node("li", undefined, list);
         const details = node("details", undefined, item);
         details.dataset.event = eventKey;
         details.open = expanded.has(eventKey);
         const unfinished = terminal && event.phase === "tool" && event.status === "running" && !ended.has(event.call_id);
         const summary = node("summary", [event.timestamp, event.backend, event.tool || event.phase || "Activity",
-          unfinished ? "Outcome unknown (no final event recorded)" : statuses[event.status] || event.status,
+          event.execution_id ? `Execution ${event.execution_id}` : "",
+          unfinished ? "Outcome unknown (no final event recorded)"
+            : (event.phase === "exegol_execution" ? executionStatuses[event.status] : statuses[event.status]) || event.status,
           event.duration_ms !== undefined ? `${event.duration_ms} ms` : ""].filter(Boolean).join(" · "), details);
         summary.dataset.event = eventKey;
         summary.dataset.focus = eventKey;

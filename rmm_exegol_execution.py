@@ -173,12 +173,21 @@ class DurableExegolBackend:
     async def __aexit__(self, *args):
         await self.backend.__aexit__(*args)
 
-    def checkpoint(self, key, state):
+    def checkpoint(self, key, state, *, action='prepare', result=None):
         """Persist status before reporting a safe cooperative job checkpoint."""
         self.store.update(key, state)
         if self.progress:
-            self.progress({'phase': 'exegol_execution', 'execution_id': key, 'status': state,
-                           'backend': 'exegol'})
+            event = {'phase': 'exegol_execution', 'execution_id': key, 'status': state,
+                     'execution_action': action, 'backend': 'exegol'}
+            observed = result or {}
+            code, size = observed.get('exit_code'), observed.get('output_bytes')
+            if type(code) is int and -(2**31) <= code < 2**31:
+                event['exit_code'] = code
+            if type(size) is int and 0 <= size <= 2**53 - 1:
+                event['output_bytes'] = size
+            if observed.get('error') in SAFE_ERRORS:
+                event['error_code'] = observed['error']
+            self.progress(event)
 
     async def request(self, row, action, **kwargs):
         """Use the existing Exegol tool only for bounded supervisor operations."""
@@ -197,7 +206,7 @@ class DurableExegolBackend:
         if (not isinstance(result, dict) or result.get('execution_id') != row['id']
                 or result.get('state') not in STATES):
             raise RuntimeError('invalid Exegol supervisor response')
-        self.checkpoint(row['id'], result['state'])
+        self.checkpoint(row['id'], result['state'], action=action, result=result)
         return result
 
     @staticmethod
