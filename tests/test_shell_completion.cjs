@@ -543,3 +543,21 @@ test('creds list renders API credential IDs and labels', async () => {
   assert.equal(f.errors.length, 0);
   assert.deepEqual(output, [String.raw`  cred-123  LAB\alice`]);
 });
+
+for (const status of [200, 400]) {
+  test(`lateral clears the prompt before its HTTP ${status} response and preserves the next draft`, async () => {
+    const f = fixture();
+    let resolve;
+    const response = new Promise(done => { resolve = done; });
+    f.context.api = () => response;
+    f.type('/lateral psexec lab-host');
+    const operation = f.context.runCommand(false);
+    assert.equal(f.input.value, '');
+    assert.equal(f.input.disabled, false);
+    assert.deepEqual(f.history, ['/lateral psexec lab-host']);
+    f.type('whoami');
+    resolve({status, data: {ok: true, error: 'request failed'}});
+    await operation;
+    assert.equal(f.input.value, 'whoami');
+  });
+}

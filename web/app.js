@@ -3524,12 +3524,10 @@ async function runCommand(wait) {
   if (!cmd || !state.selectedId) return;
 
   const target = captureShellTarget();
-  // Keep failed validation and request attempts available for editing/retry.
+  // Keep submitted commands in history for editing/retry.
   rememberShellCommand(cmd, target.sessionId);
+  clearShellInput();
   if (await dispatchShellMetaCommand(cmd, target)) {
-    if (!target.isCurrent()) return;
-    clearShellInput();
-    input.focus();
     return;
   }
 

@@ -1,5 +1,13 @@
 # Progress Log
 
+## 2026-11-18 — Clear the WebUI shell prompt on submission
+
+- `runCommand` clears the submitted input before awaiting meta-command dispatch,
+  including `lateral psexec`. Completion no longer clears a new draft typed
+  while the meta-command request is pending. Submitted commands remain in history.
+- Node regression coverage checks immediate clearing and draft preservation for
+  successful and failed lateral requests.
+
 ## 2026-11-18 — Repair lateral deployment lifecycle bugs
 
 - **PsExec preserves workspace ownership.** `lateral_move(psexec)` no longer
