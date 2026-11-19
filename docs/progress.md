@@ -1,5 +1,29 @@
 # Progress Log
 
+## 2026-11-19 — Fix the WMI pipe dial after a live deployment failure
+
+- An operator's real `wmiexec_loader` deployment reached the target: WMI
+  created the receiver, the PowerShell bootstrap ran, the session pipe was
+  created, and the source connected — then the first payload write failed
+  with `ERROR_INVALID_PARAMETER` (87) on `\\<host>\pipe\rmm-loader-<id>`.
+- Root cause: the dial used `os.OpenFile`, which opens Windows handles with
+  `FILE_FLAG_OVERLAPPED` while Go's non-pollable file I/O writes with a null
+  OVERLAPPED — a combination named pipes reject with error 87 on runtimes
+  predating the 2025 poller fix (golang/go#15388 family). The declared agent
+  baseline is Go 1.21.
+- Fix: dial with an explicit synchronous `CreateFileW` through the repo's
+  lazyDLL convention — GENERIC_READ|GENERIC_WRITE, exclusive instance,
+  OPEN_EXISTING, no overlapped flag — and wrap the handle with `os.NewFile`
+  for blocking I/O already bounded by the goroutine deadline wrappers.
+  Retry cases stay ERROR_FILE_NOT_FOUND / ERROR_PIPE_BUSY.
+- Added Windows-only regressions: the dial parameter matrix (overlapped flag
+  absent, no pipe-instance creation, documented retry errnos) and an
+  end-to-end local receiver run that dials the actual generated script with
+  the native client, streams a framed non-PE payload, and asserts the
+  `RMM_LOADER_ERROR` reply naming the mapping failure plus receiver exit.
+  Host suites, cross-vet, and both Windows architectures and build modes
+  compile; the live remote retest remains deployment validation.
+
 ## 2026-11-19 — Implement the lateral loader chain (csharp, single-loader release)
 
 - Implemented the [lateral loader plan](lateral-loader.md) up to native
