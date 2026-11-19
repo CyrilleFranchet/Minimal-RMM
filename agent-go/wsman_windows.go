@@ -337,10 +337,45 @@ func winrmDeployLoaderAgent(host string, agent []byte, sessionID string, workspa
 	return winrmDeployTransfer(transfer, host, sessionID, workspaceID, identity, useHTTPS, insecure, deadline)
 }
 
+// winrmDeployLoaderAgentIndependent escapes the WinRM shell job for the
+// deployed agent: the shell receiver re-stages through a local WMI process
+// create and relays the payload over a local pipe, and the source closes the
+// shell session as soon as the independent host proves readiness. The
+// deployment then lives like a WMI loader deployment: independent of this
+// source, ended only by a target reboot or an explicit kill.
+func winrmDeployLoaderAgentIndependent(host string, agent []byte, sessionID string, workspaceID *string, identity *winrmCredentials, useHTTPS, insecure bool, deadline time.Time) error {
+	transfer, err := prepareWinRMTransferFromBytes(agent)
+	if err != nil {
+		return fmt.Errorf("prepare WinRM transfer: %w", err)
+	}
+	// The secondary receiver runs the WMI loader contract unchanged: it
+	// creates the session-named pipe, reads the framed halves, maps the
+	// agent, and confirms loader readiness over the pipe.
+	secondary := wmiLoaderScript(wmiLoaderPipeName(sessionID), sessionID, workspaceID, transfer)
+	independent := winrmIndependentScript(sessionID, transfer)
+	transfer, err = prepareWinRMIndependentTransfer(agent, []byte(secondary))
+	if err != nil {
+		return fmt.Errorf("prepare independent WinRM transfer: %w", err)
+	}
+	return winrmDeployTransferScript(transfer,
+		winrmIndependentReceiverArguments(independent),
+		host, identity, useHTTPS, insecure, deadline, false)
+}
+
 // winrmDeployTransfer runs the shared WinRM deployment core: the
 // transfer-wide deadline, COM security policy, WSMan initialization, and the
 // loader-gated execution with a held shell.
 func winrmDeployTransfer(transfer *winrmTransfer, host, sessionID string, workspaceID *string, identity *winrmCredentials, useHTTPS, insecure bool, deadline time.Time) error {
+	return winrmDeployTransferScript(transfer,
+		winrmReceiverArguments(sessionID, workspaceID, transfer),
+		host, identity, useHTTPS, insecure, deadline, true)
+}
+
+// winrmDeployTransferScript runs the shared WSMan deployment core for a
+// pre-built receiver command. Held shells keep tethered deployments alive;
+// independent deployments close the session after the readiness marker, so
+// the shell's job kills only the relaying receiver.
+func winrmDeployTransferScript(transfer *winrmTransfer, arguments []string, host string, identity *winrmCredentials, useHTTPS, insecure bool, deadline time.Time, hold bool) error {
 	if deadline.IsZero() {
 		deadline = time.Now().Add(wsmanCompletionTimeout)
 	}
@@ -361,8 +396,8 @@ func winrmDeployTransfer(transfer *winrmTransfer, host, sessionID string, worksp
 		return err
 	}
 	return winrmExecuteWithTLSAPI(native, host, winrmReceiverCommandPath,
-		winrmReceiverArguments(sessionID, workspaceID, transfer),
-		wsmanCompletionTimeout, identity, useHTTPS, insecure, transfer, true)
+		arguments,
+		wsmanCompletionTimeout, identity, useHTTPS, insecure, transfer, hold)
 }
 
 func winrmCreateProcessWithAPI(native wsmanCaller, host, commandPath string, arguments []string, timeout time.Duration) (resultErr error) {

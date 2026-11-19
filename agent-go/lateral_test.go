@@ -209,6 +209,29 @@ func TestLateralUsesSelfBinaryFollowsTheDeploymentChain(t *testing.T) {
 	}
 }
 
+// The COM security decision follows the source's hosting mode: a
+// memory-hosted agent cannot pre-empt its PowerShell host's CLR, so
+// RPC_E_TOO_LATE is acceptance there; an on-disk agent stays fail-closed
+// because the foreign initializer is unknown.
+func TestWMISecurityResultFollowsHostingMode(t *testing.T) {
+	if err := wmiSecurityResult(0); err != nil {
+		t.Fatalf("a successful initialization must pass: %v", err)
+	}
+	t.Setenv(memoryHostedEnv, "1")
+	if err := wmiSecurityResult(rpcETooLate); err != nil {
+		t.Fatalf("a memory-hosted agent must accept its host's COM security: %v", err)
+	}
+	t.Setenv(memoryHostedEnv, "0")
+	err := wmiSecurityResult(rpcETooLate)
+	if err == nil || !strings.Contains(err.Error(), "0x80010119") {
+		t.Fatalf("an on-disk agent must fail closed on a foreign initialization: %v", err)
+	}
+	err = wmiSecurityResult(0x80010106)
+	if err == nil || !strings.Contains(err.Error(), "thread cloaking failed") {
+		t.Fatalf("other failures must keep the cloaking label: %v", err)
+	}
+}
+
 func TestParseLateralPayloadAppliesDefaultsAndBounds(t *testing.T) {
 	payload, err := parseLateralPayload(`__LATERAL__` + "\n" + `{"method":" PSEXEC ","host":"\\\\ws01.lab.local","stage":"0123456789abcdef0123456789abcdef"}`)
 	if err != nil {

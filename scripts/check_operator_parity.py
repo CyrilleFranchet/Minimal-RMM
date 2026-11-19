@@ -273,7 +273,7 @@ def main() -> int:
                       for entry in tools_mod.OPENAI_TOOLS if entry["function"]["name"] == name)
         client_parameters = inspect.signature(getattr(cli.RmmApiClient, name)).parameters
         if name == "lateral_move":
-            for option in ("https", "insecure"):
+            for option in ("https", "insecure", "independent"):
                 if (schema.get(option, {}).get("type") != "boolean" or
                         option not in mcp_parameters.get(name, set()) or option not in client_parameters):
                     errors.append(f"lateral_move must expose boolean {option} in client, MCP and AI schemas")

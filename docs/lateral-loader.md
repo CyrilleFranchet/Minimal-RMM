@@ -239,10 +239,16 @@ The lifetime model differs by transport and must be documented per method:
   process-lifetime constraints of an in-memory session (documented in
   `docs/winrm-transfer.md`): no spawn/spawnas/persistence/PE-plugin children,
   `RMM_IN_MEMORY` marker set, dies with host process termination.
-- **WinRM dependency:** the deployment lives exactly as long as the source
-  agent holds the WinRM shell (existing `winrmHeldShell` registry,
-  `stopHeldWinRMShells` at source shutdown). It dies with the source agent or
-  a target reboot. This is unchanged and accepted.
+- **WinRM dependency:** independent is the default lifetime. The receiver
+  re-stages through a local WMI process (outside the shell's job object),
+  the source closes the session after readiness, and the deployment has
+  WMI-loader lifetime — it survives its source and ends at target shutdown
+  or an explicit kill. The tethered lifetime (opt-in via `--tethered` /
+  `independent: false`, winrm-scoped) keeps the deployment alive exactly as
+  long as the source agent holds the WinRM shell (`winrmHeldShell` registry,
+  `stopHeldWinRMShells` at source shutdown): it dies with the source agent
+  or a target reboot, and suits targets whose WinRM session cannot create
+  local WMI processes.
 - **WMI dependency (new lifetime class):** `Win32_Process.Create` starts an
   independent process. A WMI-deployed in-memory session **outlives the source
   agent** and is killed only by target shutdown or explicit termination. The

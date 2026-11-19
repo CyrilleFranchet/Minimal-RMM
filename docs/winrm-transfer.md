@@ -43,6 +43,46 @@ remains enabled unless `-k` / `--insecure` is explicitly selected with HTTPS.
 The command does not change TrustedHosts, configure a listener, or retry over
 another transport.
 
+## Independent lifetime (winrm default)
+
+Independent is the **default** for WinRM loader deployments (`--tethered` on
+the CLI and WebUI shell, or `independent: false` on REST/MCP, opts back
+into the tethered lifetime; the option is ignored by other methods).
+Tethered deployments live exactly as long as the source agent holds the
+shell, because the receiver runs inside the shell's job object and the
+job kills its tree when the shell closes. Independence uses the same escape
+the WMI chain has: a process created by the WMI provider is not in the
+shell's job.
+
+In the independent flow the shell receiver does not map the agent itself.
+It verifies both streamed halves, launches a secondary receiver through a
+**local `Win32_Process.Create`** (whose process belongs to the WMI provider,
+outside the shell job), relays the payload over a session-named local pipe,
+and prints `RMM_LOADER_READY` only after the secondary receiver confirms its
+own loader readiness over that pipe. The secondary receiver is the exact
+WMI loader contract — pipe server, digest checks, `Add-Type`, mapping,
+environment markers, and a block on the agent thread — so the deployed
+session behaves like a WMI loader deployment: it survives the source and
+ends at a target reboot or an explicit kill. When the source observes the
+readiness marker it tears the whole WinRM session down instead of holding
+it: the shell's job kills only the relaying receiver, and nothing on the
+source keeps handles open.
+
+The secondary receiver's bootstrap travels as a length-prefixed stdin
+section before the standard framing, because the shell command line cannot
+carry both receivers' scripts and stay under the WinRS limit. The relay
+carries the secondary receiver's failure lines back to the source through
+the shell stdout, so a failed transition is stage-labeled by the same
+error prefix used on the WMI pipe (`RMM_LOADER_ERROR: …`).
+
+The prerequisite beyond the tethered flow applies to the default
+deployment path: the WinRM session identity must be able to create processes
+through local WMI on the target (local admin covers it; a plain Remote
+Management Users member may not). Deployments that cannot meet it opt back
+into the tethered lifetime with `--tethered`. The AMD64-only mapping
+restriction and the memory-hosted capability guard (`RMM_IN_MEMORY`) apply
+unchanged. Native Windows validation of the transition remains outstanding.
+
 ## Transfer and in-memory launch
 
 The source streams a framed payload through `WSManSendShellInput` to the

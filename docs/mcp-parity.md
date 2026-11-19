@@ -26,7 +26,12 @@ schemas (the parity checker enforces it). Only `csharp` is supported in this
 release; the reserved `powershell` value fails with `loader_reserved` instead
 of silently substituting the default. Loader deployments stage the
 workspace-owned artifact through the server, so they no longer deploy the
-source agent's own binary.
+source agent's own binary. The winrm-scoped `independent` boolean (enforced
+by the same parity gate, default true) selects the shell-independent
+lifetime: the receiver re-stages through a local WMI process, and the source
+closes its WinRM session right after readiness instead of holding it for the
+deployment's lifetime; setting it false restores the tethered lifetime, and
+other methods simply ignore the option.
 
 Operator CLI and external MCP clients default to the workspace URL on port
 8787; an explicit URL remains authoritative. Central administration requires
@@ -275,7 +280,7 @@ Unknown slash commands never reach the remote shell.
 | Agent `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | `install_persistence`, `remove_persistence` | Lab only |
 | Agent `__SPAWN__` (`POST …/spawn`) | `spawn_session` | Detached second Go agent with a fresh session ID; registration and responsiveness verification, Go sessions only |
 | Agent `__MAKE_TOKEN__` / `__REV2SELF__` (`POST …/make_token`, `…/rev2self`) | `make_token`, `rev2self` | `runas /netonly` style network identity for spawned commands, Go (Windows) sessions only; operator events record the identity label, never the password |
-| Agent `__LATERAL__` (`POST …/lateral`) | `lateral_move` | Start a Go agent on another host (psexec/wmiexec/winrm) with a fresh session ID and a `loader` option (`csharp` default; `powershell` reserved and rejected explicitly on every surface); registration and responsiveness verification, Go (Windows) sessions only |
+| Agent `__LATERAL__` (`POST …/lateral`) | `lateral_move` | Start a Go agent on another host (psexec/wmiexec/winrm) with a fresh session ID, a `loader` option (`csharp` default; `powershell` reserved and rejected explicitly on every surface), and a winrm-scoped `independent` boolean (default true: the source closes its WinRM session after readiness; false restores the tethered lifetime); registration and responsiveness verification, Go (Windows) sessions only |
 | Agent `__UID__` (`POST …/uid`) | `session_uid` | Identity report for make_token / rev2self verification, Go sessions only |
 | Agent `__STOP__` | `stop_persistent` | |
 

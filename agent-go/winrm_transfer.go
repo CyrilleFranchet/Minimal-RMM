@@ -51,6 +51,10 @@ type winrmTransfer struct {
 	loaderDigest string
 	binarySize   int64
 	binaryDigest string
+	// scriptSize is the independent receiver's secondary script length: the
+	// 4-byte length prefix precedes it in the stream. Zero marks the
+	// classic two-half framing.
+	scriptSize int64
 	// deadline bounds the whole transfer; a zero value keeps per-operation
 	// waits so ABI fixtures stay independent of a live clock.
 	deadline time.Time
@@ -310,6 +314,13 @@ if($e -eq [IntPtr]::Zero){throw 'agent image mapping failed'}
 func winrmReceiverArguments(sessionID string, workspaceID *string, transfer *winrmTransfer) []string {
 	return []string{"-NoLogo", "-NoProfile", "-NonInteractive",
 		"-EncodedCommand", winrmEncodedCommand(winrmStage1Script(sessionID, workspaceID, transfer))}
+}
+
+// winrmIndependentReceiverArguments builds the shell command for an
+// independent deployment from its pre-generated receiver script.
+func winrmIndependentReceiverArguments(script string) []string {
+	return []string{"-NoLogo", "-NoProfile", "-NonInteractive",
+		"-EncodedCommand", winrmEncodedCommand(script)}
 }
 
 // winrmReceiverCommandPath is the target's Windows PowerShell interpreter.

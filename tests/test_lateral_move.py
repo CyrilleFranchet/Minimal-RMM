@@ -281,11 +281,11 @@ class LateralFlowTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
         self.assertIs(request["https"], True)
-        self.assertEqual(request["method"], "winrm_https_loader", "older agents must reject the loader chain instead of ignoring it")
+        self.assertEqual(request["method"], "winrm_https_loader_independent", "older agents must reject the loader chain instead of ignoring it")
         self.assertIn("-s", self.server.record_operator_action.call_args.args[1])
 
     def test_wmiexec_and_winrm_deploy_server_staged_artifacts(self):
-        for method, wire in (("wmiexec", "wmiexec_loader"), ("winrm", "winrm_loader")):
+        for method, wire in (("wmiexec", "wmiexec_loader"), ("winrm", "winrm_loader_independent")):
             with self.subTest(method=method):
                 self.ack_output = f"lateral started: method={method} host=target target session={self.target_id} loader=csharp"
                 self.server.exec_and_wait.reset_mock()
@@ -293,6 +293,10 @@ class LateralFlowTests(unittest.TestCase):
                 self.assertEqual(status, "ok")
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["loader"], "csharp")
+                if method == "winrm":
+                    self.assertTrue(result["independent"], "winrm deployments are independent by default")
+                else:
+                    self.assertNotIn("independent", result, "independent is winrm-scoped")
                 request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
                 self.assertEqual(request["method"], wire,
                                  "loader deployments must use wired names older agents reject")
@@ -302,6 +306,26 @@ class LateralFlowTests(unittest.TestCase):
                 self.assertEqual(request["payload_sha256"],
                                  hashlib.sha256(b"MZfake-agent-payload-for-staging").hexdigest())
                 self.assertIn("loader=csharp", self.server.record_operator_action.call_args.args[1])
+
+    def test_winrm_tethered_optout_and_off_method_scoping(self):
+        self.ack_output = f"lateral started: method=winrm host=target target session={self.target_id} loader=csharp"
+        result, _ = self.server.lateral_move(self.source.id, "winrm", "target", independent=False)
+        self.assertFalse(result["independent"])
+        request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+        self.assertEqual(request["method"], "winrm_loader",
+                         "the tethered opt-out must use the held-shell wire name")
+        self.assertIn("--tethered", self.server.record_operator_action.call_args.args[1])
+        self.server.exec_and_wait.reset_mock()
+        # Non-winrm methods ignore the independent option instead of failing.
+        result, status = self.server.lateral_move(self.source.id, "wmiexec", "target")
+        self.assertEqual(status, "ok")
+        self.assertNotIn("independent", result)
+        request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+        self.assertEqual(request["method"], "wmiexec_loader")
+        self.server.exec_and_wait.reset_mock()
+        result, status = self.server.lateral_move(self.source.id, "psexec", "target", independent=True)
+        self.assertEqual(status, "ok")
+        self.assertNotIn("independent", result)
 
     def test_loader_deployments_require_the_workspace_artifact(self):
         for method in ("wmiexec", "winrm"):
@@ -347,7 +371,7 @@ class LateralFlowTests(unittest.TestCase):
         self.server.lateral_move(self.source.id, "winrm", "target", https=True, insecure=True)
         request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
         self.assertIs(request["insecure"], True)
-        self.assertEqual(request["method"], "winrm_https_insecure_loader")
+        self.assertEqual(request["method"], "winrm_https_insecure_loader_independent")
         self.assertIn("-k", self.server.record_operator_action.call_args.args[1])
         self.server.exec_and_wait.reset_mock()
         for value in [True, "true", 1, None]:
@@ -364,6 +388,57 @@ class LateralFlowTests(unittest.TestCase):
         with patch.object(rmm_tools, "_resolve_session_id", return_value=("source", {})):
             result = json.loads(rmm_tools.tool_lateral_move(client, "source", "winrm", "target", insecure=True))
             self.assertEqual(result["error"], "invalid_insecure")
+
+    def test_winrm_independent_deploys_with_local_wmi_restage(self):
+        self.ack_output = f"lateral started: method=winrm host=target target session={self.target_id} loader=csharp"
+        result, status = self.server.lateral_move(self.source.id, "winrm", "target", independent=True)
+        self.assertEqual(status, "ok")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["independent"])
+        request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+        self.assertEqual(request["method"], "winrm_loader_independent",
+                         "independent deployments must carry a wire name older agents reject")
+        self.assertNotIn("--tethered", self.server.record_operator_action.call_args.args[1])
+
+    def test_winrm_https_independent_wire_composition(self):
+        self.server.lateral_move(self.source.id, "winrm", "target", https=True, independent=True)
+        request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+        self.assertEqual(request["method"], "winrm_https_loader_independent")
+        self.server.exec_and_wait.reset_mock()
+        self.server.lateral_move(self.source.id, "winrm", "target", https=True, insecure=True, independent=True)
+        request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+        self.assertEqual(request["method"], "winrm_https_insecure_loader_independent")
+
+    def test_independent_is_winrm_scoped_and_requires_booleans(self):
+        for value in ("true", 1, None):
+            self.assertEqual(self.server.lateral_move(self.source.id, "winrm", "target", independent=value),
+                             (None, "invalid_independent"))
+        self.server.exec_and_wait.assert_not_called()
+        import rmm_cli
+        import rmm_tools
+        client = rmm_cli.RmmApiClient("http://fixture", "fixture-token")
+        client.request = Mock(return_value=(200, {"ok": True}))
+        with self.assertRaises(ValueError):
+            client.lateral_move("source", "winrm", "target", independent="true")
+        # The default is independent; the winrm-scoped option forwards, and
+        # the tethered opt-out forwards false.
+        client.lateral_move("source", "winrm", "target", independent=False)
+        self.assertIs(client.request.call_args.args[2]["independent"], False)
+        client.lateral_move("source", "winrm", "target")
+        self.assertIs(client.request.call_args.args[2]["independent"], True)
+        # Non-winrm methods scope the option away instead of failing.
+        client.lateral_move("source", "wmiexec", "target", independent=True)
+        self.assertNotIn("independent", client.request.call_args.args[2])
+        with patch.object(rmm_tools, "_resolve_session_id", return_value=("source", {})):
+            forwarded = json.loads(rmm_tools.tool_lateral_move(client, "source", "winrm", "target"))
+            self.assertEqual(forwarded["ok"], True)
+            self.assertIs(client.request.call_args.args[2]["independent"], True)
+            scoped = json.loads(rmm_tools.tool_lateral_move(client, "source", "wmiexec", "target", independent=True))
+            self.assertEqual(scoped["ok"], True)
+            self.assertNotIn("independent", client.request.call_args.args[2])
+            for value in ["true", 0, None]:
+                invalid = json.loads(rmm_tools.tool_lateral_move(client, "source", "winrm", "target", independent=value))
+                self.assertEqual(invalid["error"], "invalid_independent")
 
     def test_invalid_https_never_stages_or_dispatches(self):
         for method, value in [("psexec", True), ("wmiexec", True), ("winrm", "true"), ("winrm", 1), ("winrm", None)]:
@@ -550,7 +625,7 @@ class LateralHttpRoutingTests(unittest.TestCase):
         handler.server_instance.lateral_move.assert_called_once_with(
             "full-session-id", "psexec", "ws01",
             verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0,
-            loader="csharp",
+            loader="csharp", independent=True,
         )
 
     def test_lateral_status_codes(self):
@@ -563,6 +638,7 @@ class LateralHttpRoutingTests(unittest.TestCase):
             ("invalid_insecure", 400),
             ("invalid_loader", 400),
             ("loader_reserved", 400),
+            ("invalid_independent", 400),
             ("agent_payload_unavailable", 503),
             ("debug_payload_unavailable", 503),
             ("timeout", 408),

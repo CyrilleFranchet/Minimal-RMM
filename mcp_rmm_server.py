@@ -597,8 +597,9 @@ def lateral_move(
     https: StrictBool = False,
     insecure: StrictBool = False,
     loader: str = "csharp",
+    independent: StrictBool = True,
 ) -> str:
-    """Start a Go agent on another host and confirm registration. Children inherit the source agent's compiled debug mode. Debug is selected only at build time. A debug source requires a server-side Windows amd64 debug artifact for the requested method; missing required artifacts fail without fallback. wmiexec and winrm deploy the staged workspace agent build in memory via the csharp loader (powershell is reserved and fails explicitly)."""
+    """Start a Go agent on another host through psexec, wmiexec, or winrm. wmiexec and winrm deploy the server-staged workspace agent build in memory through the csharp loader (powershell is reserved). Winrm deployments are independent by default: the target escapes the WinRM shell job via a local WMI re-stage and the source closes the session right after readiness, so the deployment survives its source. independent=false (winrm only) restores the tethered lifetime that dies with its source; wmiexec deployments are independent by nature."""
     return tool_lateral_move(
         _client(),
         session_ref,
@@ -611,6 +612,7 @@ def lateral_move(
         https=https,
         insecure=insecure,
         loader=loader,
+        independent=independent,
     )
 
 

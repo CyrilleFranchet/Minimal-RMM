@@ -96,8 +96,11 @@ artifact paths and metadata, never secret-bearing file content.
   authenticated transport (WSMan stdin for WinRM, an SMB named pipe for WMI)
   and loading it without SMB file staging or any file on the target's disk.
   Both loader deployments work from memory-hosted source sessions, so a
-  WinRM-deployed agent can continue moving laterally. Manual deployment can
-  run the extracted binary or its `run-agent.ps1` launcher.
+  WinRM-deployed agent can continue moving laterally. WinRM deployments are
+  independent by default (the source closes its session right after
+  readiness); `--tethered` restores the source-held lifetime for targets
+  whose WinRM session cannot create local WMI processes. Manual deployment
+  can run the extracted binary or its `run-agent.ps1` launcher.
 
 ## Workflow
 

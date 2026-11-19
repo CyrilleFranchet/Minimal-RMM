@@ -46,13 +46,16 @@ var (
 
 // initializeWMISecurity establishes process-wide thread-token cloaking once.
 // A prior incompatible initialization fails closed instead of using the process
-// identity for the initial remote connection.
+// identity for the initial remote connection; the one exception is a
+// memory-hosted agent, whose PowerShell host (the CLR) configured process
+// COM security before this code ran — rejecting that state would block every
+// lateral deployment from an in-memory source, the flagship scenario of the
+// loader chain.
 func initializeWMISecurity() error {
 	wmiSecurityOnce.Do(func() {
-		if hr, _, _ := procCoInitializeSec.Call(0, ^uintptr(0), 0, 0,
-			rpcCAuthnLevelDefault, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking, 0); hr != 0 {
-			wmiSecurityErr = fmt.Errorf("CoInitializeSecurity with thread cloaking failed: 0x%08x", hr)
-		}
+		hr, _, _ := procCoInitializeSec.Call(0, ^uintptr(0), 0, 0,
+			rpcCAuthnLevelDefault, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking, 0)
+		wmiSecurityErr = wmiSecurityResult(hr)
 	})
 	return wmiSecurityErr
 }

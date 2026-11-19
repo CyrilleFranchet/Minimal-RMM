@@ -57,14 +57,18 @@ is created, and the source session's hosting mode (on disk or in memory) does
 not matter. Both need Windows PowerShell with `Add-Type` available (full
 language mode). Despite the PowerShell receiver, do not require `ADMIN$`,
 test SMB as a prerequisite for `winrm`, or substitute an SMB copy for these
-methods. A `winrm` deployment lives only as long as the source agent keeps
-the WinRM shell open; a `wmiexec` loader deployment creates an independent
-receiver process that survives the source agent and ends only at target
-shutdown or an explicit kill. The deployed session is memory-hosted, so it
+methods. WinRM deployments are **independent by default**: the source closes
+its shell right after readiness and the deployment ends only at target
+shutdown or an explicit kill, exactly like a `wmiexec` deployment. Pass
+`--tethered` (CLI and WebUI shell) or `independent: false` (REST/MCP) to
+restore the tethered lifetime, where the deployment lives only as long as
+the source holds the shell — use it for targets whose WinRM session cannot
+create local WMI processes. The deployed session is memory-hosted, so it
 cannot spawn, spawnas, run further legacy lateral moves, load PE plugins,
-or install persistence. Loader deployments of either kind require a
-server-staged agent build for the source workspace; the request fails with
-`agent_payload_unavailable` if none exists.
+or install persistence (the loader chain itself works from it). Loader
+deployments of either kind require a server-staged agent build for the
+source workspace; the request fails with `agent_payload_unavailable` if none
+exists.
 Actions requiring existing target control are not substitutes for reaching it.
 
 Execution surface matters: commands launched through the Windows agent use

@@ -800,6 +800,7 @@ def tool_lateral_move(
     https: bool = False,
     insecure: bool = False,
     loader: str = "csharp",
+    independent: bool = True,
 ) -> str:
     """Start a Go agent on another host through psexec, wmiexec, or winrm."""
     sid, info = _resolve_session_id(client, session_ref)
@@ -830,6 +831,11 @@ def tool_lateral_move(
                              "detail": "https must be boolean and is supported only for winrm"})
     if not isinstance(insecure, bool) or (insecure and not https):
         return _json_result({"ok": False, "error": "invalid_insecure", "detail": "insecure requires WinRM HTTPS"})
+    if not isinstance(independent, bool):
+        return _json_result({"ok": False, "error": "invalid_independent", "detail": "independent must be a boolean"})
+    if method != "winrm":
+        # Independent lifetime is a winrm-scoped option, ignored elsewhere.
+        independent = False
     host = (host or "").strip().strip("\\")
     if not host:
         return _json_result({"ok": False, "error": "invalid_host"})
@@ -842,6 +848,7 @@ def tool_lateral_move(
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
         loader=loader,
+        **({"independent": independent} if method == "winrm" else {}),
         **({"https": True} if https else {}),
         **({"insecure": True} if insecure else {}),
     )
@@ -1935,6 +1942,7 @@ OPENAI_TOOLS: list[dict] = [
                     "method": {"type": "string", "enum": ["psexec", "wmiexec", "winrm"]},
                     "host": {"type": "string", "description": "Target hostname or IP address"},
                     "loader": {"type": "string", "enum": ["csharp", "powershell"], "default": "csharp", "description": "Loader implementation for wmiexec/winrm in-memory deployment. csharp is the only supported value in this release; powershell is reserved and fails explicitly rather than substituting csharp. Ignored for psexec."},
+                    "independent": {"type": "boolean", "default": True, "description": "WinRM only (ignored by other methods): the target host escapes the WinRM shell job through a local WMI re-stage, so the source closes the WinRM session immediately after readiness instead of holding it for the deployment's lifetime. Default true: the deployed session lives independently until a target reboot or an explicit kill, like a WMI deployment. Set false (winrm only) to restore the tethered lifetime that dies with its source. Requires local WMI access from the WinRM session identity."},
                     "https": {"type": "boolean", "default": False, "description": "WinRM only: HTTPS on port 5986 with server certificate validation; default HTTP/5985."},
                     "insecure": {"type": "boolean", "default": False, "description": "Skip CA, name and revocation checks for this WinRM HTTPS session. Certificate date checks still apply. Requires https=true."},
                     "verify": {"type": "boolean", "default": True},

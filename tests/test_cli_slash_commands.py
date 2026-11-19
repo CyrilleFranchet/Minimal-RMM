@@ -222,7 +222,7 @@ class SlashCommandTests(unittest.TestCase):
     def test_winrm_https_slash_flag(self):
         for command in ["/lateral winrm -s ws01", "/lateral winrm ws01 -s", "/lateral winrm --https ws01"]:
             client, _, warn = self.run_lines([command])
-            client.lateral_move.assert_called_once_with("session-id", "winrm", "ws01", https=True)
+            client.lateral_move.assert_called_once_with("session-id", "winrm", "ws01", https=True, independent=True)
             warn.assert_not_called()
         invalid = ["/lateral psexec ws01 -s", "/lateral wmiexec -s ws01", "/lateral winrm -s", "/lateral winrm ws01 -s -s", "/lateral winrm --https ws01 -s"]
         client, _, warn = self.run_lines(invalid)
@@ -232,7 +232,7 @@ class SlashCommandTests(unittest.TestCase):
     def test_winrm_certificate_bypass_flags(self):
         for command in ["/lateral winrm target -s -k", "/lateral winrm --insecure --https target"]:
             client, _, warn = self.run_lines([command])
-            client.lateral_move.assert_called_once_with("session-id", "winrm", "target", https=True, insecure=True)
+            client.lateral_move.assert_called_once_with("session-id", "winrm", "target", https=True, insecure=True, independent=True)
             warn.assert_not_called()
         invalid = ["/lateral winrm target -k", "/lateral psexec target -s -k", "/lateral winrm target -s -k -k"]
         client, _, warn = self.run_lines(invalid)

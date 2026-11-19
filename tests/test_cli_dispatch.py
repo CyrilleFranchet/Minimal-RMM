@@ -36,6 +36,25 @@ class CliDispatchTests(unittest.TestCase):
             self.invoke(["lateral", "psexec", "ws01", "-s", "--session", "session-id"], client)
         client.lateral_move.assert_not_called()
 
+    def test_lateral_winrm_is_independent_by_default_with_tethered_optout(self):
+        client = Mock()
+        client.lateral_move.return_value = (200, {"ok": True})
+        self.invoke(["lateral", "winrm", "target", "--session", "source", "--json"], client)
+        self.assertIs(client.lateral_move.call_args.kwargs["independent"], True)
+        client.reset_mock()
+        self.invoke(["lateral", "winrm", "target", "--independent", "--session", "source", "--json"], client)
+        self.assertIs(client.lateral_move.call_args.kwargs["independent"], True)
+        client.reset_mock()
+        self.invoke(["lateral", "winrm", "target", "--tethered", "--session", "source", "--json"], client)
+        self.assertIs(client.lateral_move.call_args.kwargs["independent"], False)
+        client.reset_mock()
+        self.invoke(["lateral", "wmiexec", "target", "--session", "source", "--json"], client)
+        self.assertNotIn("independent", client.lateral_move.call_args.kwargs)
+        client.reset_mock()
+        with self.assertRaises(SystemExit):
+            self.invoke(["lateral", "wmiexec", "target", "--tethered", "--session", "source"], client)
+        client.lateral_move.assert_not_called()
+
     def test_debug_build_requests_separate_full_agent_artifact(self):
         client = Mock()
         client.build_go_agent.return_value = (200, {"filename": "debug.zip"})

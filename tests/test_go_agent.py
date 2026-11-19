@@ -41,6 +41,7 @@ class GoAgentTests(unittest.TestCase):
                 "lateral_stage.go",
                 "wmi_loader.go",
                 "wmi_loader_windows.go",
+                "winrm_independent.go",
                 "spawnas_windows.go",
                 "spawnas_other.go",
                 "stage1/main.go",

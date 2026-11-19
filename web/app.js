@@ -2144,7 +2144,15 @@ function getShellCompletionCandidates(line) {
       .map(method => `/lateral ${method}`);
   }
   if (/^\/lateral\s+(psexec|wmiexec|winrm)\s/i.test(q)) {
-    return ["-l csharp"].filter(frag => !q.toLowerCase().includes("-l") && frag.startsWith(q.trim().split(/\s+/).pop().toLowerCase()));
+    const fragments = ["-l csharp"];
+    if (/^\/lateral\s+winrm\s/i.test(q)) fragments.push("--tethered");
+    const tail = q.trim().split(/\s+/).pop().toLowerCase();
+    const alreadyLoader = /(^|\s)-l(\s|$)/.test(q.toLowerCase());
+    const alreadyTethered = /--tethered/.test(q.toLowerCase());
+    return fragments
+      .filter(frag => !(frag.startsWith("-l") && alreadyLoader))
+      .filter(frag => !(frag.startsWith("--t") && alreadyTethered))
+      .filter(frag => frag.startsWith(tail));
   }
   if (/^\/lateral\s/i.test(q)) return [];
   if (/^\/creds\s+\S*$/i.test(q)) {
@@ -2285,7 +2293,7 @@ function updateShellCompletionHint() {
   closeShellCommandMenu();
   const lateralMethod = line.match(/^\s*\/lateral\s+(psexec|wmiexec|winrm)\s/i)?.[1].toLowerCase();
   if (lateralMethod) {
-    hint.textContent = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure]" : ""} [-l csharp|powershell]`;
+    hint.textContent = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure] [--tethered]" : ""} [-l csharp|powershell]`;
     hint.classList.remove("hidden");
     return;
   }
@@ -3181,8 +3189,10 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /make_token -i &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
-  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved)
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved)
                                    -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
+                                   winrm deployments are independent by default: the target escapes the shell job via a local WMI re-stage and the source closes its session after readiness.
+                                   --tethered (winrm only) restores the classic lifetime, where the deployment dies with the source that holds its shell.
   /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
                                    Operate workspace BloodHound; never sent to the agent
 
@@ -3378,13 +3388,15 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     }
     const flags = restTokens.filter(arg => ["-s", "--https"].includes(arg));
     const insecureFlags = restTokens.filter(arg => ["-k", "--insecure"].includes(arg));
-    const targets = restTokens.filter(arg => !["-s", "--https", "-k", "--insecure"].includes(arg));
+    const tetheredFlags = restTokens.filter(arg => arg === "--tethered");
+    const targets = restTokens.filter(arg => !["-s", "--https", "-k", "--insecure", "--tethered", "--independent"].includes(arg));
     const loader = loaderValues.length ? loaderValues[0].toLowerCase() : "";
     if (targets.length !== 1 || flags.length > 1 || insecureFlags.length > 1 ||
         (insecureFlags.length && !flags.length) || targets.some(arg => arg.startsWith("-")) ||
         (flags.length && method !== "winrm") ||
+        (tetheredFlags.length && method !== "winrm") || tetheredFlags.length > 1 ||
         loaderValues.length > 1 || (loader && !loaderPattern.test(loader))) {
-      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell]");
+      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)]");
       return true;
     }
     if (!target.sessionId) {
@@ -3410,6 +3422,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         body: JSON.stringify({
           method, host,
           ...(loader ? { loader } : {}),
+          ...(method === "winrm" ? { independent: !tetheredFlags.length } : {}),
           ...(flags.length ? { https: true } : {}),
           ...(insecureFlags.length ? { insecure: true } : {}),
         }),

@@ -147,7 +147,7 @@ test('WinRM HTTPS flag forwards a boolean and rejects invalid combinations', asy
   for (const command of ['/lateral winrm -s ws01', '/lateral winrm ws01 -s', '/lateral winrm --https ws01']) {
     const f = fixture(); f.type(command); await f.context.runCommand(false);
     assert.equal(f.calls.length, 1);
-    assert.deepEqual(JSON.parse(f.calls[0][1].body), { method: 'winrm', host: 'ws01', https: true });
+    assert.deepEqual(JSON.parse(f.calls[0][1].body), { method: 'winrm', host: 'ws01', https: true, independent: true });
   }
   for (const command of ['/lateral psexec ws01 -s', '/lateral wmiexec -s ws01', '/lateral winrm -s', '/lateral winrm ws01 -s -s', '/lateral winrm --https ws01 -s']) {
     const f = fixture(); f.type(command); await f.context.runCommand(false);
@@ -159,7 +159,7 @@ test('WinRM HTTPS flag forwards a boolean and rejects invalid combinations', asy
 test('WinRM certificate bypass requires HTTPS and forwards only when selected', async () => {
   for (const command of ['/lateral winrm target -s -k', '/lateral winrm --insecure --https target']) {
     const f = fixture(); f.type(command); await f.context.runCommand(false);
-    assert.deepEqual(JSON.parse(f.calls[0][1].body), {method:'winrm',host:'target',https:true,insecure:true});
+    assert.deepEqual(JSON.parse(f.calls[0][1].body), {method:'winrm',host:'target',https:true,insecure:true,independent:true});
   }
   for (const command of ['/lateral winrm target -k','/lateral psexec target -s -k','/lateral winrm target -s -k -k']) {
     const f = fixture(); f.type(command); await f.context.runCommand(false);
@@ -169,7 +169,7 @@ test('WinRM certificate bypass requires HTTPS and forwards only when selected', 
 
 test('loader flag forwards an explicit selection and rejects invalid values', async () => {
   const csharp = fixture(); csharp.type('/lateral winrm target -l csharp'); await csharp.context.runCommand(false);
-  assert.deepEqual(JSON.parse(csharp.calls[0][1].body), {method:'winrm',host:'target',loader:'csharp'});
+  assert.deepEqual(JSON.parse(csharp.calls[0][1].body), {method:'winrm',host:'target',loader:'csharp',independent:true});
   const powershell = fixture(); powershell.type('/lateral wmiexec target --loader powershell'); await powershell.context.runCommand(false);
   assert.deepEqual(JSON.parse(powershell.calls[0][1].body), {method:'wmiexec',host:'target',loader:'powershell'});
   for (const command of ['/lateral winrm target -l', '/lateral winrm target -l csharp -l powershell']) {
@@ -527,6 +527,28 @@ test('direct identity syntax accepts domainless names and preserves empty or fla
   }
 });
 
+test('winrm independent default and --tethered opt-out; scoped away from other methods', async () => {
+  const plain = fixture(); plain.type('/lateral winrm target'); await plain.context.runCommand(false);
+  assert.deepEqual(JSON.parse(plain.calls[0][1].body), {method:'winrm',host:'target',independent:true});
+  const noop = fixture(); noop.type('/lateral winrm target --independent'); await noop.context.runCommand(false);
+  assert.deepEqual(JSON.parse(noop.calls[0][1].body), {method:'winrm',host:'target',independent:true});
+  const tethered = fixture(); tethered.type('/lateral winrm target --tethered'); await tethered.context.runCommand(false);
+  assert.deepEqual(JSON.parse(tethered.calls[0][1].body), {method:'winrm',host:'target',independent:false});
+  const secure = fixture(); secure.type('/lateral winrm target -s -k'); await secure.context.runCommand(false);
+  assert.deepEqual(JSON.parse(secure.calls[0][1].body), {method:'winrm',host:'target',https:true,insecure:true,independent:true});
+  for (const command of ['/lateral wmiexec target', '/lateral psexec target']) {
+    const f = fixture(); f.type(command); await f.context.runCommand(false);
+    const body = JSON.parse(f.calls[0][1].body);
+    assert.ok(f.calls.length === 1);
+    assert.ok(!('independent' in body), `${command} must not carry the winrm-scoped option`);
+  }
+  for (const command of ['/lateral wmiexec target --tethered', '/lateral psexec target --tethered', '/lateral winrm target --tethered --tethered']) {
+    const f = fixture(); f.type(command); await f.context.runCommand(false);
+    assert.equal(f.calls.length, 0);
+    assert.match(f.errors[0], /Usage:/);
+  }
+});
+
 test('lateral opens its method menu after command completion and accepts keyboard selection', () => {
   const f = fixture();
   f.type('/lat'); f.key('Tab');
@@ -546,7 +568,7 @@ test('lateral filters methods, supports clicks, and leaves the host untouched', 
   assert.deepEqual(f.menu.children.map(x => x.textContent), ['/lateral wmiexec', '/lateral winrm']);
   f.menu.children[1].listeners.mousedown({preventDefault() {}});
   assert.equal(f.input.value, '/lateral winrm ');
-  assert.equal(f.hint.textContent, '/lateral winrm <host> [-s|--https] [-k|--insecure] [-l csharp|powershell]');
+  assert.equal(f.hint.textContent, '/lateral winrm <host> [-s|--https] [-k|--insecure] [--tethered] [-l csharp|powershell]');
   f.context.getShellHistoryList = () => ['/lateral winrm ws01.old.example'];
   f.type('/lateral winrm ws'); f.key('Tab');
   assert.equal(f.input.value, '/lateral winrm ws');

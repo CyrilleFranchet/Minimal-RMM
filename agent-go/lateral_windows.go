@@ -147,7 +147,11 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 			if err != nil {
 				return "", err
 			}
-			if err := winrmDeployLoaderAgent(payload.Host, agent, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure, deadline); err != nil {
+			if payload.independentLifetime {
+				if err := winrmDeployLoaderAgentIndependent(payload.Host, agent, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure, deadline); err != nil {
+					return "", err
+				}
+			} else if err := winrmDeployLoaderAgent(payload.Host, agent, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure, deadline); err != nil {
 				return "", err
 			}
 		} else {
