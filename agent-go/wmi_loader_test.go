@@ -33,6 +33,10 @@ func TestWmiLoaderScriptComposition(t *testing.T) {
 	if !strings.Contains(script, winrmPowerShellLiteral(pipeName)) {
 		t.Fatal("the script must name the session-specific pipe")
 	}
+	if !strings.Contains(script,
+		fmt.Sprintf("[System.IO.Pipes.PipeOptions]::None,%d,%d)", wmiLoaderPipeBufferSize, wmiLoaderPipeBufferSize)) {
+		t.Fatal("the receiver must create the pipe with explicit byte-mode buffers")
+	}
 	if !strings.Contains(script, fmt.Sprintf("[L]::Setup(%s,%s)",
 		winrmPowerShellLiteral(session), winrmPowerShellLiteral(workspace))) {
 		t.Fatal("the script must set the target session and workspace")
@@ -186,6 +190,39 @@ func TestWmiCopyWithDeadlineBoundsStalledReceivers(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "deadline") {
 		t.Fatalf("a stalled channel must fail the deadline: %v", err)
 	}
+}
+
+// Every native write must stay within one chunk: an oversized single write
+// to a remote pipe is the ERROR_INVALID_PARAMETER the live deployment hit.
+// The fragments must reassemble into the exact framed transfer.
+func TestWmiCopyFragmentsWritesWithinTheChunkBudget(t *testing.T) {
+	agent := bytes.Repeat([]byte("agent-image-bytes"), 2000) // ~30 KiB payload
+	transfer := wmiTestTransfer(t, agent)
+	recorder := &recordingWriter{}
+	if err := wmiCopyWithDeadline(recorder, transfer.source, time.Now().Add(5*time.Second)); err != nil {
+		t.Fatalf("bounded transfer must succeed: %v", err)
+	}
+	if recorder.largest > wmiLoaderPipeChunkSize {
+		t.Fatalf("a single write reached %d bytes; every write must stay within %d",
+			recorder.largest, wmiLoaderPipeChunkSize)
+	}
+	want := append(append([]byte(nil), []byte(winrmStage1CSharp)...), agent...)
+	if !bytes.Equal(recorder.buf, want) {
+		t.Fatal("fragmented writes must reassemble into the framed loader and artifact")
+	}
+}
+
+type recordingWriter struct {
+	buf     []byte
+	largest int
+}
+
+func (r *recordingWriter) Write(p []byte) (int, error) {
+	if len(p) > r.largest {
+		r.largest = len(p)
+	}
+	r.buf = append(r.buf, p...)
+	return len(p), nil
 }
 
 func TestWmiReadLoaderReplyTimesOut(t *testing.T) {

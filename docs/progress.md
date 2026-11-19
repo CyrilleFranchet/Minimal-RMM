@@ -1,5 +1,28 @@
 # Progress Log
 
+## 2026-11-19 — Fragment remote pipe writes after live retry confirmed the native client
+
+- The operator rebuilt and redeployed the source agent and retried; the
+  failure text confirmed the fixed binary (`native pipe write …`) and
+  isolated the failure further: the synchronous native dial connected, and
+  the first payload write still returned ERROR_INVALID_PARAMETER (87).
+- Root cause this round: `io.Copy`'s default buffer emitted the payload's
+  first 32 KiB as one WriteFile. Local pipes accept oversized writes
+  (npfs splits them, which is why the local end-to-end fixture passes), but
+  remote pipes carry the write through the SMB redirector, which validates
+  single writes against the pipe's buffer and rejects oversized ones with
+  error 87 — the same class of failure every wire protocol over SMB pipes
+  avoids by writing small fragments.
+- Fix: the stream copy now writes fragments of at most 4 KiB
+  (`wmiLoaderPipeChunkSize`) through a bounded chunked writer, and the
+  receiver creates its pipe with explicit 64 KiB byte-mode buffers instead
+  of the three-argument constructor's ambiguous defaults.
+- Regressions: a recording-writer test proves every write stays within the
+  chunk budget and that the fragments reassemble into the exact framed
+  loader and artifact; script composition asserts the explicit buffers; the
+  PowerShell parser fixture and all suites still pass. The live remote
+  retest remains the deployment gate.
+
 ## 2026-11-19 — Fix the WMI pipe dial after a live deployment failure
 
 - An operator's real `wmiexec_loader` deployment reached the target: WMI

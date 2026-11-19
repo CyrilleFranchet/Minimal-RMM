@@ -24,6 +24,19 @@ const wmiLoaderConnectBudget = 120 * time.Second
 // wmiLoaderReplyLimit bounds a single receiver reply on the channel.
 const wmiLoaderReplyLimit = 512
 
+// wmiLoaderPipeChunkSize bounds each native WriteFile. io.Copy's default
+// emits the first 32 KiB in one call, and remote named pipes reject single
+// writes beyond the pipe's buffer with ERROR_INVALID_PARAMETER on the SMB
+// redirector; local pipes split internally, which is why the local fixture
+// passes where the live remote deployment failed. Wire protocols over SMB
+// pipes use fragments of this order.
+const wmiLoaderPipeChunkSize = 4 * 1024
+
+// wmiLoaderPipeBufferSize is the explicit in/out buffer requested for the
+// receiver's pipe instead of the three-argument constructor's defaults.
+// A larger server buffer keeps the redirector's write window generous.
+const wmiLoaderPipeBufferSize = 65536
+
 // wmiLoaderPipeName derives the session-specific loader channel name. The
 // reserved target session identifier makes concurrent deployments use
 // distinct channels, mirroring the stage2 filename collision fix.
@@ -46,7 +59,7 @@ func wmiLoaderScript(pipeName, sessionID string, workspaceID *string, transfer *
 	}
 	connectBudget := int(wmiLoaderConnectBudget.Milliseconds())
 	return fmt.Sprintf(`$ErrorActionPreference='Stop'
-$p=New-Object System.IO.Pipes.NamedPipeServerStream(%s,[System.IO.Pipes.PipeDirection]::InOut,1)
+$p=New-Object System.IO.Pipes.NamedPipeServerStream(%s,[System.IO.Pipes.PipeDirection]::InOut,1,[System.IO.Pipes.PipeTransmissionMode]::Byte,[System.IO.Pipes.PipeOptions]::None,%d,%d)
 try{
 $w=$p.WaitForConnectionAsync()
 if(-not $w.Wait(%d)){throw 'loader pipe connection timeout'}
@@ -77,7 +90,7 @@ $p.Write($x,0,$x.Length)
 } catch {}
 exit 1
 }`,
-		winrmPowerShellLiteral(pipeName), connectBudget,
+		winrmPowerShellLiteral(pipeName), wmiLoaderPipeBufferSize, wmiLoaderPipeBufferSize, connectBudget,
 		transfer.loaderSize,
 		transfer.loaderSize,
 		transfer.loaderSize,
@@ -95,15 +108,40 @@ func wmiLoaderArguments(script string) []string {
 		"-EncodedCommand", winrmEncodedCommand(script)}
 }
 
+// chunkedPipeWriter bounds every native WriteFile to wmiLoaderPipeChunkSize:
+// one oversized write to a remote pipe is what the SMB redirector rejects
+// with ERROR_INVALID_PARAMETER, so the stream copy emits small fragments
+// the way wire protocols over SMB pipes always have.
+type chunkedPipeWriter struct {
+	w io.Writer
+}
+
+func (c chunkedPipeWriter) Write(p []byte) (int, error) {
+	total := 0
+	for total < len(p) {
+		end := total + wmiLoaderPipeChunkSize
+		if end > len(p) {
+			end = len(p)
+		}
+		n, err := c.w.Write(p[total:end])
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
 // wmiCopyWithDeadline streams the framed transfer into the loader channel,
-// bounding the whole write by the remaining transfer deadline. A stalled
-// receiver cannot pin the pinned worker forever; the caller closes the pipe
-// on failure, which also aborts the target's reader so no half-live host
-// process survives an interrupted delivery.
+// in bounded fragments, limiting the whole write sequence by the remaining
+// transfer deadline. A stalled receiver cannot pin the pinned worker
+// forever; the caller closes the pipe on failure, which also aborts the
+// target's reader so no half-live host process survives an interrupted
+// delivery.
 func wmiCopyWithDeadline(conn io.Writer, source io.Reader, deadline time.Time) error {
 	result := make(chan error, 1)
 	go func() {
-		_, err := io.Copy(conn, source)
+		_, err := io.Copy(chunkedPipeWriter{w: conn}, source)
 		result <- err
 	}()
 	timer := time.NewTimer(time.Until(deadline))
