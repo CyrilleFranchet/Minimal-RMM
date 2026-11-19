@@ -112,6 +112,103 @@ func TestParseLateralPayloadRequiresMethodAndHost(t *testing.T) {
 	}
 }
 
+// Loader deployments use their own wire-method names so an older agent must
+// reject them instead of ignoring the new fields and deploying its own
+// binary from an in-memory session.
+func TestParseLateralLoaderWireMethods(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	valid := map[string]struct {
+		method    string
+		https     bool
+		insecure  bool
+		wireHTTPS bool
+	}{
+		"wmiexec_loader":              {"wmiexec", false, false, false},
+		"winrm_loader":                {"winrm", false, false, false},
+		"winrm_https_loader":          {"winrm", true, false, true},
+		"winrm_https_insecure_loader": {"winrm", true, true, true},
+	}
+	for wire, want := range valid {
+		body := `{"method":"` + wire + `","host":"ws01","stage":"0123456789abcdef0123456789abcdef","payload_sha256":"` + digest + `"`
+		if want.wireHTTPS {
+			body += `,"https":true`
+			if want.insecure {
+				body += `,"insecure":true`
+			}
+		}
+		body += `}`
+		payload, err := parseLateralPayload("__LATERAL__\n" + body)
+		if err != nil {
+			t.Fatalf("%s must parse: %v", wire, err)
+		}
+		if payload.Method != want.method || payload.HTTPS != want.https || payload.Insecure != want.insecure || !payload.loaderDeploy {
+			t.Fatalf("%s normalized to %#v", wire, payload)
+		}
+		if payload.Loader != "csharp" {
+			t.Fatalf("loader must default to csharp, got %q", payload.Loader)
+		}
+	}
+	for _, invalid := range []string{
+		// Every loader deployment needs the staging reference and digest.
+		`{"method":"wmiexec_loader","host":"ws01","payload_sha256":"` + digest + `"}`,
+		`{"method":"winrm_loader","host":"ws01","stage":"0123456789abcdef0123456789abcdef"}`,
+		`{"method":"winrm_loader","host":"ws01","stage":"short","payload_sha256":"` + digest + `"}`,
+		`{"method":"winrm_loader","host":"ws01","stage":"0123456789abcdef0123456789abcdef","payload_sha256":"zz"}`,
+		// Transport flags must match the wire method exactly.
+		`{"method":"winrm_loader","host":"ws01","stage":"0123456789abcdef0123456789abcdef","payload_sha256":"` + digest + `","https":true}`,
+		`{"method":"winrm_https_loader","host":"ws01","stage":"0123456789abcdef0123456789abcdef","payload_sha256":"` + digest + `","insecure":true}`,
+		// The digest belongs to loader deployments only.
+		`{"method":"winrm","host":"ws01","payload_sha256":"` + digest + `"}`,
+	} {
+		if _, err := parseLateralPayload("__LATERAL__\n" + invalid); err == nil {
+			t.Fatalf("invalid loader payload must be rejected: %s", invalid)
+		}
+	}
+}
+
+func TestParseLateralLoaderSelection(t *testing.T) {
+	base := `"host":"ws01","stage":"0123456789abcdef0123456789abcdef","payload_sha256":"` + strings.Repeat("a", 64) + `"`
+	payload, err := parseLateralPayload(`__LATERAL__` + "\n" + `{"method":"wmiexec_loader",` + base + `,"loader":""}`)
+	if err != nil || payload.Loader != "csharp" {
+		t.Fatalf("empty loader must default to csharp: %v %#v", err, payload)
+	}
+	payload, err = parseLateralPayload(`__LATERAL__` + "\n" + `{"method":"wmiexec_loader",` + base + `,"loader":"CSHARP"}`)
+	if err != nil || payload.Loader != "csharp" {
+		t.Fatalf("loader must be case-insensitive: %v %#v", err, payload)
+	}
+	for _, command := range []string{
+		`__LATERAL__` + "\n" + `{"method":"wmiexec_loader",` + base + `,"loader":"powershell"}`,
+		`__LATERAL__` + "\n" + `{"method":"wmiexec_loader",` + base + `,"loader":"RustLoader"}`,
+	} {
+		_, err := parseLateralPayload(command)
+		if err == nil {
+			t.Fatalf("unsupported loader must be rejected: %s", command)
+		}
+		if !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("reserved loader error must be explicit, got %v", err)
+		}
+	}
+}
+
+// The hosting-mode guard follows the real dependency: only loader
+// deployments free an in-memory source; psexec and the legacy methods keep
+// refusing because they deploy or re-execute this binary.
+func TestLateralUsesSelfBinaryFollowsTheDeploymentChain(t *testing.T) {
+	loader := lateralPayload{Method: "wmiexec", loaderDeploy: true}
+	if lateralUsesSelfBinary(loader) {
+		t.Fatal("loader deployments must not depend on the source binary")
+	}
+	for _, legacy := range []lateralPayload{
+		{Method: "psexec"},
+		{Method: "wmiexec"},
+		{Method: "winrm", HTTPS: true},
+	} {
+		if !lateralUsesSelfBinary(legacy) {
+			t.Fatalf("legacy method %s must keep the self-binary dependency", legacy.Method)
+		}
+	}
+}
+
 func TestParseLateralPayloadAppliesDefaultsAndBounds(t *testing.T) {
 	payload, err := parseLateralPayload(`__LATERAL__` + "\n" + `{"method":" PSEXEC ","host":"\\\\ws01.lab.local","stage":"0123456789abcdef0123456789abcdef"}`)
 	if err != nil {

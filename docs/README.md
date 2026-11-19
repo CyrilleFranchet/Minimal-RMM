@@ -114,6 +114,7 @@ historical notes in `progress.md`.
 | --- | --- |
 | Product goals and commercial security gate | [Product requirements](prd.md) |
 | Planned work and feature designs | [Technical plan](tech-plan.md) |
+| Architecture and review plan for lateral wmiexec/WinRM loader independence | [Lateral loader plan](lateral-loader.md) |
 | Completed work, open gaps, and validation notes | [Progress log](progress.md) |
 
 ## Quick navigation by code area

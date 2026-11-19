@@ -2143,6 +2143,9 @@ function getShellCompletionCandidates(line) {
       .filter(method => method.startsWith(prefix.toLowerCase()))
       .map(method => `/lateral ${method}`);
   }
+  if (/^\/lateral\s+(psexec|wmiexec|winrm)\s/i.test(q)) {
+    return ["-l csharp"].filter(frag => !q.toLowerCase().includes("-l") && frag.startsWith(q.trim().split(/\s+/).pop().toLowerCase()));
+  }
   if (/^\/lateral\s/i.test(q)) return [];
   if (/^\/creds\s+\S*$/i.test(q)) {
     const prefix = q.trim().split(/\s+/)[1] || "";
@@ -2282,7 +2285,7 @@ function updateShellCompletionHint() {
   closeShellCommandMenu();
   const lateralMethod = line.match(/^\s*\/lateral\s+(psexec|wmiexec|winrm)\s/i)?.[1].toLowerCase();
   if (lateralMethod) {
-    hint.textContent = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure]" : ""}`;
+    hint.textContent = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure]" : ""} [-l csharp|powershell]`;
     hint.classList.remove("hidden");
     return;
   }
@@ -3178,7 +3181,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /make_token -i &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
-  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure]   HTTPS/5986 for winrm only; inherits the source build mode
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved)
                                    -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
   /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']
                                    Operate workspace BloodHound; never sent to the agent
@@ -3361,13 +3364,27 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
 
   if (verb === "lateral") {
     const method = (rest[0] || "").toLowerCase();
-    const flags = rest.slice(1).filter(arg => ["-s", "--https"].includes(arg));
-    const insecureFlags = rest.slice(1).filter(arg => ["-k", "--insecure"].includes(arg));
-    const targets = rest.slice(1).filter(arg => !["-s", "--https", "-k", "--insecure"].includes(arg));
+    const loaderPattern = /^[A-Za-z][A-Za-z0-9_-]*$/;
+    const loaderValues = [];
+    const restTokens = [];
+    for (let index = 1; index < rest.length; index++) {
+      if (["-l", "--loader"].includes(rest[index])) {
+        if (index + 1 >= rest.length) { loaderValues.push("<missing>"); break; }
+        loaderValues.push(rest[index + 1]);
+        index++;
+        continue;
+      }
+      restTokens.push(rest[index]);
+    }
+    const flags = restTokens.filter(arg => ["-s", "--https"].includes(arg));
+    const insecureFlags = restTokens.filter(arg => ["-k", "--insecure"].includes(arg));
+    const targets = restTokens.filter(arg => !["-s", "--https", "-k", "--insecure"].includes(arg));
+    const loader = loaderValues.length ? loaderValues[0].toLowerCase() : "";
     if (targets.length !== 1 || flags.length > 1 || insecureFlags.length > 1 ||
         (insecureFlags.length && !flags.length) || targets.some(arg => arg.startsWith("-")) ||
-        (flags.length && method !== "winrm")) {
-      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)]");
+        (flags.length && method !== "winrm") ||
+        loaderValues.length > 1 || (loader && !loaderPattern.test(loader))) {
+      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell]");
       return true;
     }
     if (!target.sessionId) {
@@ -3379,6 +3396,10 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       showError("Method must be psexec, wmiexec, or winrm.");
       return true;
     }
+    if (loader && !["csharp", "powershell"].includes(loader)) {
+      showError("Loader must be csharp or powershell.");
+      return true;
+    }
     echoCommand();
     if (target.isCurrent()) {
       appendShellLine("output", `<pre>Lateral ${escapeHtml(method)} to ${escapeHtml(host)} — waiting for the next beacon (this can take a few minutes)…</pre>`);
@@ -3386,11 +3407,18 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/lateral`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method, host, ...(flags.length ? { https: true } : {}), ...(insecureFlags.length ? { insecure: true } : {}) }),
+        body: JSON.stringify({
+          method, host,
+          ...(loader ? { loader } : {}),
+          ...(flags.length ? { https: true } : {}),
+          ...(insecureFlags.length ? { insecure: true } : {}),
+        }),
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
-        showError(data?.error || `HTTP ${status}`);
+        showError(data?.error === "loader_reserved"
+          ? "The powershell loader is reserved for a later release; use the default csharp loader."
+          : data?.error || `HTTP ${status}`);
         return true;
       }
       // The session event stream renders the agent's lateral result once.

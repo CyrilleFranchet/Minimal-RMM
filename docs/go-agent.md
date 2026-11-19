@@ -378,12 +378,13 @@ including unsupported platforms, consistently through REST, CLI, MCP, and WebUI.
 
 ### Lateral movement (`__LATERAL__`)
 
-`__LATERAL__` starts a copy of the agent on another Windows host through
-one of three execution modules, so the target registers as a new session.
-The command carries a JSON body (`{"method","host","session_id","workspace_id","remote_name","stage",
-"timeout_seconds"}`) on a second line, like `__EXFIL__`. All modules use
-native Windows APIs: SMB file access, SCM, COM/DCOM, and the WSMan client
-library — never `wmic.exe`, `winrs.exe`, or a PowerShell wrapper.
+`__LATERAL__` starts a fresh agent on another Windows host through one of
+three execution modules, so the target registers as a new session. The
+command carries a JSON body (`{"method","host","session_id","workspace_id","remote_name","stage",
+"loader","payload_sha256","timeout_seconds"}`) on a second line, like
+`__EXFIL__`. All modules use native Windows APIs: SMB file access, SCM,
+COM/DCOM, and the WSMan client library — never `wmic.exe`, `winrs.exe`, or
+a remote PowerShell wrapper command beyond the documented receiver.
 
 Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
 
@@ -403,19 +404,32 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   same policy to its proxy. WinRM establishes this shared policy before
   WSMan can initialize it implicitly. Failed initialization stops the command
   rather than silently using the process identity for WMI authentication.
-- SMB staging (`wmiexec`): the worker copies the source executable to
-  `\\<host>\ADMIN$\System32\<stem>-<random>.exe`. `remote_name` supplies
-  the filename stem (default `minimal-rmm-agent.exe`); each deployment adds
-  a fresh 128-bit random value encoded as 32 lowercase hexadecimal characters.
-  The name must be a simple `.exe` filename because it becomes part of the
-  service command line.
-- WinRM transfers the source executable through the authenticated WSMan
+- Loader deployments (`wmiexec_loader`, `winrm_loader`, `winrm_https_loader`,
+  `winrm_https_insecure_loader` wire methods) fetch the masked,
+  digest-verified agent artifact from the listener's staging endpoint and
+  stream it through the target's Windows PowerShell; the source session's
+  own binary is never deployed. Because the artifact no longer comes from
+  `os.Executable()`, a memory-hosted source can deploy through them; the
+  legacy methods keep refusing from an in-memory session. Only the `csharp`
+  loader is supported; `powershell` is a reserved value that every surface
+  rejects explicitly. The loader wire names are unknown to older agents,
+  which reject the whole command instead of ignoring the new fields.
+- SMB staging is now legacy `wmiexec` only: the worker copies the source
+  executable to `\\<host>\ADMIN$\System32\<stem>-<random>.exe`. `remote_name`
+  supplies the filename stem (default `minimal-rmm-agent.exe`); each
+  deployment adds a fresh 128-bit random value encoded as 32 lowercase
+  hexadecimal characters. The name must be a simple `.exe` filename because
+  it becomes part of the service command line. The loader chain for `wmiexec`
+  replaces this with an in-memory receiver over an SMB named pipe: nothing
+  is written to the target's disk, and the deployed agent becomes
+  memory-hosted.
+- WinRM streams the deployment artifact through the authenticated WSMan
   session to a PowerShell receiver, verifies the length and SHA-256 of both
-  the in-band loader and the executable, and loads the agent **in memory**
-  inside the receiver: no SMB share, no separate HTTP download, and no file
-  agent executable written to the target's disk. `Add-Type` can create
-  compiler scratch files in `%TEMP%`. The receiver keeps the shell open for the
-  agent's lifetime. See [WinRM transfer](winrm-transfer.md) for failure
+  the in-band loader and the artifact, and loads the agent **in memory**
+  inside the receiver: no SMB share, no separate HTTP download on the target,
+  and no agent executable written to the target's disk. `Add-Type` can create
+  compiler scratch files in `%TEMP%`. The receiver keeps the shell open for
+  the agent's lifetime. See [WinRM transfer](winrm-transfer.md) for failure
   handling, lifetime, and validation.
 - The target copy starts with `--lateral-session <id>`, a fresh beacon-safe ID reserved by the server before dispatch.
   The source workspace is passed as `--workspace-id <id>` (the internal `-`
@@ -496,8 +510,8 @@ implementation runs. `make check-agent-deployment` includes that test.
 | Method | Technique |
 |--------|-----------|
 | `psexec` | Two-stage RemCom-style deployment: push the dedicated lateral service host to `ADMIN$`, start it as a demand-start service; its linked stage1 worker fetches the masked stage2 agent payload from the listener's staging endpoint, decodes it in memory, installs and starts the agent, then stops. The calling agent waits for successful service completion and removes the temporary service and host binary itself; the server cleanup command is only a retry path when that immediate cleanup stays pending |
-| `wmiexec` | Native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`, no PowerShell |
-| `winrm` | Native WSMan client through `WsmSvc.dll`: create an authenticated session and shell, run a Windows PowerShell receiver, stream a framed payload (loader source + agent binary) with `WSManSendShellInput`, verify each half's length and SHA-256, then load the agent **in memory**: one `VirtualAlloc(PAGE_EXECUTE_READWRITE)` image, a full PE32+ amd64 mapping (sections, relocations, imports, TLS), and a detached `CreateThread` on the entry point. The agent executable is not staged on disk; `Add-Type` can create compiler scratch files in `%TEMP%`. Native runtime validation remains outstanding. The source keeps the shell open for the deployment's lifetime; the in-memory session cannot spawn, spawnas, lateral, load PE plugins, or install persistence (guarded with a clear error). Transfer and launch both use WinRM; no SMB, WMI, `winrs.exe`, or `wmic.exe` |
+| `wmiexec` | Loader chain (default, `wmiexec_loader`): the worker starts a Windows PowerShell receiver through the native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`. The source then streams the framed loader and artifact halves over a session-specific named pipe and waits for the `RMM_LOADER_READY` marker; the receiver maps the agent in memory and blocks on its thread. Nothing is written to the target's disk; the created process is independent of the source agent and ends at target shutdown or an explicit kill. The legacy ADMIN$ copy path remains for old servers only |
+| `winrm` | Loader chain (default, `winrm_loader` and its HTTPS wire variants): native WSMan client through `WsmSvc.dll`: create an authenticated session and shell, run a Windows PowerShell receiver, stream a framed payload (loader source + agent binary) with `WSManSendShellInput`, verify each half's length and SHA-256, then load the agent **in memory**: one `VirtualAlloc(PAGE_EXECUTE_READWRITE)` image, a full PE32+ amd64 mapping (sections, relocations, imports, TLS), and a detached `CreateThread` on the entry point. The agent executable is not staged on disk; `Add-Type` can create compiler scratch files in `%TEMP%`. Native runtime validation remains outstanding. The source keeps the shell open for the deployment's lifetime; the in-memory session cannot spawn, spawnas, lateral, load PE plugins, or install persistence (guarded with a clear error, except the loader chain itself, which a memory-hosted source may run). Transfer and launch both use WinRM; no SMB, WMI, `winrs.exe`, or `wmic.exe` |
 
 WMI and explicit-credential WSMan execution select authentication using the target's written
 form (`lateralHostIsIP` in `lateral.go`). This selection does not govern SMB

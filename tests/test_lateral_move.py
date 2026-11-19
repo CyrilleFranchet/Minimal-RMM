@@ -1,4 +1,5 @@
 """Verify lateral_move and session_uid server flow, REST routing, and redaction."""
+import hashlib
 import io
 import json
 import os
@@ -280,14 +281,73 @@ class LateralFlowTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
         self.assertIs(request["https"], True)
-        self.assertEqual(request["method"], "winrm_https", "older agents must reject HTTPS instead of ignoring it")
+        self.assertEqual(request["method"], "winrm_https_loader", "older agents must reject the loader chain instead of ignoring it")
         self.assertIn("-s", self.server.record_operator_action.call_args.args[1])
+
+    def test_wmiexec_and_winrm_deploy_server_staged_artifacts(self):
+        for method, wire in (("wmiexec", "wmiexec_loader"), ("winrm", "winrm_loader")):
+            with self.subTest(method=method):
+                self.ack_output = f"lateral started: method={method} host=target target session={self.target_id} loader=csharp"
+                self.server.exec_and_wait.reset_mock()
+                result, status = self.server.lateral_move(self.source.id, method, "target")
+                self.assertEqual(status, "ok")
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["loader"], "csharp")
+                request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+                self.assertEqual(request["method"], wire,
+                                 "loader deployments must use wired names older agents reject")
+                self.assertEqual(request["loader"], "csharp")
+                self.assertTrue(request["stage"],
+                                "loader deployments must carry a staging reference")
+                self.assertEqual(request["payload_sha256"],
+                                 hashlib.sha256(b"MZfake-agent-payload-for-staging").hexdigest())
+                self.assertIn("loader=csharp", self.server.record_operator_action.call_args.args[1])
+
+    def test_loader_deployments_require_the_workspace_artifact(self):
+        for method in ("wmiexec", "winrm"):
+            with self.subTest(method=method):
+                with patch.object(server_rmm, "latest_go_agent_binary", return_value=None):
+                    self.assertEqual(self.server.lateral_move(self.source.id, method, "target"),
+                                      (None, "agent_payload_unavailable"))
+        self.server.exec_and_wait.assert_not_called()
+
+    def test_loader_worker_budget_includes_beacon_sleep_and_jitter(self):
+        self.source.sleep_seconds = 60
+        self.source.jitter_percent = 30
+        self.server.lateral_move(self.source.id, "winrm", "target", exec_timeout=300)
+        request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
+        self.assertEqual(request["timeout_seconds"], 207)
+        self.assertEqual(self.server.exec_and_wait.call_args.kwargs["timeout"], 300)
+
+    def test_powershell_loader_is_reserved_and_unknown_loaders_fail(self):
+        self.assertEqual(self.server.lateral_move(self.source.id, "winrm", "target", loader="powershell"),
+                         (None, "loader_reserved"))
+        for value in ["rubylang", 3, None]:
+            self.assertEqual(self.server.lateral_move(self.source.id, "winrm", "target", loader=value),
+                             (None, "invalid_loader"))
+        self.server.exec_and_wait.assert_not_called()
+        import rmm_cli
+        import rmm_tools
+        client = rmm_cli.RmmApiClient("http://fixture", "fixture-token")
+        client.request = Mock(return_value=(200, {"ok": True}))
+        with self.assertRaises(ValueError):
+            client.lateral_move("source", "winrm", "target", loader="rust")
+        client.lateral_move("source", "winrm", "target", loader=" powershell ".strip())
+        self.assertEqual(client.request.call_args.args[2]["loader"], "powershell")
+        with patch.object(rmm_tools, "_resolve_session_id", return_value=("source", {})):
+            reserved = json.loads(rmm_tools.tool_lateral_move(client, "source", "winrm", "target", loader="powershell"))
+            self.assertEqual(reserved["error"], "loader_reserved")
+            invalid = json.loads(rmm_tools.tool_lateral_move(client, "source", "winrm", "target", loader="rust"))
+            self.assertEqual(invalid["error"], "invalid_loader")
+            defaulted = json.loads(rmm_tools.tool_lateral_move(client, "source", "winrm", "target"))
+            self.assertEqual(defaulted["ok"], True)
+            self.assertEqual(client.request.call_args.args[2]["loader"], "csharp")
 
     def test_certificate_bypass_is_explicit_and_requires_https(self):
         self.server.lateral_move(self.source.id, "winrm", "target", https=True, insecure=True)
         request = json.loads(self.server.exec_and_wait.call_args_list[0].args[1].split("\n", 1)[1])
         self.assertIs(request["insecure"], True)
-        self.assertEqual(request["method"], "winrm_https_insecure")
+        self.assertEqual(request["method"], "winrm_https_insecure_loader")
         self.assertIn("-k", self.server.record_operator_action.call_args.args[1])
         self.server.exec_and_wait.reset_mock()
         for value in [True, "true", 1, None]:
@@ -490,6 +550,7 @@ class LateralHttpRoutingTests(unittest.TestCase):
         handler.server_instance.lateral_move.assert_called_once_with(
             "full-session-id", "psexec", "ws01",
             verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0,
+            loader="csharp",
         )
 
     def test_lateral_status_codes(self):
@@ -500,6 +561,8 @@ class LateralHttpRoutingTests(unittest.TestCase):
             ("invalid_host", 400),
             ("invalid_https", 400),
             ("invalid_insecure", 400),
+            ("invalid_loader", 400),
+            ("loader_reserved", 400),
             ("agent_payload_unavailable", 503),
             ("debug_payload_unavailable", 503),
             ("timeout", 408),

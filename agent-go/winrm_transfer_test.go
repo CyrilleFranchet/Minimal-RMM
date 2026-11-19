@@ -138,6 +138,67 @@ func TestPrepareWinRMTransfer(t *testing.T) {
 	}
 }
 
+// The bytes-based transfer is what server-staged loader deployments use: a
+// memory-hosted source has no on-disk binary, so the framing must reproduce
+// the file-based manifest exactly.
+func TestPrepareWinRMTransferFromBytes(t *testing.T) {
+	want := bytes.Repeat([]byte{0, 1, 127, 128, 255}, 10000)
+	transfer, err := prepareWinRMTransferFromBytes(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binaryDigest := sha256.Sum256(want)
+	loaderDigest := sha256.Sum256([]byte(winrmStage1CSharp))
+	if transfer.binarySize != int64(len(want)) || transfer.binaryDigest != fmt.Sprintf("%x", binaryDigest) {
+		t.Fatalf("wrong binary manifest: %+v", transfer)
+	}
+	if transfer.loaderSize != int64(len(winrmStage1CSharp)) || transfer.loaderDigest != fmt.Sprintf("%x", loaderDigest) {
+		t.Fatalf("wrong loader manifest: %+v", transfer)
+	}
+	if transfer.size != transfer.loaderSize+transfer.binarySize {
+		t.Fatalf("framed size %d must cover loader and binary", transfer.size)
+	}
+	got := make([]byte, transfer.size)
+	if n, err := io.ReadFull(transfer.source, got); err != nil || n != int(transfer.size) {
+		t.Fatal("framed source was not readable end to end")
+	}
+	if !bytes.Equal(got[:transfer.loaderSize], []byte(winrmStage1CSharp)) || !bytes.Equal(got[transfer.loaderSize:], want) {
+		t.Fatal("framed source must be the loader followed by the staged bytes")
+	}
+	if _, err := prepareWinRMTransferFromBytes(nil); err == nil {
+		t.Fatal("empty artifact must be rejected")
+	}
+	if _, err := prepareWinRMTransferFromBytes(bytes.Repeat([]byte{1}, winrmTransferMaxSize+1)); err == nil {
+		t.Fatal("oversized artifact must be rejected")
+	}
+}
+
+// The generated receiver must be valid Windows PowerShell 5.1: syntax errors
+// would leave nothing on the pipe and a stuck process on the target. Parsing
+// without executing stays portable off Windows; pwsh availability gates it.
+func TestWmiLoaderScriptParses(t *testing.T) {
+	powershell := stage1Powershell(t)
+	script := wmiLoaderScript(wmiLoaderPipeName("srv-parse-001"), "srv-parse-001", nil,
+		wmiTestTransfer(t, []byte("MZ parse fixture")))
+	path := filepath.Join(t.TempDir(), "receiver.ps1")
+	if err := os.WriteFile(path, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+		`$e=$null;`+
+			`[System.Management.Automation.Language.Parser]::ParseFile('`+path+`',[ref]$null,[ref]$e)|Out-Null;`+
+			`if($e.Count){$e|ForEach-Object{$_.Message};exit 1}else{'Parse OK'}`)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the receiver script must parse: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "Parse OK") {
+		t.Fatalf("unexpected parser output: %s", output)
+	}
+}
+
 func TestWinRMEncodedCommand(t *testing.T) {
 	want := "Write-Output 'hello 🔒'"
 	encoded, err := base64.StdEncoding.DecodeString(winrmEncodedCommand(want))

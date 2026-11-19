@@ -34,16 +34,23 @@ class DebugDeploymentTests(unittest.TestCase):
             lambda: server.lateral_move("source-session", "wmiexec", "target"),
             lambda: server.lateral_move("source-session", "winrm", "target"),
         ]
-        for build_debug in (False, True):
-            server.resolve_session.return_value.agent_debug = build_debug
-            for action in actions:
-                with self.subTest(build_debug=build_debug, action=action):
-                    result, status = action()
-                    self.assertEqual(status, "ok")
-                    self.assertIs(result["debug"], build_debug)
-                    command = server.exec_and_wait.call_args.args[1]
-                    self.assertNotIn("debug", json.loads(command.split("\n", 1)[1]))
-        server.create_staging.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory:
+            agent_binary = Path(directory, "agent.exe")
+            agent_binary.write_bytes(b"MZworkspace-owned-agent")
+            with patch.object(server_rmm, "latest_go_agent_binary", return_value=str(agent_binary)):
+                for build_debug in (False, True):
+                    server.resolve_session.return_value.agent_debug = build_debug
+                    for action in actions:
+                        with self.subTest(build_debug=build_debug, action=action):
+                            result, status = action()
+                            self.assertEqual(status, "ok")
+                            self.assertIs(result["debug"], build_debug)
+                            command = server.exec_and_wait.call_args.args[1]
+                            payload = json.loads(command.split("\n", 1)[1])
+                            self.assertNotIn("debug", payload)
+                # Every wmiexec/winrm deployment now stages the workspace
+                # artifact once: two methods across the two build modes.
+                self.assertEqual(server.create_staging.call_count, 4)
 
     def test_psexec_uses_exact_source_variant_and_workspace_owner(self):
         server = self._server()

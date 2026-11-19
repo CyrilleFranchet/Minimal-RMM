@@ -323,6 +323,24 @@ func winrmDeployAgent(host, sourcePath, sessionID string, workspaceID *string, i
 	if err != nil {
 		return fmt.Errorf("prepare WinRM transfer: %w", err)
 	}
+	return winrmDeployTransfer(transfer, host, sessionID, workspaceID, identity, useHTTPS, insecure, deadline)
+}
+
+// winrmDeployLoaderAgent streams the server-staged artifact bytes through the
+// same WSMan receiver and in-memory start. The source session never touches
+// its own binary, so a memory-hosted source can deploy through it.
+func winrmDeployLoaderAgent(host string, agent []byte, sessionID string, workspaceID *string, identity *winrmCredentials, useHTTPS, insecure bool, deadline time.Time) error {
+	transfer, err := prepareWinRMTransferFromBytes(agent)
+	if err != nil {
+		return fmt.Errorf("prepare WinRM transfer: %w", err)
+	}
+	return winrmDeployTransfer(transfer, host, sessionID, workspaceID, identity, useHTTPS, insecure, deadline)
+}
+
+// winrmDeployTransfer runs the shared WinRM deployment core: the
+// transfer-wide deadline, COM security policy, WSMan initialization, and the
+// loader-gated execution with a held shell.
+func winrmDeployTransfer(transfer *winrmTransfer, host, sessionID string, workspaceID *string, identity *winrmCredentials, useHTTPS, insecure bool, deadline time.Time) error {
 	if deadline.IsZero() {
 		deadline = time.Now().Add(wsmanCompletionTimeout)
 	}

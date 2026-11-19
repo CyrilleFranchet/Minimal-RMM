@@ -167,6 +167,26 @@ test('WinRM certificate bypass requires HTTPS and forwards only when selected', 
   }
 });
 
+test('loader flag forwards an explicit selection and rejects invalid values', async () => {
+  const csharp = fixture(); csharp.type('/lateral winrm target -l csharp'); await csharp.context.runCommand(false);
+  assert.deepEqual(JSON.parse(csharp.calls[0][1].body), {method:'winrm',host:'target',loader:'csharp'});
+  const powershell = fixture(); powershell.type('/lateral wmiexec target --loader powershell'); await powershell.context.runCommand(false);
+  assert.deepEqual(JSON.parse(powershell.calls[0][1].body), {method:'wmiexec',host:'target',loader:'powershell'});
+  for (const command of ['/lateral winrm target -l', '/lateral winrm target -l csharp -l powershell']) {
+    const f = fixture(); f.type(command); await f.context.runCommand(false);
+    assert.equal(f.calls.length, 0);
+    assert.match(f.errors[0], /Usage:/);
+  }
+  const unknown = fixture(); unknown.type('/lateral winrm target -l rustloader'); await unknown.context.runCommand(false);
+  assert.equal(unknown.calls.length, 0);
+  assert.match(unknown.errors[0], /Loader must be csharp or powershell/);
+  const reserved = fixture();
+  reserved.context.api = async (...args) => { reserved.calls.push(args); return { status: 400, data: { error: 'loader_reserved' } }; };
+  reserved.type('/lateral winrm target -l powershell'); await reserved.context.runCommand(false);
+  assert.equal(reserved.calls.length, 1);
+  assert.match(reserved.errors.at(-1), /powershell loader is reserved/);
+});
+
 test('lateral renders results only through events and preserves registration warnings', async () => {
   for (const method of ['wmiexec', 'psexec', 'winrm']) {
     for (const registered of [true, false]) {
@@ -517,7 +537,7 @@ test('lateral opens its method menu after command completion and accepts keyboar
   f.key('ArrowDown'); f.key('Tab');
   assert.equal(f.input.value, '/lateral wmiexec ');
   assert.equal(f.input.attrs['aria-expanded'], 'false');
-  assert.equal(f.hint.textContent, '/lateral wmiexec <host>');
+  assert.equal(f.hint.textContent, '/lateral wmiexec <host> [-l csharp|powershell]');
 });
 
 test('lateral filters methods, supports clicks, and leaves the host untouched', () => {
@@ -526,7 +546,7 @@ test('lateral filters methods, supports clicks, and leaves the host untouched', 
   assert.deepEqual(f.menu.children.map(x => x.textContent), ['/lateral wmiexec', '/lateral winrm']);
   f.menu.children[1].listeners.mousedown({preventDefault() {}});
   assert.equal(f.input.value, '/lateral winrm ');
-  assert.equal(f.hint.textContent, '/lateral winrm <host> [-s|--https] [-k|--insecure]');
+  assert.equal(f.hint.textContent, '/lateral winrm <host> [-s|--https] [-k|--insecure] [-l csharp|powershell]');
   f.context.getShellHistoryList = () => ['/lateral winrm ws01.old.example'];
   f.type('/lateral winrm ws'); f.key('Tab');
   assert.equal(f.input.value, '/lateral winrm ws');

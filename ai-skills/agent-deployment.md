@@ -90,11 +90,14 @@ artifact paths and metadata, never secret-bearing file content.
   lateral channel that supports file copy (SMB `ADMIN$`/`C$`, WinRM
   `Copy-Item -ToSession`) can also deliver the file directly to the target.
 - Remote execution uses the techniques in `lateral-movement`. The Go agent
-  executable itself needs no PowerShell. Agent-side `lateral winrm` uses
-  Windows PowerShell as its in-memory receiver, transferring the agent
-  through the authenticated WinRM session and loading it without SMB or a
-  file on disk. Manual deployment can run the extracted binary or its
-  `run-agent.ps1` launcher.
+  executable itself needs no PowerShell. Agent-side `lateral winrm` and
+  `lateral wmiexec` use Windows PowerShell as their in-memory receiver,
+  streaming the server-staged workspace agent build through the
+  authenticated transport (WSMan stdin for WinRM, an SMB named pipe for WMI)
+  and loading it without SMB file staging or any file on the target's disk.
+  Both loader deployments work from memory-hosted source sessions, so a
+  WinRM-deployed agent can continue moving laterally. Manual deployment can
+  run the extracted binary or its `run-agent.ps1` launcher.
 
 ## Workflow
 

@@ -50,13 +50,21 @@ fallback for DNS names. A DNS target does not guarantee Kerberos for the
 whole operation. WinRM's implicit Negotiate credentials require the target
 to satisfy the client's existing host-trust policy. Changing the host form
 alone does not establish access to a workgroup host.
-Agent-side `lateral winrm` transfers the binary entirely through
-WinRM and loads it in memory on the target; do not require `ADMIN$`, test
-SMB as a prerequisite, or substitute an SMB copy for this method. Nothing
-is written to the target's disk, and no local service is created. The
-target requires Windows PowerShell with `Add-Type` available (full language
-mode); the deployed session lives only as long as the source agent keeps
-the WinRM shell open.
+Agent-side `lateral winrm` and `lateral wmiexec` deploy the server-staged
+workspace agent build in memory through the target's Windows PowerShell
+(`csharp` loader): nothing is written to the target's disk, no local service
+is created, and the source session's hosting mode (on disk or in memory) does
+not matter. Both need Windows PowerShell with `Add-Type` available (full
+language mode). Despite the PowerShell receiver, do not require `ADMIN$`,
+test SMB as a prerequisite for `winrm`, or substitute an SMB copy for these
+methods. A `winrm` deployment lives only as long as the source agent keeps
+the WinRM shell open; a `wmiexec` loader deployment creates an independent
+receiver process that survives the source agent and ends only at target
+shutdown or an explicit kill. The deployed session is memory-hosted, so it
+cannot spawn, spawnas, run further legacy lateral moves, load PE plugins,
+or install persistence. Loader deployments of either kind require a
+server-staged agent build for the source workspace; the request fails with
+`agent_payload_unavailable` if none exists.
 Actions requiring existing target control are not substitutes for reaching it.
 
 Execution surface matters: commands launched through the Windows agent use

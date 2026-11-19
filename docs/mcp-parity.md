@@ -21,6 +21,13 @@ matching server artifact and fails if it is unavailable. See
 The parity checker requires build debug support and rejects deployment debug
 parameters, preventing the removed companion-selection interface from returning.
 
+Lateral `loader` selection is a strict string on the API client, MCP, and AI
+schemas (the parity checker enforces it). Only `csharp` is supported in this
+release; the reserved `powershell` value fails with `loader_reserved` instead
+of silently substituting the default. Loader deployments stage the
+workspace-owned artifact through the server, so they no longer deploy the
+source agent's own binary.
+
 Operator CLI and external MCP clients default to the workspace URL on port
 8787; an explicit URL remains authoritative. Central administration requires
 explicit central connection settings. The operator WebUI connects directly to
@@ -268,7 +275,7 @@ Unknown slash commands never reach the remote shell.
 | Agent `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | `install_persistence`, `remove_persistence` | Lab only |
 | Agent `__SPAWN__` (`POST …/spawn`) | `spawn_session` | Detached second Go agent with a fresh session ID; registration and responsiveness verification, Go sessions only |
 | Agent `__MAKE_TOKEN__` / `__REV2SELF__` (`POST …/make_token`, `…/rev2self`) | `make_token`, `rev2self` | `runas /netonly` style network identity for spawned commands, Go (Windows) sessions only; operator events record the identity label, never the password |
-| Agent `__LATERAL__` (`POST …/lateral`) | `lateral_move` | Start a Go agent on another host (psexec/wmiexec/winrm) with a fresh session ID; registration and responsiveness verification, Go (Windows) sessions only |
+| Agent `__LATERAL__` (`POST …/lateral`) | `lateral_move` | Start a Go agent on another host (psexec/wmiexec/winrm) with a fresh session ID and a `loader` option (`csharp` default; `powershell` reserved and rejected explicitly on every surface); registration and responsiveness verification, Go (Windows) sessions only |
 | Agent `__UID__` (`POST …/uid`) | `session_uid` | Identity report for make_token / rev2self verification, Go sessions only |
 | Agent `__STOP__` | `stop_persistent` | |
 

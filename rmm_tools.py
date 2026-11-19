@@ -799,17 +799,31 @@ def tool_lateral_move(
     verify_timeout: float = 120,
     https: bool = False,
     insecure: bool = False,
+    loader: str = "csharp",
 ) -> str:
     """Start a Go agent on another host through psexec, wmiexec, or winrm."""
     sid, info = _resolve_session_id(client, session_ref)
     if not sid:
         return _json_result({"ok": False, **info})
     method = (method or "").strip().lower()
+    loader = (loader or "csharp").strip().lower() if isinstance(loader, str) else ""
     if method not in ("psexec", "wmiexec", "winrm"):
         return _json_result({
             "ok": False,
             "error": "invalid_method",
             "detail": "method must be psexec, wmiexec, or winrm",
+        })
+    if loader not in ("csharp", "powershell"):
+        return _json_result({
+            "ok": False,
+            "error": "invalid_loader",
+            "detail": "loader must be csharp or the reserved powershell value",
+        })
+    if loader == "powershell":
+        return _json_result({
+            "ok": False,
+            "error": "loader_reserved",
+            "detail": "The powershell loader is reserved for a later release; use the default csharp loader.",
         })
     if not isinstance(https, bool) or (https and method != "winrm"):
         return _json_result({"ok": False, "error": "invalid_https",
@@ -827,6 +841,7 @@ def tool_lateral_move(
         exec_timeout=exec_timeout,
         register_timeout=register_timeout,
         verify_timeout=verify_timeout,
+        loader=loader,
         **({"https": True} if https else {}),
         **({"insecure": True} if insecure else {}),
     )
@@ -1912,13 +1927,14 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "lateral_move",
-            "description": "Start a Go agent on another host through a live Go agent session, using psexec, wmiexec, or winrm. WinRM transfers and launches the agent entirely through the authenticated WinRM session, without SMB or ADMIN$; the target requires Windows PowerShell. WMI stages the agent over ADMIN$; psexec stages its dedicated service host over ADMIN$. Each starts a fresh session ID; make_token first to use alternate credentials. The call waits for the target session to register without sending additional verification commands; report verified=false instead of resubmitting. Requires an agent binary built with embedded connection settings and admin rights on the target.",
+            "description": "Start a Go agent on another host through a live Go agent session, using psexec, wmiexec, or winrm. wmiexec and winrm deploy the server-selected workspace agent build in memory inside the target's Windows PowerShell through a loader (csharp only in this release; powershell is reserved), without SMB, ADMIN$, or any file on the target: the target requires Windows PowerShell with Add-Type. WinRM deployments live only as long as the source agent holds its shell; WMI loader deployments survive the source agent. Legacy psexec stages its dedicated service host over ADMIN$ and needs admin rights and a network share. Each starts a fresh session ID; make_token first to use alternate credentials. The call waits for the target session to register without sending additional verification commands; report verified=false instead of resubmitting. Requires an agent binary built with embedded connection settings.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "session_ref": {"type": "string"},
                     "method": {"type": "string", "enum": ["psexec", "wmiexec", "winrm"]},
                     "host": {"type": "string", "description": "Target hostname or IP address"},
+                    "loader": {"type": "string", "enum": ["csharp", "powershell"], "default": "csharp", "description": "Loader implementation for wmiexec/winrm in-memory deployment. csharp is the only supported value in this release; powershell is reserved and fails explicitly rather than substituting csharp. Ignored for psexec."},
                     "https": {"type": "boolean", "default": False, "description": "WinRM only: HTTPS on port 5986 with server certificate validation; default HTTP/5985."},
                     "insecure": {"type": "boolean", "default": False, "description": "Skip CA, name and revocation checks for this WinRM HTTPS session. Certificate date checks still apply. Requires https=true."},
                     "verify": {"type": "boolean", "default": True},

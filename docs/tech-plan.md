@@ -989,6 +989,28 @@ see [deployment](deployment.md) and [migration](workspace-migration.md).
 
 ---
 
+## 13. Lateral loader independence (wmiexec/winrm)
+
+- **Status:** implemented except native Windows validation — csharp single-loader release; the `powershell` value stays reserved and rejected
+- **Surfaces:** Go agent (`agent-go/`), server (`server_rmm.py`), REST → CLI → MCP → WebUI
+- **Goal:** Make lateral `wmiexec` and `winrm` independent of the source agent's hosting mode (on-disk vs. in-memory), with an operator-selectable loader (`csharp` only in this release; `powershell` reserved and rejected) and no deployment artifacts written to the target's disk.
+
+Today both methods treat the source binary as the deployment artifact: wmiexec
+copies `os.Executable()` to ADMIN$ and winrm streams it, so a memory-hosted
+source cannot deploy at all and wmiexec always starts the agent from disk on
+the target. The plan moves artifact selection to the server (workspace-owned,
+build-matched, architecture-checked), introduces a shared bootstrap/loader
+contract on both transports (WinRM stdin stream; named-pipe channel for WMI),
+replaces the blanket memory-hosting refusal with per-operation capability
+checks, and keeps PsExec unchanged. Registration remains the confirmation
+that a usable target agent exists. Native Windows validation gates every
+supported claim.
+
+Full design, review findings, decision matrix, and validation plan:
+[lateral loader architecture and review plan](lateral-loader.md).
+
+---
+
 ## Backlog (referenced elsewhere)
 
 ### Separate Exegol execution from the RMM server

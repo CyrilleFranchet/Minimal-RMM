@@ -596,8 +596,9 @@ def lateral_move(
     verify_timeout: float = 120,
     https: StrictBool = False,
     insecure: StrictBool = False,
+    loader: str = "csharp",
 ) -> str:
-    """Start a Go agent on another host and confirm registration. Children inherit the source agent's compiled debug mode. Debug is selected only at build time. A debug source requires a server-side Windows amd64 debug artifact for PsExec; missing required artifacts fail without fallback."""
+    """Start a Go agent on another host and confirm registration. Children inherit the source agent's compiled debug mode. Debug is selected only at build time. A debug source requires a server-side Windows amd64 debug artifact for the requested method; missing required artifacts fail without fallback. wmiexec and winrm deploy the staged workspace agent build in memory via the csharp loader (powershell is reserved and fails explicitly)."""
     return tool_lateral_move(
         _client(),
         session_ref,
@@ -609,6 +610,7 @@ def lateral_move(
         verify_timeout=verify_timeout,
         https=https,
         insecure=insecure,
+        loader=loader,
     )
 
 
