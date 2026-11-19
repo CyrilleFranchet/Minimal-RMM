@@ -123,6 +123,25 @@ class OperationActivityTests(unittest.TestCase):
             clean = _safe_activity({'phase': 'exegol_execution', **invalid})
             self.assertNotIn(next(iter(invalid)), clean)
 
+    def test_execution_checkpoint_retains_parent_round_in_job_activity(self):
+        from rmm_exegol_execution import DurableExegolBackend
+        def run(progress):
+            with patch('rmm_exegol_execution.getenv', side_effect=lambda key, default=None:
+                       self.directory.name if key == 'RMM_LOG_DIR' else default):
+                backend = DurableExegolBackend(None, 'f' * 64, progress)
+            row, _ = backend.store.claim('fixture', 'fixture command', 3600)
+            async def execute(name, args):
+                backend.checkpoint(row['id'], 'running', action='status')
+                return 'fixture result'
+            dispatcher = ContextDispatcher(execute, ContextWindow())
+            asyncio.run(run_tool_batch([{'name': 'execute_command_in_container', 'arguments': {}}],
+                                      dispatcher, progress=progress, round_number=11))
+            return {'ok': True}
+        final = self.finish(run)
+        events = [event for event in final['activity'] if event.get('phase') == 'exegol_execution']
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['round'], 11)
+
     def test_cancel_retains_late_response_without_admitting_new_work(self):
         started, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)

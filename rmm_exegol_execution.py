@@ -17,6 +17,7 @@ import uuid
 
 from rmm_settings import getenv
 from rmm_ai_jobs import JobInterrupted
+from rmm_ai_concurrency import CURRENT_TOOL_ROUND
 
 EXECUTE = 'execute_command_in_container'
 TERMINAL = frozenset({'completed', 'failed', 'timed_out', 'cancelled'})
@@ -179,6 +180,9 @@ class DurableExegolBackend:
         if self.progress:
             event = {'phase': 'exegol_execution', 'execution_id': key, 'status': state,
                      'execution_action': action, 'backend': 'exegol'}
+            round_number = CURRENT_TOOL_ROUND.get()
+            if type(round_number) is int and 1 <= round_number <= 1000000:
+                event['round'] = round_number
             observed = result or {}
             code, size = observed.get('exit_code'), observed.get('output_bytes')
             if type(code) is int and -(2**31) <= code < 2**31:

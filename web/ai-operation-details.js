@@ -143,6 +143,7 @@
         details.open = expanded.has(eventKey);
         const unfinished = terminal && event.phase === "tool" && event.status === "running" && !ended.has(event.call_id);
         const summary = node("summary", [event.timestamp, event.backend, event.tool || event.phase || "Activity",
+          event.round !== undefined ? `Round ${event.round}` : "",
           event.execution_id ? `Execution ${event.execution_id}` : "",
           unfinished ? "Outcome unknown (no final event recorded)"
             : (event.phase === "exegol_execution" ? executionStatuses[event.status] : statuses[event.status]) || event.status,

@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import rmm_ai
-from rmm_ai_concurrency import run_tool_batch, tool_concurrency
+from rmm_ai_concurrency import CURRENT_TOOL_ROUND, run_tool_batch, tool_concurrency
 
 
 def call(name="health", **arguments):
@@ -24,6 +24,42 @@ class SchedulingTests(unittest.IsolatedAsyncioTestCase):
         setting = patch("rmm_ai_concurrency.getenv", return_value="4")
         setting.start()
         self.addCleanup(setting.stop)
+
+    async def test_tool_round_is_isolated_between_concurrent_batches(self):
+        both_started = asyncio.Event()
+        started = 0
+        observed = {}
+
+        async def execute(name, arguments):
+            nonlocal started
+            first = CURRENT_TOOL_ROUND.get()
+            started += 1
+            if started == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), 2)
+            observed[arguments['label']] = (first, CURRENT_TOOL_ROUND.get())
+            return 'ok'
+
+        await asyncio.gather(
+            run_tool_batch([call('get_exegol_execution', label='first')], execute, round_number=11),
+            run_tool_batch([call('get_exegol_execution', label='second')], execute, round_number=27))
+        self.assertEqual(observed, {'first': (11, 11), 'second': (27, 27)})
+        self.assertIsNone(CURRENT_TOOL_ROUND.get())
+
+    async def test_tool_round_restores_context_after_failure_and_cancellation(self):
+        for failure in (RuntimeError('fixture'), asyncio.CancelledError()):
+            async def execute(name, arguments):
+                self.assertEqual(CURRENT_TOOL_ROUND.get(), 11)
+                raise failure
+
+            token = CURRENT_TOOL_ROUND.set(7)
+            try:
+                with self.assertRaises(type(failure)):
+                    await run_tool_batch([call('get_exegol_execution')], execute, round_number=11)
+                self.assertEqual(CURRENT_TOOL_ROUND.get(), 7)
+            finally:
+                CURRENT_TOOL_ROUND.reset(token)
+        self.assertIsNone(CURRENT_TOOL_ROUND.get())
 
     async def test_bound_and_overlap(self):
         active = peak = 0

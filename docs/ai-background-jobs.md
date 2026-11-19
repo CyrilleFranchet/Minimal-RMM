@@ -305,6 +305,10 @@ byte count, observed signed exit code when available, and a fixed supervisor
 error code when present. Continuing polls update the latest byte count in the
 same entry. The operation-details timeline and Copy diagnostics export retain
 these fields and distinguish execution states from tool-call response states.
+Supervisor checkpoints also inherit the invoking tool call's model `round`,
+including status polling and later recovery queries. Task-local context keeps
+concurrent conversations separate and is restored after success, failure,
+and cancellation. Calls outside a model round do not invent one.
 Raw commands, output, and exception messages still require explicit protected
 evidence reads and are excluded from diagnostic exports. Existing jobs show
 only the metadata recorded by the service version that executed them.

@@ -145,16 +145,19 @@ const job = { id: 'job-1', session_id: 'session-1', status: 'running', created_a
   const executionId = 'a'.repeat(32);
   const executionJob = { id: 'execution-job', status: 'running',
     progress: { phase: 'exegol_execution', backend: 'exegol', status: 'running', execution_id: executionId,
-      execution_action: 'status', exit_code: 0, output_bytes: 0, command: 'hidden-execution-secret' },
+      round: 11, execution_action: 'status', exit_code: 0, output_bytes: 0, command: 'hidden-execution-secret' },
     activity: [{ timestamp: '2026-11-18T12:00:00Z', phase: 'exegol_execution', backend: 'exegol',
-      status: 'running', execution_id: executionId, execution_action: 'status', output_bytes: 23,
+      status: 'running', round: 11, execution_id: executionId, execution_action: 'status', output_bytes: 23,
       command: 'hidden-execution-secret', output: 'hidden-execution-secret', error: 'hidden-execution-secret' }] };
   api.show(executionJob);
   assert(contains(`Execution ${executionId}`), 'execution ID is visible without expanding the event');
   assert(contains('Execution running'), 'supervisor running state is distinct from a tool call starting');
+  assert(contains('Round 11'), 'the execution timeline summary identifies its parent model round');
   await find('button', 'Copy diagnostics').click();
   let executionCopy = JSON.parse(copied);
   assert.equal(executionCopy.progress.execution_id, executionId);
+  assert.equal(executionCopy.progress.round, 11);
+  assert.equal(executionCopy.activity[0].round, 11);
   assert.equal(executionCopy.progress.backend, 'exegol');
   assert.equal(executionCopy.progress.execution_action, 'status');
   assert.equal(executionCopy.progress.exit_code, 0, 'zero exit code survives projection');

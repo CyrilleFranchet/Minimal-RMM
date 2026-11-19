@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from rmm_ai_jobs import JobInterrupted, _safe_activity
+from rmm_ai_concurrency import run_tool_batch
 from rmm_exegol_execution import DurableExegolBackend, ExecutionStore, execution_scope
 
 
@@ -73,6 +74,60 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.events = []
         self.backend = DurableExegolBackend(self.raw, 'a' * 64, self.events.append)
         self.args = {'container_name': 'fixture', 'command': 'printf fixture'}
+
+    async def test_execution_checkpoints_inherit_invoking_tool_round(self):
+        await run_tool_batch([{'name': 'execute_command_in_container', 'arguments': self.args}],
+                             self.backend.call_tool, round_number=11)
+        self.assertEqual([event['execution_action'] for event in self.events],
+                         ['prepare', 'start', 'status'])
+        self.assertTrue(all(event.get('round') == 11 for event in self.events))
+        self.assertTrue(all('call_id' not in event for event in self.events))
+        key = self.events[-1]['execution_id']
+        self.events.clear()
+        await run_tool_batch([{'name': 'get_exegol_execution', 'arguments': {'execution_id': key}}],
+                             self.backend.call_tool, round_number=12)
+        self.assertEqual(self.events[-1]['round'], 12)
+
+    async def test_direct_calls_do_not_invent_or_retain_a_tool_round(self):
+        await run_tool_batch([{'name': 'execute_command_in_container', 'arguments': self.args}],
+                             self.backend.call_tool, round_number=11)
+        key = self.events[-1]['execution_id']
+        self.events.clear()
+        await self.backend.call_tool('get_exegol_execution', {'execution_id': key})
+        self.assertNotIn('round', self.events[-1])
+
+    async def test_concurrent_execution_checkpoints_keep_their_invoking_round(self):
+        other_events = []
+        other_raw = FakeExegol()
+        other_backend = DurableExegolBackend(other_raw, 'b' * 64, other_events.append)
+        both_started = asyncio.Event()
+        started = 0
+
+        def interleave(raw):
+            original = raw.call_tool
+
+            async def call_tool(name, arguments):
+                nonlocal started
+                if json.loads(arguments['command'])['action'] == 'start':
+                    started += 1
+                    if started == 2:
+                        both_started.set()
+                    await both_started.wait()
+                return await original(name, arguments)
+
+            raw.call_tool = call_tool
+
+        interleave(self.raw)
+        interleave(other_raw)
+        await asyncio.wait_for(asyncio.gather(
+            run_tool_batch([{'name': 'execute_command_in_container', 'arguments': self.args}],
+                           self.backend.call_tool, round_number=11),
+            run_tool_batch([{'name': 'execute_command_in_container', 'arguments': self.args}],
+                           other_backend.call_tool, round_number=27)), timeout=5)
+        for events, expected_round in ((self.events, 11), (other_events, 27)):
+            self.assertEqual([event['execution_action'] for event in events],
+                             ['prepare', 'start', 'status'])
+            self.assertTrue(all(event.get('round') == expected_round for event in events))
 
     async def test_execute_persists_handle_before_dispatch_and_returns_result(self):
         original = self.raw.call_tool

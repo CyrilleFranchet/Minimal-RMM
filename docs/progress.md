@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-11-18 — Correlate Exegol execution status with model rounds
+
+- Propagate the invoking model round into supervisor launch, polling, and
+  recovery checkpoints through task-local context, restored on every exit.
+- Display recorded rounds in the operation timeline summary and preserve them
+  in copied diagnostics. Standalone calls and older events keep absent rounds
+  rather than inventing a model iteration.
+- Validation: AI regressions, persisted activity and UI tests, parity, syntax,
+  and lint pass. Regression coverage checks concurrent rounds, restoration
+  after errors/cancellation, recovery in a later round, and standalone calls.
+
 ## 2026-11-18 — Prevent idle readers from stalling SOCKS/TUN responses
 
 - A partial `ldeep users` capture exposed long LDAP response pauses; a local

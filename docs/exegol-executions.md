@@ -62,6 +62,14 @@ SQLite handles until garbage collection.
 Commands and outputs stay in protected AI evidence and remote execution
 files, not the safe activity metadata. Safe `exegol_execution` checkpoints
 record the execution ID before launch and on subsequent observations.
+Execution checkpoints inherit `round` from the model tool invocation that
+triggered them. `CURRENT_TOOL_ROUND` is task-local; `run_tool_batch` restores
+the previous context after completion, error, or cancellation, so concurrent
+conversations cannot exchange round numbers. Launch and polling share their
+parent round; recovery queries in a later round carry that later round.
+Standalone MCP use outside a model round leaves the field absent. The WebUI
+shows recorded rounds in timeline summaries and copied diagnostics. Historical
+events without a recorded round cannot reconstruct it.
 They also retain the supervisor action, observed output byte count, signed
 exit code when known, and allowlisted supervisor error code. The WebUI keeps
 these safe fields in expanded activity and Copy diagnostics. Execution states

@@ -1,10 +1,14 @@
 """Bounded, conservative scheduling of one model round's tool calls."""
 
 import asyncio
+from contextvars import ContextVar
 import time
 import uuid
 
 from rmm_settings import getenv
+
+
+CURRENT_TOOL_ROUND = ContextVar('rmm_current_tool_round', default=None)
 
 
 READ_TOOLS = frozenset({
@@ -44,6 +48,7 @@ async def run_tool_batch(calls, call_tool, *, resolve_session=None, progress=Non
         evidence = call_tool.prepare_activity(arguments) if getattr(type(call_tool), 'prepare_activity', None) else {}
         if progress:
             progress({**event, **evidence, "status": "running", "arguments_keys": list(arguments) if isinstance(arguments, dict) else []})
+        round_token = CURRENT_TOOL_ROUND.set(round_number)
         try:
             result = await call_tool(name, arguments)
         except BaseException as error:
@@ -54,6 +59,8 @@ async def run_tool_batch(calls, call_tool, *, resolve_session=None, progress=Non
                           "duration_ms": int((time.monotonic() - started) * 1000),
                           "diagnostics": _failure_diagnostics(error)})
             raise
+        finally:
+            CURRENT_TOOL_ROUND.reset(round_token)
         if progress:
             evidence = call_tool.activity_evidence() if getattr(type(call_tool), 'activity_evidence', None) else {}
             progress({**event, **evidence, "status": "completed",
