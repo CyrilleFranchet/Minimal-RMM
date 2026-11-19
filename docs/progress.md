@@ -10,19 +10,32 @@
   `FILE_FLAG_OVERLAPPED` while Go's non-pollable file I/O writes with a null
   OVERLAPPED — a combination named pipes reject with error 87 on runtimes
   predating the 2025 poller fix (golang/go#15388 family). The declared agent
-  baseline is Go 1.21.
-- Fix: dial with an explicit synchronous `CreateFileW` through the repo's
-  lazyDLL convention — GENERIC_READ|GENERIC_WRITE, exclusive instance,
-  OPEN_EXISTING, no overlapped flag — and wrap the handle with `os.NewFile`
-  for blocking I/O already bounded by the goroutine deadline wrappers.
-  Retry cases stay ERROR_FILE_NOT_FOUND / ERROR_PIPE_BUSY.
-- Added Windows-only regressions: the dial parameter matrix (overlapped flag
-  absent, no pipe-instance creation, documented retry errnos) and an
-  end-to-end local receiver run that dials the actual generated script with
-  the native client, streams a framed non-PE payload, and asserts the
-  `RMM_LOADER_ERROR` reply naming the mapping failure plus receiver exit.
-  Host suites, cross-vet, and both Windows architectures and build modes
-  compile; the live remote retest remains deployment validation.
+  baseline is Go 1.21. A retry returned the identical message, which does
+  not distinguish a stale source binary from the fixed one — the fix
+  therefore also changes the failure text so a rebuilt agent is
+  self-evident.
+- Fix: the loader channel owns one deterministic synchronous handle, with
+  dialing and every read/write through explicit kernel32 calls
+  (`CreateFileW`, `ReadFile`, `WriteFile`, `CloseHandle`) following the
+  repo's lazyDLL convention — no `os.OpenFile`/`os.NewFile` in the path, so
+  no Go-runtime I/O behavior can reintroduce the overlapped mismatch:
+  GENERIC_READ|GENERIC_WRITE, exclusive instance, OPEN_EXISTING, no
+  FILE_FLAG_OVERLAPPED, null OVERLAPPED on each blocking call. Pipe writes
+  loop over short counts; broken-pipe and no-data map to `io.EOF`; retries
+  stay ERROR_FILE_NOT_FOUND / ERROR_PIPE_BUSY. Errors from the new client
+  read `native pipe write/read <path>: ...`, proving the fixed binary is
+  live. A timed-out write goroutine can block until the receiver's own
+  connection budget ends and the kernel breaks the pipe; the receiver exit
+  bounds that, documented in the conn type.
+- Added Windows-only regressions: the dial and I/O parameter/proc matrix
+  (all four procs resolve; overlapped flag absent; no pipe-instance
+  creation; documented retry and closure errnos), a missing-pipe deadline
+  test, and an end-to-end local receiver run that dials the actual
+  generated script with the native client, streams a framed non-PE payload,
+  and asserts the `RMM_LOADER_ERROR` reply naming the mapping failure plus
+  receiver exit. Host suites, cross-vet, and both Windows architectures and
+  build modes compile; rebuilding and redeploying the source agent is
+  required before the live retest, which remains deployment validation.
 
 ## 2026-11-19 — Implement the lateral loader chain (csharp, single-loader release)
 

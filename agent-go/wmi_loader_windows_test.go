@@ -5,6 +5,7 @@ package main
 import (
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -13,10 +14,18 @@ import (
 // access on an existing instance, with no FILE_FLAG_OVERLAPPED — Go's
 // os.OpenFile adds that flag and then writes with a null OVERLAPPED, which
 // named pipes reject with ERROR_INVALID_PARAMETER (the failure observed in
-// the field).
+// the field). Read and write must stay on the same synchronous client, with
+// pipe-close errors mapping to io.EOF.
 func TestWmiLoaderDialParameters(t *testing.T) {
-	if err := procLoaderCreateFileW.Find(); err != nil {
-		t.Fatalf("CreateFileW must resolve: %v", err)
+	for name, proc := range map[string]*syscall.LazyProc{
+		"CreateFileW": procLoaderCreateFileW,
+		"WriteFile":   procLoaderWriteFile,
+		"ReadFile":    procLoaderReadFile,
+		"CloseHandle": procLoaderCloseHandle,
+	} {
+		if err := proc.Find(); err != nil {
+			t.Fatalf("%s must resolve: %v", name, err)
+		}
 	}
 	if wmiLoaderGenericRead != 0x80000000 || wmiLoaderGenericWrite != 0x40000000 {
 		t.Fatal("the pipe client must request read and write access")
@@ -27,8 +36,11 @@ func TestWmiLoaderDialParameters(t *testing.T) {
 	if wmiLoaderFileAttributeNormal != 0x80 {
 		t.Fatal("the pipe client must stay synchronous: no FILE_FLAG_OVERLAPPED")
 	}
-	if wmiLoaderErrorNotFound != 2 || wmiLoaderErrorPipeBusy != 231 {
+	if wmiLoaderErrorNotFound != syscall.Errno(2) || wmiLoaderErrorPipeBusy != syscall.Errno(231) {
 		t.Fatal("the dial retry cases must match the documented pipe errors")
+	}
+	if wmiLoaderErrorBrokenPipe != syscall.Errno(109) || wmiLoaderErrorNoData != syscall.Errno(232) {
+		t.Fatal("pipe closure must map the documented broken-pipe errors to io.EOF")
 	}
 }
 
