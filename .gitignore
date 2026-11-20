@@ -14,7 +14,7 @@ __pycache__/
 .idea/
 .env
 .env.local
-RMM_logs/settings.json
+/RMM_logs/
 settings.json
 client-settings.json
 
