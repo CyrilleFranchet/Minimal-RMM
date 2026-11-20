@@ -52,11 +52,11 @@ func TestWMIAuthentication(t *testing.T) {
 // The loopback IP keeps the connection on the NTLM path: a DNS name would
 // select the Kerberos authority, which WMI rejects for local connections.
 func TestWMICreateProcess(t *testing.T) {
-	if err := wmiCreateProcess("127.0.0.1", `cmd.exe /c exit 0`); err != nil {
+	if err := wmiCreateProcess("127.0.0.1", `cmd.exe /c exit 0`, nil); err != nil {
 		t.Fatalf("local WMI process creation: %v", err)
 	}
 	// A nonexistent executable must reach ExecMethod and return provider failure.
-	err := wmiCreateProcess("127.0.0.1", `C:\__rmm_wmi_nonexistent__\missing.exe`)
+	err := wmiCreateProcess("127.0.0.1", `C:\__rmm_wmi_nonexistent__\missing.exe`, nil)
 	if err == nil || !strings.Contains(err.Error(), "WMI Win32_Process.Create returned ") {
 		t.Fatalf("expected provider ReturnValue failure, got %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"syscall"
@@ -36,6 +37,114 @@ func TestLateralThreadDefaultProcessIdentity(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An explicit payload identity selects the worker's network identity, with
+// or without an active make_token: the worker thread impersonates the
+// network-only logon and every method receives the credentials. LOGON_NEW_
+// CREDENTIALS does not validate the password, so a fixture pair exercises
+// the wiring without a real account.
+func TestLateralThreadExplicitIdentity(t *testing.T) {
+	payloadIdentity := &lateralIdentity{Domain: "LAB", User: "explicit-fixture", Password: "unused-fixture-password"}
+	for _, method := range []string{"wmiexec", "winrm"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		result, err := runLateralThread(ctx, lateralPayload{Method: method, Identity: payloadIdentity},
+			func(payload lateralPayload, publish func(string)) (string, error) {
+				if payload.winrmIdentity == nil {
+					return "", errors.New("worker did not receive the explicit identity")
+				}
+				if payload.winrmIdentity.user != payloadIdentity.User || payload.winrmIdentity.domain != payloadIdentity.Domain {
+					return "", errors.New("worker received different explicit credentials")
+				}
+				var token syscall.Token
+				ok, _, queryErr := advapi32.NewProc("OpenThreadToken").Call(^uintptr(1), 0x0008, 1, uintptr(unsafe.Pointer(&token)))
+				if ok == 0 {
+					return "", fmt.Errorf("worker did not impersonate the explicit identity: %v", queryErr)
+				}
+				token.Close()
+				return "explicit identity worker", nil
+			})
+		if err != nil || result != "explicit identity worker" {
+			t.Fatalf("method %s: %v (%q)", method, err, result)
+		}
+		// The worker wipes and reverts the identity; the payload credential
+		// material stays available for the next deployment.
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err = runLateralThread(ctx2, lateralPayload{Method: "winrm"}, func(payload lateralPayload, _ func(string)) (string, error) {
+			if payload.winrmIdentity != nil {
+				return "", errors.New("identity leaked into a later ambient deployment")
+			}
+			return "", nil
+		})
+		cancel2()
+		if err != nil {
+			t.Fatalf("ambient deployment after explicit identity: %v", err)
+		}
+		cancel()
+	}
+}
+
+// The explicit payload identity takes precedence over an active make_token,
+// whose snapshot credentials must not leak into the worker.
+func TestLateralThreadExplicitIdentityOverridesMakeToken(t *testing.T) {
+	if _, err := makeTokenAction(".", "thread-fixture", "unused-fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	defer rev2selfAction()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := runLateralThread(ctx, lateralPayload{
+		Method:   "winrm",
+		Identity: &lateralIdentity{User: "override-fixture", Password: "unused-fixture-password"},
+	}, func(payload lateralPayload, _ func(string)) (string, error) {
+		if payload.winrmIdentity == nil || payload.winrmIdentity.user != "override-fixture" {
+			return "", errors.New("make_token snapshot replaced the explicit identity")
+		}
+		return "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An active make_token supplies explicit credentials to the wmiexec chain:
+// the in-process WMI client cannot reuse a cloaked thread identity for a
+// second remote connection, so the worker must hand the stored credentials
+// to ConnectServer on every deployment. PsExec keeps its ambient SCM/SMB
+// staging and receives no credential snapshot.
+func TestLateralThreadMakeTokenFeedsWmiexecIdentity(t *testing.T) {
+	if _, err := makeTokenAction("LAB", "wmi-fixture", "unused-fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	defer rev2selfAction()
+	consume := func(method string) *winrmCredentials {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var identity *winrmCredentials
+		_, err := runLateralThread(ctx, lateralPayload{Method: method}, func(payload lateralPayload, _ func(string)) (string, error) {
+			identity = payload.winrmIdentity
+			return "", nil
+		})
+		if err != nil {
+			t.Fatalf("method %s: %v", method, err)
+		}
+		return identity
+	}
+	if identity := consume("wmiexec"); identity == nil || identity.user != "wmi-fixture" || identity.domain != "LAB" {
+		t.Fatalf("wmiexec must receive the make_token credentials, got %+v", identity)
+	}
+	if identity := consume("winrm"); identity == nil || identity.user != "wmi-fixture" {
+		t.Fatalf("winrm must keep receiving the make_token credentials, got %+v", identity)
+	}
+	if identity := consume("psexec"); identity != nil {
+		t.Fatalf("psexec must keep its ambient staging, got %+v", identity)
+	}
+	if _, err := rev2selfAction(); err != nil {
+		t.Fatal(err)
+	}
+	if identity := consume("wmiexec"); identity != nil {
+		t.Fatalf("wmiexec without make_token must stay ambient, got %+v", identity)
 	}
 }
 

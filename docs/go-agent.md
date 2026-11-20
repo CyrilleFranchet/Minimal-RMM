@@ -429,6 +429,21 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   remote connect uses the host process security instead of a make_token
   thread token. `wmiSecurityResult` (`agent-go/lateral.go`) owns the
   decision and its host-runnable test pins both branches.
+- With an active make_token, wmiexec never relies on that cloaked thread
+  identity: live deployment evidence showed the first remote WMI connection
+  of a process succeeding and every later one failing at `ConnectServer`
+  with `0x80070005`, because the in-process WMI client (an in-proc COM
+  server loaded on the first call) keeps per-process authentication state
+  that a cloaked `LOGON_NEW_CREDENTIALS` token cannot re-establish. The
+  worker hands the stored make_token credentials explicitly to
+  `ConnectServer` (`strUser`/`strPassword`, `ntlmdomain:` authority for
+  domain accounts) and to the proxy blanket (`SEC_WINNT_AUTH_IDENTITY`),
+  the documented pattern for repeated WMI connections under alternate
+  credentials and the same contract the WinRM chain already uses with
+  `WSManCreateSession`. This also removes the `RPC_E_TOO_LATE` caveat for
+  the initial remote connect when make_token is active, including on a
+  memory-hosted source. Explicit credentials always authenticate through
+  NTLM; a future revision may restore Kerberos for DNS names.
 - Loader deployments (`wmiexec_loader`, `winrm_loader`, `winrm_https_loader`,
   `winrm_https_insecure_loader` wire methods) fetch the masked,
   digest-verified agent artifact from the listener's staging endpoint and
@@ -562,6 +577,41 @@ staging or guarantee Kerberos for the whole operation.
   can support IP SPNs when explicitly configured). With `make_token` active,
   WSMan receives the selected username/password explicitly for both transfer
   and launch. WinRM does not open an SMB connection.
+
+### Forced deployment identity (`identity` payload field)
+
+`__LATERAL__` accepts an optional `identity` JSON object
+(`{"domain","user","password"}`) for the wmiexec and winrm methods; psexec
+keeps its ambient SCM/SMB staging and rejects it. The operator supplies it on
+every surface through a credential-store ID or direct credentials (REST
+`identity_cred_id`/`identity_*` body fields, CLI `-i` or `--user`/
+`--password`, WebUI `/lateral … -i | -u -p`, MCP `identity_*` parameters),
+the same convention as make_token, spawnas, and runas. A combined
+`DOMAIN\user` value splits like make_token; audit records record the
+`DOMAIN\user` label only.
+
+Agent-side behavior:
+
+- Precedence: the payload identity beats an active make_token for the
+  deployment; without it the ambient make_token state remains the fallback
+  (captureLateralWorkerIdentity in `lateral_windows.go`).
+- The worker logs the identity on as `LOGON32_LOGON_NEW_CREDENTIALS`
+  (`captureLateralExplicitIdentity`, no privilege required) and
+  impersonates it on its pinned thread, so SMB staging and the loader pipe
+  writes authenticate with the credentials.
+- The WMI chain *also* receives them explicitly: `wmiConnectIdentity`
+  passes `strUser`/`strPassword` BSTRs to `ConnectServer` with an
+  `ntlmdomain:` authority (the domain never rides inside `strUser`, per
+  the ConnectServer contract) and hands a `SEC_WINNT_AUTH_IDENTITY_W`
+  structure to `CoSetProxyBlanket` instead of dynamic cloaking. The DCOM
+  handshake therefore no longer depends on thread cloaking, which keeps
+  WMI loader deployments working from a memory-hosted source whose
+  process COM security the PowerShell host already owns. A forced identity
+  always authenticates through NTLM, matching the network-only semantics
+  of the logon type; DNS targets without a forced identity keep the
+  Kerberos authority.
+- The winrm chain passes the identity to `WSManCreateSession` exactly like
+  the make_token snapshot it replaces.
 
 Without make_token over HTTP, `WSManCreateSession` receives a NULL authentication
 pointer for Default authentication. Over HTTPS it receives a Negotiate structure

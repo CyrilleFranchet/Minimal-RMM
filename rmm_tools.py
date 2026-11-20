@@ -801,6 +801,10 @@ def tool_lateral_move(
     insecure: bool = False,
     loader: str = "csharp",
     independent: bool = True,
+    identity_cred_id: str = "",
+    identity_domain: str = "",
+    identity_user: str = "",
+    identity_password: str = "",
 ) -> str:
     """Start a Go agent on another host through psexec, wmiexec, or winrm."""
     sid, info = _resolve_session_id(client, session_ref)
@@ -814,6 +818,26 @@ def tool_lateral_move(
             "error": "invalid_method",
             "detail": "method must be psexec, wmiexec, or winrm",
         })
+    identity_cred_id = (identity_cred_id or "").strip() if isinstance(identity_cred_id, str) else ""
+    identity_domain = (identity_domain or "").strip() if isinstance(identity_domain, str) else ""
+    identity_user = (identity_user or "").strip() if isinstance(identity_user, str) else ""
+    identity_password = identity_password if isinstance(identity_password, str) else ""
+    if identity_cred_id and (identity_domain or identity_user or identity_password):
+        return _json_result({
+            "ok": False,
+            "error": "invalid_identity",
+            "detail": "use either identity_cred_id or identity credentials, not both",
+        })
+    if identity_cred_id or identity_user or identity_domain or identity_password:
+        if method not in ("wmiexec", "winrm"):
+            return _json_result({
+                "ok": False,
+                "error": "invalid_identity_method",
+                "detail": "a forced identity is supported only for wmiexec and winrm",
+            })
+        if not identity_cred_id and not identity_user:
+            return _json_result({"ok": False, "error": "invalid_identity",
+                                 "detail": "direct identity credentials require a user"})
     if loader not in ("csharp", "powershell"):
         return _json_result({
             "ok": False,
@@ -851,6 +875,10 @@ def tool_lateral_move(
         **({"independent": independent} if method == "winrm" else {}),
         **({"https": True} if https else {}),
         **({"insecure": True} if insecure else {}),
+        **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
+        **({"identity_domain": identity_domain, "identity_user": identity_user,
+            "identity_password": identity_password}
+           if (identity_user and not identity_cred_id) else {}),
     )
     if code == 408:
         return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__LATERAL__"})
@@ -1949,6 +1977,10 @@ OPENAI_TOOLS: list[dict] = [
                     "exec_timeout": {"type": "number", "default": 300},
                     "register_timeout": {"type": "number", "default": 60},
                     "verify_timeout": {"type": "number", "default": 120},
+                    "identity_cred_id": {"type": "string", "description": "Workspace credential ID forcing the deployment identity (wmiexec/winrm only); alternative to identity_user/identity_password. NEVER echo the stored password."},
+                    "identity_domain": {"type": "string", "default": "", "description": "Domain of the forced deployment identity (wmiexec/winrm only)"},
+                    "identity_user": {"type": "string", "description": "Forced deployment identity as user or DOMAIN\\user (wmiexec/winrm only); overrides an active make_token"},
+                    "identity_password": {"type": "string", "description": "Plaintext password for a direct forced identity; never echo it back"},
                 },
                 "required": ["session_ref", "method", "host"],
             },

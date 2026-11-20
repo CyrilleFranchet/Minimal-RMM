@@ -10,6 +10,111 @@
   syntax checks, and lint pass. The redirect test passes with localhost binding
   enabled; sandboxed execution rejects its temporary listener.
 
+## 2026-11-20 — Ambient make_token feeds wmiexec explicit credentials (one-shot ConnectServer failure)
+
+- Live deployment failure: after `make_token` (ARCHER\Administrator), the
+  first agent-side `wmiexec` of a process succeeds and every later one fails
+  at `ConnectServer` with `0x80070005` — two back-to-back moves reproduce it,
+  so elapsed time is not the trigger. PsExec from the same worker and the
+  same duplicated token keeps working indefinitely, and the CI loopback test
+  creates two WMI processes in one run without a token, isolating the
+  failure to an active make_token plus DCOM plus a second remote WMI
+  connection in the same process.
+- Root cause: `wbemlocator` is an in-proc COM server, so the first
+  `ConnectServer` loads the WMI client into the agent process and leaves
+  per-process authentication state behind; a cloaked
+  `LOGON_NEW_CREDENTIALS` (netonly) thread identity cannot re-establish
+  that authentication for the second connection, and the connect falls back
+  to the process identity, which the target denies with access denied.
+  Dynamic cloaking (process `CoInitializeSecurity` plus per-proxy blankets)
+  is already fully applied and exposes no API to reset that state; a child
+  process per move is excluded by the missing
+  `SeAssignPrimaryTokenPrivilege` (see the 2026-11-20 privilege entry).
+  The documented WMI pattern for repeated connections under alternate
+  credentials is to pass them explicitly — the mechanism the forced-identity
+  entry below added for operator-supplied identities.
+- Fix: `captureLateralWorkerIdentity` now includes `wmiexec` in the
+  credential capture, so an active ambient make_token hands its stored
+  credentials to the WMI chain and the worker rides the existing explicit
+  path (`strUser`/`strPassword`, `ntlmdomain:`, `SEC_WINNT_AUTH_IDENTITY_W`
+  blanket) instead of thread cloaking — completing the forced-identity work
+  with its ambient case and matching the WinRM chain's existing treatment
+  of the make_token snapshot. PsExec keeps ambient SCM/SMB staging;
+  token-less deployments are unchanged. Side effect: the memory-hosted
+  `RPC_E_TOO_LATE` caveat no longer applies to the initial connect while
+  make_token is active, because that connect no longer depends on cloaking.
+  Explicit credentials still force NTLM for every host form; the
+  Kerberos-for-DNS-names variant stays the deferred question of the
+  forced-identity entry.
+- Tests: `TestLateralThreadMakeTokenFeedsWmiexecIdentity` (Windows identity
+  CI) pins that wmiexec and winrm receive the make_token credentials, psexec
+  does not, and token-less deployments stay ambient. Docs updated:
+  `docs/go-agent.md` (new explicit-credentials bullet next to the cloaking
+  bullet), `README.md` (lateral row), `ai-skills/lateral-movement.md`.
+  Outstanding: live back-to-back two-shot lab validation of the fix, and
+  optional confirmation of the client-side mechanism through the target's
+  Security log at the failed retry timestamp.
+- Lab reproducer added: `TestWMISecondConnectProbe`
+  (`agent-go/wmi_second_connect_windows_test.go`, env-gated, never in CI)
+  performs two read-only WMI probes (ConnectServer plus a `Win32_ComputerSystem`
+  class fetch — no ExecMethod, nothing written on the target) under one shared
+  netonly logon session, recording the calling thread token's authentication
+  LUID (`TOKEN_STATISTICS`), impersonation level, and each raw COM HRESULT
+  (`comCallHR`, extracted next to `comCall` so the probe file stays
+  vet-clean); a third probe exercises the explicit-credential path in the
+  same poisoned process. Its printed verdict separates a token-lifecycle
+  defect (LUID changed between moves) from a connection-security issue
+  (identical LUID, denied second connect). Build with
+  `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o wmi-second-connect-probe.exe .`
+  and run on the lab source host with `RMM_WMI_PROBE_TARGET`,
+  `RMM_WMI_PROBE_DOMAIN`, `RMM_WMI_PROBE_USER`, `RMM_WMI_PROBE_PASSWORD`
+  plus `-test.v -test.run TestWMISecondConnectProbe`; clear the password
+  variable afterwards. The probe never logs credentials.
+
+## 2026-11-20 — Forced lateral identities: explicit credentials at ConnectServer
+
+- Operator request: let the operator force a lateral deployment's network
+  identity (`-i <cred_id>` or `-u/-p`) instead of relying only on an active
+  make_token, after the live troubleshooting showed a memory-hosted hop
+  cannot use the make_token thread token for WMI: the PowerShell host owns
+  the once-per-process `CoInitializeSecurity`, so `ConnectServer`
+  authenticates with the host process security and fails in a
+  WMI-spawned network logon session (double-hop).
+- Agent: `__LATERAL__` accepts an optional `identity` JSON object
+  (`{"domain","user","password"}`) for wmiexec and winrm; psexec keeps
+  ambient SCM/SMB staging and rejects it. `captureLateralWorkerIdentity`
+  gives the payload identity precedence over make_token: the worker logs it
+  on as `LOGON_NEW_CREDENTIALS` (no privilege required) and impersonates it
+  for SMB staging and loader pipe writes, `wmiCreateProcess` passes
+  `strUser`/`strPassword` BSTRs to `ConnectServer` with an `ntlmdomain:`
+  authority and a `SEC_WINNT_AUTH_IDENTITY_W` structure to
+  `CoSetProxyBlanket` (explicit credentials force NTLM, so the DCOM
+  handshake no longer depends on thread cloaking — WMI loader deployments
+  now work from in-memory sources), and the winrm chain hands the
+  credentials to `WSManCreateSession` like the make_token snapshot it
+  replaces. Precedent: PowerSploit/Empire's `Invoke-WMIExec` and impacket's
+  `wmiexec.py` authenticate remote WMI exactly this way.
+- Surfaces: REST `identity_cred_id` (workspace credential store, resolved
+  like make_token) or `identity_domain`/`identity_user`/`identity_password`,
+  CLI `-i` or `--user`/`--password` plus the interactive
+  `/lateral <method> <host> [-i | -u [-p]]`, WebUI parse with the same
+  flags, MCP `lateral_move` `identity_*` parameters. `DOMAIN\user` splits
+  like make_token; audit records keep the `DOMAIN\user` label only, never
+  the password.
+- Tests: agent payload parsing (combined identity split, psexec rejection,
+  no password in validation errors, loader wire compatibility), Windows
+  worker identity seams (explicit identity applied, later ambient
+  deployment stays clean, explicit overrides make_token), server flow
+  (payload wire JSON, audit label and redaction, `invalid_identity`,
+  `invalid_identity_method`), REST routing (fields passthrough and
+  credential-store resolution), CLI dispatch and interactive flags (valid
+  forwarding, all invalid combinations rejected), WebUI parse suite, MCP
+  parity check. Full host suites (default and rmmdebug tags), 895-test
+  Python run (only the pre-existing pydantic import error reproducing on
+  HEAD), stage1, cross-vet, Windows builds in both architectures and build
+  modes pass. Live Windows validation of a forced WMI identity from a
+  memory-hosted hop remains the deployment gate.
+
 ## 2026-11-20 — Operator commands degrade instead of failing on a missing creation privilege
 
 - Operator request: never lose command execution when a `make_token` identity

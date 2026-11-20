@@ -236,6 +236,67 @@ class LateralFlowTests(unittest.TestCase):
         self.assertEqual(self.server.lateral_move(self.source.id, "ssh", "target"), (None, "invalid_method"))
         self.assertEqual(self.server.lateral_move(self.source.id, "winrm", ""), (None, "invalid_host"))
 
+    def _capture_execute(self):
+        captured = []
+        original = self.execute
+
+        def capture(sid, command, timeout=None):
+            captured.append(command)
+            return original(sid, command, timeout=timeout)
+
+        self.server.exec_and_wait = Mock(side_effect=capture)
+        return captured
+
+    def test_explicit_identity_travels_to_the_wmi_agent_payload(self):
+        captured = self._capture_execute()
+        self.ack_output = f"lateral started: method=wmiexec host=target target session={self.target_id}"
+        result, status = self.server.lateral_move(
+            self.source.id, "wmiexec", "target", verify=False,
+            identity_domain="LAB", identity_user="alice", identity_password="s3cret pw")
+        self.assertEqual(status, "ok")
+        body = json.loads(captured[0].split("\n", 1)[1])
+        self.assertEqual(body["identity"], {"domain": "LAB", "user": "alice", "password": "s3cret pw"})
+        # The audit records the identity label only: no domain pair with the
+        # password, and no password material anywhere near the audit text.
+        audit = self.server.record_operator_action.call_args.args[1]
+        self.assertIn("identity=LAB\\alice", audit)
+        self.assertNotIn("password", audit)
+        self.assertNotIn("s3cret", audit)
+        self.assertEqual(result["launch_status"], "acknowledged")
+
+    def test_explicit_identity_splits_a_combined_identity(self):
+        captured = self._capture_execute()
+        self.ack_output = f"lateral started: method=winrm host=target target session={self.target_id}"
+        _, status = self.server.lateral_move(
+            self.source.id, "winrm", "target", verify=False,
+            identity_user="LAB\\bob", identity_password="pw")
+        self.assertEqual(status, "ok")
+        body = json.loads(captured[0].split("\n", 1)[1])
+        self.assertEqual(body["identity"]["domain"], "LAB")
+        self.assertEqual(body["identity"]["user"], "bob")
+
+    def test_explicit_identity_requires_wmiexec_or_winrm(self):
+        for method in ("psexec",):
+            _, status = self.server.lateral_move(
+                self.source.id, method, "target", identity_user="alice", identity_password="pw")
+            self.assertEqual(status, "invalid_identity_method")
+        self.server.exec_and_wait.assert_not_called()
+
+    def test_explicit_identity_requires_a_user(self):
+        _, status = self.server.lateral_move(
+            self.source.id, "wmiexec", "target", identity_domain="LAB", identity_password="pw")
+        self.assertEqual(status, "invalid_identity")
+        self.server.exec_and_wait.assert_not_called()
+
+    def test_default_lateral_payload_stays_identity_free(self):
+        captured = self._capture_execute()
+        self.ack_output = f"lateral started: method=wmiexec host=target target session={self.target_id}"
+        _, status = self.server.lateral_move(self.source.id, "wmiexec", "target", verify=False)
+        self.assertEqual(status, "ok")
+        body = json.loads(captured[0].split("\n", 1)[1])
+        self.assertNotIn("identity", body)
+
+
     def test_removed_method_is_rejected_before_dispatch(self):
         self.assertEqual(self.server.lateral_move(self.source.id, "smbexec", "target"), (None, "invalid_method"))
         self.server.exec_and_wait.assert_not_called()
@@ -626,6 +687,30 @@ class LateralHttpRoutingTests(unittest.TestCase):
             "full-session-id", "psexec", "ws01",
             verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0,
             loader="csharp", independent=True,
+            identity_domain="", identity_user="", identity_password="",
+        )
+
+    def test_lateral_identity_passthrough(self):
+        handler = self._handler("lateral", {"ok": True, "target_session_id": "go-x-lateral-1", "verified": True})
+        self._run(handler, {"method": "wmiexec", "host": "ws01",
+                            "identity_domain": "LAB", "identity_user": "alice", "identity_password": "pw"})
+        handler.server_instance.lateral_move.assert_called_once_with(
+            "full-session-id", "wmiexec", "ws01",
+            verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0,
+            loader="csharp", independent=True,
+            identity_domain="LAB", identity_user="alice", identity_password="pw",
+        )
+        handler = self._handler("lateral", {"ok": True})
+        cred = {"domain": "LAB", "user": "bob", "password": "pw2"}
+        with patch.object(server_rmm._rmm_creds, "creds_resolve", return_value=cred) as resolve, \
+                patch.object(server_rmm, "plugin_directory", return_value="/tmp/plugindir"):
+            self._run(handler, {"method": "winrm", "host": "ws02", "identity_cred_id": "cred-3f0cfe46"})
+        resolve.assert_called_once_with("/tmp/plugindir", "cred-3f0cfe46")
+        handler.server_instance.lateral_move.assert_called_once_with(
+            "full-session-id", "winrm", "ws02",
+            verify=True, exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0,
+            loader="csharp", independent=True,
+            identity_domain="LAB", identity_user="bob", identity_password="pw2",
         )
 
     def test_lateral_status_codes(self):

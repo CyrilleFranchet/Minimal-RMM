@@ -598,8 +598,12 @@ def lateral_move(
     insecure: StrictBool = False,
     loader: str = "csharp",
     independent: StrictBool = True,
+    identity_cred_id: str = "",
+    identity_domain: str = "",
+    identity_user: str = "",
+    identity_password: str = "",
 ) -> str:
-    """Start a Go agent on another host through psexec, wmiexec, or winrm. wmiexec and winrm deploy the server-staged workspace agent build in memory through the csharp loader (powershell is reserved). Winrm deployments are independent by default: the target escapes the WinRM shell job via a local WMI re-stage and the source closes the session right after readiness, so the deployment survives its source. independent=false (winrm only) restores the tethered lifetime that dies with its source; wmiexec deployments are independent by nature."""
+    """Start a Go agent on another host through psexec, wmiexec, or winrm. wmiexec and winrm deploy the server-staged workspace agent build in memory through the csharp loader (powershell is reserved). Winrm deployments are independent by default: the target escapes the WinRM shell job via a local WMI re-stage and the source closes the session right after readiness, so the deployment survives its source. independent=false (winrm only) restores the tethered lifetime that dies with its source; wmiexec deployments are independent by nature. identity_cred_id (workspace credential store) or identity_domain/identity_user/identity_password (wmiexec and winrm only) force the deployment's network identity: the agent passes the credentials explicitly through the WMI ConnectServer call and proxy blanket (NTLM) or the WinRM session, overriding any active make_token, so lateral moves work from in-memory sources and WMI hops without thread cloaking."""
     return tool_lateral_move(
         _client(),
         session_ref,
@@ -613,6 +617,10 @@ def lateral_move(
         insecure=insecure,
         loader=loader,
         independent=independent,
+        identity_cred_id=identity_cred_id,
+        identity_domain=identity_domain,
+        identity_user=identity_user,
+        identity_password=identity_password,
     )
 
 

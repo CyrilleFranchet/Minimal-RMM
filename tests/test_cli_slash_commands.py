@@ -247,6 +247,34 @@ class SlashCommandTests(unittest.TestCase):
         client.lateral_move.assert_not_called()
         self.assertEqual(warn.call_count, len(invalid))
 
+    def test_lateral_identity_flags(self):
+        for command, method, host, expected in [
+            ("/lateral wmiexec ws01 -i cred-3f0cfe46", "wmiexec", "ws01", {"identity_cred_id": "cred-3f0cfe46"}),
+            ("/lateral winrm target --cred cred-abc", "winrm", "target", {"identity_cred_id": "cred-abc"}),
+            ("/lateral wmiexec target -u LAB\\alice -p pw", "wmiexec", "target",
+             {"identity_user": "LAB\\alice", "identity_password": "pw"}),
+            ("/lateral winrm target --user LAB\\alice", "winrm", "target",
+             {"identity_user": "LAB\\alice", "identity_password": ""}),
+        ]:
+            client, _, warn = self.run_lines([command])
+            client.lateral_move.assert_called_once()
+            call = client.lateral_move.call_args
+            self.assertEqual(call.args, ("session-id", method, host))
+            for key, value in expected.items():
+                self.assertEqual(call.kwargs.get(key), value, key)
+            warn.assert_not_called()
+        invalid = [
+            "/lateral psexec ws01 -i cred-abc",
+            "/lateral wmiexec ws01 -i cred-abc -u alice",
+            "/lateral wmiexec ws01 -u alice -i cred-abc",
+            "/lateral winrm ws01 -p pw",
+            "/lateral winrm ws01 -i",
+            "/lateral winrm ws01 -i cred-abc -i cred-def",
+        ]
+        client, _, warn = self.run_lines(invalid)
+        client.lateral_move.assert_not_called()
+        self.assertEqual(warn.call_count, len(invalid))
+
     def test_spawn_and_lateral_invalid_flags_never_send_requests(self):
         commands = ['/spawn -d --debug', '/spawn --unknown', '/spawn one two',
                     '/lateral psexec -d', '/lateral psexec --unknown',

@@ -2293,7 +2293,9 @@ function updateShellCompletionHint() {
   closeShellCommandMenu();
   const lateralMethod = line.match(/^\s*\/lateral\s+(psexec|wmiexec|winrm)\s/i)?.[1].toLowerCase();
   if (lateralMethod) {
-    hint.textContent = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure] [--tethered]" : ""} [-l csharp|powershell]`;
+    let lateralHint = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure] [--tethered]" : ""} [-l csharp|powershell]`;
+    if (["wmiexec", "winrm"].includes(lateralMethod)) lateralHint += " [-i cred_id | -u identity [-p password]]";
+    hint.textContent = lateralHint;
     hint.classList.remove("hidden");
     return;
   }
@@ -3189,7 +3191,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /make_token -i &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
   /uid                             Show the identity used by the selected Go agent
-  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved)
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered] [-i &lt;cred_id&gt; | -u &lt;identity&gt; [-p &lt;password&gt;]]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved); -i/-u forces the deployment identity for wmiexec/winrm (explicit credentials beat an active make_token and work from in-memory sources)
                                    -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
                                    winrm deployments are independent by default: the target escapes the shell job via a local WMI re-stage and the source closes its session after readiness.
                                    --tethered (winrm only) restores the classic lifetime, where the deployment dies with the source that holds its shell.
@@ -3376,11 +3378,32 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     const method = (rest[0] || "").toLowerCase();
     const loaderPattern = /^[A-Za-z][A-Za-z0-9_-]*$/;
     const loaderValues = [];
+    const identityCredValues = [];
+    const identityUserValues = [];
+    const identityPasswordValues = [];
     const restTokens = [];
     for (let index = 1; index < rest.length; index++) {
       if (["-l", "--loader"].includes(rest[index])) {
         if (index + 1 >= rest.length) { loaderValues.push("<missing>"); break; }
         loaderValues.push(rest[index + 1]);
+        index++;
+        continue;
+      }
+      if (["-i", "--cred"].includes(rest[index])) {
+        if (index + 1 >= rest.length) { identityCredValues.push("<missing>"); break; }
+        identityCredValues.push(rest[index + 1]);
+        index++;
+        continue;
+      }
+      if (["-u", "--user"].includes(rest[index])) {
+        if (index + 1 >= rest.length) { identityUserValues.push("<missing>"); break; }
+        identityUserValues.push(rest[index + 1]);
+        index++;
+        continue;
+      }
+      if (["-p", "--password"].includes(rest[index])) {
+        if (index + 1 >= rest.length) { identityPasswordValues.push("<missing>"); break; }
+        identityPasswordValues.push(rest[index + 1]);
         index++;
         continue;
       }
@@ -3391,12 +3414,22 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     const tetheredFlags = restTokens.filter(arg => arg === "--tethered");
     const targets = restTokens.filter(arg => !["-s", "--https", "-k", "--insecure", "--tethered", "--independent"].includes(arg));
     const loader = loaderValues.length ? loaderValues[0].toLowerCase() : "";
+    const identityValues = identityCredValues.concat(identityUserValues, identityPasswordValues);
+    const identityFlags = identityValues.length > 0;
+    // Either one credential ID or a direct identity (password optional, like
+    // make_token); never both, never leftovers, never dotted values.
+    const identityValid = !identityFlags || (
+      !identityValues.includes("<missing>") &&
+      identityCredValues.length <= 1 && identityUserValues.length <= 1 && identityPasswordValues.length <= 1 &&
+      ((identityCredValues.length && !identityUserValues.length && !identityPasswordValues.length) ||
+       (identityUserValues.length && !identityCredValues.length)));
     if (targets.length !== 1 || flags.length > 1 || insecureFlags.length > 1 ||
         (insecureFlags.length && !flags.length) || targets.some(arg => arg.startsWith("-")) ||
         (flags.length && method !== "winrm") ||
         (tetheredFlags.length && method !== "winrm") || tetheredFlags.length > 1 ||
-        loaderValues.length > 1 || (loader && !loaderPattern.test(loader))) {
-      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)]");
+        loaderValues.length > 1 || (loader && !loaderPattern.test(loader)) ||
+        (identityFlags && !["wmiexec", "winrm"].includes(method)) || !identityValid) {
+      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only; forces the deployment identity)]");
       return true;
     }
     if (!target.sessionId) {
@@ -3412,6 +3445,14 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       showError("Loader must be csharp or powershell.");
       return true;
     }
+    // A combined DOMAIN\user value splits so the domain never travels twice.
+    let identityDomain = "";
+    let identityUser = identityUserValues.length ? identityUserValues[0] : "";
+    if (identityUser && identityUser.includes("\\") && !identityUserValues.includes("<missing>")) {
+      const cut = identityUser.indexOf("\\");
+      identityDomain = identityUser.slice(0, cut).trim();
+      identityUser = identityUser.slice(cut + 1).trim();
+    }
     echoCommand();
     if (target.isCurrent()) {
       appendShellLine("output", `<pre>Lateral ${escapeHtml(method)} to ${escapeHtml(host)} — waiting for the next beacon (this can take a few minutes)…</pre>`);
@@ -3425,6 +3466,8 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
           ...(method === "winrm" ? { independent: !tetheredFlags.length } : {}),
           ...(flags.length ? { https: true } : {}),
           ...(insecureFlags.length ? { insecure: true } : {}),
+          ...(identityCredValues.length ? { identity_cred_id: identityCredValues[0] } : {}),
+          ...(identityUser ? { identity_domain: identityDomain, identity_user: identityUser, identity_password: identityPasswordValues.length ? identityPasswordValues[0] : "" } : {}),
         }),
       });
       if (!target.isCurrent()) return true;

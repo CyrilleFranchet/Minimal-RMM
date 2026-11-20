@@ -44,6 +44,29 @@ class CliDispatchTests(unittest.TestCase):
             self.invoke(["lateral", "psexec", "ws01", "-s", "--session", "session-id"], client)
         client.lateral_move.assert_not_called()
 
+    def test_lateral_identity_flags(self):
+        client = Mock()
+        client.lateral_move.return_value = (200, {"ok": True})
+        self.invoke(["lateral", "wmiexec", "target", "-i", "cred-3f0cfe46", "--session", "source", "--json"], client)
+        self.assertEqual(client.lateral_move.call_args.kwargs["identity_cred_id"], "cred-3f0cfe46")
+        client.reset_mock()
+        self.invoke(["lateral", "winrm", "target", "--user", "LAB\\alice", "--password", "pw 2",
+                    "--session", "source", "--json"], client)
+        kwargs = client.lateral_move.call_args.kwargs
+        self.assertEqual(kwargs["identity_user"], "LAB\\alice")
+        self.assertEqual(kwargs["identity_password"], "pw 2")
+        self.assertNotIn("identity_cred_id", kwargs)
+        client.reset_mock()
+        # psexec keeps ambient SCM/SMB staging: a forced identity never reaches it.
+        with self.assertRaises(SystemExit):
+            self.invoke(["lateral", "psexec", "target", "-i", "cred-3f0cfe46", "--session", "source"], client)
+        client.lateral_move.assert_not_called()
+        # Credential ID and direct identity are mutually exclusive.
+        with self.assertRaises(SystemExit):
+            self.invoke(["lateral", "wmiexec", "target", "-i", "cred-1", "--user", "LAB\\a",
+                        "--password", "pw", "--session", "source"], client)
+        client.lateral_move.assert_not_called()
+
     def test_lateral_winrm_is_independent_by_default_with_tethered_optout(self):
         client = Mock()
         client.lateral_move.return_value = (200, {"ok": True})

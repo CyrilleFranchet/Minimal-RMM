@@ -112,6 +112,54 @@ func TestParseLateralPayloadRequiresMethodAndHost(t *testing.T) {
 	}
 }
 
+// An explicit identity forces the deployment's network identity. It requires
+// a user, applies to wmiexec and winrm only (psexec keeps ambient SCM/SMB),
+// splits a combined DOMAIN\user value like make_token, and never leaks the
+// password through validation errors.
+func TestParseLateralIdentity(t *testing.T) {
+	const password = "do-not-leak-me"
+	for _, command := range []string{
+		`__LATERAL__` + "\n" + `{"method":"psexec","host":"ws01","identity":{"user":"alice"}}`,
+		`__LATERAL__` + "\n" + `{"method":"wmiexec","host":"ws01","identity":{}}`,
+		`__LATERAL__` + "\n" + `{"method":"wmiexec","host":"ws01","identity":{"user":"  "}}`,
+		`__LATERAL__` + "\n" + `{"method":"wmiexec","host":"ws01","identity":{"user":"LAB\\","password":"pw"}}`,
+	} {
+		_, err := parseLateralPayload(command)
+		if err == nil {
+			t.Fatalf("payload %q must be rejected", command)
+		}
+		if strings.Contains(err.Error(), password) {
+			t.Fatalf("validation error leaked credential material: %v", err)
+		}
+	}
+	payload, err := parseLateralPayload(`__LATERAL__` + "\n" +
+		`{"method":"wmiexec_loader","host":"ws01","stage":"0123456789abcdef0123456789abcdef","payload_sha256":"` +
+		strings.Repeat("a", 64) + `","identity":{"user":"LAB\\alice","password":"` + password + `"}}`)
+	if err != nil {
+		t.Fatalf("loader identity must parse: %v", err)
+	}
+	if payload.Identity == nil || payload.Identity.Domain != "LAB" || payload.Identity.User != "alice" {
+		t.Fatalf("combined identity not normalized: %#v", payload.Identity)
+	}
+	if payload.Identity.Password != password {
+		t.Fatalf("password with backslash escapes must survive parsing: %q", payload.Identity.Password)
+	}
+	payload, err = parseLateralPayload(`__LATERAL__` + "\n" +
+		`{"method":"winrm","host":"ws01","identity":{"user":"alice","domain":"LAB","password":"pw"}}`)
+	if err != nil {
+		t.Fatalf("winrm identity must parse: %v", err)
+	}
+	if payload.Identity == nil || payload.Identity.Domain != "LAB" || payload.Identity.User != "alice" {
+		t.Fatalf("explicit identity not preserved: %#v", payload.Identity)
+	}
+	// The password must never leave the payload in error text.
+	payload, err = parseLateralPayload(`__LATERAL__` + "\n" +
+		`{"method":"psexec","host":"ws01","identity":{"user":"alice","password":"` + password + `"}}`)
+	if err == nil || strings.Contains(err.Error(), password) {
+		t.Fatalf("psexec identity must be rejected without leaking: %v", err)
+	}
+}
+
 // Loader deployments use their own wire-method names so an older agent must
 // reject them instead of ignoring the new fields and deploying its own
 // binary from an in-memory session.
