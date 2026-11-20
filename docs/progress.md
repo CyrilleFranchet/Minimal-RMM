@@ -12,6 +12,13 @@
 
 ## 2026-11-20 — One-shot WMI connect under ambient make_token: analyzed, ambient semantics kept
 
+- Diagnostic validation: COM initialization counters use atomic access;
+  proxy impersonation labels distinguish RPC levels from token levels;
+  a failed apartment initialization never calls `CoUninitialize`.
+  Windows-only report regressions cover level labels, unexecuted queries,
+  and verdicts that must not assume both token snapshots stayed unchanged.
+  Host checks and Windows cross-builds validate compilation, not live COM
+  behavior; the richer probe still needs a new Windows lab run.
 - Live deployment failure: after `make_token` (ARCHER\Administrator), the
   first agent-side `wmiexec` of a process succeeds and every later one fails
   at `ConnectServer` with `0x80070005` — two back-to-back moves reproduce it,
@@ -49,10 +56,23 @@
   identity CI) pins the decision from both sides — wmiexec receives no
   credential snapshot under make_token and stays ambient without one,
   winrm keeps its make_token snapshot, psexec stays ambient.
-  Outstanding: live back-to-back two-shot lab confirmation of the
-  diagnosis through `__WMI_PROBE__` or the standalone probe, and optional
-  confirmation of the client-side mechanism through the target's
-  Security log at the failed retry timestamp.
+- Field confirmation (2026-11-20): `__WMI_PROBE__ 10.254.100.32` run live
+  on the deployed agent under the operator's make_token recorded the
+  evidence repro: probe 1 (ambient) connected with `0x00000000`; probe 2
+  (ambient, same duplicated netonly token) carried the identical
+  authentication LUID and impersonation level and was still denied at
+  `ConnectServer` with `0x80070005`; probe 3 through the explicit
+  credentials connected in the same already-poisoned process
+  (`0x00000000`). Under the evidence discipline these observations
+  exclude a changed identity between attempts and show the
+  explicit-credential path works in that process; they do not by
+  themselves establish which side rejected the second connect. The
+  attribution (client state vs target authorization) remains open until
+  the target-side Security events around the probe timestamps are
+  correlated: 4624/4625 account and authentication package per attempt —
+  a different account on attempt two would show the client presented
+  another identity, the same account with 4625 a server-side rejection,
+  and a missing event does not prove the attempt never left the client.
 - Lab reproducer, now built into the normal agent: `__WMI_PROBE__ <host>`
   (`agent-go/wmi_probe.go`, `wmi_probe_windows.go`, dispatched like the other
   `__` commands, sent through the generic exec route — no new
@@ -60,12 +80,29 @@
   probes (ConnectServer plus a `Win32_ComputerSystem` class fetch — no
   ExecMethod, nothing written on the target) under the active make_token
   identity on the ambient cloaked path, then a third through the explicit
-  credentials, recording the calling thread token's authentication LUID
-  (`TOKEN_STATISTICS`), impersonation level, and each raw COM HRESULT
-  (`comCallHR`, extracted next to `comCall` so the vet findings stay in the
-  already-flagged file). The printed verdict separates a token-lifecycle
-  defect (LUID changed between moves) from a connection-security issue
-  (identical LUID, denied second connect). The standalone
+  credentials. Hardened after evidence review: every stage (impersonation,
+  token capture, `CoInitializeEx`, `CoInitializeSecurity`, locator,
+  `ConnectServer`, blanket before/after, query, cleanup) records UTC
+  timestamp, PID, OS thread ID, raw HRESULT, and duration, and stages that
+  never executed report `not_run` — the earlier report printed the failed
+  probe's unexecuted query as a misleading `GetObject=0x00000000`. The
+  thread token is snapshotted immediately before and after each
+  `ConnectServer` with `TokenId`, AuthenticationId, `ModifiedId` (the
+  change detector), type, impersonation level, and user SID
+  (TOKEN_STATISTICS plus ConvertSidToStringSidW), compared against the
+  captured source token and across attempts; the original
+  `CoInitializeSecurity` HRESULT and requested flags are preserved
+  separately from the classification (`wmiSecurityInitReport`), so an
+  accepted `RPC_E_TOO_LATE` is never reported as applied; successful
+  proxies are observed through `CoQueryProxyBlanket` before and after the
+  blanket (never reading credential material back). The verdict no longer
+  attributes the denial to WMI client state: a reproduced denial reads
+  "second ambient connection denied; cause undetermined", the unchanged
+  identity is listed as evidence with its limits, and the report ends with
+  the target-side correlation checklist (Security 4624/4625: account,
+  authentication package, logon type, source address, Status and SubStatus,
+  with the probes' UTC timestamps as window anchors — missing events prove
+  neither). The standalone
   `TestWMISecondConnectProbe`
   (`agent-go/wmi_second_connect_windows_test.go`, env-gated, never in CI)
   reuses the same machinery for hosts where running the live agent is not

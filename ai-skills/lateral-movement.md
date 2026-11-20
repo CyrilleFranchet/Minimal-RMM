@@ -122,10 +122,15 @@ Diagnose before retrying:
   permissions, token restrictions, or policy; it does not alone establish
   successful authentication or the exact missing privilege. On a Windows Go
   agent, the built-in `__WMI_PROBE__ <host>` diagnostic (generic exec route)
-  separates these causes for WMI: it runs two read-only connections under the
-  active make_token identity, reports the thread token's authentication LUID
-  and each COM HRESULT, and prints a verdict (token lifecycle vs in-process
-  connection security) without deploying anything.
+  gathers that evidence for WMI without deploying anything: two read-only
+  connections under the active make_token identity with per-stage UTC
+  timestamps, HRESULTs, durations, `not_run` markers for unexecuted stages,
+  thread-token snapshots around each connect (AuthenticationId, ModifiedId,
+  user SID), the original COM-security HRESULT, and proxy blanket
+  observations. Its verdict never attributes a cause the evidence does not
+  support — reproduced denials read "second ambient connection denied;
+  cause undetermined" and are followed by the target-side correlation
+  checklist.
 - **Policy or hardening**: WinRM disabled, `ADMIN$` hidden, DCOM hardening,
   NTLM restrictions, scheduled-task policy. These block one technique while
   leaving others open.

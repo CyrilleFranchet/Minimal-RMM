@@ -451,16 +451,41 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   It runs two read-only WMI round trips (`ConnectServer` plus a
   `Win32_ComputerSystem` class fetch — no method execution, nothing written
   on the target) under the active make_token identity, deliberately on the
-  ambient cloaked path, then a third through the explicit credentials. The
-  report records the thread token's authentication LUID, the impersonation
-  level, and every raw COM HRESULT (`comCallHR`, shared with `comCall`), and
-  its verdict separates a token-lifecycle defect (LUID changed between
-  probes) from the in-process connection-security state (identical LUID,
-  denied second connect). Without make_token the ambient probes use the
-  agent identity and the explicit probe is skipped. The probe leaves the
-  same per-process WMI client state behind as an ambient wmiexec — which is
-  the point of running it in the live agent — and explicit-credential
-  deployments remain immune to it.
+  ambient cloaked path, then a third through the explicit credentials.
+  Evidence discipline: every stage (impersonation, token capture,
+  `CoInitializeEx`, the once-per-process `CoInitializeSecurity` report,
+  locator creation, `ConnectServer`, blanket configuration, query,
+  cleanup) records a UTC timestamp, PID, OS thread ID, raw HRESULT, and
+  duration; stages that never executed report `not_run` instead of a
+  misleading zero HRESULT, so a denied connect shows no proxy and no
+  query. The thread token is snapshotted immediately before and after each
+  `ConnectServer` with `TokenId`, `AuthenticationId` (the logon session),
+  `ModifiedId` (the change detector an unchanged logon ID would miss),
+  type, impersonation level, and the user SID, compared against the
+  captured source token and across attempts. The original
+  `CoInitializeSecurity` HRESULT and the requested flags are preserved
+  separately from the classification: an accepted `RPC_E_TOO_LATE` is
+  reported as a foreign initialization the requested settings may never
+  have reached, never as applied. Successful connects are observed through
+  `CoQueryProxyBlanket` before and after the blanket is applied
+  (authentication service, principal, levels, capability flags — no
+  credential material). The verdict never names a cause the evidence does
+  not support. `proxyImpersonationLevelLabel` decodes COM proxy levels
+  separately from token impersonation levels, which use different numeric
+  values. COM initialization call counts use atomic access, and failed
+  apartment initialization is never balanced with `CoUninitialize`.
+  The Windows-only `wmi_probe_windows_test.go` regressions cover proxy/token
+  label distinctions, unexecuted queries, and conservative verdicts. A
+  reproduced denial reads "second ambient connection denied; cause
+  undetermined", lists what the unchanged identity does and
+  does not prove, and is followed by the target-side correlation checklist
+  (Security 4624/4625: account/domain, authentication package, logon
+  type, source address, and on 4625 the Status and SubStatus, with the
+  probes' UTC timestamps as window anchors; missing events prove
+  neither). The probe leaves the same per-process WMI client state behind
+  as an ambient wmiexec — which is the point of running it in the live
+  agent. Success of the explicit comparison establishes only that this
+  connection succeeded; it does not guarantee later deployments.
 - Loader deployments (`wmiexec_loader`, `winrm_loader`, `winrm_https_loader`,
   `winrm_https_insecure_loader` wire methods) fetch the masked,
   digest-verified agent artifact from the listener's staging endpoint and

@@ -59,17 +59,20 @@ func TestWMISecondConnectProbe(t *testing.T) {
 		}
 		_ = token.Close()
 	}()
+	source := wmiProbeCaptureToken(token)
 	t.Logf("target=%s identity=%s host process logon LUID=0x%016x",
 		target, label, wmiProbeProcessAuthenticationID())
+	t.Logf("source token authID=0x%016x modifiedID=0x%016x sid=%s",
+		source.authID, source.modifiedID, source.sid)
 
-	first := wmiProbeRun(target, nil, token)
-	t.Logf("[ambient one (first wmiexec)] %s", first.report())
-	second := wmiProbeRun(target, nil, token)
-	t.Logf("[ambient two (second wmiexec)] %s", second.report())
-	fixed := wmiProbeRun(target, credentials, token)
-	t.Logf("[explicit credentials (shipped fix)] %s", fixed.report())
+	first := wmiProbeRun(target, nil, token, source)
+	t.Logf("[ambient one (first wmiexec)]\n%s", first.report())
+	second := wmiProbeRun(target, nil, token, source)
+	t.Logf("[ambient two (second wmiexec)]\n%s", second.report())
+	fixed := wmiProbeRun(target, credentials, token, source)
+	t.Logf("[explicit credentials (shipped fix)]\n%s", fixed.report())
 
-	t.Log(wmiProbeVerdict(first, second))
+	t.Log(wmiProbeVerdict(target, first, second))
 	if fixed.Err == nil && fixed.ConnectHR == 0 {
 		t.Log("The explicit-credential probe succeeded in the same process: the wmiexec+make_token fix works against this target.")
 	} else {

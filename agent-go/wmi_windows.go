@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -32,8 +33,15 @@ const (
 )
 
 var (
-	wmiSecurityOnce       sync.Once
-	wmiSecurityErr        error
+	wmiSecurityOnce sync.Once
+	wmiSecurityErr  error
+	// wmiSecurityHR preserves the original HRESULT of the single
+	// CoInitializeSecurity attempt, whatever the classification decided.
+	wmiSecurityHR uintptr
+	// wmiSecurityCalls counts initializeWMISecurity calls: more than one
+	// means every caller after the first was served from the once-cache
+	// without a new COM call.
+	wmiSecurityCalls      atomic.Uint32
 	ole32                 = syscall.NewLazyDLL("ole32.dll")
 	oleaut32              = syscall.NewLazyDLL("oleaut32.dll")
 	procCoInitializeEx    = ole32.NewProc("CoInitializeEx")
@@ -53,12 +61,47 @@ var (
 // lateral deployment from an in-memory source, the flagship scenario of the
 // loader chain.
 func initializeWMISecurity() error {
+	wmiSecurityCalls.Add(1)
 	wmiSecurityOnce.Do(func() {
 		hr, _, _ := procCoInitializeSec.Call(0, ^uintptr(0), 0, 0,
 			rpcCAuthnLevelDefault, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking, 0)
+		wmiSecurityHR = hr
 		wmiSecurityErr = wmiSecurityResult(hr)
 	})
 	return wmiSecurityErr
+}
+
+// wmiSecurityInitReport describes the single COM security initialization the
+// process actually got: the original CoInitializeSecurity HRESULT, the
+// classification that decided whether deployments may proceed, and whether
+// the requested settings took effect at all. An accepted RPC_E_TOO_LATE only
+// means COM security was already initialized elsewhere — it is never
+// evidence that the cloaking and impersonation levels requested here were
+// applied. Whether the reporting call hit the once-cache distinguishes a
+// fresh initialization from process state predating the probe.
+func wmiSecurityInitReport() string {
+	requested := fmt.Sprintf(
+		"requested=authn-level:%d(imp-level:%d caps:0x%x(dynamic-cloaking))",
+		rpcCAuthnLevelDefault, rpcCImpLevelImpersonate, eoacDynamicCloaking)
+	if wmiSecurityHR == 0 {
+		return fmt.Sprintf("%s original-hr=0x%08x classified=applied calls=%d",
+			requested, wmiSecurityHR, wmiSecurityCalls.Load())
+	}
+	classified := "other-failure"
+	switch {
+	case wmiSecurityHR == rpcETooLate && wmiSecurityErr == nil:
+		// A memory-hosted agent proceeded; the requested settings are
+		// not guaranteed effective — never report them as applied.
+		classified = "accepted-TOO-LATE-foreign-initialization-host-proceeds"
+	case wmiSecurityHR == rpcETooLate:
+		classified = "fails-closed-TOO-LATE"
+	}
+	detail := fmt.Sprintf("%s original-hr=0x%08x classified=%s calls=%d",
+		requested, wmiSecurityHR, classified, wmiSecurityCalls.Load())
+	if wmiSecurityErr != nil {
+		detail += " err=" + wmiSecurityErr.Error()
+	}
+	return detail
 }
 
 type comGUID struct {
