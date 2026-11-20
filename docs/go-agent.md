@@ -299,11 +299,14 @@ Agent-side behavior (`agent-go/make_token.go`,
 - The token is stored in memory (mutex-protected) and impersonated on the
   calling OS thread. `applyCommandToken` also supplies it to operator command
   children through Go's `SysProcAttr.Token` (`CreateProcessAsUser`), but only
-  when the agent process holds an enabled process-creation privilege
-  (`SeAssignPrimaryTokenPrivilege` or `SeImpersonatePrivilege`); without
-  either one, children launch through plain `CreateProcess` with the agent
+  when the agent process holds an enabled `SeAssignPrimaryTokenPrivilege`;
+  without it, children launch through plain `CreateProcess` with the agent
   identity and the command output carries a degraded-identity notice instead
-  of failing to run. Standard spawn does not use this helper; spawnas and
+  of failing to run. `SeImpersonatePrivilege` does not enable this path: it
+  belongs to `CreateProcessWithTokenW`, and a live elevated administrator
+  holding only SeImpersonate confirmed `CreateProcessAsUser` fails with
+  ERROR_PRIVILEGE_NOT_HELD. Standard
+  spawn does not use this helper; spawnas and
   runas use explicit credentials. The cloned token retains the local identity
   and supplies different outbound
   credentials. Beacon HTTP requests temporarily revert thread impersonation;
@@ -321,15 +324,18 @@ Result contract (used by the server to detect success):
 - `token reverted: <identity>; spawned commands use the agent identity`
 - Failures answer `Make token failed: …` / `Rev2self failed: …`.
 
-Privileges: `CreateProcessAsUser` requires `SeAssignPrimaryToken` (or
-`SeImpersonate` when the token is a clone of the caller's own). Before every
-command launch with an active token, the agent checks the process token for an
-enabled `SeAssignPrimaryTokenPrivilege` or `SeImpersonatePrivilege`
-(`processCommandTokenPrivilegeHeld`, reusing the read-only
-`spawnTokenPrivileges` snapshot). When neither is enabled, the child is created
-with plain `CreateProcess` under the agent identity and the output appends a
+Privileges: `CreateProcessAsUser` (Go's `SysProcAttr.Token` path) requires
+`SeAssignPrimaryToken`. Before every command launch with an active token, the
+agent checks the process token for an enabled `SeAssignPrimaryTokenPrivilege`
+(`processCommandTokenPrivilegeHeld`, a variable test seam reusing the
+read-only `spawnTokenPrivileges` snapshot). When it is not enabled — the
+default for interactive or elevated administrator accounts, which hold
+`SeImpersonate` but never `SeAssignPrimaryToken` — the child is created with
+plain `CreateProcess` under the agent identity and the output appends a
 degraded-identity notice recommending `runas` with explicit credentials for
 network commands, so a missing privilege never blocks command execution.
+Agents running as a service (LocalSystem) hold the privilege and inherit the
+network identity normally.
 `applyCommandToken` reports whether it applied the token. Password handling: the beacon command
 carries the credentials in memory; server operator audit events record only
 the `DOMAIN\user` label. The interactive CLI keeps the entered command,

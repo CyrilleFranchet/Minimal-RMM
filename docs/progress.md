@@ -4,20 +4,28 @@
 
 - Operator request: never lose command execution when a `make_token` identity
   is active but the agent account cannot assign that token to a child. Go's
-  `SysProcAttr.Token` launch path uses `CreateProcessAsUserW`, which fails with
+  `SysProcAttr.Token` launch path uses `CreateProcessAsUser`, which fails with
   a privilege error when the caller lacks the required privilege and blocks
   the command outright.
+- Live evidence from the deployed agent (ARCHER\Administrator): an elevated
+  administrator holds `SeImpersonatePrivilege` but never
+  `SeAssignPrimaryTokenPrivilege`, and `whoami /priv` right after
+  `make_token` answered with error 1314 (ERROR_PRIVILEGE_NOT_HELD) — Go's
+  path is `CreateProcessAsUser`, not `CreateProcessWithTokenW`, so the
+  SeImpersonate alternative from the operator's original tree was dropped
+  from the gate after this test.
 - New launch decision in `runCommand`, with no command classification: no
-  active `make_token` → plain `CreateProcess` (process identity). Active token
-  plus an enabled `SeAssignPrimaryTokenPrivilege` or
-  `SeImpersonatePrivilege` on the process token
-  (`processCommandTokenPrivilegeHeld`, a variable seam for tests, reusing the
-  read-only `spawnTokenPrivileges` snapshot) → `SysProcAttr.Token =
+  active `make_token` → plain `CreateProcess` (process identity). Active
+  token plus an enabled `SeAssignPrimaryTokenPrivilege` on the process token
+  (`processCommandTokenPrivilegeHeld`, a variable seam for tests, reusing
+  the read-only `spawnTokenPrivileges` snapshot) → `SysProcAttr.Token =
   activeToken`, keeping the local identity by construction while children
   inherit the network identity. Active token without the privilege → plain
   `CreateProcess` plus a degraded-identity notice in the command output
   telling the operator to use `runas` with explicit credentials for network
-  commands.
+  commands. Note the interactive-administrator profile (SeImpersonate only)
+  always lands in the degraded branch; service accounts (LocalSystem) hold
+  `SeAssignPrimaryToken` and keep identity inheritance.
 - `applyCommandToken` now reports whether it applied the identity; the
   lateral-cleanup child caller treats a missing application as a remote
   access failure instead of a blocked launch. The notice only appears while

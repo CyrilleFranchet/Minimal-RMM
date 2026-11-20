@@ -757,8 +757,8 @@ func buildCommandInvocation(command, goos string, pwshAvailable bool) (string, [
 // instead of failing to launch. Network commands need runas with explicit
 // credentials in that state.
 const degradedIdentityNotice = "[!] make_token identity not applied: this account lacks an enabled " +
-	"SeAssignPrimaryTokenPrivilege/SeImpersonatePrivilege, so the command ran under the agent identity " +
-	"with the process network credentials; use runas with explicit credentials for network commands."
+	"SeAssignPrimaryTokenPrivilege, so the command ran under the agent identity with the process network " +
+	"credentials; use runas with explicit credentials for network commands."
 
 func runCommand(command string) (string, string) {
 	pwshAvailable := true

@@ -191,10 +191,12 @@ func reestablishThreadToken() {
 var commandTokenPrivilegeHeld = processCommandTokenPrivilegeHeld
 
 // processCommandTokenPrivilegeHeld reports whether this agent process holds an
-// enabled process-creation privilege: SeAssignPrimaryTokenPrivilege, or
-// SeImpersonatePrivilege. CreateProcessAsUserW fails outright without either
-// one, so a child launched under SysProcAttr.Token on an account lacking them
-// would block command execution instead of running it under the agent identity.
+// enabled SeAssignPrimaryTokenPrivilege, the privilege Windows requires to
+// assign the make_token identity to a child through CreateProcessAsUserW
+// (Go's SysProcAttr.Token path). SeImpersonatePrivilege is deliberately not
+// accepted here: it is the privilege behind CreateProcessWithTokenW, and a
+// live elevated administrator with only SeImpersonate confirmed
+// CreateProcessAsUserW fails there with ERROR_PRIVILEGE_NOT_HELD (1314).
 // Only an enabled privilege counts: absent, removed, disabled, or unknown
 // states all degrade to plain CreateProcess.
 func processCommandTokenPrivilegeHeld() bool {
@@ -203,13 +205,7 @@ func processCommandTokenPrivilegeHeld() bool {
 		return false
 	}
 	defer token.Close()
-	states := spawnTokenPrivileges(token)
-	for _, privilege := range []string{"SeAssignPrimaryTokenPrivilege", "SeImpersonatePrivilege"} {
-		if states[privilege] == "enabled" {
-			return true
-		}
-	}
-	return false
+	return spawnTokenPrivileges(token)["SeAssignPrimaryTokenPrivilege"] == "enabled"
 }
 
 // applyCommandToken gives an operator command child the active network
