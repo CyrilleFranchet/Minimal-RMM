@@ -947,6 +947,23 @@ body.sidebar-resizing iframe {
   margin-bottom: 0.5rem;
 }
 
+.credential-id-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+
+.credential-copy-id {
+  flex: none;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
 .shell-line-error {
   color: var(--danger);
   padding-left: 1.25rem;

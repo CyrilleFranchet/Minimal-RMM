@@ -3477,14 +3477,39 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     try {
       if (!sub || sub === "list") {
         if (args.length > 1) { showError("Usage: /creds list"); return true; }
-        const { status, data } = await api("/creds");
+        const { status, data } = await api("/creds?include_passwords=1");
         if (!target.isCurrent()) return true;
         if (status !== 200) { showError(`creds list failed (${status})`); return true; }
         const creds = data?.creds ?? [];
         if (!creds.length) { appendShellOutput("no credentials stored"); return true; }
         for (const c of creds) {
           const identity = c.label ?? "?";
-          appendShellOutput(`  ${c.cred_id ?? c.id}  ${identity}`);
+          const credId = String(c.cred_id ?? c.id ?? "");
+          const line = appendShellLine("output", "");
+          const idGroup = document.createElement("span");
+          idGroup.className = "credential-id-group";
+          const idText = document.createElement("span");
+          idText.textContent = credId;
+          idGroup.appendChild(idText);
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = "secondary credential-copy-id";
+          copy.textContent = "Copy ID";
+          copy.setAttribute("aria-label", `Copy credential ID ${credId}`);
+          copy.setAttribute("aria-live", "polite");
+          copy.addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(credId);
+              copy.textContent = "Copied";
+            } catch {
+              copy.textContent = "Copy failed";
+            }
+          });
+          idGroup.appendChild(copy);
+          line.appendChild(idGroup);
+          const details = document.createElement("span");
+          details.textContent = `  ${identity}  ${c.password ?? ""}`;
+          line.appendChild(details);
         }
       } else if (sub === "add") {
         if (args.length !== 3 || !args[1]) { showError("Usage: /creds add <domain\\user | user> <password>"); return true; }

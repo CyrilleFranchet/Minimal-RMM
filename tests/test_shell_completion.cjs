@@ -412,7 +412,7 @@ test('rev2self failure is shown as an error', async () => {
 
 test('creds dispatches list, add and delete with literal credential arguments', async () => {
   for (const [command, path, body] of [
-    ['/creds list', '/creds', null],
+    ['/creds list', '/creds?include_passwords=1', null],
     [String.raw`/creds add LAB\alice 'two words\path'`, '/creds', {domain:'LAB', user:'alice', password:String.raw`two words\path`}],
     ["/creds add alice ''", '/creds', {domain:'', user:'alice', password:''}],
     ['/creds del -i credential-123', '/creds/credential-123', null],
@@ -577,13 +577,31 @@ test('lateral filters methods, supports clicks, and leaves the host untouched', 
   assert.equal(f.input.attrs['aria-expanded'], 'false');
 });
 
-test('creds list renders API credential IDs and labels', async () => {
-  const f = fixture(), output = [];
-  f.context.appendShellOutput = text => output.push(text);
-  f.context.api = async () => ({status:200,data:{ok:true,creds:[{cred_id:'cred-123',label:String.raw`LAB\alice`}]}});
+test('creds list displays literal passwords and copies only the credential ID', async () => {
+  const f = fixture();
+  let row;
+  f.context.appendShellLine = () => { row = element(); return row; };
+  const copied = [];
+  f.context.navigator = {clipboard: {writeText: async text => copied.push(text)}};
+  const password = '<img src=x> & " spaced é';
+  f.context.api = async () => ({status:200,data:{ok:true,creds:[{cred_id:'cred-123',label:'alice',password}]}});
   await f.context.dispatchShellMetaCommand('/creds list');
   assert.equal(f.errors.length, 0);
-  assert.deepEqual(output, [String.raw`  cred-123  LAB\alice`]);
+  const [idGroup, details] = row.children;
+  const [idText, copy] = idGroup.children;
+  assert.equal(idGroup.className, 'credential-id-group');
+  assert.equal(idText.textContent, 'cred-123');
+  assert.equal(copy.className, 'secondary credential-copy-id');
+  assert.equal(details.textContent, '  alice  ' + password);
+  assert.equal(details.innerHTML, undefined);
+  assert.equal(copy.type, 'button');
+  assert.equal(copy.attrs['aria-label'], 'Copy credential ID cred-123');
+  await copy.listeners.click();
+  assert.deepEqual(copied, ['cred-123']);
+  assert.equal(copy.textContent, 'Copied');
+  f.context.navigator.clipboard.writeText = async () => { throw new Error('denied'); };
+  await copy.listeners.click();
+  assert.equal(copy.textContent, 'Copy failed');
 });
 
 for (const status of [200, 400]) {

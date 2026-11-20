@@ -11,6 +11,14 @@ import rmm_cli
 
 
 class CliDispatchTests(unittest.TestCase):
+    def test_creds_list_displays_passwords(self):
+        client = Mock()
+        client.creds_list.return_value = (200, {"creds": [
+            {"cred_id": "cred-123", "label": "alice", "password": " spaced é password "}]})
+        output, _ = self.invoke(["creds", "list"], client)
+        client.creds_list.assert_called_once_with(include_passwords=True)
+        self.assertIn("cred-123  alice   spaced é password ", output)
+
     def test_lateral_certificate_bypass_flag(self):
         client = Mock()
         client.lateral_move.return_value = (200, {"ok": True})

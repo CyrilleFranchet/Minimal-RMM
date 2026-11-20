@@ -4652,13 +4652,13 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(200, {"requests": self.server_instance.bloodhound_broker.pending(owner)})
             return True
         if parts == ["creds"]:
-            # GET /api/v1/creds — list credentials (workspace-scoped, no passwords).
+            # GET /api/v1/creds — passwords require an explicit workspace operator request.
             owner = self._workspace_scope()
             if not owner:
                 self._json(403, {"error": "workspace_auth_required"})
                 return True
             workspace_dir = plugin_directory(owner)
-            result = _rmm_creds.creds_list(workspace_dir)
+            result = _rmm_creds.creds_list(workspace_dir, include_passwords=qs.get("include_passwords") == ["1"])
             self._json(503 if result.get("error") == "credential_store_unavailable" else 200, result)
             return True
         if parts and parts[0] == "embeddings":

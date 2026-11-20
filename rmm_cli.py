@@ -293,8 +293,8 @@ class RmmApiClient:
     def creds_purge(self):
         return self.request("DELETE", "/api/v1/creds")
 
-    def creds_list(self):
-        return self.request("GET", "/api/v1/creds")
+    def creds_list(self, *, include_passwords: bool = False):
+        return self.request("GET", "/api/v1/creds" + ("?include_passwords=1" if include_passwords else ""))
 
     # ── Identity-aware process creation ───────────────────────────────────────
 
@@ -1154,7 +1154,7 @@ def cmd_creds_purge(client: RmmApiClient, state: dict, args):
 
 
 def cmd_creds_list(client: RmmApiClient, state: dict, args):
-    code, data = client.creds_list()
+    code, data = client.creds_list(include_passwords=True)
     if args.json:
         print_json(data)
         return
@@ -1166,7 +1166,7 @@ def cmd_creds_list(client: RmmApiClient, state: dict, args):
         return
     for c in creds:
         identity = c.get("label", "?")
-        say(f"  {c.get('cred_id') or c.get('id')}  {identity}")
+        say(f"  {c.get('cred_id') or c.get('id')}  {identity}  {c.get('password', '')}")
 
 
 def cmd_spawnas(client: RmmApiClient, state: dict, args):
@@ -2375,7 +2375,7 @@ def run_interactive(
                     if len(sub_rest) > 1:
                         warn("Usage: /creds list")
                         continue
-                    code, data = client.creds_list()
+                    code, data = client.creds_list(include_passwords=True)
                     if code != 200:
                         warn(f"creds list failed ({code})")
                     else:
@@ -2384,7 +2384,7 @@ def run_interactive(
                             say("no credentials stored")
                         for c in creds:
                             identity = c.get("label", "?")
-                            say(f"  {c.get('cred_id') or c.get('id')}  {identity}")
+                            say(f"  {c.get('cred_id') or c.get('id')}  {identity}  {c.get('password', '')}")
                 elif sub_cmd == "add":
                     if len(sub_rest) != 3:
                         warn("Usage: /creds add <domain\\user | user> <password>")

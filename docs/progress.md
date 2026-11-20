@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-11-20 — Credential display and ID copying
+
+- CLI `creds list`, interactive `/creds`, and WebUI `/creds` now display passwords.
+- WebUI credential rows provide a Copy ID button with success/failure feedback.
+- API password inclusion is explicit (`include_passwords=1`); default API and
+  MCP listings remain redacted. See [credential display](credential-display.md).
+- Validation: credential route tests, CLI tests, operator parity, WebUI contracts,
+  syntax checks, and lint pass. The redirect test passes with localhost binding
+  enabled; sandboxed execution rejects its temporary listener.
+
 ## 2026-11-20 — Operator commands degrade instead of failing on a missing creation privilege
 
 - Operator request: never lose command execution when a `make_token` identity

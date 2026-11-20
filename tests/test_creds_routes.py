@@ -23,6 +23,8 @@ class CredentialRoutingTests(unittest.TestCase):
             self.assertEqual(rmm_creds.creds_del(second, result["cred_id"])["error"], "cred_not_found")
             self.assertEqual(os.stat(os.path.join(first, "creds.json")).st_mode & 0o777, 0o600)
             self.assertNotIn(password, str(rmm_creds.creds_list(first)))
+            self.assertEqual(rmm_creds.creds_list(first, include_passwords=True)["creds"][0]["password"], password)
+            self.assertEqual(rmm_creds.creds_list(second, include_passwords=True)["creds"], [])
             self.assertTrue(rmm_creds.creds_del(first, result["cred_id"])["ok"])
             self.assertIsNone(rmm_creds.creds_resolve(first, result["cred_id"]))
 
@@ -107,6 +109,8 @@ class CredentialRoutingTests(unittest.TestCase):
             self.assertEqual(len(result["creds"]), 1)
             self.assertEqual(result["creds"][0]["label"], "LAB\\alice")
             self.assertNotIn("fixture-password", str(result))
+            handler._handle_api_get("/api/v1/creds", {"include_passwords": ["1"]})
+            self.assertEqual(handler._json.call_args.args[1]["creds"][0]["password"], "fixture-password")
             self.assertTrue(handler._handle_api_delete(f"/api/v1/creds/{cred_id}"))
             self.assertEqual(handler._json.call_args.args[0], 200)
             handler._handle_api_get("/api/v1/creds", {})

@@ -3,7 +3,7 @@ Workspace-scoped credential store for Minimal-RMM.
 
 Credentials are stored in {PLUGIN_CACHE_DIR}/workspaces/{workspace_id}/creds.json.
 Each entry maps a cred_id to its metadata; passwords are stored server-side only
-and are never returned in list responses or logged.
+and are returned only when an operator explicitly requests them, never logged.
 
 Cred IDs have the format "cred-XXXXXXXX" (8 lowercase hex chars).
 """
@@ -71,7 +71,7 @@ def _store_operation(operation):
 def creds_add(workspace_dir: str, domain: str, user: str, password: str) -> dict[str, Any]:
     """
     Add a credential entry and return its ID and label.
-    The password is stored but never returned in subsequent list calls.
+    List calls omit the password unless explicitly requested.
     """
     domain = (domain or "").strip()
     user = (user or "").strip()
@@ -128,12 +128,13 @@ def creds_purge(workspace_dir: str) -> dict[str, Any]:
 
 
 @_store_operation
-def creds_list(workspace_dir: str) -> dict[str, Any]:
-    """List all stored credentials. Passwords are omitted."""
+def creds_list(workspace_dir: str, *, include_passwords: bool = False) -> dict[str, Any]:
+    """List workspace credentials, optionally including operator-requested passwords."""
     with _lock:
         creds = _load(workspace_dir)
     items = [
-        {"cred_id": v["id"], "label": v["label"]}
+        {"cred_id": v["id"], "label": v["label"],
+         **({"password": v["password"]} if include_passwords else {})}
         for v in creds.values()
         if isinstance(v, dict)
     ]

@@ -27,6 +27,8 @@ class SlashCommandTests(unittest.TestCase):
         client.runas.return_value = (200, {'ok': True, 'output': 'done'})
         client.creds_purge.return_value = (200, {"ok": True, "deleted": 2})
         client.creds_del.return_value = (200, {'message': 'deleted'})
+        client.creds_list.return_value = (200, {'creds': [
+            {'cred_id': 'cred-123', 'label': 'alice', 'password': 'two words'}]})
         prompt = Mock()
         prompt.prompt.side_effect = [*lines, EOFError()]
         with patch('prompt_toolkit.PromptSession', return_value=prompt) as factory, \
@@ -48,6 +50,12 @@ class SlashCommandTests(unittest.TestCase):
         client.creds_purge.assert_called_once_with()
         client.queue_command.assert_not_called()
         warn.assert_called_once_with("Usage: /creds purge")
+
+    def test_creds_listing_requests_passwords(self):
+        client, _, warn = self.run_lines(['/creds', '/creds list'])
+        self.assertEqual(client.creds_list.call_count, 2)
+        client.creds_list.assert_called_with(include_passwords=True)
+        warn.assert_not_called()
 
     def test_creds_preserves_quoted_empty_and_literal_passwords(self):
         for password, expected in [("'two words\\path'", "two words\\path"), ("''", "")]:
