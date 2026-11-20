@@ -429,21 +429,38 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   remote connect uses the host process security instead of a make_token
   thread token. `wmiSecurityResult` (`agent-go/lateral.go`) owns the
   decision and its host-runnable test pins both branches.
-- With an active make_token, wmiexec never relies on that cloaked thread
-  identity: live deployment evidence showed the first remote WMI connection
-  of a process succeeding and every later one failing at `ConnectServer`
-  with `0x80070005`, because the in-process WMI client (an in-proc COM
-  server loaded on the first call) keeps per-process authentication state
-  that a cloaked `LOGON_NEW_CREDENTIALS` token cannot re-establish. The
-  worker hands the stored make_token credentials explicitly to
-  `ConnectServer` (`strUser`/`strPassword`, `ntlmdomain:` authority for
-  domain accounts) and to the proxy blanket (`SEC_WINNT_AUTH_IDENTITY`),
+- With an active make_token, wmiexec stays on the ambient cloaked path by
+  design: a forced identity (`-i` / `-u -p`, the `identity` payload field)
+  is the only way to hand the WMI chain explicit credentials
+  (`strUser`/`strPassword`, `ntlmdomain:` authority, and a
+  `SEC_WINNT_AUTH_IDENTITY_W` structure on `CoSetProxyBlanket`), mirroring
   the documented pattern for repeated WMI connections under alternate
-  credentials and the same contract the WinRM chain already uses with
-  `WSManCreateSession`. This also removes the `RPC_E_TOO_LATE` caveat for
-  the initial remote connect when make_token is active, including on a
-  memory-hosted source. Explicit credentials always authenticate through
-  NTLM; a future revision may restore Kerberos for DNS names.
+  credentials — and mirroring what the WinRM chain does with its
+  `WSManCreateSession` credentials. Known consequence of the ambient
+  design, pinned by live evidence: the first remote WMI connection of a
+  process under the netonly thread token succeeds and every later one
+  fails at `ConnectServer` with `0x80070005`, because the in-process WMI
+  client (an in-proc COM server loaded on the first call) keeps
+  per-process authentication state that a cloaked
+  `LOGON_NEW_CREDENTIALS` token cannot re-establish. Operators repeating
+  WMI deployments under the same identity must pass the forced identity
+  instead of relying on make_token; `__WMI_PROBE__` diagnoses the state.
+- `__WMI_PROBE__ <host>` (`agent-go/wmi_probe.go`, `wmi_probe_windows.go`)
+  is the lab diagnostic for that failure, built into the Windows agent and
+  served by the generic exec route (no REST/CLI/MCP surface of its own).
+  It runs two read-only WMI round trips (`ConnectServer` plus a
+  `Win32_ComputerSystem` class fetch — no method execution, nothing written
+  on the target) under the active make_token identity, deliberately on the
+  ambient cloaked path, then a third through the explicit credentials. The
+  report records the thread token's authentication LUID, the impersonation
+  level, and every raw COM HRESULT (`comCallHR`, shared with `comCall`), and
+  its verdict separates a token-lifecycle defect (LUID changed between
+  probes) from the in-process connection-security state (identical LUID,
+  denied second connect). Without make_token the ambient probes use the
+  agent identity and the explicit probe is skipped. The probe leaves the
+  same per-process WMI client state behind as an ambient wmiexec — which is
+  the point of running it in the live agent — and explicit-credential
+  deployments remain immune to it.
 - Loader deployments (`wmiexec_loader`, `winrm_loader`, `winrm_https_loader`,
   `winrm_https_insecure_loader` wire methods) fetch the masked,
   digest-verified agent artifact from the listener's staging endpoint and

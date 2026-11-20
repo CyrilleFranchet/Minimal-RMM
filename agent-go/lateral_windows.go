@@ -665,20 +665,16 @@ func captureLateralToken() (syscall.Token, error) {
 // they log on as a network-only token (no privilege required) so both the
 // thread impersonation for SMB staging and the explicit credential plumbing
 // of the WMI and WinRM chains carry them. Without them the ambient make_token
-// state remains the fallback, but wmiexec also consumes the stored make_token
-// credentials: the in-process WMI client keeps authentication state from the
-// first remote connection, and a cloaked network-only thread identity fails
-// the second ConnectServer with E_ACCESSDENIED. Passing the credentials
-// explicitly rebuilds the DCOM authentication for every deployment, the
-// documented WMI pattern and the one the WinRM chain already uses.
-// Deployments without a token keep the ambient process identity.
+// state remains the fallback, unchanged: a make_token stays the ambient
+// (cloaked) identity for wmiexec by design — only a forced identity may
+// hand the WMI chain explicit credentials.
 func captureLateralWorkerIdentity(payload lateralPayload) (syscall.Token, *winrmCredentials, error) {
 	if payload.Identity != nil {
 		return captureLateralExplicitIdentity(winrmCredentials{
 			domain: payload.Identity.Domain, user: payload.Identity.User, password: payload.Identity.Password,
 		})
 	}
-	return captureLateralIdentity(payload.Method == "winrm" || payload.Method == "wmiexec")
+	return captureLateralIdentity(payload.Method == "winrm")
 }
 
 // captureLateralExplicitIdentity creates a LOGON32_LOGON_NEW_CREDENTIALS

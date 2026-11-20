@@ -10,7 +10,7 @@
   syntax checks, and lint pass. The redirect test passes with localhost binding
   enabled; sandboxed execution rejects its temporary listener.
 
-## 2026-11-20 — Ambient make_token feeds wmiexec explicit credentials (one-shot ConnectServer failure)
+## 2026-11-20 — One-shot WMI connect under ambient make_token: analyzed, ambient semantics kept
 
 - Live deployment failure: after `make_token` (ARCHER\Administrator), the
   first agent-side `wmiexec` of a process succeeds and every later one fails
@@ -33,43 +33,50 @@
   The documented WMI pattern for repeated connections under alternate
   credentials is to pass them explicitly — the mechanism the forced-identity
   entry below added for operator-supplied identities.
-- Fix: `captureLateralWorkerIdentity` now includes `wmiexec` in the
-  credential capture, so an active ambient make_token hands its stored
-  credentials to the WMI chain and the worker rides the existing explicit
-  path (`strUser`/`strPassword`, `ntlmdomain:`, `SEC_WINNT_AUTH_IDENTITY_W`
-  blanket) instead of thread cloaking — completing the forced-identity work
-  with its ambient case and matching the WinRM chain's existing treatment
-  of the make_token snapshot. PsExec keeps ambient SCM/SMB staging;
-  token-less deployments are unchanged. Side effect: the memory-hosted
-  `RPC_E_TOO_LATE` caveat no longer applies to the initial connect while
-  make_token is active, because that connect no longer depends on cloaking.
-  Explicit credentials still force NTLM for every host form; the
-  Kerberos-for-DNS-names variant stays the deferred question of the
-  forced-identity entry.
-- Tests: `TestLateralThreadMakeTokenFeedsWmiexecIdentity` (Windows identity
-  CI) pins that wmiexec and winrm receive the make_token credentials, psexec
-  does not, and token-less deployments stay ambient. Docs updated:
-  `docs/go-agent.md` (new explicit-credentials bullet next to the cloaking
-  bullet), `README.md` (lateral row), `ai-skills/lateral-movement.md`.
-  Outstanding: live back-to-back two-shot lab validation of the fix, and
-  optional confirmation of the client-side mechanism through the target's
+- Design decision (operator): keep the recorded conclusion — a make_token
+  stays the ambient (cloaked) WMI identity, and only a forced identity
+  (`-i` / `-u -p`, the `identity` payload field of the entry below) hands
+  the WMI chain explicit credentials. An implicit routing of the stored
+  make_token credentials into wmiexec was implemented during the
+  investigation and reverted for changing the deployment's network
+  semantics (explicit credentials force NTLM for every host form).
+  Known consequence, documented (`docs/go-agent.md`, `README.md` lateral
+  row, `ai-skills/lateral-movement.md`): repeated `wmiexec` under one
+  make_token hits the one-shot failure; operators pass the forced identity
+  for repeated WMI deployments, which creates a fresh netonly logon per
+  move and authenticates explicitly at `ConnectServer`.
+- Tests: `TestLateralThreadMakeTokenStaysAmbientForWmiexec` (Windows
+  identity CI) pins the decision from both sides — wmiexec receives no
+  credential snapshot under make_token and stays ambient without one,
+  winrm keeps its make_token snapshot, psexec stays ambient.
+  Outstanding: live back-to-back two-shot lab confirmation of the
+  diagnosis through `__WMI_PROBE__` or the standalone probe, and optional
+  confirmation of the client-side mechanism through the target's
   Security log at the failed retry timestamp.
-- Lab reproducer added: `TestWMISecondConnectProbe`
-  (`agent-go/wmi_second_connect_windows_test.go`, env-gated, never in CI)
-  performs two read-only WMI probes (ConnectServer plus a `Win32_ComputerSystem`
-  class fetch — no ExecMethod, nothing written on the target) under one shared
-  netonly logon session, recording the calling thread token's authentication
-  LUID (`TOKEN_STATISTICS`), impersonation level, and each raw COM HRESULT
-  (`comCallHR`, extracted next to `comCall` so the probe file stays
-  vet-clean); a third probe exercises the explicit-credential path in the
-  same poisoned process. Its printed verdict separates a token-lifecycle
+- Lab reproducer, now built into the normal agent: `__WMI_PROBE__ <host>`
+  (`agent-go/wmi_probe.go`, `wmi_probe_windows.go`, dispatched like the other
+  `__` commands, sent through the generic exec route — no new
+  REST/CLI/MCP surface). It performs the safe reproducer: two read-only WMI
+  probes (ConnectServer plus a `Win32_ComputerSystem` class fetch — no
+  ExecMethod, nothing written on the target) under the active make_token
+  identity on the ambient cloaked path, then a third through the explicit
+  credentials, recording the calling thread token's authentication LUID
+  (`TOKEN_STATISTICS`), impersonation level, and each raw COM HRESULT
+  (`comCallHR`, extracted next to `comCall` so the vet findings stay in the
+  already-flagged file). The printed verdict separates a token-lifecycle
   defect (LUID changed between moves) from a connection-security issue
-  (identical LUID, denied second connect). Build with
+  (identical LUID, denied second connect). The standalone
+  `TestWMISecondConnectProbe`
+  (`agent-go/wmi_second_connect_windows_test.go`, env-gated, never in CI)
+  reuses the same machinery for hosts where running the live agent is not
+  practical: build with
   `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o wmi-second-connect-probe.exe .`
-  and run on the lab source host with `RMM_WMI_PROBE_TARGET`,
-  `RMM_WMI_PROBE_DOMAIN`, `RMM_WMI_PROBE_USER`, `RMM_WMI_PROBE_PASSWORD`
-  plus `-test.v -test.run TestWMISecondConnectProbe`; clear the password
-  variable afterwards. The probe never logs credentials.
+  and run with `RMM_WMI_PROBE_TARGET`, `RMM_WMI_PROBE_DOMAIN`,
+  `RMM_WMI_PROBE_USER`, `RMM_WMI_PROBE_PASSWORD` plus
+  `-test.v -test.run TestWMISecondConnectProbe`; clear the password
+  variable afterwards. Neither surface ever logs credentials. Host parser
+  regression: `TestParseWmiProbeCommand`. Docs: README protocol row,
+  `docs/go-agent.md` bullet.
 
 ## 2026-11-20 — Forced lateral identities: explicit credentials at ConnectServer
 

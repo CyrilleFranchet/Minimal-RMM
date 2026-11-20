@@ -108,12 +108,13 @@ func TestLateralThreadExplicitIdentityOverridesMakeToken(t *testing.T) {
 	}
 }
 
-// An active make_token supplies explicit credentials to the wmiexec chain:
-// the in-process WMI client cannot reuse a cloaked thread identity for a
-// second remote connection, so the worker must hand the stored credentials
-// to ConnectServer on every deployment. PsExec keeps its ambient SCM/SMB
-// staging and receives no credential snapshot.
-func TestLateralThreadMakeTokenFeedsWmiexecIdentity(t *testing.T) {
+// An active make_token stays ambient for wmiexec: only a forced identity
+// (payload identity, `-i` / `-u -p`) may select explicit credentials for
+// the WMI chain, because routing the stored make_token credentials
+// implicitly would change the deployment's network semantics. WinRM keeps
+// receiving the make_token snapshot; PsExec keeps its ambient SCM/SMB
+// staging.
+func TestLateralThreadMakeTokenStaysAmbientForWmiexec(t *testing.T) {
 	if _, err := makeTokenAction("LAB", "wmi-fixture", "unused-fixture-password"); err != nil {
 		t.Fatal(err)
 	}
@@ -131,10 +132,10 @@ func TestLateralThreadMakeTokenFeedsWmiexecIdentity(t *testing.T) {
 		}
 		return identity
 	}
-	if identity := consume("wmiexec"); identity == nil || identity.user != "wmi-fixture" || identity.domain != "LAB" {
-		t.Fatalf("wmiexec must receive the make_token credentials, got %+v", identity)
+	if identity := consume("wmiexec"); identity != nil {
+		t.Fatalf("wmiexec must stay ambient under make_token, got %+v", identity)
 	}
-	if identity := consume("winrm"); identity == nil || identity.user != "wmi-fixture" {
+	if identity := consume("winrm"); identity == nil || identity.user != "wmi-fixture" || identity.domain != "LAB" {
 		t.Fatalf("winrm must keep receiving the make_token credentials, got %+v", identity)
 	}
 	if identity := consume("psexec"); identity != nil {

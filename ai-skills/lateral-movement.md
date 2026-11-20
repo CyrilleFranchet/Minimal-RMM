@@ -42,10 +42,11 @@ validation. The following execution methods are examples, not a ranked checklist
 Authentication material (password, hash, or ticket) is separate from the
 execution method; possession alone establishes neither permission nor access.
 Agent-side WMI execution selects NTLM for IP literals and Kerberos for DNS
-names. With make_token (or an explicit identity), WMI authenticates through
-the explicit NTLM credentials at ConnectServer: the in-process WMI client
-cannot reuse a cloaked network-only thread identity for a second remote
-connection, so ambient cloaking is not relied on for WMI.
+names. An active make_token stays the ambient (cloaked) WMI identity: only
+the first same-process WMI connection under it is reliable, and repeated
+in-process ones fail at the connect with `0x80070005` — for repeated WMI
+deployments pass the forced identity (`-i` / `-u -p`) instead of relying on
+make_token.
 With make_token, WinRM selects Negotiate for IP literals and Kerberos
 for DNS names. Without make_token, WinRM uses process-default credentials
 and Windows negotiation; make_token is optional.
@@ -119,7 +120,12 @@ Diagnose before retrying:
 - **Authorization**: distinguish NTSTATUS `STATUS_ACCESS_DENIED`
   (`0xC0000022`) from Win32 `ERROR_ACCESS_DENIED` (5). Access denial can reflect
   permissions, token restrictions, or policy; it does not alone establish
-  successful authentication or the exact missing privilege.
+  successful authentication or the exact missing privilege. On a Windows Go
+  agent, the built-in `__WMI_PROBE__ <host>` diagnostic (generic exec route)
+  separates these causes for WMI: it runs two read-only connections under the
+  active make_token identity, reports the thread token's authentication LUID
+  and each COM HRESULT, and prints a verdict (token lifecycle vs in-process
+  connection security) without deploying anything.
 - **Policy or hardening**: WinRM disabled, `ADMIN$` hidden, DCOM hardening,
   NTLM restrictions, scheduled-task policy. These block one technique while
   leaving others open.
