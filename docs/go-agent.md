@@ -298,9 +298,14 @@ Agent-side behavior (`agent-go/make_token.go`,
   correct; verify with a network command.
 - The token is stored in memory (mutex-protected) and impersonated on the
   calling OS thread. `applyCommandToken` also supplies it to operator command
-  children through Go's `SysProcAttr.Token` (`CreateProcessAsUser`). Standard
-  spawn does not use this helper; spawnas and runas use explicit credentials.
-  The cloned token retains the local identity and supplies different outbound
+  children through Go's `SysProcAttr.Token` (`CreateProcessAsUser`), but only
+  when the agent process holds an enabled process-creation privilege
+  (`SeAssignPrimaryTokenPrivilege` or `SeImpersonatePrivilege`); without
+  either one, children launch through plain `CreateProcess` with the agent
+  identity and the command output carries a degraded-identity notice instead
+  of failing to run. Standard spawn does not use this helper; spawnas and
+  runas use explicit credentials. The cloned token retains the local identity
+  and supplies different outbound
   credentials. Beacon HTTP requests temporarily revert thread impersonation;
   inherited process credentials require separate validation as described above.
 - A second `__MAKE_TOKEN__` replaces the active token (the previous one is
@@ -316,9 +321,16 @@ Result contract (used by the server to detect success):
 - `token reverted: <identity>; spawned commands use the agent identity`
 - Failures answer `Make token failed: …` / `Rev2self failed: …`.
 
-Privileges: `CreateProcessAsUser` may require `SeAssignPrimaryToken` when
-the token is not a clone of the caller's own token; a privilege failure is
-reported verbatim to the operator. Password handling: the beacon command
+Privileges: `CreateProcessAsUser` requires `SeAssignPrimaryToken` (or
+`SeImpersonate` when the token is a clone of the caller's own). Before every
+command launch with an active token, the agent checks the process token for an
+enabled `SeAssignPrimaryTokenPrivilege` or `SeImpersonatePrivilege`
+(`processCommandTokenPrivilegeHeld`, reusing the read-only
+`spawnTokenPrivileges` snapshot). When neither is enabled, the child is created
+with plain `CreateProcess` under the agent identity and the output appends a
+degraded-identity notice recommending `runas` with explicit credentials for
+network commands, so a missing privilege never blocks command execution.
+`applyCommandToken` reports whether it applied the token. Password handling: the beacon command
 carries the credentials in memory; server operator audit events record only
 the `DOMAIN\user` label. The interactive CLI keeps the entered command,
 including its plaintext password, in `~/.rmm_cli_history`. The WebUI displays

@@ -110,6 +110,7 @@ jobs:
         shell: pwsh
         run: |
           $tests = 'Test(Callback|ExplicitRev2self|IdentityBoundary'
+          $tests += '|RunCommandIdentity'
           $tests += '|ServerRequest|SpawnUsesOnlyCreateProcessA'
           $tests += '|WindowsDetachedSpawn|WindowsExplicitLogonHasNoFallback'
           $tests += '|WindowsRunasOutputLifecycle'

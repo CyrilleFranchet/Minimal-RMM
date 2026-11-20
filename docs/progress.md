@@ -1,5 +1,36 @@
 # Progress Log
 
+## 2026-11-20 — Operator commands degrade instead of failing on a missing creation privilege
+
+- Operator request: never lose command execution when a `make_token` identity
+  is active but the agent account cannot assign that token to a child. Go's
+  `SysProcAttr.Token` launch path uses `CreateProcessAsUserW`, which fails with
+  a privilege error when the caller lacks the required privilege and blocks
+  the command outright.
+- New launch decision in `runCommand`, with no command classification: no
+  active `make_token` → plain `CreateProcess` (process identity). Active token
+  plus an enabled `SeAssignPrimaryTokenPrivilege` or
+  `SeImpersonatePrivilege` on the process token
+  (`processCommandTokenPrivilegeHeld`, a variable seam for tests, reusing the
+  read-only `spawnTokenPrivileges` snapshot) → `SysProcAttr.Token =
+  activeToken`, keeping the local identity by construction while children
+  inherit the network identity. Active token without the privilege → plain
+  `CreateProcess` plus a degraded-identity notice in the command output
+  telling the operator to use `runas` with explicit credentials for network
+  commands.
+- `applyCommandToken` now reports whether it applied the identity; the
+  lateral-cleanup child caller treats a missing application as a remote
+  access failure instead of a blocked launch. The notice only appears while
+  a token is active; plain commands without `make_token` are unchanged.
+- Tests: `TestRunCommandIdentityDegradesWithoutCreationPrivilege`
+  (Windows-only, added to the Windows agent identity CI job) pins the
+  privilege seam, verifies the command still runs with the notice under a
+  missing privilege, the token assignment follows the held/missing decision,
+  and `rev2self` removes the notice. Full host suites (default and rmmdebug
+  tags), stage1, cross-vet (pre-existing `unsafe.Pointer` findings only), and
+  Windows builds/tests compile pass. Docs updated: `docs/go-agent.md`
+  (applyCommandToken behavior and privilege paragraph).
+
 ## 2026-11-19 — WinRM loader deployments are independent by default
 
 - Operator request: make the independent lifetime the default for WinRM

@@ -185,23 +185,59 @@ func reestablishThreadToken() {
 	}
 }
 
+// commandTokenPrivilegeHeld is a variable seam so Windows regressions can pin
+// the process-creation privilege decision without granting or stripping real
+// privileges on the test account.
+var commandTokenPrivilegeHeld = processCommandTokenPrivilegeHeld
+
+// processCommandTokenPrivilegeHeld reports whether this agent process holds an
+// enabled process-creation privilege: SeAssignPrimaryTokenPrivilege, or
+// SeImpersonatePrivilege. CreateProcessAsUserW fails outright without either
+// one, so a child launched under SysProcAttr.Token on an account lacking them
+// would block command execution instead of running it under the agent identity.
+// Only an enabled privilege counts: absent, removed, disabled, or unknown
+// states all degrade to plain CreateProcess.
+func processCommandTokenPrivilegeHeld() bool {
+	token, err := syscall.OpenCurrentProcessToken()
+	if err != nil {
+		return false
+	}
+	defer token.Close()
+	states := spawnTokenPrivileges(token)
+	for _, privilege := range []string{"SeAssignPrimaryTokenPrivilege", "SeImpersonatePrivilege"} {
+		if states[privilege] == "enabled" {
+			return true
+		}
+	}
+	return false
+}
+
 // applyCommandToken gives an operator command child the active network
-// identity via SysProcAttr.Token (CreateProcessAsUserW / CreateProcessWithTokenW).
-// Lateral execution uses pinned worker impersonation instead. After a call
-// that uses SysProcAttr.Token, call
-// reestablishThreadToken to restore the creating goroutine's thread token.
-func applyCommandToken(command *exec.Cmd) {
+// identity via SysProcAttr.Token (CreateProcessAsUserW). Lateral execution uses
+// pinned worker impersonation instead. The token is assigned only while a
+// make_token identity is active and this process holds a process-creation
+// privilege: without it, CreateProcessAsUserW fails and would block the
+// command outright, so the caller must fall back to plain CreateProcess with
+// the agent identity, which the returned false signals. After a call that
+// uses SysProcAttr.Token, call reestablishThreadToken to restore the creating
+// goroutine's thread token.
+func applyCommandToken(command *exec.Cmd) bool {
 	if identityBoundaryFault.Load() {
-		return
+		return false
 	}
 	if command.SysProcAttr == nil {
-		return
+		return false
 	}
 	tokenMu.Lock()
 	defer tokenMu.Unlock()
-	if tokenActive && activeToken != 0 {
-		command.SysProcAttr.Token = activeToken
+	if !tokenActive || activeToken == 0 {
+		return false
 	}
+	if !commandTokenPrivilegeHeld() {
+		return false
+	}
+	command.SysProcAttr.Token = activeToken
+	return true
 }
 
 // processUserIdentity resolves the account running this agent process,

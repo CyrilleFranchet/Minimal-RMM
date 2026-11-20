@@ -69,7 +69,7 @@ func rev2selfAction() (string, error) {
 	return "", errors.New("network identity commands require the Windows agent build")
 }
 
-func applyCommandToken(*exec.Cmd) {}
+func applyCommandToken(*exec.Cmd) bool { return false }
 
 func reestablishThreadToken() {}
 

