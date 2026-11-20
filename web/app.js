@@ -1868,7 +1868,7 @@ function createCommandBlock(cmd, { meta = null, kind = null, remotePath = null, 
 function appendUnmatchedEvent(ev) {
   const evType = ev.type || "output";
   const body = String(ev.body || "").trim();
-  const cmdEcho = (ev.command || "").trim();
+  const cmdEcho = shellCommandLabel(ev.command);
 
   if (evType === "output") {
     if (cmdEcho) {
@@ -2417,6 +2417,17 @@ function appendShellError(text) {
   appendShellLine("error", escapeHtml(text));
 }
 
+function shellCommandLabel(command) {
+  const text = String(command || "").trim();
+  const match = text.match(/^__(LATERAL|LATERAL_CLEANUP|SPAWN|SPAWNAS|RUNAS|MAKE_TOKEN|REV2SELF|UID|SCREENSHOT)__(?=\s|$)/);
+  if (!match) return text;
+  const label = `/${match[1].toLowerCase()}`;
+  const args = text.slice(match[0].length).trim();
+  // Wire payloads are not shell arguments and can contain credentials.
+  if (args.startsWith("{") || args.startsWith("[")) return label;
+  return args ? `${label} ${args}` : label;
+}
+
 function operatorCommandFromBody(body) {
   const b = String(body || "").trim();
   const idx = b.indexOf(":");
@@ -2844,7 +2855,7 @@ function appendEvent(ev, { local = false, history = false, allowPast = false } =
       const matchKeys = [opCmd];
       if (kind === "download") matchKeys.push(`download ${remotePath}`);
       if (kind === "exfil") matchKeys.push(`exfil ${remotePath}`);
-      createCommandBlock(opCmd, { meta, kind, remotePath, matchKeys });
+      createCommandBlock(shellCommandLabel(opCmd), { meta, kind, remotePath, matchKeys });
       return;
     }
     if (!history && opCmd && state.echoedCommands.has(opCmd)) {

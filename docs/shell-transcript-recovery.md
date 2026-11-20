@@ -44,6 +44,14 @@ reconnection recovery. WebSocket notifications trigger the same ordered recovery
 instead of advancing the cursor past notifications delivered out of order.
 Session selection restores shell command recall from the recovered transcript.
 
+`shellCommandLabel` formats known internal tool markers such as `__LATERAL__`
+as readable `/lateral` labels in restored command blocks and unmatched result
+headings. Audit arguments remain visible, while JSON wire payloads are omitted
+from headings. Stored events and raw result matching keys remain unchanged.
+Tool audit labels remain excluded from command recall because they can omit
+arguments required to repeat the operation. `tests/test_shell_command_labels.cjs`
+covers restored labels, matching keys, wire payload headings, and recall exclusion.
+
 This covers retained agent session commands and outputs. Exegol and other
 local tool operations are separate from the remote agent shell. AI tool result
 previews are not the complete shell transcript. Events already lost due to a
