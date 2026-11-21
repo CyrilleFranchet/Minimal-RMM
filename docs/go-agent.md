@@ -509,9 +509,25 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   named for corroboration. Both modes are ambient-only; `cycled` requires
   an active make_token and refuses without one. The standalone probe
   binary exposes them through `RMM_WMI_PROBE_MODE=held` and
-  `RMM_WMI_PROBE_MODE=cycled`. The target-evidence checklist now includes
-  `RecordId` — Security timestamps have second resolution, so
-  event-to-call assignment without a record ID remains inferred.
+  `RMM_WMI_PROBE_MODE=cycled`. The target-evidence checklist includes
+  `RecordId` and the round-trip timestamp form: Security events can carry
+  subsecond precision that CSV formatting can discard, and `RecordId`
+  establishes event order within the log without identifying which probe
+  call generated an event — call-to-event assignment stays inferred from
+  timestamps and source addresses.
+- The default mode also surfaces the account-switch case: the agent
+  remembers the previous default-mode run's ambient identity summary
+  (identifier fields and HRESULTs only — never credentials,
+  `wmiProbeSeen`), and when two consecutive runs in one process carry
+  different identities it prints an identity-switch observation naming
+  both identities and their first-connect results. Successful reuse of an
+  authenticated connection never establishes that switching between
+  accounts behaves correctly, so the observation names the target-event
+  correlation as the arbiter. This is the read-only validator for the
+  deployment-relevant switch flow: make_token A → probe → rev2self or
+  make_token B → probe, read what the poisoned process presents for the
+  second account. Pinned by
+  `TestWMIProbeIdentitySwitchObservationStoresAndCompares`.
 - Loader deployments (`wmiexec_loader`, `winrm_loader`, `winrm_https_loader`,
   `winrm_https_insecure_loader` wire methods) fetch the masked,
   digest-verified agent artifact from the listener's staging endpoint and

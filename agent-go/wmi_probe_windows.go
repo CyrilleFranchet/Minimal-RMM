@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -326,8 +327,79 @@ func wmiProbeExecute(host, mode string) (string, error) {
 		report.WriteString("probe 3 explicit skipped: no make_token active\n")
 	}
 	fmt.Fprintf(&report, "%s\n", wmiProbeVerdict(host, first, second))
+	if observation := wmiProbeIdentitySwitchObservation(first); observation != "" {
+		fmt.Fprintf(&report, "%s\n", observation)
+	}
 	fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, first.StartUTC, second.EndUTC))
 	return report.String(), nil
+}
+
+// wmiProbeSeen remembers the previous default-mode run's ambient identity
+// summary (identifier fields and HRESULTs only — never credentials) so two
+// consecutive probe runs in one process can surface the account-switch
+// case. Reuse under one logon session never establishes that switching
+// between accounts behaves correctly; the observation names the two
+// identities and their first-connect results and keeps the target-event
+// correlation as the arbiter.
+var wmiProbeSeen = struct {
+	sync.Mutex
+	state wmiProbeSeenState
+}{}
+
+// wmiProbeSeenState is the previous default-mode run's identity summary:
+// identifier fields and HRESULTs only — never credentials.
+type wmiProbeSeenState struct {
+	valid     bool
+	present   bool
+	authID    uint64
+	sid       string
+	connectHR uintptr
+	when      string
+}
+
+// wmiProbeIdentityLabel describes one run's ambient identity with
+// identifier fields only.
+func wmiProbeIdentityLabel(present bool, authID uint64, sid string) string {
+	if !present {
+		return "the process identity (no thread token)"
+	}
+	return fmt.Sprintf("authID=0x%016x sid=%s", authID, sid)
+}
+
+// wmiProbeIdentitySwitchObservation compares this run's ambient identity
+// with the previous default-mode run in the same process, stores the
+// current one, and returns the account-switch observation when they
+// differ. The same identity across runs returns nothing: that case is the
+// probe pair's own subject.
+func wmiProbeIdentitySwitchObservation(current wmiProbeResult) string {
+	wmiProbeSeen.Lock()
+	previous := wmiProbeSeen.state
+	wmiProbeSeen.Unlock()
+	wmiProbeSeen.Lock()
+	defer wmiProbeSeen.Unlock()
+	wmiProbeSeen.state = wmiProbeSeenState{
+		valid:     true,
+		present:   current.Before.present,
+		authID:    current.Before.authID,
+		sid:       current.Before.sid,
+		connectHR: current.ConnectHR,
+		when:      current.StartUTC,
+	}
+	if !previous.valid {
+		return ""
+	}
+	sameIdentity := previous.present == current.Before.present &&
+		(!current.Before.present ||
+			(previous.authID == current.Before.authID && previous.sid == current.Before.sid))
+	if sameIdentity {
+		return ""
+	}
+	return fmt.Sprintf("identity-switch observation: a previous default-mode probe run in this process (start=%s) used %s with first connect 0x%08x;"+
+		" this run uses %s with first connect 0x%08x."+
+		" This is the account-switch case: successful reuse of an authenticated connection never establishes that switching between accounts behaves correctly."+
+		" Correlate the target events to learn which account this run's first attempt actually presented before treating a spanning COM lifetime as generally correct.",
+		previous.when, wmiProbeIdentityLabel(previous.present, previous.authID, previous.sid), previous.connectHR,
+		wmiProbeIdentityLabel(current.Before.present, current.Before.authID, current.Before.sid), current.ConnectHR)
 }
 
 // wmiProbeHeld runs both connections inside one continuous COM
@@ -602,11 +674,14 @@ func wmiProbeChecklist(host, startUTC, endUTC string) string {
 	return "target evidence (collect on " + host + ", local time applies to Security events):\n" +
 		"  Get-WinEvent -FilterHashtable @{LogName='Security'; Id=@(4624,4625)} -MaxEvents 400 |\n" +
 		"    Where-Object { $_.TimeCreated -gt (Get-Date).AddHours(-3) } |\n" +
-		"    Select-Object TimeCreated, Id, RecordId, Message | Format-List\n" +
+		"    Select-Object @{n='Time';e={$_.TimeCreated.ToString('o')}}, Id, RecordId, Message | Format-List\n" +
 		"  probes ran between " + startUTC + " and " + endUTC + " UTC; match on this agent host's source address.\n" +
-		"  record per attempt (RecordId pins each event unambiguously): account and domain, authentication package,\n" +
-		"  logon type, source address; on 4625 additionally the Status and SubStatus codes.\n" +
-		"  caveat: Security timestamps have second resolution, so event-to-call assignment without RecordId is inferred.\n" +
+		"  record per attempt: account and domain, authentication package, logon type, source address;\n" +
+		"  on 4625 additionally the Status and SubStatus codes.\n" +
+		"  timestamps: Security events can carry subsecond precision — use the round-trip ('o') form or\n" +
+		"  an XML export; CSV formatting can discard that precision.\n" +
+		"  RecordId establishes event order within the log; it does not directly identify which probe call\n" +
+		"  generated an event — call-to-event assignment stays inferred from timestamps and source address.\n" +
 		"  reading: a different account on attempt two means the client presented another identity;\n" +
 		"  the same account with 4625 means an authentication or authorization rejection;\n" +
 		"  a missing event does not by itself prove the attempt never left the client."

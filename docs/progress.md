@@ -32,6 +32,42 @@
   cover recovery, rejected requests, existing CRUD behavior, connection changes,
   and duplicate-request prevention.
 
+## 2026-11-21 — Cycled field confirmation; account-switch observation; checklist precision fixed
+
+- Cycled-mode field results: the stage trace verified the thread token was
+  actually removed between the connects (no thread token at the
+  `token-reverted` stage) and reapplied from a fresh token object, and
+  both read-only WMI queries succeeded without explicit credentials.
+  The mode matrix now reads: default lifecycle — first connect succeeds,
+  second is denied and presents an account other than the make_token
+  identity; held lifecycle — both succeed; cycled lifecycle — both
+  succeed. Working diagnosis recorded as such: a COM/RPC lifetime
+  problem across independently initialized attempts, rather than an
+  inherent inability to reuse make_token through cloaking. The exact
+  internal mechanism remains unproven.
+- Consequence for guidance: a COM lifetime spanning multiple read-only
+  operations with per-operation impersonation is the supported working
+  hypothesis — but before treating it as generally correct, account
+  switching must be validated, not just reuse under one logon session.
+  The default probe mode therefore now remembers the previous run's
+  ambient identity summary in process memory (identifier fields and
+  HRESULTs only, never credentials, `wmiProbeSeen`) and, when two
+  consecutive runs carry different identities, prints an identity-switch
+  observation naming both identities and their first-connect results:
+  successful reuse of an authenticated connection never establishes that
+  switching between accounts behaves correctly, so the target events
+  arbitrate which account the second run actually presented. This is the
+  read-only validator for the deployment-relevant flow — make_token A →
+  probe → rev2self / make_token B → probe — in the same poisoned process.
+  Pinned by `TestWMIProbeIdentitySwitchObservationStoresAndCompares`.
+- Checklist precision fixed after evidence review: Security events can
+  carry subsecond timestamps (the earlier XML exports showed them; the
+  CSV formatting discarded that precision), so the collection command now
+  selects the round-trip timestamp form, and `RecordId` is described
+  accurately: it establishes event order within the log, it does not
+  directly identify which probe call generated an event — call-to-event
+  assignment stays inferred from timestamps and source addresses.
+
 ## 2026-11-21 — WebUI credential store manager
 
 - Added a top-right Credentials dialog for adding, editing, deleting one, and
