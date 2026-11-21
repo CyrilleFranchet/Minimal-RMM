@@ -9,6 +9,52 @@ from server_rmm import RMMServer, Session
 
 
 class SessionKillTests(unittest.TestCase):
+    def test_kill_broadcast_follows_inflight_snapshot(self):
+        entered = threading.Event()
+        release = threading.Event()
+        removed = threading.Event()
+        published = threading.Event()
+        publish_attempted = threading.Event()
+        messages = []
+
+        class ObservedPublishLock:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                if entered.is_set():
+                    publish_attempted.set()
+                self.lock.acquire()
+
+            def __exit__(self, *_args):
+                self.lock.release()
+
+        def broadcast(sessions):
+            if sessions:
+                entered.set()
+                release.wait(3)
+            messages.append([row['id'] for row in sessions])
+            if not sessions:
+                published.set()
+
+        self.runtime._sessions_publish_lock = ObservedPublishLock()
+        self.runtime.event_hub.broadcast_sessions.side_effect = broadcast
+        self.runtime.remove_persisted_session.side_effect = lambda _sid: removed.set()
+        self.runtime._broadcast_sessions_async()
+        self.assertTrue(entered.wait(2))
+        killed = threading.Thread(target=self.runtime.kill_session, args=(self.session.id,))
+        killed.start()
+        try:
+            self.assertTrue(removed.wait(2))
+            killed.join(1)
+            self.assertFalse(killed.is_alive(), 'Kill must not wait for slow WebSocket clients')
+            self.assertTrue(publish_attempted.wait(2))
+        finally:
+            release.set()
+            killed.join(3)
+        self.assertTrue(published.wait(2))
+        self.assertEqual(messages, [[self.session.id], []])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.patch = patch.object(server_rmm, 'LOG_DIR', self.directory.name)

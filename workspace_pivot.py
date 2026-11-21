@@ -33,6 +33,7 @@ class WorkspacePivotManager:
         self.tun_transport = SocksManager(log_fn=self.log_fn)
         self.tun_relays: dict[str, ServerTunRelay] = {}
         self._lock = threading.RLock()
+        self._ended_sessions: set[str] = set()
         self._running = True
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -56,6 +57,8 @@ class WorkspacePivotManager:
         with self._lock:
             if not self._running:
                 raise RuntimeError("workspace pivots are stopped")
+            if session_id in self._ended_sessions:
+                raise RuntimeError("session has ended")
             bridge = self.socks.start(session_id, port=port, bind_host=bind_host)
         return {
             "session_id": session_id,
@@ -69,6 +72,16 @@ class WorkspacePivotManager:
     def stop_socks(self, session_id: str) -> bool:
         """Stop the workspace-local public SOCKS5 listener."""
         return self.socks.stop(session_id)
+
+    def end_session(self, session_id: str) -> None:
+        """Reject future restores and attempt both local pivot cleanups."""
+        with self._lock:
+            self._ended_sessions.add(session_id)
+        for kind, stop in (("SOCKS", self.stop_socks), ("TUN", self.stop_tun)):
+            try:
+                stop(session_id)
+            except Exception:
+                self.log(f"Local {kind} cleanup failed for ended session {session_id[:8]}", "WARNING")
 
     def socks_active(self, session_id: str) -> bool:
         """Return whether a local public SOCKS listener is active."""
@@ -86,6 +99,8 @@ class WorkspacePivotManager:
         with self._lock:
             if not self._running:
                 raise TunError("workspace pivots are stopped")
+            if session_id in self._ended_sessions:
+                raise TunError("session has ended")
             normalized = normalize_tun_config(config)
             if self.tun_active(session_id):
                 raise TunError("TUN relay is already active")

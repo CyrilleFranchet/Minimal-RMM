@@ -144,7 +144,8 @@ test('agent workspace tabs follow selection and do not restore an archive after 
   const noop = () => {};
   const context = {
     state: { workspaceTab: 'pivots', selectedId: null, selectedHistoryId: null, sessions: [],
-      selectionGeneration: 5, authGeneration: 1, token: 'old-token', echoedCommands: new Set() },
+      selectionGeneration: 5, authGeneration: 1, token: 'old-token', echoedCommands: new Set(),
+      killingSessionIds: new Set(), killedSessionIds: new Set() },
     document: { querySelector: () => tabs, querySelectorAll: selector => selector === '.workspace-tab' ? buttons : panels },
     $: id => nodes.get(id), show: node => node.classList.remove('hidden'), hide: node => node.classList.add('hidden'),
     refreshExfilStatus: async () => refreshes.push('files'), refreshSocksRelays: async () => refreshes.push('socks'),
@@ -191,7 +192,8 @@ test('authentication transitions clear protected AI operation previews before ne
   let clears = 0;
   const noop = () => {};
   const context = {
-    state: { authGeneration: 1, selectionGeneration: 0, echoedCommands: new Set() },
+    state: { authGeneration: 1, selectionGeneration: 0, echoedCommands: new Set(),
+      killingSessionIds: new Set(), killedSessionIds: new Set() },
     window: { rmmAiOperationDetails: { reset: () => clears++ } },
     $: () => ({ value: 'token' }),
     api: async () => { assert.equal(clears, 1); return { status: 401, data: {} }; },

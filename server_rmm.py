@@ -1416,6 +1416,7 @@ class RMMServer:
         self.workspace_socks_configs = {}
         self.workspace_tun_configs = {}
         self._sessions_broadcast_lock = threading.Lock()
+        self._sessions_publish_lock = threading.Lock()
         self._sessions_broadcast_timer = None
         self._embedding_store = None
         self._embedding_store_lock = threading.Lock()
@@ -2845,8 +2846,8 @@ class RMMServer:
         def fire() -> None:
             with self._sessions_broadcast_lock:
                 self._sessions_broadcast_timer = None
-            sessions = self.sessions_to_json()
-            self.event_hub.broadcast_sessions(sessions)
+            with self._sessions_publish_lock:
+                self.event_hub.broadcast_sessions(self.sessions_to_json())
 
         with self._sessions_broadcast_lock:
             if not self.running:
@@ -2875,7 +2876,7 @@ class RMMServer:
             if session.wait_event is not None:
                 session.wait_event.set()
         self.remove_persisted_session(session.id)
-        self.event_hub.broadcast_sessions(self.sessions_to_json())
+        self._broadcast_sessions_async()
         if self.storage_mode == "workspace":
             self.tun_transport.stop(session.id)
             getattr(self, "workspace_tun_configs", {}).pop(session.id, None)

@@ -1,5 +1,18 @@
 # Progress Log
 
+## 2026-11-21 — Consistent session kill state
+
+- Successful workspace kills immediately archive local session state and retain
+  durable killed-ID records so stale synchronization cannot restore live rows.
+- The WebUI disables repeated Kill requests, removes accepted kills immediately,
+  rejects stale reads, and keeps live and archived session lists disjoint.
+- Central session broadcasts preserve publication order across kills. Added
+  workspace, browser-state, and broadcast race regressions. See
+  [Session kill lifecycle](session-kill.md) for behavior and limitations.
+- Follow-up verification closed stale pivot listener restoration races, made
+  kill broadcasts asynchronous, and preserved accepted-kill feedback when list
+  refreshes fail. Added cleanup-failure and delayed-listener-start coverage.
+
 ## 2026-11-21 — Credential dialog refresh failure recovery
 
 - Confirmed adds, edits, and deletions retain their success message when the

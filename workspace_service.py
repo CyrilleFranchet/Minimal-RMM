@@ -225,6 +225,10 @@ class WorkspaceStore:
                     payload TEXT NOT NULL,
                     PRIMARY KEY (session_id, event_id)
                 );
+                CREATE TABLE IF NOT EXISTS session_kills (
+                    session_id TEXT PRIMARY KEY,
+                    killed_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS downloads (
                     artifact TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -312,10 +316,13 @@ class WorkspaceStore:
         now = datetime.now().isoformat()
         seen: set[str] = set()
         with self._lock:
+            killed = {row[0] for row in self._db.execute("SELECT session_id FROM session_kills")}
             for record in records:
                 if not isinstance(record, dict) or not record.get("id"):
                     continue
                 session_id = str(record["id"])
+                if session_id in killed:
+                    continue
                 seen.add(session_id)
                 self._db.execute(
                     "INSERT INTO sessions(session_id,payload,active,updated_at,ended_at) "
@@ -336,6 +343,33 @@ class WorkspaceStore:
                     (now,),
                 )
             self._db.commit()
+
+    def mark_session_killed(self, session_id: str) -> None:
+        """Archive an acknowledged kill and prevent stale snapshots from reviving it."""
+        now = datetime.now().isoformat()
+        with self._lock:
+            row = self._db.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            payload = self._decode_session(row) or {"id": session_id}
+            payload.update({"end_reason": "killed"})
+            self._db.execute(
+                "INSERT OR IGNORE INTO session_kills(session_id,killed_at) VALUES(?,?)",
+                (session_id, now),
+            )
+            self._db.execute(
+                "INSERT INTO sessions(session_id,payload,active,updated_at,ended_at) VALUES(?,?,0,?,?) "
+                "ON CONFLICT(session_id) DO UPDATE SET payload=excluded.payload,active=0,"
+                "updated_at=excluded.updated_at,ended_at=COALESCE(sessions.ended_at,excluded.ended_at)",
+                (session_id, json.dumps(payload, ensure_ascii=False), now, now),
+            )
+            self._db.execute("DELETE FROM ai_chats WHERE session_id=?", (session_id,))
+            self._db.commit()
+
+    def is_session_killed(self, session_id: str) -> bool:
+        """Check the durable kill marker before restoring session resources."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM session_kills WHERE session_id=?", (session_id,)
+            ).fetchone() is not None
 
     @staticmethod
     def _decode_session(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -1199,6 +1233,9 @@ class WorkspaceService:
                 if session_id and session_id not in active:
                     self.pivots.stop_socks(session_id)
             for session_id, row in active.items():
+                if self.store.is_session_killed(session_id):
+                    self.pivots.end_session(session_id)
+                    continue
                 if not self.pivots.socks_active(session_id):
                     try:
                         self.pivots.start_socks(
@@ -1217,6 +1254,9 @@ class WorkspaceService:
                 if session_id and session_id not in active:
                     self.pivots.stop_tun(session_id)
             for session_id, row in active.items():
+                if self.store.is_session_killed(session_id):
+                    self.pivots.end_session(session_id)
+                    continue
                 if not self.pivots.tun_active(session_id):
                     try:
                         self.pivots.start_tun(session_id, row)
@@ -1794,6 +1834,13 @@ class WorkspaceService:
     def delete_json(self, path: str) -> tuple[int, Any, str] | None:
         """Handle local history and AI deletion endpoints or return ``None``."""
         parts = [part for part in path[len("/api/v1/"):].split("/") if part] if path.startswith("/api/v1/") else []
+        if len(parts) == 2 and parts[0] == "sessions":
+            status, payload, content_type = self._proxy("DELETE", path)
+            if status == 200 and isinstance(payload, dict) and payload.get("session_id"):
+                session_id = str(payload["session_id"])
+                self.store.mark_session_killed(session_id)
+                self.pivots.end_session(session_id)
+            return status, payload, content_type
         if parts and parts[0] == "embeddings":
             return self._embedding_api("DELETE", parts)
         if len(parts) == 2 and parts[0] == "plugin-sources":

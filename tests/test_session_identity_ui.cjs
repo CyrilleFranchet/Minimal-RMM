@@ -42,7 +42,7 @@ test('selected console refreshes and clears PID on session updates', () => {
   Object.assign(context, {
     state: { viewMode: 'live', selectedId: 'agent-session' },
     $: () => detail,
-    updateSessionSidebarMeta() {}, renderSessionList() {}, updateShellPrompt() {},
+    updateSessionSidebarMeta() {}, renderSessionList() {}, renderHistoryList() {}, updateShellPrompt() {},
     formatTime: () => 'now',
   });
   vm.runInContext(source.slice(source.indexOf('function applySessionsUpdate('),
@@ -76,7 +76,8 @@ test('live and archived session cards render the full account and separate host'
     document: { createElement: node },
     $: selector => ({ '#session-list': live, '#history-list': history }[selector] || node()),
     state: { sessions: [{ id: 'live-session', username: 'HOST\\Administrator', hostname: 'host', agent_pid: 1234, agent_process_name: 'renamed-agent.exe' }],
-      historySessions: [{ session_id: 'archived-session', username: 'ARCHER\\Administrator', hostname: 'host', agent_pid: 1234, agent_process_name: 'renamed-agent.exe' }] },
+      historySessions: [{ session_id: 'archived-session', username: 'ARCHER\\Administrator', hostname: 'host', agent_pid: 1234, agent_process_name: 'renamed-agent.exe' },
+        { session_id: 'live-session', active: false }] },
     sessionAgoSeconds: () => 1, formatAgo: () => '1s', formatTime: () => 'now',
     computeBeaconStatus: () => 'online', statusClass: () => 'online',
     formatFirstConnected: () => '', selectedSocksRelay: () => null, selectedTunRelay: () => null,
@@ -87,6 +88,7 @@ test('live and archived session cards render the full account and separate host'
     source.indexOf('async function deleteHistorySession(')), context);
   context.renderSessionList();
   context.renderHistoryList();
+  assert.equal(history.children.length, 1, 'separate snapshots cannot duplicate a live session in archives');
   assert.match(live.children[0].innerHTML, />HOST\\Administrator<\/div>/);
   assert.match(history.children[0].innerHTML, />ARCHER\\Administrator<\/div>/);
   for (const item of [live.children[0], history.children[0]]) {

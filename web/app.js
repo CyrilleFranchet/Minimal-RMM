@@ -20,6 +20,10 @@ const state = {
   token: sessionStorage.getItem(STORAGE_KEY) || "",
   sessions: [],
   historySessions: [],
+  killingSessionIds: new Set(),
+  killedSessionIds: new Set(),
+  sessionsRequest: 0,
+  historyRequest: 0,
   selectedId: null,
   selectedHistoryId: null,
   viewMode: "live",
@@ -978,7 +982,7 @@ function sessionAgoSeconds(session) {
 }
 
 function applySessionsUpdate(sessions) {
-  state.sessions = sessions || [];
+  state.sessions = (sessions || []).filter((s) => !state.killedSessionIds?.has(s.id));
   updateSessionSidebarMeta();
   if (state.viewMode === "live" && state.selectedId) {
     const selected = state.sessions.find((s) => s.id === state.selectedId);
@@ -989,6 +993,7 @@ function applySessionsUpdate(sessions) {
     }
   }
   renderSessionList();
+  renderHistoryList();
   updateShellPrompt();
 }
 
@@ -1070,14 +1075,18 @@ function startStatusTick() {
 
 async function fetchSessionHistory() {
   if (!state.token && !WORKSPACE_MODE) return;
+  const generation = state.authGeneration;
+  const request = ++state.historyRequest;
   const { status, data } = await api("/history");
+  if (generation !== state.authGeneration || request !== state.historyRequest) return;
   if (status === 401) {
     disconnect();
     return;
   }
-  if (status !== 200) return;
+  if (status !== 200) return false;
   state.historySessions = data.sessions || [];
   renderHistoryList();
+  return true;
 }
 
 function renderHistoryList() {
@@ -1085,7 +1094,8 @@ function renderHistoryList() {
   const empty = $("#history-empty");
   if (!ul) return;
   ul.innerHTML = "";
-  const rows = state.historySessions.filter((s) => !s.active);
+  const liveIds = new Set(state.sessions.map((s) => s.id));
+  const rows = state.historySessions.filter((s) => !s.active && !liveIds.has(s.session_id || s.id));
   const clearBtn = $("#history-clear-all");
   if (clearBtn) {
     clearBtn.classList.toggle("hidden", rows.length === 0);
@@ -2697,6 +2707,8 @@ function disconnect() {
   stopConnectivityProbe();
   sessionStorage.removeItem(STORAGE_KEY);
   state.token = "";
+  state.killingSessionIds.clear();
+  state.killedSessionIds.clear();
   state.selectedId = null;
   state.selectedHistoryId = null;
   state.viewMode = "live";
@@ -2711,13 +2723,17 @@ function disconnect() {
 }
 
 async function refreshSessions() {
+  const generation = state.authGeneration;
+  const request = ++state.sessionsRequest;
   const { status, data } = await api("/sessions");
+  if (generation !== state.authGeneration || request !== state.sessionsRequest) return;
   if (status === 401) {
     disconnect();
     return;
   }
-  if (status !== 200) return;
+  if (status !== 200) return false;
   applySessionsUpdate(data.sessions || []);
+  return true;
 }
 
 function renderSessionList() {
@@ -2768,6 +2784,11 @@ function renderSessionList() {
     killBtn.title = "Kill session and interrupt its AI job (remote shutdown on next beacon)";
     killBtn.setAttribute("aria-label", "Kill session");
     killBtn.textContent = "Kill";
+    if (state.killingSessionIds?.has(s.id)) {
+      killBtn.textContent = "Killing…";
+      killBtn.disabled = true;
+      killBtn.setAttribute("aria-label", "Killing session");
+    }
     killBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -4064,21 +4085,41 @@ function bindBeaconConfigDialog() {
 
 async function killSession(id) {
   const sessionId = id || state.selectedId;
-  if (!sessionId) return;
+  if (!sessionId || state.killingSessionIds.has(sessionId) || state.killedSessionIds.has(sessionId)) return;
   const shortId = sessionId.slice(0, 8);
   if (!confirm(`Kill session ${shortId} and interrupt its AI job? The remote client exits when it next contacts the server; a running command may delay shutdown.`)) return;
-  const { status } = await api(`/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "DELETE",
-  });
-  if (status === 200) {
+  const generation = state.authGeneration;
+  state.killingSessionIds.add(sessionId);
+  renderSessionList();
+  let accepted = false;
+  try {
+    const { status, data } = await api(`/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+    });
+    if (generation !== state.authGeneration) return;
+    if (status !== 200) throw new Error(data?.error || `Kill failed (HTTP ${status})`);
+    accepted = true;
+    state.killedSessionIds.add(sessionId);
+    applySessionsUpdate(state.sessions);
     if (typeof window.clearAiChatMemory === "function") {
       window.clearAiChatMemory(sessionId);
     }
     if (state.selectedId === sessionId) {
       showEmptyConsole();
     }
-    await refreshSessions();
-    await fetchSessionHistory();
+    const refreshed = await Promise.all([refreshSessions(), fetchSessionHistory()]);
+    if (refreshed.includes(false)) throw new Error("Session list refresh failed");
+  } catch (error) {
+    if (generation === state.authGeneration) {
+      alert(accepted
+        ? "Session killed. Refreshing the session lists failed; refresh to see the archive."
+        : (error.message || "Kill request failed; refresh before retrying."));
+    }
+  } finally {
+    if (generation === state.authGeneration) {
+      state.killingSessionIds.delete(sessionId);
+      renderSessionList();
+    }
   }
 }
 
