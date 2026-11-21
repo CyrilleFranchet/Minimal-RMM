@@ -6264,6 +6264,25 @@ class RMMHandler(BaseHTTPRequestHandler):
             return True
         srv = self.server_instance
 
+        if len(parts) == 2 and parts[0] == "creds":
+            owner = self._workspace_scope()
+            if not owner:
+                self._json(403, {"error": "workspace_auth_required"})
+                return True
+            if (not isinstance(body, dict) or set(body) - {"domain", "user", "password"}
+                    or not isinstance(body.get("user"), str)
+                    or not isinstance(body.get("domain", ""), str)
+                    or ("password" in body and not isinstance(body["password"], str))):
+                self._json(400, {"error": "invalid_credential_fields"})
+                return True
+            result = _rmm_creds.creds_update(
+                plugin_directory(owner), urllib.parse.unquote(parts[1]),
+                body.get("domain", ""), body["user"], body.get("password"))
+            error = result.get("error")
+            self._json(200 if result.get("ok") else 503 if error == "credential_store_unavailable"
+                       else 404 if error == "cred_not_found" else 400, result)
+            return True
+
         if parts in (["settings"], ["ui", "config"]) and self._workspace_scope():
             self._json(403, {"error": "administrator_required"})
             return True

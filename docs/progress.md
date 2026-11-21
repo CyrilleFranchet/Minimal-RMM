@@ -1,5 +1,28 @@
 # Progress Log
 
+## 2026-11-21 — Credential dialog refresh failure recovery
+
+- Confirmed adds, edits, and deletions retain their success message when the
+  following list refresh fails, preventing a completed add from appearing to
+  need a retry.
+- A refresh clears old rows and disables mutations until a fresh list loads;
+  callbacks from earlier list versions remain inactive after recovery.
+- Failed and uncertain mutation requests also disable further writes until a
+  successful refresh while preserving the form. Eight credential dialog tests
+  cover recovery, rejected requests, existing CRUD behavior, connection changes,
+  and duplicate-request prevention.
+
+## 2026-11-21 — WebUI credential store manager
+
+- Added a top-right Credentials dialog for adding, editing, deleting one, and
+  deleting all credentials in the authenticated workspace. Delete actions require
+  confirmation; the list never fetches passwords.
+- Identity updates preserve credential IDs; omitted passwords remain unchanged
+  and an explicit empty password clears the secret.
+- Added authenticated PATCH routing, CLI client/command and MCP/AI parity,
+  documentation, and credential route/UI regression coverage. See
+  [credential display](credential-display.md#credential-store-dialog).
+
 ## 2026-11-21 — Detailed read-only identity report
 
 - Added `/whoami [--tickets]` for Go Windows agents alongside the existing

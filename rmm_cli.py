@@ -313,6 +313,12 @@ class RmmApiClient:
         return self.request("POST", "/api/v1/creds",
                             {"domain": domain, "user": user, "password": password})
 
+    def creds_update(self, cred_id: str, domain: str, user: str, password: str | None = None):
+        """Edit a stored identity without changing its credential ID."""
+        return self.request("PATCH", f"/api/v1/creds/{urllib.parse.quote(cred_id, safe='')}",
+                            {"domain": domain, "user": user,
+                             **({"password": password} if password is not None else {})})
+
     def creds_del(self, cred_id: str):
         return self.request("DELETE", f"/api/v1/creds/{cred_id}")
 
@@ -1154,6 +1160,18 @@ def cmd_creds_add(client: RmmApiClient, state: dict, args):
     if code != 200:
         die(f"creds add failed ({code}): {data.get('error') if isinstance(data, dict) else data}", 1)
     say(f"stored {data.get('cred_id')} ({domain + chr(92) + user if domain else user})")
+
+
+def cmd_creds_update(client: RmmApiClient, state: dict, args):
+    """Update a stored identity, optionally replacing its password."""
+    domain, user = split_identity(args.user)
+    code, data = client.creds_update(args.cred_id, domain, user, args.password)
+    if code != 200:
+        die(f"creds update failed ({code})", 1)
+    if args.json:
+        print_json(data)
+    else:
+        say(f"updated {data.get('cred_id')}")
 
 
 def cmd_creds_del(client: RmmApiClient, state: dict, args):
@@ -3134,6 +3152,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp_creds_add_p.add_argument("user", help="Identity as DOMAIN\\user or plain user")
     sp_creds_add_p.add_argument("password", help="Password")
     sp_creds_add_p.set_defaults(func=cmd_creds_add)
+    sp_creds_update_p = sp_creds_sub.add_parser("update", parents=[shared], help="Edit a credential in place")
+    sp_creds_update_p.add_argument("-i", dest="cred_id", required=True, help="Credential ID")
+    sp_creds_update_p.add_argument("user", help="Identity as DOMAIN\\user or plain user")
+    sp_creds_update_p.add_argument("--password", default=None, help="Replacement password; omit to keep")
+    sp_creds_update_p.set_defaults(func=cmd_creds_update)
     sp_creds_del_p = sp_creds_sub.add_parser("del", parents=[shared], help="Remove a stored credential")
     sp_creds_del_p.add_argument("-i", dest="cred_id", required=True, help="Credential ID")
     sp_creds_del_p.set_defaults(func=cmd_creds_del)

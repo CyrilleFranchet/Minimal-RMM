@@ -935,6 +935,13 @@ def tool_creds_add(client: RmmApiClient, domain: str = "", user: str = "", passw
     return _json_result(data)
 
 
+def tool_creds_update(client: RmmApiClient, cred_id: str, user: str,
+                      domain: str = "", password: str | None = None) -> str:
+    """Update a stored identity in place without returning its password."""
+    code, data = client.creds_update(cred_id, domain, user, password)
+    return _json_result(data if code == 200 else {"ok": False, "status": code, "data": data})
+
+
 def tool_creds_del(client: RmmApiClient, cred_id: str) -> str:
     """Remove a credential entry from the workspace store by cred_id."""
     if not (cred_id or "").strip():
@@ -1200,6 +1207,8 @@ TOOL_HANDLERS = {
         user=a.get("user", ""),
         password=a.get("password", ""),
     ),
+    "creds_update": lambda c, a: tool_creds_update(c, a["cred_id"], a["user"],
+                                                 a.get("domain", ""), a.get("password")),
     "creds_del": lambda c, a: tool_creds_del(c, a["cred_id"]),
     "creds_purge": lambda c, a: tool_creds_purge(c),
     "creds_list": lambda c, a: tool_creds_list(c),
@@ -2050,6 +2059,17 @@ OPENAI_TOOLS: list[dict] = [
                 },
                 "required": ["user", "password"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "creds_update",
+            "description": "Edit a stored identity preserving its ID. Omit password to keep it; never echo secrets.",
+            "parameters": {"type": "object", "properties": {
+                "cred_id": {"type": "string"}, "user": {"type": "string"},
+                "domain": {"type": "string"}, "password": {"type": "string"}},
+                "required": ["cred_id", "user"]},
         },
     },
     {

@@ -103,6 +103,27 @@ def creds_add(workspace_dir: str, domain: str, user: str, password: str) -> dict
 
 
 @_store_operation
+def creds_update(workspace_dir: str, cred_id: str, domain: str, user: str,
+                 password: str | None = None) -> dict[str, Any]:
+    """Replace an identity in place; an omitted password preserves its current value."""
+    domain, user = domain.strip(), user.strip()
+    if not domain and "\\" in user:
+        domain, user = (part.strip() for part in user.split("\\", 1))
+    if not user:
+        return {"ok": False, "error": "user is required"}
+    with _lock:
+        creds = _load(workspace_dir)
+        if cred_id not in creds:
+            return {"ok": False, "error": "cred_not_found"}
+        entry = creds[cred_id]
+        entry.update(domain=domain, user=user, label=f"{domain}\\{user}" if domain else user)
+        if password is not None:
+            entry["password"] = password
+        _save(workspace_dir, creds)
+    return {"ok": True, "cred_id": cred_id, "label": entry["label"]}
+
+
+@_store_operation
 def creds_del(workspace_dir: str, cred_id: str) -> dict[str, Any]:
     """Remove a credential entry by ID."""
     cred_id = (cred_id or "").strip()

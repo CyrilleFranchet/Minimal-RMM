@@ -112,6 +112,7 @@ from rmm_tools import (
     tool_stop_socks,
     tool_stop_tun,
     tool_creds_add,
+    tool_creds_update,
     tool_creds_del,
     tool_creds_list,
     tool_creds_purge,
@@ -645,6 +646,12 @@ def session_whoami(session_ref: str, timeout: float = 120, tickets: bool = False
 def creds_add(user: str, domain: str = "", password: str = "") -> str:
     """Add credentials to the workspace store. Returns a cred_id to pass to make_token, spawnas, or runas. Passwords are stored server-side only."""
     return tool_creds_add(_client(), domain=domain, user=user, password=password)
+
+
+@mcp.tool()
+def creds_update(cred_id: str, user: str, domain: str = "", password: str | None = None) -> str:
+    """Edit a stored identity preserving its ID; omit password to keep it. Never echo secrets."""
+    return tool_creds_update(_client(), cred_id, user, domain, password)
 
 
 @mcp.tool()

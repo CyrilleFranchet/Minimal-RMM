@@ -127,6 +127,7 @@ check-agent-deployment:
 
 check-web-contracts:
 	@node tests/test_whoami_shell.cjs
+	@node tests/test_credentials_ui.cjs
 	@$(PYTHON) scripts/check_web_contracts.py
 	@node tests/test_shell_command_labels.cjs
 	@node tests/test_session_identity_ui.cjs

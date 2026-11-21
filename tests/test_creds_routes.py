@@ -150,3 +150,55 @@ class CredentialRoutingTests(unittest.TestCase):
                 operation()
                 self.assertEqual(handler._json.call_args.args,
                                  (503, {"ok": False, "error": "credential_store_unavailable"}))
+
+    def test_update_preserves_id_password_and_workspace_isolation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first, other = os.path.join(directory, 'a'), os.path.join(directory, 'b')
+            cred_id = rmm_creds.creds_add(first, '', 'alice', ' original ')["cred_id"]
+            self.assertEqual(rmm_creds.creds_update(other, cred_id, '', 'bob')["error"], 'cred_not_found')
+            result = rmm_creds.creds_update(first, cred_id, '', 'LAB\\bob')
+            self.assertEqual(result, {"ok": True, "cred_id": cred_id, "label": 'LAB\\bob'})
+            self.assertEqual(rmm_creds.creds_resolve(first, cred_id)["password"], ' original ')
+            self.assertTrue(rmm_creds.creds_update(first, cred_id, '', 'bob', '')["ok"])
+            self.assertEqual(rmm_creds.creds_resolve(first, cred_id)["password"], '')
+            self.assertEqual(rmm_creds.creds_update(first, cred_id, '', '')["error"], 'user is required')
+            self.assertEqual(len(rmm_creds.creds_list(first)["creds"]), 1)
+
+    def test_update_route_validation_authentication_and_storage_failure(self):
+        handler = object.__new__(server_rmm.RMMHandler)
+        handler._api_authorized = Mock(return_value=True)
+        handler._workspace_scope = Mock(return_value='fixture')
+        handler._api_unauthorized = Mock()
+        handler._json = Mock()
+        handler.server_instance = SimpleNamespace()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(server_rmm, 'plugin_directory', return_value=directory):
+            cred_id = rmm_creds.creds_add(directory, '', 'alice', 'secret')["cred_id"]
+            path = f'/api/v1/creds/{cred_id}'
+            for body in ({}, {"user": []}, {"user": 'alice', "password": None},
+                         {"user": 'alice', "domain": 1}, {"user": 'alice', "unexpected": 'x'}):
+                handler._handle_api_patch(path, body)
+                self.assertEqual(handler._json.call_args.args[0], 400)
+            handler._handle_api_patch(path, {"user": 'bob'})
+            self.assertEqual(handler._json.call_args.args[0], 200)
+            self.assertNotIn('secret', str(handler._json.call_args))
+            handler._handle_api_patch('/api/v1/creds/missing', {"user": 'bob'})
+            self.assertEqual(handler._json.call_args.args[0], 404)
+            handler._workspace_scope.return_value = None
+            handler._handle_api_patch(path, {"user": 'bob'})
+            self.assertEqual(handler._json.call_args.args[0], 403)
+            handler._workspace_scope.return_value = 'fixture'
+            handler._api_authorized.return_value = False
+            handler._handle_api_patch(path, {"user": 'bob'})
+            handler._api_unauthorized.assert_called_once()
+            handler._api_authorized.return_value = True
+            store = Path(directory) / 'creds.json'
+            original = store.read_bytes()
+            with patch.object(rmm_creds.os, 'replace', side_effect=OSError):
+                handler._handle_api_patch(path, {"user": 'bob', "password": 'changed'})
+                self.assertEqual(handler._json.call_args.args[0], 503)
+                self.assertEqual(store.read_bytes(), original)
+            store.write_text('{broken')
+            handler._handle_api_patch(path, {"user": 'bob'})
+            self.assertEqual(handler._json.call_args.args[0], 503)
+            self.assertEqual(store.read_text(), '{broken')

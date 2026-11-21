@@ -1381,6 +1381,7 @@ async function handleLiveEvent(ev, sessionId) {
 }
 
 function disconnectWebSocket() {
+  window.rmmCredentials?.reset();
   state.connectionGeneration = (state.connectionGeneration || 0) + 1;
   state.workspaceReachable = false;
   clearWebSocketReconnectTimer();

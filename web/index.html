@@ -48,6 +48,7 @@
       <button type="button" class="secondary" id="embedding-open">Embeddings</button>
       <button type="button" class="secondary" id="bloodhound-open" title="Open workspace or standalone BloodHound CE in a new tab">Open BloodHound</button>
       <button type="button" class="secondary hidden" id="bloodhound-reset" title="A previous BloodHound launch's reply was lost; confirm no stray startup is still running elsewhere, then retry">Retry BloodHound startup</button>
+      <button type="button" class="secondary" id="credentials-open" title="Manage workspace credentials">Credentials</button>
       <button type="button" class="secondary" id="config-toggle-btn" title="Manage plugins, assets, transport, and settings">Config</button>
       <button type="button" class="secondary" id="ai-toggle-btn" title="AI assistant (OpenAI + RMM tools)">AI</button>
       <button type="button" class="secondary" id="open-downloads-dialog" title="Show downloads from all agents">Downloads</button>
@@ -721,11 +722,42 @@
     </fieldset>
   </dialog>
 
+  <dialog id="credentials-dialog" class="embedding-dialog" aria-labelledby="credentials-title">
+    <div class="embedding-dialog-header">
+      <h2 id="credentials-title">Credential store</h2>
+      <button id="credentials-close" type="button" class="secondary">Close</button>
+    </div>
+    <p>Credentials belong to this workspace. Editing preserves the credential ID.</p>
+    <p id="credentials-status" role="status" aria-live="polite"></p>
+    <fieldset id="credentials-controls">
+      <legend class="sr-only">Manage credentials</legend>
+      <div class="embedding-actions">
+        <button id="credentials-refresh" type="button" class="secondary">Refresh</button>
+        <button id="credentials-purge" type="button" class="secondary" disabled>Delete all credentials</button>
+      </div>
+      <div id="credentials-list"></div>
+      <form id="credentials-form" autocomplete="off">
+        <h3 id="credentials-editor-title">Add credential</h3>
+        <label for="credentials-identity">Identity</label>
+        <input id="credentials-identity" type="text" placeholder="DOMAIN\user or user" required autocomplete="off" spellcheck="false" autocapitalize="none">
+        <label for="credentials-password">Password</label>
+        <input id="credentials-password" type="password" autocomplete="new-password" aria-describedby="credentials-password-help">
+        <p id="credentials-password-help" class="ai-hint">An empty password is allowed.</p>
+        <label id="credentials-empty-label" hidden><input id="credentials-empty" type="checkbox"> Set empty password</label>
+        <div class="embedding-actions">
+          <button id="credentials-save" type="submit">Add credential</button>
+          <button id="credentials-cancel-edit" type="button" class="secondary">Clear form</button>
+        </div>
+      </form>
+    </fieldset>
+  </dialog>
+
   <script src="theme.js"></script>
   <script src="config.js"></script>
   <script src="settings.js"></script>
   <script src="workspace-config.js"></script>
   <script src="app.js"></script>
+  <script src="credentials.js"></script>
   <script src="assets.js"></script>
   <script src="plugin-releases.js"></script>
   <script src="embeddings.js"></script>

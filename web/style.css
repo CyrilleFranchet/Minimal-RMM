@@ -2139,3 +2139,9 @@ body.sidebar-resizing iframe {
 .shell-command-menu.hidden { display: none; }
 .shell-command-menu [role="option"] { padding: 0.35rem 0.5rem; cursor: pointer; }
 .shell-command-menu [aria-selected="true"] { background: var(--accent); color: #101010; }
+
+.credentials-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.6rem 0; border-bottom: 1px solid var(--border); }
+.credentials-row > span { flex: 1 1 15rem; overflow-wrap: anywhere; min-width: 0; }
+#credentials-controls { border: 0; padding: 0; min-width: 0; }
+#credentials-empty-label { display: flex; align-items: center; gap: 0.5rem; }
+#credentials-empty-label[hidden] { display: none; }
