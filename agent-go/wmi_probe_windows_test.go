@@ -21,7 +21,7 @@ func TestWMIProbeProxyImpersonationLabels(t *testing.T) {
 func TestWMIProbeDeniedConnectDoesNotReportQuerySuccess(t *testing.T) {
 	result := wmiProbeResult{ConnectHR: 0x80070005}
 	result.stageHR("connect", result.ConnectHR, 0, "denied")
-	result.markRemainingNotRun("connect")
+	result.markRemainingNotRun("connect", "")
 	for _, stage := range result.Stages {
 		if stage.name == "query" {
 			if !stage.notRun || stage.hasHR {
@@ -43,4 +43,20 @@ func TestWMIProbeVerdictDoesNotClaimTokenStayedUnchanged(t *testing.T) {
 	if !strings.Contains(verdict, "cause undetermined") || strings.Contains(verdict, "neither attempt's token changed") {
 		t.Fatalf("verdict exceeds observed evidence: %s", verdict)
 	}
+}
+
+func TestWMIProbeHeldStagesRemainSeparate(t *testing.T) {
+	result := wmiProbeResult{}
+	result.stageHR("query@1", 0, 0, "first query succeeded")
+	result.stageHR("connect@2", 0x80070005, 0, "second connect denied")
+	result.markRemainingNotRun("connect@2", "@2")
+	for _, stage := range result.Stages {
+		if stage.name == "query@2" {
+			if !stage.notRun || stage.hasHR {
+				t.Fatalf("first sequence's success must not become a second query result: %+v", stage)
+			}
+			return
+		}
+	}
+	t.Fatal("missing second query's not_run stage")
 }

@@ -61,16 +61,17 @@ type wmiProbeToken struct {
 // stage list. HRESULT and stage fields hold zero values only for stages
 // that actually ran.
 type wmiProbeResult struct {
-	ConnectHR uintptr
-	Err       error
-	Explicit  bool
-	StartUTC  string
-	EndUTC    string
-	PID       uint32
-	TID       uint32
-	Before    wmiProbeToken
-	After     wmiProbeToken
-	Stages    []wmiProbeStage
+	ConnectHR       uintptr
+	SecondConnectHR uintptr
+	Err             error
+	Explicit        bool
+	StartUTC        string
+	EndUTC          string
+	PID             uint32
+	TID             uint32
+	Before          wmiProbeToken
+	After           wmiProbeToken
+	Stages          []wmiProbeStage
 }
 
 func wmiProbeTimestamp() string {
@@ -238,18 +239,45 @@ func wmiProbeVerdict(host string, first, second wmiProbeResult) string {
 	fmt.Fprintf(&out, "  evidence: both pre-connect snapshots carried the same logon ID and SID (authID=0x%016x sid=%s second-level=%s). Consult the before/after snapshots for other changes.",
 		second.Before.authID, second.Before.sid, impersonationLevelLabel(second.Before.impLevel))
 	fmt.Fprintf(&out, " An unchanged identity does not prove the token entirely sound, nor identify which side rejected the second connect.\n")
-	fmt.Fprintf(&out, "  next distinction: target authentication events around %s .. %s (see the checklist below).", first.StartUTC, second.EndUTC)
+	fmt.Fprintf(&out, "  next distinction: target authentication events around %s .. %s (see the checklist below), and the COM-lifetime comparison `__WMI_PROBE__ %s held` on a fresh agent process, which isolates the per-attempt teardown variable.",
+		first.StartUTC, second.EndUTC, host)
 	return out.String()
 }
 
 // wmiProbeExecute runs the diagnostic against one host using the active
-// make_token state: two ambient probes — deliberately on the cloaked path
-// the deployed wmiexec uses under make_token — and one explicit comparison
-// probe, then the verdict and the target-side evidence checklist. Neither
-// the report nor the verdict names a cause beyond the recorded evidence.
-func wmiProbeExecute(host string) (string, error) {
+// make_token state. The default (isolated) mode runs two ambient probes —
+// deliberately on the cloaked path the deployed wmiexec uses under
+// make_token — and one explicit comparison probe. The held mode runs both
+// connections inside one continuous COM initialization (single
+// CoInitializeEx with no CoUninitialize between the sequences, same OS
+// thread, impersonation held), isolating whether the per-attempt teardown
+// is what triggers the denial. Neither the report nor the verdict names a
+// cause beyond the recorded evidence.
+func wmiProbeExecute(host, mode string) (string, error) {
 	if identityBoundaryFault.Load() {
 		return "", errIdentityUnsafe
+	}
+	if mode == "held" {
+		token, _, err := captureLateralIdentity(false)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = token.Close() }()
+		source := wmiProbeCaptureToken(token)
+		var report strings.Builder
+		fmt.Fprintf(&report, "wmi probe host=%s mode=held; process logon LUID=0x%016x;",
+			host, wmiProbeProcessAuthenticationID())
+		if token == 0 {
+			report.WriteString(" no make_token active: the held probes authenticate as the agent identity\n")
+		} else {
+			fmt.Fprintf(&report, " source token authID=0x%016x modifiedID=0x%016x sid=%s\n",
+				source.authID, source.modifiedID, source.sid)
+		}
+		held := wmiProbeHeld(host, token, source)
+		fmt.Fprintf(&report, "probe held (one continuous COM initialization, two connect sequences)\n%s", held.report())
+		fmt.Fprintf(&report, "%s\n", wmiProbeHeldVerdict(host, held))
+		fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, held.StartUTC, held.EndUTC))
+		return report.String(), nil
 	}
 	token, credentials, err := captureLateralIdentity(true)
 	if err != nil {
@@ -284,8 +312,122 @@ func wmiProbeExecute(host string) (string, error) {
 		report.WriteString("probe 3 explicit skipped: no make_token active\n")
 	}
 	fmt.Fprintf(&report, "%s\n", wmiProbeVerdict(host, first, second))
-	fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, first, second))
+	fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, first.StartUTC, second.EndUTC))
 	return report.String(), nil
+}
+
+// wmiProbeHeld runs both connections inside one continuous COM
+// initialization on a single locked OS thread: one impersonation held
+// across both sequences, one CoInitializeEx and CoInitializeSecurity, two
+// complete connect sequences (fresh locator, connect, blanket observation,
+// class fetch, full proxy release each), and one teardown at the end. This
+// isolates whether the isolated mode's per-attempt COM teardown is what
+// turns the first successful connect into a denied second one.
+func wmiProbeHeld(host string, token syscall.Token, source wmiProbeToken) (result wmiProbeResult) {
+	result = wmiProbeResult{StartUTC: wmiProbeTimestamp()}
+	pid, _, _ := procProbeGetCurrentProcessId.Call()
+	result.PID = uint32(pid)
+	defer func() { result.EndUTC = wmiProbeTimestamp() }()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	tid, _, _ := procProbeGetCurrentThreadId.Call()
+	result.TID = uint32(tid)
+	impersonated := false
+	if token != 0 {
+		var duplicate syscall.Handle
+		process := syscall.Handle(^uintptr(0))
+		if err := syscall.DuplicateHandle(process, syscall.Handle(token), process, &duplicate, 0, false, 2); err != nil {
+			result.Err = fmt.Errorf("duplicate the network-only token: %w", err)
+			result.stageNotRun("impersonate", err.Error())
+			result.markRemainingNotRun("impersonation setup", "@1")
+			result.markRemainingNotRun("impersonation setup", "@2")
+			return result
+		}
+		defer syscall.CloseHandle(duplicate)
+		start := time.Now()
+		ok, _, impErr := procImpersonateLoggedOnUser.Call(uintptr(duplicate))
+		if ok == 0 {
+			result.stageInfo("impersonate", time.Since(start), fmt.Sprintf("ImpersonateLoggedOnUser failed: %v", impErr))
+			result.Err = fmt.Errorf("impersonate the network-only token: %w", impErr)
+			result.markRemainingNotRun("impersonation setup", "@1")
+			result.markRemainingNotRun("impersonation setup", "@2")
+			return result
+		}
+		impersonated = true
+		result.stageInfo("impersonate", time.Since(start), "ImpersonateLoggedOnUser ok (held across both sequences)")
+	} else {
+		result.stageNotRun("impersonate", "no token supplied: ambient process identity")
+	}
+	defer func() {
+		if !impersonated {
+			result.stageNotRun("cleanup", "nothing impersonated")
+			return
+		}
+		start := time.Now()
+		ok, _, revertErr := procRevertToSelf.Call()
+		if ok == 0 {
+			result.stageInfo("cleanup", time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", revertErr))
+			result.Err = fmt.Errorf("revert held probe identity: %w", revertErr)
+		} else {
+			result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok")
+		}
+	}()
+	start := time.Now()
+	result.Before = wmiProbeCaptureThreadToken()
+	result.stageInfo("token-before", time.Since(start), result.Before.identityDetail(source))
+	start = time.Now()
+	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
+	label := "initialization failed"
+	if hr == 0 {
+		label = "S_OK new-MA-on-thread, held for both sequences"
+	} else if hr == 1 {
+		label = "S_FALSE thread-already-in-COM, held for both sequences"
+	}
+	result.stageHR("co-init", hr, time.Since(start), label)
+	if hr != 0 && hr != 1 {
+		result.Err = fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
+		result.markRemainingNotRun("co-init", "@1")
+		result.markRemainingNotRun("co-init", "@2")
+		return result
+	}
+	defer func() {
+		start := time.Now()
+		procCoUninitialize.Call()
+		result.stageInfo("co-uninit", time.Since(start), "single teardown after held initialization")
+	}()
+	start = time.Now()
+	initErr := initializeWMISecurity()
+	result.stageInfo("com-security", time.Since(start), wmiSecurityInitReport())
+	if initErr != nil {
+		result.Err = initErr
+		result.markRemainingNotRun("com-security blocked the chain", "@1")
+		result.markRemainingNotRun("com-security blocked the chain", "@2")
+		return result
+	}
+	result.ConnectHR = result.connectSequence(host, nil, "@1")
+	result.SecondConnectHR = result.connectSequence(host, nil, "@2")
+	return result
+}
+
+// wmiProbeHeldVerdict interprets the held run under the evidence
+// discipline: it compares against the isolated mode's known behavior but
+// never attributes a cause the recorded evidence does not support.
+func wmiProbeHeldVerdict(host string, held wmiProbeResult) string {
+	switch {
+	case held.Err != nil:
+		return fmt.Sprintf("verdict inconclusive: held-mode machinery failed (%v)", held.Err)
+	case held.ConnectHR != 0:
+		return fmt.Sprintf("verdict inconclusive: the first held connect did not succeed (connect=0x%08x); fix the probe environment (credentials, target reachability) before comparing lifetimes",
+			held.ConnectHR)
+	case held.SecondConnectHR == 0:
+		return fmt.Sprintf("verdict: second connect succeeded within one continuous COM initialization (first held connect also 0x%08x)."+
+			" Consistent with the per-attempt COM teardown/re-initialization being involved in the isolated mode's denial; it is not proof — corroborate with the isolated mode on a fresh agent process and the target events checklist.",
+			held.ConnectHR)
+	}
+	return fmt.Sprintf("verdict: second connect denied even within one continuous COM initialization (0x%08x)."+
+		" The denial trigger is not the per-attempt teardown alone: state from earlier connections in this process or a target-side rejection remain candidates."+
+		" Correlate the target events below and, ideally, run both modes on fresh agent processes before attributing a cause.",
+		held.SecondConnectHR)
 }
 
 // wmiProbeChecklist prints the target-side correlation guidance, keyed to
@@ -294,12 +436,12 @@ func wmiProbeExecute(host string) (string, error) {
 // address and account when the window is ambiguous. Field names differ
 // between 4624 and 4625, so the example reads the full message rather than
 // fixed property indices.
-func wmiProbeChecklist(host string, first, second wmiProbeResult) string {
+func wmiProbeChecklist(host, startUTC, endUTC string) string {
 	return "target evidence (collect on " + host + ", local time applies to Security events):\n" +
 		"  Get-WinEvent -FilterHashtable @{LogName='Security'; Id=@(4624,4625)} -MaxEvents 400 |\n" +
 		"    Where-Object { $_.TimeCreated -gt (Get-Date).AddHours(-3) } |\n" +
 		"    Select-Object TimeCreated, Id, Message | Format-List\n" +
-		"  probes ran at " + first.StartUTC + " and " + second.StartUTC + " UTC; match on this agent host's source address.\n" +
+		"  probes ran between " + startUTC + " and " + endUTC + " UTC; match on this agent host's source address.\n" +
 		"  record per attempt: account and domain, authentication package, logon type, source address;\n" +
 		"  on 4625 additionally the Status and SubStatus codes.\n" +
 		"  reading: a different account on attempt two means the client presented another identity;\n" +
@@ -511,36 +653,12 @@ func wmiProbeBlanket(services uintptr) (string, error) {
 		capabilities), nil
 }
 
-// connectAndQuery performs the instrumented read-only chain: COM
-// initialization, the once-per-process COM security report, locator
-// creation, ConnectServer with a token snapshot immediately after, the
-// blanket observed before and after applying it, and the class fetch. When
-// an upstream stage fails, every downstream stage records itself as not_run
-// rather than carrying a zero result.
+// connectAndQuery performs the instrumented read-only chain for the
+// isolated mode: COM initialization, the once-per-process COM security
+// report, then one full connect sequence. When an upstream stage fails,
+// every downstream stage records itself as not_run rather than carrying a
+// zero result.
 func (r *wmiProbeResult) connectAndQuery(host string, identity *winrmCredentials) {
-	authnService, ambientAuthority, serverPrincipal, err := wmiAuthentication(host)
-	if err != nil {
-		r.Err = err
-		r.markRemainingNotRun("authentication inputs")
-		return
-	}
-	defer sysFreeString(ambientAuthority)
-	defer runtime.KeepAlive(serverPrincipal)
-	var identityUser, identityPassword, identityAuthority uintptr
-	var blanket *secWinNTAuthIdentity
-	if identity != nil {
-		userPtr, passwordPtr, authorityPtr, blanketPtr, credErr := wmiConnectIdentity(identity)
-		if credErr != nil {
-			r.Err = credErr
-			r.markRemainingNotRun("credential encoding")
-			return
-		}
-		identityUser, identityPassword, identityAuthority, blanket = userPtr, passwordPtr, authorityPtr, blanketPtr
-		defer sysFreeString(identityUser)
-		defer sysFreeString(identityPassword)
-		defer sysFreeString(identityAuthority)
-		defer runtime.KeepAlive(blanket)
-	}
 	start := time.Now()
 	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
 	label := "initialization failed"
@@ -552,7 +670,7 @@ func (r *wmiProbeResult) connectAndQuery(host string, identity *winrmCredentials
 	r.stageHR("co-init", hr, time.Since(start), label)
 	if hr != 0 && hr != 1 {
 		r.Err = fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
-		r.markRemainingNotRun("co-init")
+		r.markRemainingNotRun("co-init", "")
 		return
 	}
 	defer procCoUninitialize.Call()
@@ -561,27 +679,60 @@ func (r *wmiProbeResult) connectAndQuery(host string, identity *winrmCredentials
 	r.stageInfo("com-security", time.Since(start), wmiSecurityInitReport())
 	if initErr != nil {
 		r.Err = initErr
-		r.markRemainingNotRun("com-security blocked the chain")
+		r.markRemainingNotRun("com-security blocked the chain", "")
 		return
 	}
-	start = time.Now()
+	r.ConnectHR = r.connectSequence(host, identity, "")
+}
+
+// connectSequence runs one full instrumented connect — fresh locator,
+// ConnectServer with a token snapshot immediately after, the blanket
+// observed before and after applying it, and the class fetch — inside an
+// already-initialized COM apartment. The suffix parameterizes the stage
+// names so the held mode can record two sequences in one report. It
+// returns the raw ConnectServer HRESULT.
+func (r *wmiProbeResult) connectSequence(host string, identity *winrmCredentials, suffix string) uintptr {
+	authnService, ambientAuthority, serverPrincipal, err := wmiAuthentication(host)
+	if err != nil {
+		r.Err = err
+		r.markRemainingNotRun("authentication inputs", suffix)
+		return 0
+	}
+	defer sysFreeString(ambientAuthority)
+	defer runtime.KeepAlive(serverPrincipal)
+	var identityUser, identityPassword, identityAuthority uintptr
+	var blanket *secWinNTAuthIdentity
+	if identity != nil {
+		userPtr, passwordPtr, authorityPtr, blanketPtr, credErr := wmiConnectIdentity(identity)
+		if credErr != nil {
+			r.Err = credErr
+			r.markRemainingNotRun("credential encoding", suffix)
+			return 0
+		}
+		identityUser, identityPassword, identityAuthority, blanket = userPtr, passwordPtr, authorityPtr, blanketPtr
+		defer sysFreeString(identityUser)
+		defer sysFreeString(identityPassword)
+		defer sysFreeString(identityAuthority)
+		defer runtime.KeepAlive(blanket)
+	}
+	start := time.Now()
 	var locator uintptr
-	hr, _, _ = procCoCreateInstance.Call(
+	hr, _, _ := procCoCreateInstance.Call(
 		uintptr(unsafe.Pointer(&clsidWbemLocator)), 0, clsctxInprocServer,
 		uintptr(unsafe.Pointer(&iidIWbemLocator)), uintptr(unsafe.Pointer(&locator)))
-	r.stageHR("cocreate", hr, time.Since(start), "WbemLocator in-proc")
+	r.stageHR("cocreate"+suffix, hr, time.Since(start), "WbemLocator in-proc")
 	if hr != 0 || locator == 0 {
 		r.Err = fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x", hr)
-		r.markRemainingNotRun("cocreate")
-		return
+		r.markRemainingNotRun("cocreate"+suffix, suffix)
+		return 0
 	}
 	defer comRelease(locator)
 	namespace := sysAllocString(`\\` + host + `\root\cimv2`)
 	defer sysFreeString(namespace)
 	if namespace == 0 {
 		r.Err = fmt.Errorf("allocate namespace string")
-		r.markRemainingNotRun("namespace allocation")
-		return
+		r.markRemainingNotRun("namespace allocation"+suffix, suffix)
+		return 0
 	}
 	authority, authnService := ambientAuthority, authnService
 	blanketMode := "dynamic-cloaking"
@@ -591,24 +742,24 @@ func (r *wmiProbeResult) connectAndQuery(host string, identity *winrmCredentials
 	}
 	var services uintptr
 	start = time.Now()
-	r.ConnectHR = comCallHR(locator, 3, namespace, identityUser, identityPassword, 0, 0,
+	connectHR := comCallHR(locator, 3, namespace, identityUser, identityPassword, 0, 0,
 		authority, 0, uintptr(unsafe.Pointer(&services)))
-	r.stageHR("connect", r.ConnectHR, time.Since(start), fmt.Sprintf(`\\%s\root\cimv2 authn=%d(%s)`,
+	r.stageHR("connect"+suffix, connectHR, time.Since(start), fmt.Sprintf(`\\%s\root\cimv2 authn=%d(%s)`,
 		host, authnService, authnServiceLabel(uint32(authnService))))
 	start = time.Now()
 	r.After = wmiProbeCaptureThreadToken()
-	r.stageInfo("token-after", time.Since(start), r.After.identityDetail(r.Before))
-	if r.ConnectHR != 0 || services == 0 {
-		r.markRemainingNotRun("connect denied: no proxy exists")
-		return
+	r.stageInfo("token-after"+suffix, time.Since(start), r.After.identityDetail(r.Before))
+	if connectHR != 0 || services == 0 {
+		r.markRemainingNotRun("connect denied: no proxy exists"+suffix, suffix)
+		return connectHR
 	}
 	defer comRelease(services)
 	start = time.Now()
 	before, blanketErr := wmiProbeBlanket(services)
 	if blanketErr != nil {
-		r.stageNotRun("blanket-before", "CoQueryProxyBlanket failed: "+blanketErr.Error())
+		r.stageNotRun("blanket-before"+suffix, "CoQueryProxyBlanket failed: "+blanketErr.Error())
 	} else {
-		r.stageInfo("blanket-before", time.Since(start), before)
+		r.stageInfo("blanket-before"+suffix, time.Since(start), before)
 	}
 	start = time.Now()
 	var blanketHR uintptr
@@ -621,44 +772,46 @@ func (r *wmiProbeResult) connectAndQuery(host string, identity *winrmCredentials
 			services, authnService, rpcCAuthzNone, uintptr(unsafe.Pointer(serverPrincipal)),
 			rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking)
 	}
-	r.stageHR("blanket", blanketHR, time.Since(start), blanketMode)
+	r.stageHR("blanket"+suffix, blanketHR, time.Since(start), blanketMode)
 	if blanketHR != 0 {
-		r.markRemainingNotRun("blanket failed")
-		return
+		r.markRemainingNotRun("blanket failed"+suffix, suffix)
+		return connectHR
 	}
 	if after, err := wmiProbeBlanket(services); err != nil {
-		r.stageNotRun("blanket-after", "CoQueryProxyBlanket failed: "+err.Error())
+		r.stageNotRun("blanket-after"+suffix, "CoQueryProxyBlanket failed: "+err.Error())
 	} else {
-		r.stageInfo("blanket-after", 0, after)
+		r.stageInfo("blanket-after"+suffix, 0, after)
 	}
 	classPath := sysAllocString("Win32_ComputerSystem")
 	defer sysFreeString(classPath)
 	if classPath == 0 {
 		r.Err = fmt.Errorf("allocate class path string")
-		r.stageNotRun("query", "class path allocation failed")
-		return
+		r.stageNotRun("query"+suffix, "class path allocation failed")
+		return connectHR
 	}
 	var classObject uintptr
 	start = time.Now()
 	queryHR := comCallHR(services, 6, classPath, 0, 0,
 		uintptr(unsafe.Pointer(&classObject)), 0)
-	r.stageHR("query", queryHR, time.Since(start), "GetObject Win32_ComputerSystem")
+	r.stageHR("query"+suffix, queryHR, time.Since(start), "GetObject Win32_ComputerSystem")
 	if classObject != 0 {
 		comRelease(classObject)
 	}
+	return connectHR
 }
 
-// markRemainingNotRun records the stages after a failure point so no
-// unexecuted step can appear as a succeeded zero result.
-func (r *wmiProbeResult) markRemainingNotRun(failedAt string) {
+// markRemainingNotRun records the stages after a failure point — within the
+// connect sequence identified by suffix — so no unexecuted step can appear
+// as a succeeded zero result.
+func (r *wmiProbeResult) markRemainingNotRun(failedAt, suffix string) {
 	why := "upstream stage failed: " + failedAt
 	executed := map[string]bool{}
 	for _, s := range r.Stages {
 		executed[s.name] = true
 	}
-	for _, name := range []string{"co-init", "com-security", "cocreate", "connect", "token-after", "blanket-before", "blanket", "blanket-after", "query"} {
-		if !executed[name] {
-			r.stageNotRun(name, why)
+	for _, name := range []string{"cocreate", "connect", "token-after", "blanket-before", "blanket", "blanket-after", "query"} {
+		if !executed[name+suffix] {
+			r.stageNotRun(name+suffix, why)
 		}
 	}
 }

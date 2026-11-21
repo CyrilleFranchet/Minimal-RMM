@@ -65,6 +65,14 @@ func TestWMISecondConnectProbe(t *testing.T) {
 	t.Logf("source token authID=0x%016x modifiedID=0x%016x sid=%s",
 		source.authID, source.modifiedID, source.sid)
 
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("RMM_WMI_PROBE_MODE")), "held") {
+		held := wmiProbeHeld(target, token, source)
+		t.Logf("[held COM lifetime: one continuous initialization, two connect sequences]\n%s", held.report())
+		t.Log(wmiProbeHeldVerdict(target, held))
+		t.Log(wmiProbeChecklist(target, held.StartUTC, held.EndUTC))
+		return
+	}
+
 	first := wmiProbeRun(target, nil, token, source)
 	t.Logf("[ambient one (first wmiexec)]\n%s", first.report())
 	second := wmiProbeRun(target, nil, token, source)

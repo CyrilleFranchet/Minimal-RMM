@@ -125,6 +125,25 @@
   variable afterwards. Neither surface ever logs credentials. Host parser
   regression: `TestParseWmiProbeCommand`. Docs: README protocol row,
   `docs/go-agent.md` bullet.
+- COM-lifetime comparison added as the probe's optional held mode:
+  `__WMI_PROBE__ <host> held` (`parseWmiProbeCommand`, `wmiProbeHeld`,
+  `wmiProbeHeldVerdict`) runs both read-only connections inside one
+  continuous COM initialization — one locked OS thread with the
+  impersonation held, one `CoInitializeEx` and `CoInitializeSecurity`,
+  two fully instrumented connect sequences (stages suffixed `@1`/`@2`,
+  same token/blanket/HRESULT evidence), and a single teardown at the end —
+  versus the default mode's initialization/teardown around each
+  connection. This isolates the per-attempt teardown as the variable: a
+  succeeded held second connect is reported as "consistent with the
+  teardown being involved" with a fresh-process isolated run and target
+  events named for corroboration; a denied one shows the trigger is not
+  the teardown alone. Held mode is ambient-only — no explicit credentials
+  anywhere, matching the deployment combination under review. The
+  standalone binary exposes it via `RMM_WMI_PROBE_MODE=held`. Regressed
+  by `TestParseWmiProbeCommand` mode cases; verdict and checklist wording
+  kept under the same evidence discipline.
+  Held cleanup balances initialization exactly once and reverts impersonation
+  on early initialization failures as well as completed runs.
 
 ## 2026-11-20 — Forced lateral identities: explicit credentials at ConnectServer
 

@@ -486,6 +486,25 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   as an ambient wmiexec — which is the point of running it in the live
   agent. Success of the explicit comparison establishes only that this
   connection succeeded; it does not guarantee later deployments.
+- The optional held mode (`__WMI_PROBE__ <host> held`; the parser accepts
+  exactly that word) runs the COM-lifetime comparison: both connections
+  execute inside one continuous COM initialization on a single locked OS
+  thread — one impersonation held across both sequences, one
+  `CoInitializeEx` and one `CoInitializeSecurity`, then two complete
+  connect sequences with the same instrumentation (fresh locator, connect,
+  token snapshot, blanket observation, class fetch, full proxy release
+  each; stages carry `@1`/`@2` suffixes) and a single `CoUninitialize`
+  teardown at the end. This isolates whether the default mode's
+  per-attempt COM teardown is what turns the first successful connect into
+  a denied second one. A held second connect that succeeds is consistent
+  with the teardown being involved — the verdict says exactly that and
+  points to an isolated-mode run on a fresh agent process plus the target
+  events for corroboration, never to a conclusion. A held second connect
+  that is still denied shows the trigger is not the per-attempt teardown
+  alone. Held mode is ambient-only: no explicit credentials are involved
+  at any point, matching the deployment combination under investigation.
+  The standalone probe binary exposes the same mode through
+  `RMM_WMI_PROBE_MODE=held`.
 - Loader deployments (`wmiexec_loader`, `winrm_loader`, `winrm_https_loader`,
   `winrm_https_insecure_loader` wire methods) fetch the masked,
   digest-verified agent artifact from the listener's staging endpoint and
