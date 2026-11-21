@@ -2132,7 +2132,65 @@ function longestCommonPrefix(strings) {
   return prefix;
 }
 
+const CREDENTIAL_ID_COMPLETION_COMMANDS = {
+  make_token: ["-i"], spawnas: ["-i"], runas: ["-i"], lateral: ["-i"], "creds del": ["-i"],
+};
+const shellCredentialCompletion = { rows: [], expires: 0, pending: null, scope: null };
+
+function shellCredentialScope() {
+  return JSON.stringify([state.token || "", state.authGeneration || 0, state.connectionGeneration || 0]);
+}
+
+function shellCredentialContext(line) {
+  const match = String(line).match(/^(\s*\/.*\s)(-\S+)\s+([^\s"']*)$/);
+  if (!match) return null;
+  let words;
+  try { words = parseShellWords(match[1].trim().slice(1), true); } catch { return null; }
+  const key = Object.keys(CREDENTIAL_ID_COMPLETION_COMMANDS)
+    .sort((a, b) => b.length - a.length)
+    .find(path => path.split(" ").every((word, index) => words[index]?.toLowerCase() === word));
+  if (!CREDENTIAL_ID_COMPLETION_COMMANDS[key]?.includes(match[2])) return null;
+  // Identity commands only accept the store selector as their first argument.
+  if (["make_token", "spawnas", "runas"].includes(key) && words.length !== 1) return null;
+  if (key === "creds del" && words.length !== 2) return null;
+  if (key === "lateral" && (words.length < 3 || words.includes("-i"))) return null;
+  return { base: match[1] + match[2] + " ", prefix: match[3] };
+}
+
+function refreshShellCredentialCompletion() {
+  const scope = shellCredentialScope();
+  if (shellCredentialCompletion.scope !== scope) {
+    Object.assign(shellCredentialCompletion, { rows: [], expires: 0, pending: null, scope });
+  }
+  if (shellCredentialCompletion.pending || Date.now() < shellCredentialCompletion.expires) return;
+  const request = (async () => {
+    try {
+      const { status, data } = await api("/creds");
+      if (shellCredentialScope() !== scope) return;
+      shellCredentialCompletion.rows = status === 200 && Array.isArray(data?.creds)
+        ? data.creds.filter(row => row && typeof row.cred_id === "string").map(row => ({
+          id: row.cred_id, label: typeof row.label === "string" ? row.label : "",
+        })) : [];
+    } catch {
+      if (shellCredentialScope() !== scope) return;
+      shellCredentialCompletion.rows = [];
+    }
+    shellCredentialCompletion.expires = Date.now() + 5000;
+  })().finally(() => {
+    if (shellCredentialScope() !== scope || shellCredentialCompletion.pending !== request) return;
+    shellCredentialCompletion.pending = null;
+    updateShellCompletionHint();
+  });
+  shellCredentialCompletion.pending = request;
+}
+
 function getShellCompletionCandidates(line) {
+  const credential = shellCredentialContext(line);
+  if (credential) {
+    refreshShellCredentialCompletion();
+    return shellCredentialCompletion.rows.filter(row => row.id.startsWith(credential.prefix))
+      .map(row => credential.base + row.id);
+  }
   const q = String(line ?? "").trimStart();
   if (/^\/\S*$/.test(q)) {
     return SHELL_META_COMMANDS.map(cmd => `/${cmd}`).filter(cmd => cmd.startsWith(q.toLowerCase()));
@@ -2248,7 +2306,9 @@ function renderShellCommandMenu() {
     option.id = "shell-command-option-" + index;
     option.setAttribute("role", "option");
     option.setAttribute("aria-selected", String(index === shellCommandMenu.index));
-    option.textContent = command;
+    const credential = shellCredentialContext(command);
+    const row = credential && shellCredentialCompletion.rows.find(item => item.id === credential.prefix);
+    option.textContent = row?.label ? `${command} — ${row.label}` : command;
     option.addEventListener("mousedown", event => {
       event.preventDefault();
       shellCommandMenu.index = index;
@@ -2283,7 +2343,7 @@ function updateShellCompletionHint() {
   }
   const line = input.value;
   const cands = getShellCompletionCandidates(line);
-  if (!shellCommandMenu.dismissed && /^\s*\/(?:\S*|(?:creds|lateral)\s+\S*)$/i.test(line) && cands.length && state.viewMode !== "history") {
+  if (!shellCommandMenu.dismissed && (shellCredentialContext(line) || /^\s*\/(?:\S*|(?:creds|lateral)\s+\S*)$/i.test(line)) && cands.length && state.viewMode !== "history") {
     shellCommandMenu.candidates = cands;
     shellCommandMenu.index = Math.min(shellCommandMenu.index, cands.length - 1);
     hint.classList.add("hidden");

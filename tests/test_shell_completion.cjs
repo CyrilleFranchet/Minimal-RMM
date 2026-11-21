@@ -20,7 +20,7 @@ function fixture() {
     state: { echoedCommands: new Set(), viewMode: 'live', selectedId: 'agent', selectionGeneration: 1, shellTabCycle: { anchor: null, candidates: [], index: -1 } },
     getShellHistoryList: () => ['whoami', '/screenshot'], resetShellHistoryNav() {}, resetShellTabCycle() {},
     navigateShellHistory: () => { throw new Error('History must not handle menu navigation'); },
-    api: async (...args) => { calls.push(args); return { status: 200, data: {} }; },
+    api: async (...args) => { if (!(args[0] === '/creds' && args.length === 1)) calls.push(args); return { status: 200, data: {} }; },
     appendShellError: text => { errors.push(text); lines.push({kind: 'error', text}); }, rememberShellCommand: cmd => {
       if (history.at(-1) !== cmd) history.push(cmd);
     },
@@ -275,6 +275,7 @@ test('spawnas renders its launch result once through events and preserves regist
     const f = fixture(), outputs = [];
     const result = 'spawned session=child-session pid=42 identity=LAB\\alice';
     f.context.api = async (...args) => {
+      if (args[0] === '/creds') return {status: 200, data: {creds: []}};
       f.calls.push(args);
       return {status: 200, data: {spawned_session_id: 'child-session', spawn_pid: 42,
         identity: 'LAB\\alice', verify: true, registered}};
@@ -659,4 +660,81 @@ test('creds purge uses DELETE and reports counts or failures', async () => {
     if (status === 200) assert.deepEqual(output, [`deleted ${deleted} credentials`]);
     else { assert.equal(output.length, 0); assert.match(f.errors[0], /creds purge failed/); }
   }
+});
+
+test('credential completion fetches redacted IDs, filters and inserts IDs with labels', async () => {
+  for (const command of ['/make_token', '/spawnas', '/runas', '/lateral wmiexec host', '/creds del']) {
+    const f = fixture(), requests = [];
+    f.context.api = async (...args) => {
+      requests.push(args);
+      return {status: 200, data: {creds: [
+        {cred_id: 'abc1', label: 'LAB\\<alice>', password: 'never show'},
+        {cred_id: 'xyz2', label: 'bob'},
+      ]}};
+    };
+    f.type(command + ' -i a');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(requests, [['/creds']]);
+    assert.equal(f.menu.children.length, 1);
+    assert.match(f.menu.children[0].textContent, /LAB\\<alice>/);
+    assert.ok(!f.menu.children[0].textContent.includes('never show'));
+    f.key('Tab');
+    assert.equal(f.input.value, command + ' -i abc1 ');
+  }
+});
+
+test('credential completion ignores remote commands and runas command arguments', () => {
+  const f = fixture();
+  for (const line of ['echo -i a', '/runas -i existing echo -i a', '/creds add user -i a', '/unknown -i a']) {
+    assert.equal(f.context.shellCredentialContext(line), null);
+  }
+});
+
+test('credential completion handles unavailable stores and late responses', async () => {
+  const f = fixture();
+  let finish;
+  f.context.api = () => new Promise(resolve => { finish = resolve; });
+  f.type('/spawnas -i ');
+  f.type('/sc');
+  finish({status: 503, data: {}});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.input.value, '/sc');
+  assert.equal(f.menu.children[0].textContent, '/screenshot');
+});
+
+test('credential registry supports additional command paths and selector flags', () => {
+  const f = fixture();
+  vm.runInContext('CREDENTIAL_ID_COMPLETION_COMMANDS["custom action"] = ["--credential"]', f.context);
+  const result = f.context.shellCredentialContext('/CUSTOM ACTION --credential abc');
+  assert.equal(result.prefix, 'abc');
+  assert.equal(result.base, '/CUSTOM ACTION --credential ');
+  assert.equal(f.context.shellCredentialContext('/SPAWNAS -i abc').prefix, 'abc');
+});
+
+test('credential completion discards cached IDs when the connection changes', async () => {
+  const f = fixture();
+  f.context.api = async () => ({status: 200, data: {creds: [{cred_id: 'old-id'}]}});
+  f.type('/spawnas -i ');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(f.menu.children[0].textContent, /old-id/);
+  f.context.state.connectionGeneration = 1;
+  f.context.api = async () => ({status: 200, data: {creds: [{cred_id: 'new-id'}]}});
+  f.type('/spawnas -i ');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.menu.children.length, 1);
+  assert.match(f.menu.children[0].textContent, /new-id/);
+});
+
+test('an old credential response cannot overwrite a new authentication context', async () => {
+  const f = fixture(), pending = [];
+  f.context.api = () => new Promise(resolve => pending.push(resolve));
+  f.type('/spawnas -i ');
+  f.context.state.authGeneration = 1;
+  f.type('/spawnas -i ');
+  pending[1]({status: 200, data: {creds: [{cred_id: 'current-id'}]}});
+  await new Promise(resolve => setImmediate(resolve));
+  pending[0]({status: 200, data: {creds: [{cred_id: 'previous-id'}]}});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.menu.children.length, 1);
+  assert.match(f.menu.children[0].textContent, /current-id/);
 });

@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-11-20 — Credential ID completion
+
+- CLI and WebUI complete workspace credential IDs after `-i` for identity
+  commands, lateral deployment, and credential deletion.
+- Command registries attach a shared redacted provider; suggestions display
+  identity labels and insert only IDs. Lists are cached in memory for five seconds.
+- WebUI cache entries and pending responses are scoped to the authentication
+  and connection generations so a previous workspace cannot supply suggestions.
+- See [completion](web-shell-completion.md#credential-id-completion) and
+  [CLI extension points](credential-completion-cli.md).
+
 ## 2026-11-20 — Credential display and ID copying
 
 - CLI `creds list`, interactive `/creds`, and WebUI `/creds` now display passwords.

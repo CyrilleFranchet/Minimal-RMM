@@ -205,3 +205,28 @@ fallback. Token type and privilege snapshots are in Response details (JSON).
 `renderSpawnResult` escapes response values and keeps the full API response in
 a collapsed **Response details (JSON)** section for troubleshooting. No additional
 verification command is executed on either session.
+
+## Credential ID completion
+
+In the CLI and WebUI, type `-i` followed by a space after `/make_token`, `/spawnas`, `/runas`,
+`/lateral <method> <host>`, or `/creds del` to select a workspace credential.
+Type an ID prefix to filter; use arrows and Tab or click in the WebUI.
+Suggestions display the identity label but insert only the ID.
+Completion uses the redacted credential listing, with a five-second memory cache;
+failed requests yield no suggestions. No passwords are requested for completion.
+`shellCredentialScope()` binds cached IDs and pending responses to the current
+token, authentication generation, and workspace connection generation. Changing
+that context discards cached IDs and prevents old responses from updating suggestions.
+
+WebUI extension points in `web/app.js`:
+
+- `CREDENTIAL_ID_COMPLETION_COMMANDS` registers command paths and selector flags.
+  Add a command here to attach the existing credential provider.
+- `shellCredentialContext(line)` recognizes a registered command's ID argument
+  and returns its replacement base and typed prefix. Completed `/runas` command
+  arguments and quoted text are excluded.
+- `refreshShellCredentialCompletion()` fetches `/creds`, coalesces concurrent
+  requests, and retains only IDs and identity labels for five seconds. A late
+  response refreshes suggestions for the current input without replacing it.
+
+See [CLI provider details](credential-completion-cli.md) for Python extension points.

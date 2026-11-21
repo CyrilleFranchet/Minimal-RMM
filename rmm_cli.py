@@ -1778,11 +1778,73 @@ def _refresh_completion_sessions(client: "RmmApiClient", state: dict) -> None:
         state.setdefault("_completion_sessions", [])
 
 
+CREDENTIAL_ID_COMPLETION_COMMANDS = {
+    ("make_token",): ("-i",),
+    ("spawnas",): ("-i",),
+    ("runas",): ("-i",),
+    ("lateral",): ("-i",),
+    ("creds", "del"): ("-i",),
+}
+
+
+def credential_completion_prefix(line: str) -> str | None:
+    """Return the credential ID prefix at the cursor for registered commands."""
+    if not line.lstrip().startswith("/"):
+        return None
+    try:
+        words = parse_identity_arguments(line.lstrip()[1:])
+    except ValueError:
+        return None
+    if line.endswith((" ", "\t")):
+        words.append("")
+    for command, flags in CREDENTIAL_ID_COMPLETION_COMMANDS.items():
+        if tuple(word.lower() for word in words[:len(command)]) != command:
+            continue
+        arguments = words[len(command):]
+        # runas command text is arbitrary shell input after the credential ID.
+        if command == ("runas",) and len(arguments) > 2:
+            return None
+        if len(arguments) >= 2 and arguments[-2] in flags and not arguments[-1].startswith("-"):
+            return arguments[-1]
+    return None
+
+
+class CredentialIdCompletionProvider:
+    """Lazily read redacted workspace credentials with a short bounded cache."""
+
+    def __init__(self, client=None):
+        self.client = client
+        self._expires = 0.0
+        self._items = []
+
+    def candidates(self, prefix):
+        if self.client is None:
+            return []
+        now = time.monotonic()
+        if now >= self._expires:
+            self._items = []
+            self._expires = now + 5.0
+            try:
+                code, data = self.client.creds_list(include_passwords=False)
+                if code == 200 and isinstance(data, dict):
+                    for item in data.get("creds", []):
+                        if not isinstance(item, dict):
+                            continue
+                        cred_id = item.get("cred_id")
+                        if isinstance(cred_id, str) and cred_id:
+                            label = item.get("label", "")
+                            self._items.append((cred_id, label if isinstance(label, str) else ""))
+            except (OSError, ValueError, TypeError):
+                pass
+        return [(cred_id, label) for cred_id, label in self._items if cred_id.startswith(prefix)]
+
+
 class RmmCliCompleter:
     """readline tab completion for the interactive operator CLI."""
 
-    def __init__(self, state: dict):
+    def __init__(self, state: dict, client=None):
         self.state = state
+        self.credentials = CredentialIdCompletionProvider(client)
 
     def _session_prefixes(self):
         return self.state.get("_completion_sessions") or []
@@ -1792,6 +1854,10 @@ class RmmCliCompleter:
             return None
         line = readline.get_line_buffer()
         parts = line.split()
+        prefix = credential_completion_prefix(line)
+        if prefix is not None:
+            matches = self.credentials.candidates(prefix)
+            return matches[state_index][0] + " " if state_index < len(matches) else None
 
         if not parts or (len(parts) == 1 and not line.endswith(" ")):
             matches = ["/" + c for c in RMM_CLI_COMMANDS if ("/" + c).startswith(text.lower())] if line.lstrip().startswith("/") else []
@@ -1829,15 +1895,20 @@ class RmmCliCompleter:
 class RmmCliPTKCompleter(_PTCompleterBase):
     """Live completion for slash commands and their supported arguments."""
 
-    def __init__(self, state: dict):
+    def __init__(self, state: dict, client=None):
         super().__init__()
         self.state = state
-        self._words = RmmCliCompleter(state)
+        self._words = RmmCliCompleter(state, client)
 
     def get_completions(self, document, complete_event):
         from prompt_toolkit.completion import Completion
 
         line = document.text_before_cursor
+        prefix = credential_completion_prefix(line)
+        if prefix is not None:
+            for cred_id, label in self._words.credentials.candidates(prefix):
+                yield Completion(cred_id + " ", start_position=-len(prefix), display_meta=label)
+            return
         parts = line.split()
         if not line.lstrip().startswith("/"):
             return
@@ -1976,7 +2047,8 @@ def run_interactive(
 
     ptk_session = PromptSession(
         history=FileHistory(HISTORY_FILE),
-        completer=RmmCliPTKCompleter(state),
+        completer=RmmCliPTKCompleter(state, client),
+        complete_in_thread=True,
         complete_style="COLUMN",
         complete_while_typing=True,
         enable_history_search=False,
