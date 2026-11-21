@@ -486,25 +486,32 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   as an ambient wmiexec — which is the point of running it in the live
   agent. Success of the explicit comparison establishes only that this
   connection succeeded; it does not guarantee later deployments.
-- The optional held mode (`__WMI_PROBE__ <host> held`; the parser accepts
-  exactly that word) runs the COM-lifetime comparison: both connections
-  execute inside one continuous COM initialization on a single locked OS
-  thread — one impersonation held across both sequences, one
-  `CoInitializeEx` and one `CoInitializeSecurity`, then two complete
-  connect sequences with the same instrumentation (fresh locator, connect,
-  token snapshot, blanket observation, class fetch, full proxy release
-  each; stages carry `@1`/`@2` suffixes) and a single `CoUninitialize`
-  teardown at the end. This isolates whether the default mode's
-  per-attempt COM teardown is what turns the first successful connect into
-  a denied second one. A held second connect that succeeds is consistent
-  with the teardown being involved — the verdict says exactly that and
-  points to an isolated-mode run on a fresh agent process plus the target
-  events for corroboration, never to a conclusion. A held second connect
-  that is still denied shows the trigger is not the per-attempt teardown
-  alone. Held mode is ambient-only: no explicit credentials are involved
-  at any point, matching the deployment combination under investigation.
-  The standalone probe binary exposes the same mode through
-  `RMM_WMI_PROBE_MODE=held`.
+- The optional lifecycle modes (`__WMI_PROBE__ <host> held` and
+  `__WMI_PROBE__ <host> cycled`; the parser accepts exactly those words)
+  both run their connections inside one continuous COM initialization on a
+  single locked OS thread: one `CoInitializeEx` and one
+  `CoInitializeSecurity`, two complete instrumented connect sequences
+  (stages suffixed `@1`/`@2`, same token/blanket/HRESULT evidence), and a
+  single `CoUninitialize` teardown at the end. The difference is the
+  impersonation: `held` keeps one impersonation across both connects,
+  while `cycled` reverts and reapplies a fresh duplicate between them —
+  mirroring the default mode's per-attempt identity handling. Held
+  therefore changes two variables at once versus the isolated mode (the
+  COM lifecycle and the impersonation continuity), so its success narrows
+  the suspect set to the two without attributing the failure to
+  `CoUninitialize` specifically; `cycled` separates the variables:
+  both connects succeeding there makes the COM initialization/teardown
+  lifecycle the stronger suspect (impersonation cycling alone does not
+  reproduce the denial), while a denied second connect makes the
+  impersonation cycling — or its interaction with COM/RPC state — the
+  stronger suspect. Verdicts keep the evidence discipline: suspects, never
+  proven causes, with fresh-process reruns and target-event correlation
+  named for corroboration. Both modes are ambient-only; `cycled` requires
+  an active make_token and refuses without one. The standalone probe
+  binary exposes them through `RMM_WMI_PROBE_MODE=held` and
+  `RMM_WMI_PROBE_MODE=cycled`. The target-evidence checklist now includes
+  `RecordId` — Security timestamps have second resolution, so
+  event-to-call assignment without a record ID remains inferred.
 - Loader deployments (`wmiexec_loader`, `winrm_loader`, `winrm_https_loader`,
   `winrm_https_insecure_loader` wire methods) fetch the masked,
   digest-verified agent artifact from the listener's staging endpoint and

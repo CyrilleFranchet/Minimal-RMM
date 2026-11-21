@@ -1,5 +1,44 @@
 # Progress Log
 
+## 2026-11-21 — Lifecycle field results; cycled mode separates COM lifetime from impersonation cycling
+
+- Field results for the lifecycle comparison (`__WMI_PROBE__`): the held
+  lifecycle — one continuous COM initialization with the impersonation
+  held — carried both read-only connects successfully, while the default
+  lifecycle still reproduced the denial, and the correlated target
+  Security events show the default lifecycle's second attempt presenting
+  an account other than the make_token identity (wrong-account
+  authentication followed by the denial). Combined, the evidence is now
+  substantially stronger: the held lifecycle works while the default
+  lifecycle both presents the wrong account and is denied.
+- Evidence caveats recorded with the results: the exported Security CSV has
+  second-resolution timestamps and initially no event record IDs, so exact
+  event-to-call assignment remains inferred (the probe checklist now
+  includes `RecordId` for unambiguous pinning). And the earlier wording
+  that held mode "isolates COM teardown" was too strong: held changes two
+  variables at once versus the default mode — the COM lifecycle and the
+  impersonation continuity — so the failure cannot yet be attributed
+  specifically to `CoUninitialize`.
+- New `cycled` mode (`__WMI_PROBE__ <host> cycled`; `wmiProbeCycled`,
+  `wmiProbeCycledVerdict`): both connections inside one continuous COM
+  initialization, with the impersonation reverted and reapplied from a
+  fresh duplicate between the connects — the default mode's identity
+  handling with the held mode's COM lifetime. Decision rules in the
+  verdict: both connects succeeding makes the per-attempt COM
+  initialization/teardown lifecycle the stronger suspect (impersonation
+  cycling alone does not reproduce the denial); a denied second connect
+  makes the impersonation cycling — or its interaction with COM/RPC
+  state — the stronger suspect. Suspects, never proven causes: each
+  verdict names fresh-process reruns and the target-event checklist for
+  corroboration. Cycled requires an active make_token and refuses without
+  one. Held-mode wording in docs and verdicts was corrected to the
+  two-variables framing, and the held success verdict now points to
+  `cycled` as the separating experiment. The standalone binary exposes
+  both modes through `RMM_WMI_PROBE_MODE`.
+- Regressions: `TestParseWmiProbeCommand` covers both mode words and
+  rejects unknown ones; host suites, rmmdebug, and all Windows build
+  variants pass.
+
 ## 2026-11-20 — Credential ID completion
 
 - CLI and WebUI complete workspace credential IDs after `-i` for identity

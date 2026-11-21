@@ -32,11 +32,11 @@ func parseWmiProbeCommand(command string) (host, mode string, err error) {
 	case 1:
 	case 2:
 		mode = strings.ToLower(fields[1])
-		if mode != "held" {
-			return "", "", errors.New("the only optional wmi probe mode is: held")
+		if mode != "held" && mode != "cycled" {
+			return "", "", errors.New("the optional wmi probe modes are: held, cycled")
 		}
 	default:
-		return "", "", errors.New("usage: __WMI_PROBE__ <host> [held]")
+		return "", "", errors.New("usage: __WMI_PROBE__ <host> [held|cycled]")
 	}
 	host = fields[0]
 	if host == "" || strings.ContainsAny(host, "\\/") {

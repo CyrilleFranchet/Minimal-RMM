@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"strings"
@@ -239,44 +240,57 @@ func wmiProbeVerdict(host string, first, second wmiProbeResult) string {
 	fmt.Fprintf(&out, "  evidence: both pre-connect snapshots carried the same logon ID and SID (authID=0x%016x sid=%s second-level=%s). Consult the before/after snapshots for other changes.",
 		second.Before.authID, second.Before.sid, impersonationLevelLabel(second.Before.impLevel))
 	fmt.Fprintf(&out, " An unchanged identity does not prove the token entirely sound, nor identify which side rejected the second connect.\n")
-	fmt.Fprintf(&out, "  next distinction: target authentication events around %s .. %s (see the checklist below), and the COM-lifetime comparison `__WMI_PROBE__ %s held` on a fresh agent process, which isolates the per-attempt teardown variable.",
-		first.StartUTC, second.EndUTC, host)
+	fmt.Fprintf(&out, "  next distinction: target authentication events around %s .. %s (see the checklist below), plus the lifecycle comparisons on fresh agent processes: `__WMI_PROBE__ %s held` (COM held, impersonation held) and `__WMI_PROBE__ %s cycled` (COM held, impersonation reverted and reapplied between the connections), which separate the COM-lifetime variable from the impersonation-cycling variable.",
+		first.StartUTC, second.EndUTC, host, host)
 	return out.String()
 }
 
 // wmiProbeExecute runs the diagnostic against one host using the active
 // make_token state. The default (isolated) mode runs two ambient probes —
 // deliberately on the cloaked path the deployed wmiexec uses under
-// make_token — and one explicit comparison probe. The held mode runs both
-// connections inside one continuous COM initialization (single
-// CoInitializeEx with no CoUninitialize between the sequences, same OS
-// thread, impersonation held), isolating whether the per-attempt teardown
-// is what triggers the denial. Neither the report nor the verdict names a
-// cause beyond the recorded evidence.
+// make_token — and one explicit comparison probe. The held and cycled
+// modes both run their connections inside one continuous COM
+// initialization (single CoInitializeEx, no CoUninitialize between the
+// sequences, same OS thread); they differ in the impersonation: held
+// keeps one impersonation across both connects, while cycled reverts and
+// reapplies a fresh duplicate between them, mirroring the default mode's
+// per-attempt identity handling. Held therefore changes two variables at
+// once versus the isolated mode, and cycled separates them. Neither the
+// report nor the verdict names a cause beyond the recorded evidence.
 func wmiProbeExecute(host, mode string) (string, error) {
 	if identityBoundaryFault.Load() {
 		return "", errIdentityUnsafe
 	}
-	if mode == "held" {
+	if mode == "held" || mode == "cycled" {
 		token, _, err := captureLateralIdentity(false)
 		if err != nil {
 			return "", err
 		}
 		defer func() { _ = token.Close() }()
 		source := wmiProbeCaptureToken(token)
+		if mode == "cycled" && token == 0 {
+			return "", errors.New("cycled mode requires an active make_token: it exists to cycle one")
+		}
 		var report strings.Builder
-		fmt.Fprintf(&report, "wmi probe host=%s mode=held; process logon LUID=0x%016x;",
-			host, wmiProbeProcessAuthenticationID())
+		fmt.Fprintf(&report, "wmi probe host=%s mode=%s; process logon LUID=0x%016x;",
+			host, mode, wmiProbeProcessAuthenticationID())
 		if token == 0 {
 			report.WriteString(" no make_token active: the held probes authenticate as the agent identity\n")
 		} else {
 			fmt.Fprintf(&report, " source token authID=0x%016x modifiedID=0x%016x sid=%s\n",
 				source.authID, source.modifiedID, source.sid)
 		}
-		held := wmiProbeHeld(host, token, source)
-		fmt.Fprintf(&report, "probe held (one continuous COM initialization, two connect sequences)\n%s", held.report())
-		fmt.Fprintf(&report, "%s\n", wmiProbeHeldVerdict(host, held))
-		fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, held.StartUTC, held.EndUTC))
+		if mode == "held" {
+			held := wmiProbeHeld(host, token, source)
+			fmt.Fprintf(&report, "probe held (one continuous COM initialization, impersonation held across both connects)\n%s", held.report())
+			fmt.Fprintf(&report, "%s\n", wmiProbeHeldVerdict(host, held))
+			fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, held.StartUTC, held.EndUTC))
+		} else {
+			cycled := wmiProbeCycled(host, token, source)
+			fmt.Fprintf(&report, "probe cycled (one continuous COM initialization, impersonation reverted and reapplied between the connects)\n%s", cycled.report())
+			fmt.Fprintf(&report, "%s\n", wmiProbeCycledVerdict(host, cycled))
+			fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, cycled.StartUTC, cycled.EndUTC))
+		}
 		return report.String(), nil
 	}
 	token, credentials, err := captureLateralIdentity(true)
@@ -320,9 +334,11 @@ func wmiProbeExecute(host, mode string) (string, error) {
 // initialization on a single locked OS thread: one impersonation held
 // across both sequences, one CoInitializeEx and CoInitializeSecurity, two
 // complete connect sequences (fresh locator, connect, blanket observation,
-// class fetch, full proxy release each), and one teardown at the end. This
-// isolates whether the isolated mode's per-attempt COM teardown is what
-// turns the first successful connect into a denied second one.
+// class fetch, full proxy release each), and one teardown at the end.
+// Versus the isolated mode this changes two variables at once — the COM
+// lifecycle and the impersonation continuity — so a held second connect
+// that succeeds narrows the suspect set to those two without singling one
+// out; the cycled mode separates them.
 func wmiProbeHeld(host string, token syscall.Token, source wmiProbeToken) (result wmiProbeResult) {
 	result = wmiProbeResult{StartUTC: wmiProbeTimestamp()}
 	pid, _, _ := procProbeGetCurrentProcessId.Call()
@@ -421,13 +437,159 @@ func wmiProbeHeldVerdict(host string, held wmiProbeResult) string {
 			held.ConnectHR)
 	case held.SecondConnectHR == 0:
 		return fmt.Sprintf("verdict: second connect succeeded within one continuous COM initialization (first held connect also 0x%08x)."+
-			" Consistent with the per-attempt COM teardown/re-initialization being involved in the isolated mode's denial; it is not proof — corroborate with the isolated mode on a fresh agent process and the target events checklist.",
-			held.ConnectHR)
+			" Held mode changes two variables at once versus the isolated mode — the COM lifecycle and the impersonation continuity — so this success narrows the suspects to the two without singling one out (it does not by itself attribute the failure to CoUninitialize)."+
+			" Run `__WMI_PROBE__ %s cycled` on a fresh agent process (COM held, impersonation reverted and reapplied) to separate them, and correlate the target events checklist.",
+			held.ConnectHR, host)
 	}
 	return fmt.Sprintf("verdict: second connect denied even within one continuous COM initialization (0x%08x)."+
-		" The denial trigger is not the per-attempt teardown alone: state from earlier connections in this process or a target-side rejection remain candidates."+
+		" The denial trigger is neither the per-attempt COM teardown nor the impersonation cycling alone: state from earlier connections in this process or a target-side rejection remain candidates."+
 		" Correlate the target events below and, ideally, run both modes on fresh agent processes before attributing a cause.",
 		held.SecondConnectHR)
+}
+
+// wmiProbeCycled runs the discriminating comparison between the held and
+// isolated lifecycles: both connections execute inside one continuous COM
+// initialization (single CoInitializeEx, no CoUninitialize between them,
+// same OS thread), but the impersonation is reverted and reapplied from a
+// fresh duplicate between the two connects — mirroring the identity
+// handling the default mode performs per attempt, while the COM lifetime
+// matches the held mode. If both connects succeed here, the impersonation
+// cycling alone does not explain the isolated mode's denial and the COM
+// lifecycle becomes the stronger suspect; a denied second connect makes
+// the impersonation cycling — or its interaction with COM/RPC state — the
+// stronger suspect. Cycled mode requires an active make_token.
+func wmiProbeCycled(host string, token syscall.Token, source wmiProbeToken) (result wmiProbeResult) {
+	result = wmiProbeResult{StartUTC: wmiProbeTimestamp()}
+	pid, _, _ := procProbeGetCurrentProcessId.Call()
+	result.PID = uint32(pid)
+	defer func() { result.EndUTC = wmiProbeTimestamp() }()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	tid, _, _ := procProbeGetCurrentThreadId.Call()
+	result.TID = uint32(tid)
+	var duplicate syscall.Handle
+	process := syscall.Handle(^uintptr(0))
+	if err := syscall.DuplicateHandle(process, syscall.Handle(token), process, &duplicate, 0, false, 2); err != nil {
+		result.Err = fmt.Errorf("duplicate the network-only token: %w", err)
+		result.stageNotRun("impersonate", err.Error())
+		result.markRemainingNotRun("impersonation setup", "@1")
+		result.markRemainingNotRun("impersonation setup", "@2")
+		return result
+	}
+	defer syscall.CloseHandle(duplicate)
+	start := time.Now()
+	ok, _, impErr := procImpersonateLoggedOnUser.Call(uintptr(duplicate))
+	if ok == 0 {
+		result.stageInfo("impersonate", time.Since(start), fmt.Sprintf("ImpersonateLoggedOnUser failed: %v", impErr))
+		result.Err = fmt.Errorf("impersonate the network-only token: %w", impErr)
+		result.markRemainingNotRun("impersonation setup", "@1")
+		result.markRemainingNotRun("impersonation setup", "@2")
+		return result
+	}
+	result.stageInfo("impersonate", time.Since(start), "ImpersonateLoggedOnUser ok (first cycle)")
+	defer func() {
+		start := time.Now()
+		ok, _, err := procRevertToSelf.Call()
+		if ok == 0 {
+			result.stageInfo("cleanup", time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", err))
+			result.Err = fmt.Errorf("revert cycled probe identity: %w", err)
+		} else {
+			result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok")
+		}
+	}()
+	start = time.Now()
+	result.Before = wmiProbeCaptureThreadToken()
+	result.stageInfo("token-before", time.Since(start), result.Before.identityDetail(source))
+	start = time.Now()
+	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
+	label := "initialization failed"
+	if hr == 0 {
+		label = "S_OK new-MA-on-thread, held across the impersonation cycle"
+	} else if hr == 1 {
+		label = "S_FALSE thread-already-in-COM, held across the impersonation cycle"
+	}
+	result.stageHR("co-init", hr, time.Since(start), label)
+	if hr != 0 && hr != 1 {
+		result.Err = fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
+		result.markRemainingNotRun("co-init", "@1")
+		result.markRemainingNotRun("co-init", "@2")
+		return result
+	}
+	defer func() {
+		start := time.Now()
+		procCoUninitialize.Call()
+		result.stageInfo("co-uninit", time.Since(start), "single teardown after cycled initialization")
+	}()
+	start = time.Now()
+	initErr := initializeWMISecurity()
+	result.stageInfo("com-security", time.Since(start), wmiSecurityInitReport())
+	if initErr != nil {
+		result.Err = initErr
+		result.markRemainingNotRun("com-security blocked the chain", "@1")
+		result.markRemainingNotRun("com-security blocked the chain", "@2")
+		return result
+	}
+	result.ConnectHR = result.connectSequence(host, nil, "@1")
+	// The cycle: mirror the default mode's per-attempt identity handling —
+	// revert, then reapply a fresh duplicate — while the COM apartment and
+	// its process-wide security stay initialized.
+	start = time.Now()
+	ok, _, revertErr := procRevertToSelf.Call()
+	if ok == 0 {
+		result.stageInfo("revert", time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", revertErr))
+		result.Err = fmt.Errorf("revert between probe connections: %w", revertErr)
+		result.markRemainingNotRun("identity revert failed", "@2")
+		return result
+	} else {
+		result.stageInfo("revert", time.Since(start), "RevertToSelf ok (between the connects)")
+	}
+	start = time.Now()
+	reverted := wmiProbeCaptureThreadToken()
+	result.stageInfo("token-reverted", time.Since(start), reverted.identityDetail(result.Before))
+	var nextDuplicate syscall.Handle
+	if err := syscall.DuplicateHandle(process, syscall.Handle(token), process, &nextDuplicate, 0, false, 2); err != nil {
+		result.Err = fmt.Errorf("duplicate the network-only token for the second cycle: %w", err)
+		result.stageNotRun("reimpersonate", err.Error())
+		result.markRemainingNotRun("reimpersonation setup", "@2")
+		return result
+	}
+	defer syscall.CloseHandle(nextDuplicate)
+	start = time.Now()
+	ok, _, reimpErr := procImpersonateLoggedOnUser.Call(uintptr(nextDuplicate))
+	if ok == 0 {
+		result.stageInfo("reimpersonate", time.Since(start), fmt.Sprintf("ImpersonateLoggedOnUser failed: %v", reimpErr))
+		result.Err = fmt.Errorf("reapply the network-only token: %w", reimpErr)
+		result.markRemainingNotRun("reimpersonation setup", "@2")
+		return result
+	}
+	result.stageInfo("reimpersonate", time.Since(start), "ImpersonateLoggedOnUser ok (fresh duplicate, second cycle)")
+	start = time.Now()
+	reapplied := wmiProbeCaptureThreadToken()
+	result.stageInfo("token-reapplied", time.Since(start), reapplied.identityDetail(source))
+	result.SecondConnectHR = result.connectSequence(host, nil, "@2")
+	return result
+}
+
+// wmiProbeCycledVerdict interprets the cycled run under the decision rules
+// the comparison was designed for, keeping the evidence discipline: COM
+// lifecycle and impersonation cycling come out as stronger or weaker
+// suspects, never as proven causes, and the target-event correlation keeps
+// its inferred-assignment caveat.
+func wmiProbeCycledVerdict(host string, cycled wmiProbeResult) string {
+	switch {
+	case cycled.Err != nil:
+		return fmt.Sprintf("verdict inconclusive: cycled-mode machinery failed (%v)", cycled.Err)
+	case cycled.ConnectHR != 0:
+		return fmt.Sprintf("verdict inconclusive: the first cycled connect did not succeed (connect=0x%08x); fix the probe environment before reading the comparison",
+			cycled.ConnectHR)
+	case cycled.SecondConnectHR == 0:
+		return fmt.Sprintf("verdict: second connect succeeded with COM held and the impersonation reverted/reapplied between the connects (first connect 0x%08x)."+
+			" Impersonation cycling alone does not reproduce the isolated mode's denial here, so the per-attempt COM initialization/teardown lifecycle becomes the stronger suspect — attribution remains inferred, not proven: corroborate with the target events checklist and re-run the compared modes on fresh agent processes.",
+			cycled.ConnectHR)
+	}
+	return fmt.Sprintf("verdict: second connect denied with COM held and the impersonation reverted/reapplied between the connects (0x%08x)."+
+		" The impersonation cycling — or its interaction with COM/RPC state — becomes the stronger suspect; the COM lifecycle alone cannot explain this denial. Attribution remains inferred, not proven: correlate the target events below.",
+		cycled.SecondConnectHR)
 }
 
 // wmiProbeChecklist prints the target-side correlation guidance, keyed to
@@ -440,10 +602,11 @@ func wmiProbeChecklist(host, startUTC, endUTC string) string {
 	return "target evidence (collect on " + host + ", local time applies to Security events):\n" +
 		"  Get-WinEvent -FilterHashtable @{LogName='Security'; Id=@(4624,4625)} -MaxEvents 400 |\n" +
 		"    Where-Object { $_.TimeCreated -gt (Get-Date).AddHours(-3) } |\n" +
-		"    Select-Object TimeCreated, Id, Message | Format-List\n" +
+		"    Select-Object TimeCreated, Id, RecordId, Message | Format-List\n" +
 		"  probes ran between " + startUTC + " and " + endUTC + " UTC; match on this agent host's source address.\n" +
-		"  record per attempt: account and domain, authentication package, logon type, source address;\n" +
-		"  on 4625 additionally the Status and SubStatus codes.\n" +
+		"  record per attempt (RecordId pins each event unambiguously): account and domain, authentication package,\n" +
+		"  logon type, source address; on 4625 additionally the Status and SubStatus codes.\n" +
+		"  caveat: Security timestamps have second resolution, so event-to-call assignment without RecordId is inferred.\n" +
 		"  reading: a different account on attempt two means the client presented another identity;\n" +
 		"  the same account with 4625 means an authentication or authorization rejection;\n" +
 		"  a missing event does not by itself prove the attempt never left the client."
