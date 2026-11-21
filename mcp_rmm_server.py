@@ -105,6 +105,7 @@ from rmm_tools import (
     tool_rev2self,
     tool_lateral_move,
     tool_session_uid,
+    tool_session_whoami,
     tool_start_socks,
     tool_start_tun,
     tool_stop_persistent,
@@ -629,6 +630,13 @@ def lateral_move(
 def session_uid(session_ref: str, timeout: float = 120) -> str:
     """Show the identity a Go agent runs under, plus any active make_token network identity."""
     return tool_session_uid(_client(), session_ref, timeout=timeout)
+
+
+@mcp.tool()
+@_offload_tool
+def session_whoami(session_ref: str, timeout: float = 120, tickets: bool = False) -> str:
+    """Read Windows process, tokens, groups, privileges, and logon metadata; optionally ticket metadata."""
+    return tool_session_whoami(_client(), session_ref, timeout=timeout, tickets=tickets)
 
 
 # ── Credential store (workspace-scoped, passwords never logged or returned) ───

@@ -11,7 +11,7 @@ const SHELL_HISTORY_MAX = 100;
 const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
-const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "spawnas", "runas", "creds", "make_token", "rev2self", "lateral", "uid", "embeddings", "bloodhound"];
+const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "spawnas", "runas", "creds", "make_token", "rev2self", "lateral", "uid", "whoami", "embeddings", "bloodhound"];
 
 const BLOODHOUND_ACTIONS = ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "auth", "reset_ce", "library_search", "library_get"];
 window.rmmBloodHoundActions = BLOODHOUND_ACTIONS;
@@ -3261,6 +3261,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt; | /creds purge   Manage workspace credentials
   /make_token -i &lt;cred_id&gt; | /make_token &lt;DOMAIN\\user | user&gt; &lt;password&gt;   Create a runas /netonly style network identity
   /rev2self                        Revert to the agent's own network identity
+  /whoami [--tickets]              Report process, tokens, privileges, and logon session
   /uid                             Show the identity used by the selected Go agent
   /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered] [-i &lt;cred_id&gt; | -u &lt;identity&gt; [-p &lt;password&gt;]]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved); -i/-u forces the deployment identity for wmiexec/winrm (explicit credentials beat an active make_token and work from in-memory sources)
                                    -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
@@ -3555,6 +3556,32 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       pollSessionEvents().catch(() => {});
     } catch (error) {
       if (target.isCurrent()) showError(error.message || "Lateral request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "whoami") {
+    if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--tickets")) {
+      showError("Usage: /whoami [--tickets]");
+      return true;
+    }
+    if (!target.sessionId) {
+      showError("Select a Go agent session first.");
+      return true;
+    }
+    echoCommand();
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/whoami`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tickets: rest.length === 1 }),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) {
+        showError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      pollSessionEvents().catch(() => {});
+    } catch (error) {
+      if (target.isCurrent()) showError(error.message || "whoami request failed.");
     }
     return true;
   }

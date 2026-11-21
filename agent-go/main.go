@@ -566,6 +566,16 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 		}
 		return result, "output"
 	}
+	if trimmed == "__WHOAMI__" || trimmed == "__WHOAMI__ --tickets" {
+		result, err := whoamiAction(strings.HasSuffix(trimmed, " --tickets"))
+		if err != nil {
+			return "Whoami failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if strings.HasPrefix(trimmed, "__WHOAMI__") {
+		return "Whoami failed: usage: __WHOAMI__ [--tickets]", "output"
+	}
 	if trimmed == "__UID__" {
 		result, err := uidAction()
 		if err != nil {

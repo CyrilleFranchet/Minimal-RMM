@@ -58,7 +58,7 @@ profile or execution semantics when a session is reloaded.
 
 - Session command history (most recent first in candidate list)
 - Static agent dispatch prefixes: `cmd:`, `PS:`, `powershell:`, `pwsh:`; Tab completion inserts the trailing space
-- Slash command suggestions: `/help`, `/?`, `/exfil`, `/download`, `/screenshot`, `/pe`, `/spawn`, `/make_token`, `/rev2self`, `/lateral`, `/uid`, `/embeddings`, `/bloodhound`, `/creds`, `/spawnas`, `/runas`
+- Slash command suggestions: `/help`, `/?`, `/exfil`, `/download`, `/screenshot`, `/pe`, `/spawn`, `/make_token`, `/rev2self`, `/lateral`, `/uid`, `/whoami`, `/embeddings`, `/bloodhound`, `/creds`, `/spawnas`, `/runas`
 
 Agent-side path completion is out of scope (tech plan §4 v2).
 
@@ -79,6 +79,7 @@ These commands are handled in the browser instead of being sent to the agent she
 | `/make_token <domain\user \| user> <password>` | `POST …/make_token` | Creates a `runas /netonly` style network identity on the selected Go session; identity and password are passed as parameters |
 | `/rev2self` | `POST …/rev2self` | Reverts the selected Go session to its own network identity |
 | `/uid` | `POST …/uid` | Shows the identity used by the selected Go agent (process user + active network identity) |
+| `/whoami [--tickets]` | `POST …/whoami` | Reports process/thread tokens, privileges and logon metadata; optionally Kerberos ticket metadata |
 | `/lateral <psexec\|wmiexec\|winrm> <host>` | `POST …/lateral` | Starts a Go agent on another host through the requested method; the request confirms registration without extra probe commands (see `docs/go-agent.md`) |
 | `/bloodhound ACTION [--run-id ID] [--options-json JSON]` | `POST /api/v1/bloodhound` | All workflow/library actions run at the workspace owner; quote JSON with single quotes. Use `result` for relay responses and `status` for collection/import progress. Invalid syntax never reaches the agent. |
 | `/creds <add \| del \| list \| purge> [arguments]` | `GET/POST/DELETE …/creds` | Manage workspace credentials; `del -i <cred_id>` removes one entry; `purge` removes all entries in the authenticated workspace |

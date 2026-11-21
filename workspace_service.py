@@ -1855,7 +1855,7 @@ def operator_proxy_timeout(path: str, body: dict | None) -> float:
         if options.get("verify", True):
             wait += seconds("register_timeout", 60) + 2 * seconds("verify_timeout", 120)
         return wait + 30
-    if re.fullmatch(r"/api/v1/sessions/[^/]+/(make_token|rev2self|uid)", path):
+    if re.fullmatch(r"/api/v1/sessions/[^/]+/(make_token|rev2self|uid|whoami)", path):
         return seconds("timeout", 120) + 30
     if path.endswith("/exec") or path.endswith("/ai/chat") or path == "/api/v1/agent/go/build":
         return 300

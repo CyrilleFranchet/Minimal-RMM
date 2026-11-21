@@ -58,6 +58,15 @@ jobs:
         run: |
           go test -buildvcs=false -count=1 -v `
             -run '^TestWindowsCMDQuotedCommands$' .
+      - name: Test read-only process and token reports
+        working-directory: agent-go
+        shell: pwsh
+        run: |
+          go test -buildvcs=false -count=1 -v -run '^TestWhoami' .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -buildvcs=false -count=1 -v -tags=rmmdebug `
+            -run '^TestWhoami' .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: amd64

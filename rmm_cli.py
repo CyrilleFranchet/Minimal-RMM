@@ -80,6 +80,7 @@ RMM_CLI_COMMANDS = [
     "rev2self",
     "lateral",
     "uid",
+    "whoami",
     "persist",
     "stop",
     "run",
@@ -297,6 +298,13 @@ class RmmApiClient:
             f"/api/v1/sessions/{session_id}/uid",
             {"timeout": timeout},
             timeout=timeout + 5,
+        )
+
+    def session_whoami(self, session_id: str, timeout: float = 120, tickets: bool = False):
+        """Query process, tokens, privileges, and logon metadata on a Go agent."""
+        return self.request(
+            "POST", f"/api/v1/sessions/{session_id}/whoami",
+            {"timeout": timeout, "tickets": tickets}, timeout=timeout + 5,
         )
 
     # ── Credential store (workspace-scoped) ───────────────────────────────────
@@ -1330,6 +1338,23 @@ def cmd_uid(client: RmmApiClient, state: dict, args):
     print(data.get("output") or "")
 
 
+def cmd_whoami(client: RmmApiClient, state: dict, args):
+    """Print a detailed Windows identity report."""
+    sid = require_session(state, args.session)
+    code, data = client.session_whoami(sid, timeout=args.timeout, tickets=args.tickets)
+    if args.json:
+        print_json(data)
+        if code != 200 or not data.get("ok", False):
+            raise SystemExit(1)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"whoami failed ({code}): {detail}", 1)
+    print(data.get("output") or "")
+    if not data.get("ok", False):
+        raise SystemExit(1)
+
+
 def cmd_config_set_sleep(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
     code, data = client.patch_config(sid, sleep_seconds=args.seconds)
@@ -1749,7 +1774,7 @@ Spawn:    /spawn [id]   (same identity; children inherit the source build mode)
           /spawnas -i <cred_id>   (different identity; children inherit the source build mode)
           /runas -i <cred_id> <command>   (run command under different identity)
 Creds:    /creds list | /creds add <domain\\user | user> <password> | /creds del -i <cred_id> | /creds purge
-Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid
+Identity: /make_token -i <cred_id> | /make_token <domain\\user | user> <password>  (runas /netonly style) | /rev2self | /uid | /whoami [--tickets]
 Lateral:  /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered] [-i <cred_id> | -u <identity> [-p <password>]]   (HTTPS/5986 for winrm only; wmiexec/winrm deploy in memory via the csharp loader; winrm is independent by default — --tethered keeps the deployment alive only as long as the source holds its shell; powershell is reserved; -i/-u forces the deployment identity for wmiexec/winrm — explicit credentials beat an active make_token and work from in-memory sources)
           -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
 Files:    /download <remote> | /exfil <remote> [profile] | /upload <local> <remote> | /screenshot
@@ -2494,6 +2519,23 @@ def run_interactive(
                             warn("Lateral registration was not confirmed.")
                     _refresh_completion_sessions(client, state)
                 continue
+            if cmd == "whoami":
+                options = line.split()[1:]
+                if options not in ([], ["--tickets"]):
+                    warn("Usage: /whoami [--tickets]")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                code, data = client.session_whoami(sid, tickets=bool(options))
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"whoami failed ({code}): {detail}")
+                else:
+                    for output_line in (data.get("output") or "").splitlines() or ["(no output)"]:
+                        say(output_line)
+                continue
             if cmd == "uid":
                 sid = session_or_none(state)
                 if not sid:
@@ -3160,6 +3202,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp_uid.add_argument("--session", "-s", default=None)
     sp_uid.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
     sp_uid.set_defaults(func=cmd_uid)
+
+    sp_whoami = sub.add_parser("whoami", parents=[shared], help="Report Windows process, tokens, privileges, and logon session")
+    sp_whoami.add_argument("--session", "-s", default=None)
+    sp_whoami.add_argument("--timeout", type=float, default=120)
+    sp_whoami.add_argument("--tickets", action="store_true", help="Include Kerberos ticket metadata")
+    sp_whoami.set_defaults(func=cmd_whoami)
 
     sp_cfg = sub.add_parser("config", help="Beacon configuration")
     sp_cfg_sub = sp_cfg.add_subparsers(dest="config_cmd", required=True)

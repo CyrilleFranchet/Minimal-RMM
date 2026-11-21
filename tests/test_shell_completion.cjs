@@ -46,10 +46,11 @@ function fixture() {
 }
 test('slash immediately displays commands; typing and backspacing filter live', () => {
   const f = fixture(); f.type('/');
-  assert.equal(f.menu.children.length, 16); assert.equal(f.input.attrs['aria-expanded'], 'true');
+  assert.equal(f.menu.children.length, 17); assert.equal(f.input.attrs['aria-expanded'], 'true');
+  assert.ok(f.menu.children.some(x => x.textContent === '/whoami'));
   f.type('/s'); assert.deepEqual(f.menu.children.map(x => x.textContent), ['/screenshot', '/spawn', '/spawnas']);
   f.type('/sc'); assert.equal(f.menu.children.length, 1);
-  f.type('/'); assert.equal(f.menu.children.length, 16);
+  f.type('/'); assert.equal(f.menu.children.length, 17);
   f.type('/unknown'); assert.equal(f.input.attrs['aria-expanded'], 'false');
   f.type('who'); assert.equal(f.input.attrs['aria-expanded'], 'false');
 });

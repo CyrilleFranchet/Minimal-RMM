@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-11-21 — Detailed read-only identity report
+
+- Added `/whoami [--tickets]` for Go Windows agents alongside the existing
+  compact `/uid`. The report distinguishes process and actual thread tokens,
+  privilege presence and activation, and associated logon-session metadata.
+- REST, CLI, WebUI, and MCP expose the same optional ticket-metadata query.
+  Ticket bytes and credential extraction are outside this command.
+- See [collector details](whoami.md) and [operator surfaces](whoami-surfaces.md).
+- Host regression checks and Windows cross-compilation are local validation;
+  native Windows execution is covered by the Windows identity CI workflow and
+  still requires a Windows run to verify runtime API behavior.
+- Validation: identity Python/API tests, executable WebUI whoami tests, operator
+  parity, host Go suites, and Windows test cross-compilation pass. The complete
+  `make check` passed on the review rerun; subsequent CLI/API fixes also passed
+  targeted regression suites.
+- Review fixed a potential Windows panic from one-byte `TokenHasRestrictions`
+  results, added bounded token-buffer retries and native buffer validation, and
+  retained native query errors. CLI report failures now exit nonzero in text and
+  JSON modes. API validation rejects non-object bodies and boolean timeouts.
+
 ## 2026-11-21 — Lifecycle field results; cycled mode separates COM lifetime from impersonation cycling
 
 - Field results for the lifecycle comparison (`__WMI_PROBE__`): the held

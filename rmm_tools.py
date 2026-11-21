@@ -907,6 +907,22 @@ def tool_session_uid(client: RmmApiClient, session_ref: str, timeout: float = 12
     return _json_result({"ok": True, "session_id": sid, "output": data.get("output")})
 
 
+def tool_session_whoami(client: RmmApiClient, session_ref: str, timeout: float = 120, tickets: bool = False) -> str:
+    """Read a Windows identity report, optionally including ticket metadata."""
+    if not isinstance(tickets, bool):
+        return _json_result({"ok": False, "error": "tickets must be a boolean"})
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    code, data = client.session_whoami(sid, timeout=timeout, tickets=tickets)
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid,
+                             "command": "__WHOAMI__ --tickets" if tickets else "__WHOAMI__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    return _json_result({"ok": bool(data.get("ok", True)), "session_id": sid, "output": data.get("output")})
+
+
 # ── Credential store tools ────────────────────────────────────────────────────
 
 def tool_creds_add(client: RmmApiClient, domain: str = "", user: str = "", password: str = "") -> str:
@@ -1169,6 +1185,9 @@ TOOL_HANDLERS = {
         float(a.get("verify_timeout", 120)),
         a.get("https", False),
         a.get("insecure", False),
+    ),
+    "session_whoami": lambda c, a: tool_session_whoami(
+        c, a["session_ref"], float(a.get("timeout", 120)), a.get("tickets", False),
     ),
     "session_uid": lambda c, a: tool_session_uid(
         c,
@@ -1983,6 +2002,22 @@ OPENAI_TOOLS: list[dict] = [
                     "identity_password": {"type": "string", "description": "Plaintext password for a direct forced identity; never echo it back"},
                 },
                 "required": ["session_ref", "method", "host"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "session_whoami",
+            "description": "Read Windows Go agent process, process/thread tokens, groups, privileges, and associated logon session. Optional Kerberos ticket metadata only; does not change identity or privileges.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "timeout": {"type": "number", "default": 120},
+                    "tickets": {"type": "boolean", "default": False},
+                },
+                "required": ["session_ref"],
             },
         },
     },

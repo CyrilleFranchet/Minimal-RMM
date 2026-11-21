@@ -130,6 +130,7 @@ MAKE_TOKEN_OK_PREFIXES = ("token created:", "token replaced:")
 # is running. __UID__ reports the process and network identities.
 LATERAL_COMMAND = "__LATERAL__"
 UID_COMMAND = "__UID__"
+WHOAMI_COMMAND = "__WHOAMI__"
 LATERAL_METHODS = frozenset({"psexec", "wmiexec", "winrm"})
 # Single-loader release: csharp deploys in memory; powershell stays a
 # reserved value on every surface so a later release ships without an API
@@ -3612,6 +3613,24 @@ class RMMServer:
         body = str((event or {}).get("body") or "").strip()
         return {"ok": True, "session_id": session.id, "output": body}, "ok"
 
+    def session_whoami(self, session_id_or_prefix, timeout=120.0, tickets=False):
+        """Read the Go agent's process, token, and associated logon metadata."""
+        if type(tickets) is not bool:
+            return None, "invalid_whoami_options"
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        command = WHOAMI_COMMAND + (" --tickets" if tickets else "")
+        self.record_operator_action(session, command, "whoami")
+        event, status = self.exec_and_wait(session.id, command, timeout=timeout)
+        if status != "ok":
+            return None, status
+        output = str((event or {}).get("body") or "").strip()
+        ok = bool(output) and not output.startswith("Whoami failed:")
+        return {"ok": ok, "session_id": session.id, "output": output}, "ok"
+
     def get_events(self, session_id_or_prefix, since_id=0, limit=50):
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -5771,6 +5790,33 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(503, {"error": status})
             elif status == "timeout":
                 self._json(408, {"error": status, "command": LATERAL_COMMAND})
+            else:
+                self._json(200, result)
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "whoami":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            try:
+                if not isinstance(body, dict) or isinstance(body.get("timeout"), bool):
+                    raise ValueError("invalid whoami options")
+                timeout = float(body.get("timeout", 120))
+                tickets = body.get("tickets", False)
+                if (not 1 <= timeout <= 3600 or type(tickets) is not bool
+                        or set(body) - {"timeout", "tickets"}):
+                    raise ValueError("invalid whoami options")
+            except (TypeError, ValueError, OverflowError):
+                self._json(400, {"error": "invalid_whoami_options"})
+                return True
+            result, status = srv.session_whoami(session.id, timeout=timeout, tickets=tickets)
+            errors = {"not_found": 404, "agent_type_unsupported": 409,
+                      "session_busy": 409, "session_killed": 410,
+                      "server_stopped": 503, "timeout": 408,
+                      "invalid_whoami_options": 400}
+            if status != "ok":
+                self._json(errors.get(status, 502), {"error": status, "command": WHOAMI_COMMAND})
             else:
                 self._json(200, result)
             return True

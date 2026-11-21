@@ -61,6 +61,7 @@ historical notes in `progress.md`.
 | Supported service launcher | [Server startup](server-startup.md) |
 | RMM-Profile volume and Cloudflared Quick/named tunnels | [RMM-Profiles](rmm-profiles.md) |
 | Go agent generation, targets, and runtime settings | [Go agent](go-agent.md) |
+| Inspect process identity, tokens, privileges, and logon sessions | [Whoami report](whoami.md) and [operator surfaces](whoami-surfaces.md) |
 | Transfer and launch through WinRM without SMB | [WinRM-only transfer](winrm-transfer.md) |
 | Build the main agent with inherited diagnostics and investigate cleanup | [Agent debug tracing](agent-debug.md) |
 | PowerShell agent generation | [PowerShell agent generator](web-agent-generator.md) |
