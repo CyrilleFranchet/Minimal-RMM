@@ -54,6 +54,34 @@ test('slash immediately displays commands; typing and backspacing filter live', 
   f.type('/unknown'); assert.equal(f.input.attrs['aria-expanded'], 'false');
   f.type('who'); assert.equal(f.input.attrs['aria-expanded'], 'false');
 });
+test('history crosses slash commands without opening a menu and restores the draft', () => {
+  const f = fixture();
+  vm.runInContext(source.slice(source.indexOf('function resetShellHistoryNav('),
+    source.indexOf('function longestCommonPrefix(')), f.context);
+  f.context.getShellHistoryList = () => ['older command', '/screenshot', '/whoami', 'newer command'];
+  f.context.resetShellHistoryNav();
+  f.type('unfinished draft');
+  for (const expected of ['newer command', '/whoami', '/screenshot', 'older command', 'older command']) {
+    assert.equal(f.key('ArrowUp'), true);
+    assert.equal(f.input.value, expected);
+    assert.equal(f.input.attrs['aria-expanded'], 'false');
+    // A focus or asynchronous credential refresh must not reopen the menu.
+    f.context.updateShellCompletionHint();
+    assert.equal(f.input.attrs['aria-expanded'], 'false');
+  }
+  for (const expected of ['/screenshot', '/whoami', 'newer command', 'unfinished draft']) {
+    f.key('ArrowDown');
+    assert.equal(f.input.value, expected);
+    assert.equal(f.input.attrs['aria-expanded'], 'false');
+  }
+  f.key('ArrowUp');
+  f.key('ArrowUp');
+  f.type('/s');
+  assert.equal(f.input.attrs['aria-expanded'], 'true');
+  f.key('ArrowDown');
+  assert.equal(f.input.value, '/s');
+  assert.equal(f.input.attrs['aria-activedescendant'], 'shell-command-option-1');
+});
 test('arrows select, Tab inserts, Escape dismisses until edited, click inserts', () => {
   const f = fixture(); f.type('/'); f.key('ArrowDown');
   assert.equal(f.input.attrs['aria-activedescendant'], 'shell-command-option-1');

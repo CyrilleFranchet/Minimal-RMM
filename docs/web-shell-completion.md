@@ -20,6 +20,10 @@ use `/exec <command>` for execution with a wait in the CLI.
 
 The slash menu lists matching internal commands. Ordinary shell input retains its history completion hint.
 
+`navigateShellHistory()` keeps the suggestion menu dismissed while recalling
+commands or restoring the draft, so Up/Down continue through history even across
+slash commands. Editing the input enables suggestions again.
+
 Invalid commands appear in the selected session's transcript before their error
 message. This includes unknown slash commands, malformed quoting, missing
 arguments, and rejected requests. Input rejected during validation uses a plain

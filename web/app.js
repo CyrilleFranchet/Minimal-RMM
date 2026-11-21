@@ -2125,6 +2125,8 @@ function navigateShellHistory(direction) {
     const idx = shellHistoryRelativeIndex(nav.index, list.length);
     input.value = list[idx] ?? "";
   }
+  // Recalled commands must not let completion capture subsequent history arrows.
+  shellCommandMenu.dismissed = true;
   updateShellCompletionHint();
   return true;
 }

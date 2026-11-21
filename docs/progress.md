@@ -13,6 +13,13 @@
   kill broadcasts asynchronous, and preserved accepted-kill feedback when list
   refreshes fail. Added cleanup-failure and delayed-listener-start coverage.
 
+## 2026-11-21 — WebUI command history navigation
+
+- Recalled slash commands no longer open the completion menu and capture the
+  next history arrow. Editing the input enables suggestions again.
+- Added regression coverage for consecutive slash entries, history boundaries,
+  draft restoration, hint refreshes, and suggestion navigation after editing.
+
 ## 2026-11-21 — Credential dialog refresh failure recovery
 
 - Confirmed adds, edits, and deletions retain their success message when the
