@@ -42,11 +42,11 @@ validation. The following execution methods are examples, not a ranked checklist
 Authentication material (password, hash, or ticket) is separate from the
 execution method; possession alone establishes neither permission nor access.
 Agent-side WMI execution selects NTLM for IP literals and Kerberos for DNS
-names. An active make_token stays the ambient (cloaked) WMI identity: only
-the first same-process WMI connection under it is reliable, and repeated
-in-process ones fail at the connect with `0x80070005` — for repeated WMI
-deployments pass the forced identity (`-i` / `-u -p`) instead of relying on
-make_token.
+names. An active make_token stays the ambient (cloaked) WMI identity: the
+deployment chain runs on a dedicated process-lifetime WMI COM thread with
+a held initialization and per-operation impersonation, so repeated WMI
+deployments under one make_token are reliable; the forced identity
+(`-i` / `-u -p`) remains the other route.
 With make_token, WinRM selects Negotiate for IP literals and Kerberos
 for DNS names. Without make_token, WinRM uses process-default credentials
 and Windows negotiation; make_token is optional.

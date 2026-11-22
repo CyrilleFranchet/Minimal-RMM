@@ -1,5 +1,82 @@
 # Progress Log
 
+## 2026-11-23 — Worker review fixes: cleanup failure fails the operation, bounded marshal wait, regression coverage
+
+- Review of the backport (three findings, all corrected):
+  1. The chain's deferred cleanup raised the identity-boundary fault but
+     discarded its error, so reversion or verification failure could still
+     return nil. `wmiCreateProcessChain` now returns a named error and the
+     deferred cleanup joins its failure into it — a cleanup failure always
+     fails the operation, never reports success.
+  2. The adapted CI test only covered loopback process-identity calls. Two
+     regressions added: `TestWMICreateProcessWorkerAmbientCycle` cycles two
+     distinct network-only logons (loopback connects under fixture
+     credentials fail authentication by design, keeping the test
+     account-independent) and a final process-identity operation that must
+     succeed — proving every earlier operation applied and reverted its
+     identity on the held apartment; and
+     `TestWMICreateProcessCleanupFailureInvalidatesResult` pins through the
+     `wmiCleanupTokenPresent` seam that a failed cleanup verification turns
+     the result into an error naming the enforcement failure and raises the
+     boundary flag (reset for the rest of the CI run). The remote
+     wrong-account end-to-end regression remains the lab acceptance test —
+     CI has no domain, second host, or second admin account.
+  3. The unbounded marshal wait let one stalled operation block every other
+     target's caller. `wmiCreateProcess` now selects on its reply channel
+     with the caller's remaining deployment deadline (both call sites pass
+     `time.Until(deadline)`), so a stalled chain cannot hold another
+     target's waiter past that target's own budget; the stalled chain
+     itself still owns the worker until the OS call returns — a
+     no-user-mode-preemption limitation the timeout error states.
+- Validations: host suites (default + rmmdebug), all four Windows build
+  variants, the probe binary, `gofmt`, and `go vet` (pre-existing family
+  only) pass; parity and web contracts unchanged and green. The three new
+  tests run under the existing `WMICreateProcess` CI pattern.
+
+## 2026-11-23 — Backport: the validated WMI lifecycle runs the production wmiexec chain
+
+- Operator validation passed (`"It now works correctly"`): the probe
+  lifecycle — one continuous COM initialization with explicit
+  impersonation and verified reversion per operation — behaves correctly
+  under the lab's two-account and account-switch diagnostics. Backported
+  to the production path per the controlled-implementation plan.
+- Design: a dedicated WMI COM worker (`wmiComWorker`,
+  `agent-go/wmi_windows.go`) — a process-lived goroutine pinned to one OS
+  thread that owns the MTA initialization (single `CoInitializeEx`, never
+  balanced by `CoUninitialize`) and the process-wide COM security. Every
+  production `Win32_Process.Create` — legacy wmiexec and the chain's
+  loader receiver start — funnels through that apartment
+  (`wmiCreateProcess` marshals to `wmiCreateProcessChain` on the worker),
+  so the per-attempt initialization/teardown cycle that poisoned the
+  per-process WMI client state against cloaked netonly identities no
+  longer exists. The lateral worker passes its captured identity handle
+  through the payload (`ambientToken`, an unexported, never-serialized
+  uintptr field) instead of relying on its own thread for the connect;
+  explicit-identity deployments keep their in-band credentials unchanged.
+- Enforced ambient discipline on the worker, mirroring the probe contract:
+  verified clean entry before every operation, the ambient token applied
+  only for the connect when no explicit credentials ride the payload, and
+  a verified clean revert after it — failures raise the identity-boundary
+  fault rather than continuing; worker startup verifies its thread entry
+  too (every identity-holding flow in the agent locks its thread, so a
+  foreign token there is a leak by definition). WMI operations serialize
+  process-wide, matching the existing per-host claim and keeping the
+  validated same-thread held property across deployments.
+- Semantics kept: an active make_token stays the ambient (cloaked) WMI
+  identity; the forced identity (`-i` / `-u -p`) remains the explicit
+  route and takes precedence. The former one-shot limitation statements
+  were updated everywhere (`docs/go-agent.md` bullet + worker bullet,
+  README lateral row, `ai-skills/lateral-movement.md`) from "only the
+  first same-process connection is reliable" to the hard worker contract.
+- Tests and checks: Windows CI `TestWMICreateProcess` now funnels two
+  consecutive local operations through the worker (the loopback ambient
+  path), pinning the funnelling; host suites (default + rmmdebug), all
+  four Windows build variants, the probe binary, `gofmt`, and `go vet`
+  (pre-existing family findings only) pass; operator parity unchanged and
+  green. Outstanding acceptance: replay the original failing sequence in
+  the lab — two back-to-back `wmiexec` deployments under one make_token —
+  and confirm the second deploys without `0x80070005`.
+
 ## 2026-11-22 — Probe caller-identity verification and regressions
 
 - Reviewed the pending preserve/restore fix for the incoming make_token

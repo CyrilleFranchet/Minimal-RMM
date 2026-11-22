@@ -132,7 +132,7 @@ func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (stri
 			}
 			localPath := `C:\Windows\System32\` + binaryName
 			agentCommand := lateralAgentCommand(localPath, targetSession, payload.WorkspaceID, serviceName)
-			if err := wmiCreateProcess(payload.Host, agentCommand, payload.winrmIdentity); err != nil {
+			if err := wmiCreateProcess(payload.Host, agentCommand, payload.winrmIdentity, payload.ambientToken, time.Until(deadline)); err != nil {
 				// The staged executable belongs to this deployment only: remove it
 				// instead of leaving an untracked artifact on the target.
 				if rollbackErr := os.Remove(sharePath); rollbackErr != nil && !os.IsNotExist(rollbackErr) {
@@ -598,6 +598,7 @@ func runLateralThreadWithCleanup(ctx context.Context, payload lateralPayload, mo
 		return "", err
 	}
 	payload.winrmIdentity = identity
+	payload.ambientToken = uintptr(token)
 	ch := make(chan lateralResult, 1)
 	progress := make(chan string, 1)
 	go func() {

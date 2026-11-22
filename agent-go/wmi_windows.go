@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -257,16 +258,159 @@ func wmiConnectIdentity(identity *winrmCredentials) (user, password, authority u
 	return user, password, authority, blanket, nil
 }
 
-// wmiCreateProcess executes Win32_Process.Create over DCOM. Without an
-// explicit identity it authenticates with the current thread identity, which
-// carries the active make_token credentials when one is set (cloaking path).
-// An explicit identity travels in ConnectServer's strUser/strPassword and
-// the proxy blanket, so the DCOM handshake no longer depends on thread
-// cloaking — this keeps WMI deployments working from a memory-hosted source
-// whose process COM security the PowerShell host already owns. DNS targets
-// without explicit credentials keep one HOST SPN for connection and proxy
-// security; explicit credentials always use NTLM.
-func wmiCreateProcess(host, command string, identity *winrmCredentials) error {
+// wmiWorkerStart backs the process-lived WMI COM worker. The once holds
+// both the start error (a failed apartment initialization is permanent
+// for this worker) and the request channel every production WMI operation
+// funnels through.
+var wmiWorkerStart struct {
+	sync.Once
+	requests chan func()
+	err      error
+}
+
+// wmiComWorker lazily starts and returns the process-lived WMI COM worker:
+// one goroutine pinned to one OS thread for the agent's lifetime, holding
+// the COM apartment (a single CoInitializeEx, never balanced by
+// CoUninitialize) and the process-wide COM security initialization. Every
+// production Win32_Process.Create — the deployment code path — executes on
+// that thread, so the in-process WMI client keeps one continuous COM
+// lifetime across deployments instead of the per-attempt
+// initialization/teardown cycle that turned the second connect under a
+// network-only thread identity into a wrong-account denial. The worker
+// thread is an isolated, exclusively owned thread: callers never run COM
+// on their own threads, every identity-holding flow in this agent locks its
+// OS thread, so the worker's thread starts (and is verified to stay) free
+// of foreign impersonations.
+func wmiComWorker() (chan func(), error) {
+	wmiWorkerStart.Do(func() {
+		requests := make(chan func())
+		wmiWorkerStart.requests = requests
+		ready := make(chan error, 1)
+		go func() {
+			runtime.LockOSThread()
+			hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
+			if hr != 0 && hr != 1 {
+				ready <- fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
+				return
+			}
+			// Never CoUninitialize: the validated lifecycle keeps the
+			// apartment alive for the process, which is what separates it
+			// from the per-attempt cycle that failed in the field.
+			if err := initializeWMISecurity(); err != nil {
+				ready <- err
+				return
+			}
+			if present, err := wmiThreadTokenPresent(); err != nil {
+				ready <- fmt.Errorf("verify the WMI worker thread entry: %w", err)
+				return
+			} else if present {
+				ready <- identityBoundaryFailure(errors.New("the WMI worker thread carries a foreign thread token at entry"))
+				return
+			}
+			ready <- nil
+			for fn := range requests {
+				fn()
+			}
+		}()
+		wmiWorkerStart.err = <-ready
+	})
+	return wmiWorkerStart.requests, wmiWorkerStart.err
+}
+
+// wmiThreadTokenPresent reports whether the calling thread carries an
+// impersonation token, the enforced clean-state check of the production
+// WMI identity discipline.
+func wmiThreadTokenPresent() (bool, error) {
+	open := advapi32.NewProc("OpenThreadToken")
+	var token syscall.Token
+	ok, _, openErr := open.Call(^uintptr(1), 0x0008, 1, uintptr(unsafe.Pointer(&token)))
+	if ok == 0 {
+		if errno, valid := openErr.(syscall.Errno); valid && errno == syscall.Errno(1008) {
+			return false, nil
+		}
+		return false, openErr
+	}
+	_ = token.Close()
+	return true, nil
+}
+
+// wmiCreateProcess executes Win32_Process.Create over DCOM, funneled
+// through the process-lived WMI COM worker so every deployment shares one
+// continuous COM lifetime. Without an explicit identity it authenticates
+// with the caller-captured ambient token (the active make_token state as of
+// the lateral dispatch, carried through the payload as a handle) applied
+// on the worker thread for the duration of the operation — the cloaked
+// path the validated lifecycle proved reliable under
+// initialization-and-revert-per-operation. An explicit identity travels in
+// ConnectServer's strUser/strPassword and the proxy blanket, so the DCOM
+// handshake never depends on thread identity at all. The worker enforces
+// the identity discipline instead of observing it: an unclean thread at
+// entry or after the operation's revert aborts or fails with the
+// identity-boundary fault, never silently, and a failed cleanup turns the
+// operation's result into an error — never into a success. The marshal
+// wait is bounded by the caller's budget: one stalled operation cannot
+// hold other targets' waiters past their own deployment deadline (the
+// stalled chain itself still owns the worker until the OS call returns —
+// no user-mode code can preempt it, and the report says so).
+func wmiCreateProcess(host, command string, identity *winrmCredentials, ambient uintptr, wait time.Duration) error {
+	requests, err := wmiComWorker()
+	if err != nil {
+		return fmt.Errorf("start the WMI COM worker: %w", err)
+	}
+	if wait <= 0 {
+		wait = 30 * time.Second
+	}
+	done := make(chan error, 1)
+	requests <- func() {
+		done <- wmiCreateProcessChain(host, command, identity, ambient)
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(wait):
+		return fmt.Errorf("the WMI COM worker did not finish within %.0fs; a stalled operation on another target may still hold the worker", wait.Seconds())
+	}
+}
+
+// wmiCleanupTokenPresent is the deferred post-revert verification seam:
+// Windows regressions substitute it to pin that a failed cleanup turns the
+// operation's result into an error, without manipulating real tokens.
+var wmiCleanupTokenPresent = wmiThreadTokenPresent
+
+// wmiCreateProcessChain runs one Win32_Process.Create on the COM worker
+// thread. The COM apartment and process security are already initialized
+// there; this chain owns only the per-operation identity: a verified clean
+// entry, the ambient token applied for the connect when no explicit
+// credentials were supplied, and a verified revert on every exit path —
+// a revert or verification failure joins the operation's error, so
+// cleanup failure never reports success.
+func wmiCreateProcessChain(host, command string, identity *winrmCredentials, ambient uintptr) (err error) {
+	if present, err := wmiThreadTokenPresent(); err != nil {
+		return identityBoundaryFailure(fmt.Errorf("verify the WMI worker thread entry: %w", err))
+	} else if present {
+		return identityBoundaryFailure(errors.New("the WMI worker thread carries a thread token at operation entry"))
+	}
+	impersonated := false
+	if identity == nil && ambient != 0 {
+		if ok, _, err := procImpersonateLoggedOnUser.Call(ambient); ok == 0 {
+			return fmt.Errorf("apply the ambient WMI identity: %w", err)
+		}
+		impersonated = true
+	}
+	if impersonated {
+		defer func() {
+			ok, _, revertErr := procRevertToSelf.Call()
+			if ok == 0 {
+				err = errors.Join(err, identityBoundaryFailure(fmt.Errorf("revert the ambient WMI identity: %w", revertErr)))
+				return
+			}
+			if present, verifyErr := wmiCleanupTokenPresent(); verifyErr != nil {
+				err = errors.Join(err, identityBoundaryFailure(fmt.Errorf("verify the WMI worker thread after revert: %w", verifyErr)))
+			} else if present {
+				err = errors.Join(err, identityBoundaryFailure(errors.New("the WMI worker thread carries a thread token after the operation")))
+			}
+		}()
+	}
 	authnSvc, authorityAmbient, serverPrincipal, err := wmiAuthentication(host)
 	if err != nil {
 		return err
@@ -280,16 +424,7 @@ func wmiCreateProcess(host, command string, identity *winrmCredentials) error {
 	defer sysFreeString(identityUser)
 	defer sysFreeString(identityPassword)
 	defer sysFreeString(identityAuthority)
-	// COM apartments belong to OS threads, not goroutines.
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	if hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded); hr != 0 && hr != 1 {
-		return fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
-	}
-	defer procCoUninitialize.Call()
-	if err := initializeWMISecurity(); err != nil {
-		return err
-	}
+	defer runtime.KeepAlive(identityBlanket)
 	var locator uintptr
 	if hr, _, _ := procCoCreateInstance.Call(
 		uintptr(unsafe.Pointer(&clsidWbemLocator)), 0, clsctxInprocServer,
@@ -306,8 +441,9 @@ func wmiCreateProcess(host, command string, identity *winrmCredentials) error {
 	var services uintptr
 	// IWbemLocator::ConnectServer (slot 3): [namespace, user, password,
 	// locale, securityFlags, authority, context, out]. Ambient deployments
-	// keep the thread identity (user/password NULL); explicit credentials
-	// replace the Kerberos authority with the NTLM domain of the payload.
+	// keep the worker thread's impersonated identity (user/password NULL);
+	// explicit credentials replace the Kerberos authority with the NTLM
+	// domain of the payload.
 	authority := authorityAmbient
 	authnService := authnSvc
 	if identity != nil {

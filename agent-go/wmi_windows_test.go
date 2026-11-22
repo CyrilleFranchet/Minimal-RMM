@@ -7,6 +7,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -52,12 +53,88 @@ func TestWMIAuthentication(t *testing.T) {
 // The loopback IP keeps the connection on the NTLM path: a DNS name would
 // select the Kerberos authority, which WMI rejects for local connections.
 func TestWMICreateProcess(t *testing.T) {
-	if err := wmiCreateProcess("127.0.0.1", `cmd.exe /c exit 0`, nil); err != nil {
+	if err := wmiCreateProcess("127.0.0.1", `cmd.exe /c exit 0`, nil, 0, 0); err != nil {
 		t.Fatalf("local WMI process creation: %v", err)
 	}
 	// A nonexistent executable must reach ExecMethod and return provider failure.
-	err := wmiCreateProcess("127.0.0.1", `C:\__rmm_wmi_nonexistent__\missing.exe`, nil)
+	err := wmiCreateProcess("127.0.0.1", `C:\__rmm_wmi_nonexistent__\missing.exe`, nil, 0, 0)
 	if err == nil || !strings.Contains(err.Error(), "WMI Win32_Process.Create returned ") {
 		t.Fatalf("expected provider ReturnValue failure, got %v", err)
+	}
+}
+
+// TestWMICreateProcessWorkerAmbientCycle exercises the worker's per-operation
+// identity machinery with two distinct network-only logons and a final
+// process-identity operation — the account-switching mechanics of the
+// original regression at the loopback level. The loopback connects under
+// fixture credentials fail authentication by design (their effective
+// outcome is the connect error, keeping the test account-independent); the
+// assertion is the final process-identity operation succeeding through the
+// same worker, which requires every earlier operation to have applied and
+// reverted its identity for real: a leaked thread token would fail the
+// next operation's entry check, and the worker's held lifetime means the
+// operations share one continuous apartment, mirroring what repeated
+// remote deployments now do.
+func TestWMICreateProcessWorkerAmbientCycle(t *testing.T) {
+	tokenA, _, err := captureLateralExplicitIdentity(winrmCredentials{
+		domain: "LAB", user: "wmi-fixture-a", password: "fixture-a-unused",
+	})
+	if err != nil {
+		t.Fatalf("create the first network-only logon: %v", err)
+	}
+	defer tokenA.Close()
+	tokenB, _, err := captureLateralExplicitIdentity(winrmCredentials{
+		domain: "LAB", user: "wmi-fixture-b", password: "fixture-b-unused",
+	})
+	if err != nil {
+		t.Fatalf("create the second network-only logon: %v", err)
+	}
+	defer tokenB.Close()
+
+	err = wmiCreateProcess("127.0.0.1", `cmd.exe /c exit 0`, nil, uintptr(tokenA), 30*time.Second)
+	if err == nil {
+		t.Fatal("a loopback connect under unvalidated fixture credentials must not succeed")
+	}
+	err = wmiCreateProcess("127.0.0.1", `cmd.exe /c exit 0`, nil, uintptr(tokenB), 30*time.Second)
+	if err == nil {
+		t.Fatal("a loopback connect under unvalidated fixture credentials must not succeed")
+	}
+	// The account-switch proof: the worker thread must be clean after two
+	// failed ambient operations, and this process-identity operation must
+	// succeed — on the same held apartment the earlier operations used.
+	if err := wmiCreateProcess("127.0.0.1", `cmd.exe /c exit 0`, nil, 0, 30*time.Second); err != nil {
+		t.Fatalf("process-identity operation after two ambient cycles failed (identity not cleanly reverted?): %v", err)
+	}
+}
+
+// TestWMICreateProcessCleanupFailureInvalidatesResult pins the review
+// finding that a cleanup failure must never let the operation report
+// success: with the deferred verification reporting a residual thread
+// token, the chain returns an error naming the enforcement failure even
+// though the operation itself succeeded, and the identity-boundary fault
+// is raised. The test resets the process-global boundary flag so it does
+// not poison the rest of the Windows CI run.
+func TestWMICreateProcessCleanupFailureInvalidatesResult(t *testing.T) {
+	defer func() {
+		wmiCleanupTokenPresent = wmiThreadTokenPresent
+		identityBoundaryFault.Store(false)
+	}()
+	wmiCleanupTokenPresent = func() (bool, error) { return true, nil }
+	token, _, err := captureLateralExplicitIdentity(winrmCredentials{
+		domain: "LAB", user: "wmi-fixture", password: "fixture-unused",
+	})
+	if err != nil {
+		t.Fatalf("create the network-only logon: %v", err)
+	}
+	defer token.Close()
+	err = wmiCreateProcess("127.0.0.1", `cmd.exe /c exit 0`, nil, uintptr(token), 30*time.Second)
+	if err == nil {
+		t.Fatal("a failed cleanup verification must invalidate the operation result")
+	}
+	if !strings.Contains(err.Error(), "thread token after the operation") {
+		t.Fatalf("the error must name the cleanup enforcement failure, got %v", err)
+	}
+	if !identityBoundaryFault.Load() {
+		t.Fatal("a failed cleanup verification must raise the identity-boundary fault")
 	}
 }

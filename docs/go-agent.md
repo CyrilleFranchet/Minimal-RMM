@@ -436,15 +436,47 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   `SEC_WINNT_AUTH_IDENTITY_W` structure on `CoSetProxyBlanket`), mirroring
   the documented pattern for repeated WMI connections under alternate
   credentials — and mirroring what the WinRM chain does with its
-  `WSManCreateSession` credentials. Known consequence of the ambient
-  design, pinned by live evidence: the first remote WMI connection of a
-  process under the netonly thread token succeeds and every later one
-  fails at `ConnectServer` with `0x80070005`, because the in-process WMI
-  client (an in-proc COM server loaded on the first call) keeps
-  per-process authentication state that a cloaked
-  `LOGON_NEW_CREDENTIALS` token cannot re-establish. Operators repeating
-  WMI deployments under the same identity must pass the forced identity
-  instead of relying on make_token; `__WMI_PROBE__` diagnoses the state.
+  `WSManCreateSession` credentials. The former one-shot limitation is resolved in production by the
+  dedicated WMI COM worker: the deployment chain no longer cycles
+  `CoInitializeEx`/`CoUninitialize` per move, so the per-process WMI
+  client state that denied the second connect under a cloaked
+  `LOGON_NEW_CREDENTIALS` token never accumulates. Repeated `wmiexec`
+  deployments under one make_token follow the validated lifecycle —
+  one held COM initialization, per-operation impersonation with
+  verified reversion — and remain ambient (cloaked); the forced
+  identity stays the other supported route. `__WMI_PROBE__` still
+  diagnoses the state on demand.
+- The production WMI chain now runs on a dedicated WMI COM worker
+  (`wmiComWorker`, `wmiCreateProcess`/`wmiCreateProcessChain` in
+  `agent-go/wmi_windows.go`): a process-lived goroutine pinned to one OS
+  thread, holding the MTA initialization (a single `CoInitializeEx`,
+  never balanced by `CoUninitialize`) and routing every
+  `Win32_Process.Create` — legacy wmiexec and the loader chain's receiver
+  start — through that one apartment. Callers never touch COM on their
+  own threads; the lateral worker passes its captured identity handle
+  through the payload (`ambientToken`, a uintptr transport for the
+  unexported, never-serialized field) and the worker applies it on its
+  own thread for the cloaked connect, with the ambient discipline
+  enforced: a verified clean entry before every operation, a verified
+  clean revert after it, and an identity-boundary fault on either failure
+  — and a cleanup failure joins the operation's error, so a failed revert
+  or verification never reports success. The marshal wait is bounded by
+  the deployment budget (`wmiCreateProcess` selects on its reply channel
+  with the caller's remaining deadline): one stalled operation cannot
+  hold another target's waiter past its own deadline, though the stalled
+  chain itself owns the worker until the OS call returns — a limitation
+  no user-mode code can preempt, and the timeout error says so. WMI
+  operations serialize process-wide on the worker, matching the per-host
+  claim that already serialized moves and keeping the validated
+  same-thread held property across deployments. The Windows CI
+  `TestWMICreateProcess` funnels two consecutive local operations through
+  the worker; `TestWMICreateProcessWorkerAmbientCycle` cycles two distinct
+  network-only identities and a final process-identity operation through
+  the held apartment, pinning the per-operation apply/revert machinery
+  (the final operation succeeds only if every earlier one reverted
+  cleanly); `TestWMICreateProcessCleanupFailureInvalidatesResult` pins
+  that a failed cleanup verification turns the result into an error and
+  raises the boundary fault.
 - `__WMI_PROBE__ <host>` (`agent-go/wmi_probe.go`, `wmi_probe_windows.go`)
   is the lab diagnostic for that failure, built into the Windows agent and
   served by the generic exec route (no REST/CLI/MCP surface of its own).
