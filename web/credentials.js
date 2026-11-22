@@ -4,6 +4,7 @@
   let generation = 0;
   let busy = false;
   let editing = null;
+  let originalPassword = null;
   let listReady = false;
   let listVersion = 0;
 
@@ -21,12 +22,15 @@
 
   function editor(row = null) {
     editing = row?.cred_id || null;
+    originalPassword = row?.password ?? null;
     $("form").reset();
     $("password").disabled = false;
+    $("password").type = editing ? "text" : "password";
+    $("password").value = row?.password ?? "";
     $("identity").value = row?.label || "";
     $("editor-title").textContent = editing ? `Edit ${editing}` : "Add credential";
     $("password-help").textContent = editing
-      ? "Leave blank to keep the current password, or select Set empty password."
+      ? "The stored password is shown. Edit it to replace it, leave unchanged or blank to keep it, or select Set empty password."
       : "An empty password is allowed.";
     $("empty-label").hidden = !editing;
     $("save").textContent = editing ? "Save changes" : "Add credential";
@@ -79,7 +83,15 @@
       edit.textContent = "Edit"; edit.setAttribute("aria-label", `Edit ${row.label}`);
       edit.addEventListener("click", () => {
         if (!current(owner) || busy || !listReady || version !== listVersion) return;
-        editor(row); $("identity").focus();
+        perform(async (active) => {
+          status("Loading credential for editing…");
+          const data = await request("/creds?include_passwords=1");
+          if (!current(active) || !listReady || version !== listVersion) return;
+          const entry = data?.creds?.find((credential) => credential.cred_id === row.cred_id);
+          if (!entry || typeof entry.password !== "string") throw new Error("Credential unavailable.");
+          editor(entry); $("identity").focus();
+          status("Credential loaded for editing.");
+        });
       });
       const remove = document.createElement("button"); remove.type = "button"; remove.className = "secondary";
       remove.textContent = "Delete"; remove.setAttribute("aria-label", `Delete ${row.label}`);
@@ -160,7 +172,9 @@
       const body = { domain: separator < 0 ? "" : identity.slice(0, separator),
         user: separator < 0 ? identity : identity.slice(separator + 1) };
       if (!body.user.trim()) { status("Enter a username.", true); return; }
-      if (!editing || $("password").value !== "" || $("empty").checked) body.password = $("password").value;
+      if (!editing || $("empty").checked || ($("password").value !== "" && $("password").value !== originalPassword)) {
+        body.password = $("password").value;
+      }
       const id = editing;
       perform(async (owner) => {
         await request(id ? `/creds/${encodeURIComponent(id)}` : "/creds", id ? "PATCH" : "POST", body);

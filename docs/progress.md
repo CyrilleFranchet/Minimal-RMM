@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-22 — Display stored passwords when editing credentials
+
+- Edit explicitly fetches stored passwords and displays the selected credential's
+  password as visible text. The ordinary list stays redacted; Add remains masked.
+- Unchanged and blank edit passwords preserve the stored value, while changed
+  passwords replace it and Set empty password clears it. Identity-only edits
+  omit the password field from PATCH.
+- Closing/resetting clears displayed and original-password values. Late password
+  lookups cannot populate a closed, reopened, or reconnected dialog.
+- Eleven credential UI tests cover CRUD, recovery, password display/preservation,
+  failed lookups, and stale responses. See [credential display](credential-display.md).
+
 ## 2026-11-21 — Consistent session kill state
 
 - Successful workspace kills immediately archive local session state and retain

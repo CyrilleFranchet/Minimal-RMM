@@ -24,7 +24,10 @@ function fixture() {
       calls.push({ url, ...options });
       if (respond) return respond(url, options);
       if (pending) return pending;
-      return { status: 200, data: { ok: true, creds: rows, deleted: rows.length } };
+      const creds = url === '/creds?include_passwords=1'
+        ? rows.map((row) => ({ ...row, password: row.password ?? 'stored secret' }))
+        : rows.map(({ password, ...row }) => row);
+      return { status: 200, data: { ok: true, creds, deleted: rows.length } };
     } };
   vm.runInNewContext(fs.readFileSync(require('node:path').join(__dirname, '../web/credentials.js'), 'utf8'), {
     window, document: { getElementById: (id) => get(id.replace('credentials-', '')), createElement: () => new Element(), addEventListener: (_, fn) => fn() },
@@ -42,13 +45,13 @@ test('dialog loads redacted list, adds and edits while preserving ID and exact p
   ui.get('identity').value = 'LAB\\bob'; ui.get('password').value = "  quoted ' secret  ";
   await ui.submit();
   assert.deepEqual(JSON.parse(ui.calls[1].body), { domain: 'LAB', user: 'bob', password: "  quoted ' secret  " });
-  ui.get('list').children[0].children[1].handlers.click();
+  ui.get('list').children[0].children[1].handlers.click(); await tick();
   assert.equal(ui.get('identity').value, 'LAB\\alice');
   ui.get('identity').value = 'LAB\\new'; await ui.submit();
   const edit = ui.calls.find((call) => call.method === 'PATCH');
   assert.equal(edit.url, '/creds/cred-12345678');
   assert.deepEqual(JSON.parse(edit.body), { domain: 'LAB', user: 'new' });
-  ui.get('list').children[0].children[1].handlers.click();
+  ui.get('list').children[0].children[1].handlers.click(); await tick();
   ui.get('empty').checked = true; ui.get('empty').handlers.change(); await ui.submit();
   assert.equal(JSON.parse(ui.calls.filter((call) => call.method === 'PATCH')[1].body).password, '');
   assert.equal(ui.get('password').disabled, false);
@@ -104,11 +107,11 @@ test('completed mutations remain successful when the list refresh fails and bloc
     const row = ui.get('list').children[0];
     const staleEdit = row.children[1].handlers.click;
     const staleDelete = row.children[2].handlers.click;
+    if (action === 'edit') { staleEdit(); await tick(); }
     ui.respond((url, options) => options.method === 'GET'
       ? { status: 503, data: {} }
       : { status: 200, data: { ok: true, deleted: 1 } });
     if (action === 'add' || action === 'edit') {
-      if (action === 'edit') staleEdit();
       ui.get('identity').value = 'updated'; ui.get('password').value = 'secret'; await ui.submit();
     } else if (action === 'delete') { staleDelete(); await tick(); }
     else await ui.click('purge');
@@ -132,7 +135,7 @@ test('completed mutations remain successful when the list refresh fails and bloc
 
 test('failed manual list refresh disables edits and deletes until a successful refresh', async () => {
   const ui = fixture(); ui.rows([{ cred_id: 'stored', label: 'alice' }]); await ui.click('open');
-  const row = ui.get('list').children[0]; row.children[1].handlers.click();
+  const row = ui.get('list').children[0]; row.children[1].handlers.click(); await tick();
   ui.respond(() => ({ status: 503, data: {} })); await ui.click('refresh');
   assert.equal(ui.get('save').disabled, true); assert.equal(ui.get('purge').disabled, true);
   assert.equal(ui.get('list').children.length, 0);
@@ -168,5 +171,58 @@ test('uncertain mutation results require a successful refresh before any further
     await ui.submit();
     assert.equal(ui.calls.filter((call) => call.method === 'POST').length, 2);
     assert.equal(ui.get('password').value, '');
+  }
+});
+
+
+test('Edit explicitly fetches and displays the selected stored password and omits unchanged secrets', async () => {
+  const ui = fixture();
+  const storedPassword = "  <literal> ' \\ password  ";
+  ui.rows([{ cred_id: 'other', label: 'other', password: 'other secret' },
+    { cred_id: 'selected', label: 'alice', password: storedPassword }]);
+  await ui.click('open');
+  assert.equal(ui.calls.length, 1); assert.equal(ui.calls[0].url, '/creds');
+  assert.equal(ui.get('password').type, 'password'); assert.equal(ui.get('password').value, '');
+  ui.get('list').children[1].children[1].handlers.click(); await tick();
+  assert.equal(ui.calls[1].url, '/creds?include_passwords=1');
+  assert.equal(ui.get('password').type, 'text'); assert.equal(ui.get('password').value, storedPassword);
+  ui.get('identity').value = 'renamed'; await ui.submit();
+  const update = ui.calls.find((call) => call.method === 'PATCH');
+  assert.equal(update.url, '/creds/selected'); assert.equal(Object.hasOwn(JSON.parse(update.body), 'password'), false);
+  assert.equal(ui.get('password').type, 'password'); assert.equal(ui.get('password').value, '');
+  ui.get('list').children[1].children[1].handlers.click(); await tick();
+  ui.get('password').value = ''; await ui.submit();
+  assert.equal(Object.hasOwn(JSON.parse(ui.calls.filter((call) => call.method === 'PATCH')[1].body), 'password'), false);
+  ui.get('list').children[1].children[1].handlers.click(); await tick();
+  const replacement = " replacement ' \\ "; ui.get('password').value = replacement; await ui.submit();
+  assert.equal(JSON.parse(ui.calls.filter((call) => call.method === 'PATCH')[2].body).password, replacement);
+});
+
+test('late Edit password responses cannot fill closed or reconnected dialogs', async () => {
+  for (const transition of ['close', 'reopen', 'authentication', 'connection']) {
+    const ui = fixture(); ui.rows([{ cred_id: 'stored', label: 'alice' }]); await ui.click('open');
+    let release;
+    ui.pending(new Promise((resolve) => { release = resolve; }));
+    ui.get('list').children[0].children[1].handlers.click(); await tick();
+    assert.equal(ui.calls[1].url, '/creds?include_passwords=1');
+    if (transition === 'close' || transition === 'reopen') await ui.click('close');
+    else {
+      ui.window.rmmState[transition === 'authentication' ? 'authGeneration' : 'connectionGeneration']++;
+      ui.window.rmmCredentials.reset();
+    }
+    if (transition === 'reopen') { ui.pending(null); await ui.click('open'); }
+    release({ status: 200, data: { creds: [{ cred_id: 'stored', label: 'alice', password: 'must not appear' }] } });
+    await tick();
+    assert.equal(ui.get('password').value, ''); assert.equal(ui.get('password').type, 'password');
+  }
+});
+
+test('failed Edit lookup never replaces the form with missing or unrequested secret data', async () => {
+  for (const creds of [[], [{ cred_id: 'stored', label: 'alice' }]]) {
+    const ui = fixture(); ui.rows([{ cred_id: 'stored', label: 'alice' }]); await ui.click('open');
+    ui.respond(() => ({ status: 200, data: { creds } }));
+    ui.get('list').children[0].children[1].handlers.click(); await tick();
+    assert.equal(ui.get('password').value, ''); assert.equal(ui.get('password').type, 'password');
+    assert.equal(ui.get('save').disabled, true); assert.match(ui.get('status').textContent, /failed/);
   }
 });
