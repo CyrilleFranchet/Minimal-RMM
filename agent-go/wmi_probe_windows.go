@@ -66,8 +66,8 @@ type wmiProbeResult struct {
 	ConnectHR       uintptr
 	SecondConnectHR uintptr
 	ThirdConnectHR  uintptr
-	MidReverted     wmiProbeToken
-	MidReapplied    wmiProbeToken
+	StepBefore      []wmiProbeToken
+	CleanupFailed   bool
 	Err             error
 	Explicit        bool
 	StartUTC        string
@@ -215,6 +215,19 @@ func (t wmiProbeToken) identityDetail(reference wmiProbeToken) string {
 	return text + " unchanged-vs-reference"
 }
 
+// wmiProbeCleanupInvalid returns the verdict-invalidating text whenever a
+// run failed its identity-cleanup enforcement. The HRESULTs of such a run
+// describe an identity state the run does not hold, so every verdict
+// returns this before reading anything else.
+func wmiProbeCleanupInvalid(run wmiProbeResult) string {
+	if !run.CleanupFailed {
+		return ""
+	}
+	return "verdict invalid: the run failed its identity-cleanup enforcement (see the cleanup and token-after-cleanup stages)." +
+		" The thread identity state is not what the report's HRESULTs would claim, the agent's identity boundary is now terminal," +
+		" and nothing about this run supports any lifecycle conclusion."
+}
+
 // wmiProbeVerdict interprets the two ambient probes under the evidence
 // discipline: an unchanged thread identity is useful evidence, but it does
 // not establish that the token is entirely sound, nor that any particular
@@ -222,6 +235,12 @@ func (t wmiProbeToken) identityDetail(reference wmiProbeToken) string {
 // "cause undetermined" and names the target-side evidence that would
 // settle the question.
 func wmiProbeVerdict(host string, first, second wmiProbeResult) string {
+	if text := wmiProbeCleanupInvalid(first); text != "" {
+		return "probe 1 " + text
+	}
+	if text := wmiProbeCleanupInvalid(second); text != "" {
+		return "probe 2 " + text
+	}
 	switch {
 	case first.Err != nil || first.ConnectHR != 0:
 		return fmt.Sprintf("verdict inconclusive: the first probe did not succeed (err=%v connect=0x%08x); fix the probe environment (credentials, target reachability) before reading more",
@@ -259,13 +278,20 @@ func wmiProbeVerdict(host string, first, second wmiProbeResult) string {
 // keeps one impersonation across both connects, while cycled reverts and
 // reapplies a fresh duplicate between them, mirroring the default mode's
 // per-attempt identity handling. Held therefore changes two variables at
-// once versus the isolated mode, and cycled separates them. Neither the
-// report nor the verdict names a cause beyond the recorded evidence.
-func wmiProbeExecute(host, mode string) (string, error) {
+// once versus the isolated mode, and cycled separates them. The switch
+// mode runs the A → B → A account-switch sequence; with a supplied
+// second-account identity it validates two distinct accounts (the payload
+// credentials travel like make_token's: beacon command body only, never
+// logs or report text). Neither the report nor the verdict names a cause
+// beyond the recorded evidence.
+func wmiProbeExecute(host, mode string, bIdentity *lateralIdentity) (string, error) {
 	if identityBoundaryFault.Load() {
 		return "", errIdentityUnsafe
 	}
 	if mode == "held" || mode == "cycled" || mode == "switch" {
+		if bIdentity != nil && mode != "switch" {
+			return "", errors.New("the account-B identity is valid only with the switch mode")
+		}
 		token, _, err := captureLateralIdentity(false)
 		if err != nil {
 			return "", err
@@ -296,6 +322,33 @@ func wmiProbeExecute(host, mode string) (string, error) {
 			fmt.Fprintf(&report, "%s\n", wmiProbeCycledVerdict(host, cycled))
 			fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, cycled.StartUTC, cycled.EndUTC))
 		default:
+			if bIdentity != nil {
+				// Two-account validation: account A is the active make_token,
+				// account B arrives through the command body's credentials.
+				// The credentials are used for one network-only logon and
+				// wiped afterwards; they never appear in the report.
+				bCredentials := winrmCredentials{
+					domain: bIdentity.Domain, user: bIdentity.User, password: bIdentity.Password,
+				}
+				tokenB, identityB, err := captureLateralExplicitIdentity(bCredentials)
+				if err != nil {
+					return "", err
+				}
+				defer func() {
+					if identityB != nil {
+						*identityB = winrmCredentials{}
+					}
+					_ = tokenB.Close()
+				}()
+				sourceB := wmiProbeCaptureToken(tokenB)
+				fmt.Fprintf(&report, " source B token authID=0x%016x modifiedID=0x%016x sid=%s\n",
+					sourceB.authID, sourceB.modifiedID, sourceB.sid)
+				dual := wmiProbeDual(host, token, tokenB, source, sourceB)
+				fmt.Fprintf(&report, "probe switch dual (one continuous COM initialization, A → B → A over two distinct accounts)\n%s", dual.report())
+				fmt.Fprintf(&report, "%s\n", wmiProbeDualVerdict(host, dual))
+				fmt.Fprintf(&report, "%s\n", wmiProbeChecklist(host, dual.StartUTC, dual.EndUTC))
+				return report.String(), nil
+			}
 			switched := wmiProbeSwitch(host, token, source)
 			fmt.Fprintf(&report, "probe switch (one continuous COM initialization, A → B → A: make_token identity, process identity, make_token identity)\n%s", switched.report())
 			fmt.Fprintf(&report, "%s\n", wmiProbeSwitchVerdict(host, switched))
@@ -463,10 +516,20 @@ func wmiProbeHeld(host string, token syscall.Token, source wmiProbeToken) (resul
 		start := time.Now()
 		ok, _, revertErr := procRevertToSelf.Call()
 		if ok == 0 {
-			result.stageInfo("cleanup", time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", revertErr))
-			result.Err = fmt.Errorf("revert held probe identity: %w", revertErr)
-		} else {
-			result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok")
+			result.CleanupFailed = true
+			result.stageInfo("cleanup", time.Since(start),
+				fmt.Sprintf("RevertToSelf FAILED: %v — identity-boundary fault raised; the run's verdict is invalid", revertErr))
+			result.Err = errors.Join(result.Err, identityBoundaryFailure(fmt.Errorf("revert held probe identity: %w", revertErr)))
+			return
+		}
+		result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok (verified below)")
+		start = time.Now()
+		after := wmiProbeCaptureThreadToken()
+		result.stageInfo("token-after-cleanup", time.Since(start), after.identityDetail(wmiProbeToken{}))
+		if after.present {
+			result.CleanupFailed = true
+			result.stageNotRun("cleanup-enforcement", "a thread token remains after the final revert — identity-boundary fault raised; the run's verdict is invalid")
+			result.Err = errors.Join(result.Err, identityBoundaryFailure(errors.New("thread token remains after the held run's cleanup")))
 		}
 	}()
 	start := time.Now()
@@ -510,6 +573,9 @@ func wmiProbeHeld(host string, token syscall.Token, source wmiProbeToken) (resul
 // discipline: it compares against the isolated mode's known behavior but
 // never attributes a cause the recorded evidence does not support.
 func wmiProbeHeldVerdict(host string, held wmiProbeResult) string {
+	if text := wmiProbeCleanupInvalid(held); text != "" {
+		return text
+	}
 	switch {
 	case held.Err != nil:
 		return fmt.Sprintf("verdict inconclusive: held-mode machinery failed (%v)", held.Err)
@@ -572,10 +638,20 @@ func wmiProbeCycled(host string, token syscall.Token, source wmiProbeToken) (res
 		start := time.Now()
 		ok, _, err := procRevertToSelf.Call()
 		if ok == 0 {
-			result.stageInfo("cleanup", time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", err))
-			result.Err = fmt.Errorf("revert cycled probe identity: %w", err)
-		} else {
-			result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok")
+			result.CleanupFailed = true
+			result.stageInfo("cleanup", time.Since(start),
+				fmt.Sprintf("RevertToSelf FAILED: %v — identity-boundary fault raised; the run's verdict is invalid", err))
+			result.Err = errors.Join(result.Err, identityBoundaryFailure(fmt.Errorf("revert cycled probe identity: %w", err)))
+			return
+		}
+		result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok (verified below)")
+		start = time.Now()
+		after := wmiProbeCaptureThreadToken()
+		result.stageInfo("token-after-cleanup", time.Since(start), after.identityDetail(wmiProbeToken{}))
+		if after.present {
+			result.CleanupFailed = true
+			result.stageNotRun("cleanup-enforcement", "a thread token remains after the final revert — identity-boundary fault raised; the run's verdict is invalid")
+			result.Err = errors.Join(result.Err, identityBoundaryFailure(errors.New("thread token remains after the cycled run's cleanup")))
 		}
 	}()
 	start = time.Now()
@@ -627,6 +703,11 @@ func wmiProbeCycled(host string, token syscall.Token, source wmiProbeToken) (res
 	start = time.Now()
 	reverted := wmiProbeCaptureThreadToken()
 	result.stageInfo("token-reverted", time.Since(start), reverted.identityDetail(result.Before))
+	if reverted.present {
+		result.Err = fmt.Errorf("a thread token remained after the revert between the connects: the identity state this report would claim is not enforceable")
+		result.markRemainingNotRun("identity contract violated: leftover thread token", "@2")
+		return result
+	}
 	var nextDuplicate syscall.Handle
 	if err := syscall.DuplicateHandle(process, syscall.Handle(token), process, &nextDuplicate, 0, false, 2); err != nil {
 		result.Err = fmt.Errorf("duplicate the network-only token for the second cycle: %w", err)
@@ -657,6 +738,9 @@ func wmiProbeCycled(host string, token syscall.Token, source wmiProbeToken) (res
 // suspects, never as proven causes, and the target-event correlation keeps
 // its inferred-assignment caveat.
 func wmiProbeCycledVerdict(host string, cycled wmiProbeResult) string {
+	if text := wmiProbeCleanupInvalid(cycled); text != "" {
+		return text
+	}
 	switch {
 	case cycled.Err != nil:
 		return fmt.Sprintf("verdict inconclusive: cycled-mode machinery failed (%v)", cycled.Err)
@@ -673,19 +757,29 @@ func wmiProbeCycledVerdict(host string, cycled wmiProbeResult) string {
 		cycled.SecondConnectHR)
 }
 
-// wmiProbeSwitch runs the A → B → A identity-switch diagnostic inside one
-// continuous COM initialization on a single locked OS thread: A is the
-// active make_token identity, B is the process identity (revert with a
-// verified absence of thread token), and A returns through a fresh
-// duplicate. Every step performs the existing read-only class query with
-// full stage instrumentation, and each step's WMI interfaces are released
-// (connectSequence flushes its proxy releases on return) before the
-// identity changes. The critical reading is defined before the run: B
-// succeeding with the target still seeing the make_token account would
-// reveal unintended identity reuse; B authenticating as the process
-// account and being denied, followed by A2 reconnecting, supports correct
-// identity switching for this sequence.
-func wmiProbeSwitch(host string, token syscall.Token, source wmiProbeToken) (result wmiProbeResult) {
+// wmiProbeLifecycleStep is one read-only operation in a lifecycle run: the
+// identity to impersonate for it (a zero token runs the operation under the
+// process identity), the identity snapshot the thread token is compared
+// against, and the label carried by the step's stages.
+type wmiProbeLifecycleStep struct {
+	label  string
+	token  syscall.Token
+	source wmiProbeToken
+}
+
+// wmiProbeLifecycleRun executes read-only WMI operations under one
+// continuous COM lifetime — a single locked OS thread, one CoInitializeEx
+// and one CoInitializeSecurity, a single teardown (the deferred call only
+// fires when the explicit success teardown did not) — with explicit
+// impersonation and reversion scoped to each operation, enforced rather
+// than observed: a failed reversion, a thread token that remains after a
+// revert, or a leftover token seen before a step aborts the run with the
+// remaining steps marked not_run, and the final cleanup reverts and
+// verifies on every exit path — a revert failure or a residual thread
+// token sets CleanupFailed, invalidating every verdict, and raises the
+// agent's identity-boundary fault the way the lateral worker does, because
+// the pooled OS thread must never return carrying the impersonation.
+func wmiProbeLifecycleRun(host string, steps []wmiProbeLifecycleStep) (result wmiProbeResult) {
 	result = wmiProbeResult{StartUTC: wmiProbeTimestamp()}
 	pid, _, _ := procProbeGetCurrentProcessId.Call()
 	result.PID = uint32(pid)
@@ -694,129 +788,174 @@ func wmiProbeSwitch(host string, token syscall.Token, source wmiProbeToken) (res
 	defer runtime.UnlockOSThread()
 	tid, _, _ := procProbeGetCurrentThreadId.Call()
 	result.TID = uint32(tid)
-	var duplicate syscall.Handle
+	impersonated := false
 	process := syscall.Handle(^uintptr(0))
-	if err := syscall.DuplicateHandle(process, syscall.Handle(token), process, &duplicate, 0, false, 2); err != nil {
-		result.Err = fmt.Errorf("duplicate the network-only token: %w", err)
-		result.stageNotRun("impersonate", err.Error())
-		result.markRemainingNotRun("impersonation setup", "@1")
-		result.markRemainingNotRun("impersonation setup", "@2")
-		result.markRemainingNotRun("impersonation setup", "@3")
-		return result
-	}
-	defer syscall.CloseHandle(duplicate)
-	start := time.Now()
-	ok, _, impErr := procImpersonateLoggedOnUser.Call(uintptr(duplicate))
-	if ok == 0 {
-		result.stageInfo("impersonate", time.Since(start), fmt.Sprintf("ImpersonateLoggedOnUser failed: %v", impErr))
-		result.Err = fmt.Errorf("impersonate the network-only token: %w", impErr)
-		result.markRemainingNotRun("impersonation setup", "@1")
-		result.markRemainingNotRun("impersonation setup", "@2")
-		result.markRemainingNotRun("impersonation setup", "@3")
-		return result
-	}
-	result.stageInfo("impersonate", time.Since(start), "ImpersonateLoggedOnUser ok (identity A)")
 	defer func() {
 		start := time.Now()
-		ok, _, finalRevertErr := procRevertToSelf.Call()
+		ok, _, revertErr := procRevertToSelf.Call()
 		if ok == 0 {
-			result.stageInfo("cleanup", time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", finalRevertErr))
-		} else {
-			result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok")
+			result.CleanupFailed = true
+			result.stageInfo("cleanup", time.Since(start),
+				fmt.Sprintf("RevertToSelf FAILED: %v — identity-boundary fault raised; the run's verdict is invalid", revertErr))
+			result.Err = errors.Join(result.Err, identityBoundaryFailure(fmt.Errorf("final RevertToSelf: %w", revertErr)))
+			return
+		}
+		result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok (verified below)")
+		start = time.Now()
+		after := wmiProbeCaptureThreadToken()
+		result.stageInfo("token-after-cleanup", time.Since(start), after.identityDetail(wmiProbeToken{}))
+		if after.present {
+			result.CleanupFailed = true
+			result.stageNotRun("cleanup-enforcement", "a thread token remains after the final revert — identity-boundary fault raised; the run's verdict is invalid")
+			result.Err = errors.Join(result.Err, identityBoundaryFailure(errors.New("thread token remains after the final cleanup")))
 		}
 	}()
-	start = time.Now()
-	result.Before = wmiProbeCaptureThreadToken()
-	result.stageInfo("token-before", time.Since(start), result.Before.identityDetail(source))
-	start = time.Now()
+	start := time.Now()
 	hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
 	label := "initialization failed"
 	if hr == 0 {
-		label = "S_OK new-MA-on-thread, held across A, B, and A2"
+		label = "S_OK new-MA-on-thread, held across every step"
 	} else if hr == 1 {
-		label = "S_FALSE thread-already-in-COM, held across A, B, and A2"
+		label = "S_FALSE thread-already-in-COM, held across every step"
 	}
 	result.stageHR("co-init", hr, time.Since(start), label)
 	if hr != 0 && hr != 1 {
 		result.Err = fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
-		result.markRemainingNotRun("co-init", "@1")
-		result.markRemainingNotRun("co-init", "@2")
-		result.markRemainingNotRun("co-init", "@3")
+		result.notRunRemainingSteps(steps, 0, "co-init failed")
 		return result
 	}
+	comClosed := false
 	defer func() {
-		start := time.Now()
-		procCoUninitialize.Call()
-		result.stageInfo("co-uninit", time.Since(start), "single teardown after switch sequence")
+		if !comClosed {
+			procCoUninitialize.Call()
+		}
 	}()
 	start = time.Now()
 	initErr := initializeWMISecurity()
 	result.stageInfo("com-security", time.Since(start), wmiSecurityInitReport())
 	if initErr != nil {
 		result.Err = initErr
-		result.markRemainingNotRun("com-security blocked the chain", "@1")
-		result.markRemainingNotRun("com-security blocked the chain", "@2")
-		result.markRemainingNotRun("com-security blocked the chain", "@3")
+		result.notRunRemainingSteps(steps, 0, "com-security blocked the chain")
 		return result
 	}
-	// A1: make_token identity, read-only query. connectSequence released
-	// every proxy it created before returning.
-	result.ConnectHR = result.connectSequence(host, nil, "@1")
-	// B: drop the impersonation and verify the thread carries no token.
-	start = time.Now()
-	ok, _, revertErr := procRevertToSelf.Call()
-	if ok == 0 {
-		result.stageInfo("revert", time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", revertErr))
-	} else {
-		result.stageInfo("revert", time.Since(start), "RevertToSelf ok (before the B step)")
+	for index, step := range steps {
+		if impersonated {
+			start = time.Now()
+			ok, _, revertErr := procRevertToSelf.Call()
+			if ok == 0 {
+				result.stageInfo("revert@"+step.label, time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", revertErr))
+				result.Err = fmt.Errorf("identity revert before step %s failed: %w", step.label, revertErr)
+				result.notRunRemainingSteps(steps, index, "identity revert failed")
+				return result
+			}
+			result.stageInfo("revert@"+step.label, time.Since(start), "RevertToSelf ok (verification follows)")
+			impersonated = false
+		}
+		start = time.Now()
+		idle := wmiProbeCaptureThreadToken()
+		result.stageInfo("token-idle@"+step.label, time.Since(start), idle.identityDetail(wmiProbeToken{}))
+		if idle.present {
+			result.Err = fmt.Errorf("a thread token remained before step %s: the identity state this report would claim is not enforceable", step.label)
+			result.notRunRemainingSteps(steps, index, "identity contract violated: leftover thread token")
+			return result
+		}
+		if step.token != 0 {
+			var duplicate syscall.Handle
+			if err := syscall.DuplicateHandle(process, syscall.Handle(step.token), process, &duplicate, 0, false, 2); err != nil {
+				result.Err = fmt.Errorf("duplicate the step identity token: %w", err)
+				result.stageNotRun("impersonate@"+step.label, err.Error())
+				result.notRunRemainingSteps(steps, index, "identity handling failed")
+				return result
+			}
+			defer syscall.CloseHandle(duplicate)
+			start = time.Now()
+			ok, _, impErr := procImpersonateLoggedOnUser.Call(uintptr(duplicate))
+			if ok == 0 {
+				result.stageInfo("impersonate@"+step.label, time.Since(start), fmt.Sprintf("ImpersonateLoggedOnUser failed: %v", impErr))
+				result.Err = fmt.Errorf("impersonate the step identity: %w", impErr)
+				result.notRunRemainingSteps(steps, index, "identity handling failed")
+				return result
+			}
+			impersonated = true
+			result.stageInfo("impersonate@"+step.label, time.Since(start), "ImpersonateLoggedOnUser ok (fresh duplicate)")
+		} else {
+			result.stageNotRun("impersonate@"+step.label, "process-identity step: no impersonation")
+		}
+		start = time.Now()
+		before := wmiProbeCaptureThreadToken()
+		result.StepBefore = append(result.StepBefore, before)
+		result.stageInfo("token-before@"+step.label, time.Since(start), before.identityDetail(step.source))
+		connect := result.connectSequence(host, nil, "@"+step.label)
+		switch index {
+		case 0:
+			result.ConnectHR = connect
+		case 1:
+			result.SecondConnectHR = connect
+		case 2:
+			result.ThirdConnectHR = connect
+		}
 	}
 	start = time.Now()
-	result.MidReverted = wmiProbeCaptureThreadToken()
-	reverted := result.MidReverted
-	result.stageInfo("token-reverted", time.Since(start), reverted.identityDetail(result.Before))
-	// B connect under the process identity.
-	result.SecondConnectHR = result.connectSequence(host, nil, "@2")
-	// A2: reapply the make_token identity from a fresh duplicate.
-	var nextDuplicate syscall.Handle
-	if err := syscall.DuplicateHandle(process, syscall.Handle(token), process, &nextDuplicate, 0, false, 2); err != nil {
-		result.Err = fmt.Errorf("duplicate the network-only token for A2: %w", err)
-		result.stageNotRun("reimpersonate", err.Error())
-		result.markRemainingNotRun("reimpersonation setup", "@3")
-		return result
-	}
-	defer syscall.CloseHandle(nextDuplicate)
-	start = time.Now()
-	ok, _, reimpErr := procImpersonateLoggedOnUser.Call(uintptr(nextDuplicate))
-	if ok == 0 {
-		result.stageInfo("reimpersonate", time.Since(start), fmt.Sprintf("ImpersonateLoggedOnUser failed: %v", reimpErr))
-		result.Err = fmt.Errorf("reapply the network-only token: %w", reimpErr)
-		result.markRemainingNotRun("reimpersonation setup", "@3")
-		return result
-	}
-	result.stageInfo("reimpersonate", time.Since(start), "ImpersonateLoggedOnUser ok (fresh duplicate, identity A again)")
-	start = time.Now()
-	result.MidReapplied = wmiProbeCaptureThreadToken()
-	reapplied := result.MidReapplied
-	result.stageInfo("token-reapplied", time.Since(start), reapplied.identityDetail(source))
-	// A2 connect, read-only query.
-	result.ThirdConnectHR = result.connectSequence(host, nil, "@3")
+	procCoUninitialize.Call()
+	comClosed = true
+	result.stageInfo("co-uninit", time.Since(start), "single teardown after every step")
 	return result
 }
 
-// wmiProbeSwitchVerdict interprets the A → B → A run under the readings
-// defined before the run: B succeeding under the process identity would be
-// the unintended-identity-reuse signal if the target still saw the
-// make_token account; B authenticating as the process account and being
-// denied, followed by A2 reconnecting, supports correct identity switching
-// — for this sequence, never as a general claim. The target's
-// authentication events remain the arbiter for which account each step
-// actually presented.
+// notRunRemainingSteps marks the connect stage of every step from the given
+// index as not_run, so failed identity handling never reads as a succeeded
+// zero HRESULT.
+func (r *wmiProbeResult) notRunRemainingSteps(steps []wmiProbeLifecycleStep, from int, why string) {
+	for i := from; i < len(steps); i++ {
+		r.stageNotRun("connect@"+steps[i].label, why)
+	}
+}
+
+// wmiProbeSwitch runs the agent's A → B → A account-switch diagnostic: A
+// is the active make_token identity, B is the process identity (the B step
+// records a token snapshot that must show no thread token), and A2 applies
+// the make_token identity again. All three operations share one continuous
+// COM lifetime through the generic lifecycle runner.
+func wmiProbeSwitch(host string, token syscall.Token, source wmiProbeToken) wmiProbeResult {
+	return wmiProbeLifecycleRun(host, []wmiProbeLifecycleStep{
+		{label: "A1", token: token, source: source},
+		{label: "B", token: 0, source: wmiProbeToken{sid: "process-identity"}},
+		{label: "A2", token: token, source: source},
+	})
+}
+
+// wmiProbeDual runs the two-account variant: two distinct network-only
+// identities, A → B → A, each with its own logon — the validation the
+// single-account modes cannot provide, since reuse of one identity never
+// establishes that account switching behaves correctly. The target-
+// permission expectations belong to the accounts; the verdict leaves the
+// presentation question to the target events.
+func wmiProbeDual(host string, tokenA, tokenB syscall.Token, sourceA, sourceB wmiProbeToken) wmiProbeResult {
+	return wmiProbeLifecycleRun(host, []wmiProbeLifecycleStep{
+		{label: "A1", token: tokenA, source: sourceA},
+		{label: "B", token: tokenB, source: sourceB},
+		{label: "A2", token: tokenA, source: sourceA},
+	})
+}
+
+// wmiProbeSwitchVerdict interprets the agent's A → B → A run under the
+// readings defined before the run: B succeeding under the process identity
+// is only decipherable through the target events (unintended identity
+// reuse versus more process rights than the baseline assumed); B
+// authenticating as the process account and being denied, followed by A2
+// reconnecting, supports correct identity switching for this sequence —
+// never as a general claim.
 func wmiProbeSwitchVerdict(host string, run wmiProbeResult) string {
+	if text := wmiProbeCleanupInvalid(run); text != "" {
+		return text
+	}
 	switch {
 	case run.Err != nil:
 		return fmt.Sprintf("verdict inconclusive: switch-mode machinery failed (%v)", run.Err)
-	case run.MidReverted.present:
-		return "verdict unreliable: the revert verification still saw a thread token before the B step, so step B did not run under the process identity this report claims; read nothing from the A/B/A comparison"
+	case len(run.StepBefore) < 3:
+		return "verdict inconclusive: the run did not reach all three steps; read the stages above"
+	case run.StepBefore[1].present:
+		return "verdict unreliable: the B step still saw a thread token, so it did not run under the process identity this report claims; read nothing from the A/B/A comparison"
 	case run.ConnectHR != 0:
 		return fmt.Sprintf("verdict inconclusive: the A1 step did not succeed (connect=0x%08x); fix the probe environment before reading the switch comparison",
 			run.ConnectHR)
@@ -833,6 +972,32 @@ func wmiProbeSwitchVerdict(host string, run wmiProbeResult) string {
 	return fmt.Sprintf("verdict: A2 failed after the denied B step under the held lifetime (0x%08x): returning from the process identity to the make_token identity is implicated — the denial mirrors the isolated-mode failure inside a held lifetime."+
 		" Correlate the target events to learn which account A2 actually presented.",
 		run.ThirdConnectHR)
+}
+
+// wmiProbeDualVerdict interprets the two-account A → B → A run. With two
+// distinct accounts carrying their own target permissions, either HRESULT
+// on the B step is readable on its own; the validation is the presentation,
+// which the client cannot observe. The pre-registered reading: each step's
+// account is settled only by the target's authentication events, and the
+// critical failure is a step presenting the other account's name.
+func wmiProbeDualVerdict(host string, run wmiProbeResult) string {
+	if text := wmiProbeCleanupInvalid(run); text != "" {
+		return text
+	}
+	switch {
+	case run.Err != nil:
+		return fmt.Sprintf("verdict inconclusive: dual-mode machinery failed (%v)", run.Err)
+	case len(run.StepBefore) < 3:
+		return "verdict inconclusive: the run did not reach all three steps; read the stages above"
+	case run.ConnectHR != 0:
+		return fmt.Sprintf("verdict inconclusive: the A1 step did not succeed (connect=0x%08x); fix the probe environment before reading the account-switch comparison",
+			run.ConnectHR)
+	}
+	return fmt.Sprintf("verdict: A → B → A over two distinct accounts completed with HRESULTs A1=0x%08x B=0x%08x A2=0x%08x under one COM lifetime held throughout."+
+		" With different target permissions per account, either B outcome is expected on its own; the validation is the presentation, which the client cannot observe:"+
+		" correlate the target's authentication events per step — the B step must present account B's name (its HRESULT then reflects account B's permissions) and A2 must present account A's."+
+		" The critical failure is a step presenting the other account's name — unintended identity reuse; an A2 failure after a well-formed B step implicates the identity-return step.",
+		run.ConnectHR, run.SecondConnectHR, run.ThirdConnectHR)
 }
 
 // wmiProbeChecklist prints the target-side correlation guidance, keyed to
@@ -905,9 +1070,20 @@ func wmiProbeRun(host string, identity *winrmCredentials, token syscall.Token, s
 		start = time.Now()
 		ok, _, revertErr := procRevertToSelf.Call()
 		if ok == 0 {
-			result.stageInfo("cleanup", time.Since(start), fmt.Sprintf("RevertToSelf failed: %v", revertErr))
+			result.CleanupFailed = true
+			result.stageInfo("cleanup", time.Since(start),
+				fmt.Sprintf("RevertToSelf FAILED: %v — identity-boundary fault raised; the run's verdict is invalid", revertErr))
+			result.Err = errors.Join(result.Err, identityBoundaryFailure(fmt.Errorf("revert the probe identity: %w", revertErr)))
 		} else {
-			result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok")
+			result.stageInfo("cleanup", time.Since(start), "RevertToSelf ok (verified below)")
+			start = time.Now()
+			after := wmiProbeCaptureThreadToken()
+			result.stageInfo("token-after-cleanup", time.Since(start), after.identityDetail(wmiProbeToken{}))
+			if after.present {
+				result.CleanupFailed = true
+				result.stageNotRun("cleanup-enforcement", "a thread token remains after the final revert — identity-boundary fault raised; the run's verdict is invalid")
+				result.Err = errors.Join(result.Err, identityBoundaryFailure(errors.New("thread token remains after the probe's cleanup")))
+			}
 		}
 	} else {
 		result.stageNotRun("cleanup", "nothing impersonated")

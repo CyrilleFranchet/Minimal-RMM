@@ -30,6 +30,14 @@ import (
 //
 // Clear the password variable afterwards. Without RMM_WMI_PROBE_TARGET the
 // test skips, so CI and plain `go test` never touch a remote host.
+//
+// Optional modes through RMM_WMI_PROBE_MODE: `held`, `cycled`, and
+// `switch`. The switch mode additionally accepts a second account through
+// RMM_WMI_PROBE_B_DOMAIN / RMM_WMI_PROBE_B_USER / RMM_WMI_PROBE_B_PASSWORD
+// and then runs the two-account A → B → A validation (two distinct
+// network-only identities under one continuous COM lifetime); without those
+// variables the B step uses the process identity, like the agent's switch
+// mode. Clear every password variable afterwards.
 func TestWMISecondConnectProbe(t *testing.T) {
 	target := strings.TrimSpace(os.Getenv("RMM_WMI_PROBE_TARGET"))
 	if target == "" {
@@ -78,10 +86,29 @@ func TestWMISecondConnectProbe(t *testing.T) {
 			t.Log(wmiProbeCycledVerdict(target, cycled))
 			t.Log(wmiProbeChecklist(target, cycled.StartUTC, cycled.EndUTC))
 		default:
-			switched := wmiProbeSwitch(target, token, source)
-			t.Logf("[switch: one continuous COM initialization, A → B → A: make_token identity, process identity, make_token identity]\n%s", switched.report())
-			t.Log(wmiProbeSwitchVerdict(target, switched))
-			t.Log(wmiProbeChecklist(target, switched.StartUTC, switched.EndUTC))
+			bUser := strings.TrimSpace(os.Getenv("RMM_WMI_PROBE_B_USER"))
+			if bUser == "" {
+				switched := wmiProbeSwitch(target, token, source)
+				t.Logf("[switch: one continuous COM initialization, A → B → A: make_token identity, process identity, make_token identity]\n%s", switched.report())
+				t.Log(wmiProbeSwitchVerdict(target, switched))
+				t.Log(wmiProbeChecklist(target, switched.StartUTC, switched.EndUTC))
+				return
+			}
+			// Two distinct accounts: the two-account validation the
+			// single-identity modes cannot provide. Both credential sets
+			// arrive through environment variables only.
+			bDomain := strings.TrimSpace(os.Getenv("RMM_WMI_PROBE_B_DOMAIN"))
+			bCredentials := winrmCredentials{domain: bDomain, user: bUser, password: os.Getenv("RMM_WMI_PROBE_B_PASSWORD")}
+			tokenB, _, err := captureLateralExplicitIdentity(bCredentials)
+			if err != nil {
+				t.Fatalf("create the second account logon: %v", err)
+			}
+			defer func() { _ = tokenB.Close() }()
+			sourceB := wmiProbeCaptureToken(tokenB)
+			dual := wmiProbeDual(target, token, tokenB, source, sourceB)
+			t.Logf("[dual: one continuous COM initialization, A → B → A over two distinct accounts]\n%s", dual.report())
+			t.Log(wmiProbeDualVerdict(target, dual))
+			t.Log(wmiProbeChecklist(target, dual.StartUTC, dual.EndUTC))
 		}
 		return
 	}

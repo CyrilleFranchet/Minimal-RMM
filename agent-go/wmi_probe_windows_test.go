@@ -64,6 +64,76 @@ func TestWMIProbeIdentitySwitchObservationStoresAndCompares(t *testing.T) {
 	}
 }
 
+func TestWMIProbeLifecycleNotRunRemainingStepsMarksEveryRemainingConnect(t *testing.T) {
+	steps := []wmiProbeLifecycleStep{{label: "A1"}, {label: "B"}, {label: "A2"}}
+	result := wmiProbeResult{}
+	result.notRunRemainingSteps(steps, 1, "identity handling failed")
+	seen := map[string]bool{}
+	for _, stage := range result.Stages {
+		if stage.name == "connect@B" || stage.name == "connect@A2" {
+			if !stage.notRun {
+				t.Fatalf("%s must be marked not_run, got %+v", stage.name, stage)
+			}
+			seen[stage.name] = true
+		}
+		if stage.name == "connect@A1" {
+			t.Fatalf("steps before the failure index must stay untouched, got %+v", stage)
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("both remaining steps must be marked, got %v", seen)
+	}
+}
+
+func TestWmiProbeVerdictsInvalidatedByCleanupFailure(t *testing.T) {
+	// Every verdict must refuse to read HRESULTs whose run failed its
+	// identity-cleanup enforcement, before any other branch.
+	cases := []struct {
+		name   string
+		veract string
+	}{
+		{"wmiProbeVerdict", "default"},
+		{"wmiProbeHeldVerdict", "held"},
+		{"wmiProbeCycledVerdict", "cycled"},
+		{"wmiProbeSwitchVerdict", "switch"},
+		{"wmiProbeDualVerdict", "dual"},
+	}
+	before := wmiProbeToken{present: true, authID: 0x1111, sid: "S-1-A"}
+	run := wmiProbeResult{
+		ConnectHR: 0, SecondConnectHR: 0x80070005, ThirdConnectHR: 0,
+		Before: before, StepBefore: []wmiProbeToken{before, {}, before},
+		CleanupFailed: true,
+	}
+	for _, c := range cases {
+		var verdict string
+		switch c.veract {
+		case "default":
+			verdict = wmiProbeVerdict("fixture", run, run)
+		case "held":
+			verdict = wmiProbeHeldVerdict("fixture", run)
+		case "cycled":
+			verdict = wmiProbeCycledVerdict("fixture", run)
+		case "switch":
+			verdict = wmiProbeSwitchVerdict("fixture", run)
+		case "dual":
+			verdict = wmiProbeDualVerdict("fixture", run)
+		}
+		if !strings.HasPrefix(verdict, "verdict invalid") && !strings.Contains(verdict, "verdict invalid") {
+			t.Fatalf("%s must lead with the cleanup-invalid verdict, got %q", c.name, verdict)
+		}
+		if !strings.Contains(verdict, "identity-cleanup enforcement") {
+			t.Fatalf("%s verdict must name the enforcement failure, got %q", c.name, verdict)
+		}
+	}
+	// Without the flag, the same run keeps its normal branch structure.
+	if verdict := wmiProbeSwitchVerdict("fixture", wmiProbeResult{
+		ConnectHR: 0, SecondConnectHR: 0x80070005, ThirdConnectHR: 0,
+		StepBefore: []wmiProbeToken{before, {}, before},
+	}); !strings.HasPrefix(verdict, "verdict: the A → B → A sequence behaved as correct identity switching") {
+		t.Fatalf("without cleanup failure the switch verdict must read the sequence, got %q", verdict)
+	}
+}
+
 func TestWMIProbeVerdictDoesNotClaimTokenStayedUnchanged(t *testing.T) {
 	before := wmiProbeToken{present: true, authID: 42, sid: "S-1-5-18", modifiedID: 1}
 	after := before

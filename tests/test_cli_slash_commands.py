@@ -21,6 +21,7 @@ class SlashCommandTests(unittest.TestCase):
         client.queue_screenshot.return_value = (200, {})
         client.health.return_value = (200, {'sessions': 0})
         client.make_token.return_value = (200, {'ok': True})
+        client.wmi_probe.return_value = (200, {'ok': True, 'output': 'wmi probe host=ws01 mode=;'})
         client.spawnas.return_value = (200, {'ok': True})
         client.spawn_session.return_value = (200, {'ok': True})
         client.lateral_move.return_value = (200, {'ok': True})
@@ -284,6 +285,31 @@ class SlashCommandTests(unittest.TestCase):
         client.spawn_session.assert_not_called()
         client.lateral_move.assert_not_called()
         self.assertEqual(warn.call_count, len(commands))
+
+    def test_wmi_probe_slash_command(self):
+        for command, host, mode, expected in [
+            ("/wmi_probe ws01", "ws01", "", {}),
+            ("/wmi_probe ws01 held", "ws01", "held", {}),
+            ("/wmi_probe 10.0.0.8 switch -i cred-3f0cfe46", "10.0.0.8", "switch", {"b_cred_id": "cred-3f0cfe46"}),
+            ("/wmi_probe ws01 switch -u LAB\\svc-b -p pw", "ws01", "switch", {"b_user": "LAB\\svc-b", "b_password": "pw"}),
+            ("/wmi_probe ws01 switch -u svc-b", "ws01", "switch", {"b_user": "svc-b", "b_password": ""}),
+        ]:
+            client, _, warn = self.run_lines([command])
+            client.wmi_probe.assert_called_once()
+            call = client.wmi_probe.call_args
+            self.assertEqual(call.args, ("session-id", host, mode))
+            for key, value in expected.items():
+                self.assertEqual(call.kwargs.get(key), value, key)
+            warn.assert_not_called()
+        invalid = [
+            "/wmi_probe", "/wmi_probe ws01 extra", "/wmi_probe ws01 continuous",
+            "/wmi_probe ws01 held -i cred-abc", "/wmi_probe ws01 -i cred-abc",
+            "/wmi_probe ws01 switch -i cred-abc -u bob", "/wmi_probe ws01 switch -u",
+            "/wmi_probe ws01 switch -i cred-abc -i cred-def", "/wmi_probe --flag ws01",
+        ]
+        client, _, warn = self.run_lines(invalid)
+        client.wmi_probe.assert_not_called()
+        self.assertEqual(warn.call_count, len(invalid))
 
     def test_invalid_credential_forms_never_send_requests(self):
         lines = [

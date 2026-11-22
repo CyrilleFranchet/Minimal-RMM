@@ -509,11 +509,60 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   authenticating as the process account and being denied followed by A2
   reconnecting supports correct identity switching for this sequence, and
   the verdict never generalizes beyond it. Switch requires an active
-  make_token and refuses without one. Verdicts keep the evidence
-  discipline: suspects, never proven causes, with fresh-process reruns
-  and target-event correlation named for corroboration. The standalone
-  probe binary exposes the modes through `RMM_WMI_PROBE_MODE=held`,
-  `=cycled`, and `=switch`. The target-evidence checklist includes
+  make_token and refuses without one. Switch, held, and cycled all run
+  through the generic lifecycle runner (`wmiProbeLifecycleRun`): one
+  locked OS thread and one COM initialization held across every step,
+  explicit impersonation and reversion scoped to each operation, a token
+  snapshot after every revert, and a final `token-after-cleanup`
+  verification on every exit path — and the verification is enforced, not
+  observed: a failed reversion, a thread token that survives a revert, or
+  a leftover token seen before a step aborts the run with the remaining
+  steps marked not_run, and a final cleanup failure (revert failure or
+  residual thread token) sets the run's cleanup-failed flag — every
+  verdict returns "verdict invalid" before reading any HRESULT — and
+  raises the agent's identity-boundary fault the way the lateral worker
+  does, so a pooled OS thread never returns carrying the impersonation
+  silently. COM teardown is balanced: the deferred `CoUninitialize`
+  only fires when the explicit success teardown did not. An unexecuted
+  stage is never reported with a result. Failure-cleanup validation is
+  part of the protocol: an unreachable host (connect denied, downstream
+  stages not_run, cleanup verified), a denied connection (the switch B
+  step), and account changes after a failure (the A2 step following the
+  denied B) all surface through the same stages. The two-account variant
+  (`wmiProbeDual` — in the agent through the `__WMI_PROBE__` JSON body and
+  in the standalone binary through its environment variables; carrying
+  second-account
+  credentials through the raw exec route would put them in the exec
+  audit text) runs A → B → A over two distinct network-only identities:
+  set `RMM_WMI_PROBE_B_DOMAIN`/`_B_USER`/`_B_PASSWORD` alongside the
+  account A variables with `RMM_WMI_PROBE_MODE=switch`; without them the
+  B step uses the process identity like the agent mode without its JSON
+  body. Its verdict keeps
+  both permission outcomes readable and names the presentation question:
+  the critical failure is a step presenting the other account's name,
+  settled only by the target's authentication events. The two-account
+  variant runs in the agent too: `__WMI_PROBE__ <host> switch` accepts an
+  optional JSON body (`{"domain","user","password"}`, account B) that
+  rides the beacon command like `__MAKE_TOKEN__`'s — the password never
+  enters logs, errors, or report text. Because a typed password in a raw
+  `exec` command would land verbatim in the exec audit, the body is
+  supplied through the dedicated `POST /api/v1/sessions/{id}/wmi-probe`
+  route (`b_cred_id` from the workspace credential store or the direct
+  `b_*` fields, mutually exclusive, switch mode only), which audits the
+  identity label only; every surface reaches it (CLI `wmi-probe`,
+  interactive `/wmi_probe`, MCP `wmi_probe`, WebUI `/wmi_probe` with
+  credential-ID completion). The standalone binary keeps the same
+  contract through `RMM_WMI_PROBE_B_DOMAIN`/`_B_USER`/`_B_PASSWORD` with
+  `RMM_WMI_PROBE_MODE=switch`. Verdicts keep the
+  evidence discipline: suspects, never proven causes, with fresh-process
+  reruns and target-event correlation named for corroboration. The
+  standalone probe binary exposes the modes through
+  `RMM_WMI_PROBE_MODE=held`, `=cycled`, and `=switch` (switch gains the
+  dual contract with the `RMM_WMI_PROBE_B_*` variables). The
+  production WMI path keeps its per-operation lifecycle until these
+  validations pass; until then the explicit-credential path remains the
+  supported route for repeated WMI deployments and the lifecycle change
+  stays an unapplied direction. The target-evidence checklist includes
   `RecordId` and the round-trip timestamp form: Security events can carry
   subsecond precision that CSV formatting can discard, and `RecordId`
   establishes event order within the log without identifying which probe

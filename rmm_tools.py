@@ -923,6 +923,70 @@ def tool_session_whoami(client: RmmApiClient, session_ref: str, timeout: float =
     return _json_result({"ok": bool(data.get("ok", True)), "session_id": sid, "output": data.get("output")})
 
 
+def tool_wmi_probe(
+    client: RmmApiClient,
+    session_ref: str,
+    host: str,
+    mode: str = "",
+    b_cred_id: str = "",
+    b_domain: str = "",
+    b_user: str = "",
+    b_password: str = "",
+    timeout: float = 120,
+) -> str:
+    """Run the read-only WMI lifecycle diagnostic on a Go agent session."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    host = (host or "").strip()
+    mode = (mode or "").strip().lower() if isinstance(mode, str) else ""
+    if mode and mode not in ("held", "cycled", "switch"):
+        return _json_result({
+            "ok": False,
+            "error": "invalid_mode",
+            "detail": "mode must be held, cycled, or switch",
+        })
+    b_cred_id = (b_cred_id or "").strip() if isinstance(b_cred_id, str) else ""
+    b_domain = (b_domain or "").strip() if isinstance(b_domain, str) else ""
+    b_user = (b_user or "").strip() if isinstance(b_user, str) else ""
+    b_password = b_password if isinstance(b_password, str) else ""
+    if b_cred_id and (b_domain or b_user or b_password):
+        return _json_result({
+            "ok": False,
+            "error": "invalid_identity",
+            "detail": "use either b_cred_id or the b_* credentials, not both",
+        })
+    if b_cred_id or b_user or b_domain or b_password:
+        if mode != "switch":
+            return _json_result({
+                "ok": False,
+                "error": "invalid_identity_method",
+                "detail": "account-B credentials require the switch mode",
+            })
+        if not b_cred_id and not b_user:
+            return _json_result({"ok": False, "error": "invalid_identity",
+                                 "detail": "direct account-B credentials require a user"})
+    if not host:
+        return _json_result({"ok": False, "error": "invalid_host"})
+    code, data = client.wmi_probe(
+        sid,
+        host,
+        mode,
+        timeout=timeout,
+        **({"b_cred_id": b_cred_id} if b_cred_id else {}),
+        **({"b_domain": b_domain, "b_user": b_user, "b_password": b_password}
+           if (b_user and not b_cred_id) else {}),
+    )
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__WMI_PROBE__"})
+    if code != 200 or not data.get("ok"):
+        detail = data.get("error") if isinstance(data, dict) else data
+        output = data.get("output") if isinstance(data, dict) else ""
+        return _json_result({"ok": False, "status": code, "session_id": sid,
+                             "detail": detail, "output": output or ""})
+    return _json_result({"ok": True, "session_id": sid, "output": data.get("output", "")})
+
+
 # ── Credential store tools ────────────────────────────────────────────────────
 
 def tool_creds_add(client: RmmApiClient, domain: str = "", user: str = "", password: str = "") -> str:
@@ -1195,6 +1259,17 @@ TOOL_HANDLERS = {
     ),
     "session_whoami": lambda c, a: tool_session_whoami(
         c, a["session_ref"], float(a.get("timeout", 120)), a.get("tickets", False),
+    ),
+    "wmi_probe": lambda c, a: tool_wmi_probe(
+        c,
+        a["session_ref"],
+        a["host"],
+        mode=a.get("mode", ""),
+        b_cred_id=a.get("b_cred_id", ""),
+        b_domain=a.get("b_domain", ""),
+        b_user=a.get("b_user", ""),
+        b_password=a.get("b_password", ""),
+        timeout=float(a.get("timeout", 120)),
     ),
     "session_uid": lambda c, a: tool_session_uid(
         c,
@@ -2011,6 +2086,27 @@ OPENAI_TOOLS: list[dict] = [
                     "identity_password": {"type": "string", "description": "Plaintext password for a direct forced identity; never echo it back"},
                 },
                 "required": ["session_ref", "method", "host"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "wmi_probe",
+            "description": "Run the read-only WMI lifecycle diagnostic on a live Go agent session: read-only WMI connections under the active make_token identity with per-stage evidence (UTC timestamps, OS thread, raw HRESULTs, durations, token snapshots around every connect, unexecuted stages reported as not_run), ending in a verdict that never attributes a cause the evidence does not support and a target-side event correlation checklist. Default: two ambient probes plus one explicit-credential comparison. mode=held or cycled run the COM-lifetime comparisons; mode=switch runs the A to B to A account-switch sequence (account A is the active make_token, account B the process identity), or validates two distinct accounts when account-B credentials are supplied (switch mode only). Deploys nothing, writes nothing to the target, never echoes credentials.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "host": {"type": "string", "description": "Target hostname or IP address"},
+                    "mode": {"type": "string", "enum": ["held", "cycled", "switch"], "default": "", "description": "Lifecycle comparison; empty runs the default isolated pair"},
+                    "b_cred_id": {"type": "string", "description": "Workspace credential ID for account B (switch mode only); alternative to the b_* fields. NEVER echo the stored password."},
+                    "b_domain": {"type": "string", "default": "", "description": "Domain of account B (switch mode only)"},
+                    "b_user": {"type": "string", "description": "Account B as user or DOMAIN\\user (switch mode only)"},
+                    "b_password": {"type": "string", "description": "Plaintext password for account B; never echo it back"},
+                    "timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref", "host"],
             },
         },
     },

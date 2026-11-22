@@ -11,7 +11,7 @@ const SHELL_HISTORY_MAX = 100;
 const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
-const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "spawnas", "runas", "creds", "make_token", "rev2self", "lateral", "uid", "whoami", "embeddings", "bloodhound"];
+const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "spawnas", "runas", "creds", "make_token", "rev2self", "lateral", "wmi_probe", "uid", "whoami", "embeddings", "bloodhound"];
 
 const BLOODHOUND_ACTIONS = ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "auth", "reset_ce", "library_search", "library_get"];
 window.rmmBloodHoundActions = BLOODHOUND_ACTIONS;
@@ -2146,7 +2146,7 @@ function longestCommonPrefix(strings) {
 }
 
 const CREDENTIAL_ID_COMPLETION_COMMANDS = {
-  make_token: ["-i"], spawnas: ["-i"], runas: ["-i"], lateral: ["-i"], "creds del": ["-i"],
+  make_token: ["-i"], spawnas: ["-i"], runas: ["-i"], lateral: ["-i"], wmi_probe: ["-i"], "creds del": ["-i"],
 };
 const shellCredentialCompletion = { rows: [], expires: 0, pending: null, scope: null };
 
@@ -2167,6 +2167,8 @@ function shellCredentialContext(line) {
   if (["make_token", "spawnas", "runas"].includes(key) && words.length !== 1) return null;
   if (key === "creds del" && words.length !== 2) return null;
   if (key === "lateral" && (words.length < 3 || words.includes("-i"))) return null;
+  // The wmi probe accepts the store selector only with the switch mode.
+  if (key === "wmi_probe" && !["held", "cycled", "switch"].includes((words[1] || "").toLowerCase())) return null;
   return { base: match[1] + match[2] + " ", prefix: match[3] };
 }
 
@@ -3580,6 +3582,79 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       pollSessionEvents().catch(() => {});
     } catch (error) {
       if (target.isCurrent()) showError(error.message || "Lateral request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "wmi_probe") {
+    const credValues = [];
+    const userValues = [];
+    const passwordValues = [];
+    const targets = [];
+    for (let index = 0; index < rest.length; index++) {
+      if (["-i", "--cred"].includes(rest[index])) {
+        if (index + 1 >= rest.length) { credValues.push("<missing>"); break; }
+        credValues.push(rest[index + 1]);
+        index++;
+        continue;
+      }
+      if (["-u", "--b-user"].includes(rest[index])) {
+        if (index + 1 >= rest.length) { userValues.push("<missing>"); break; }
+        userValues.push(rest[index + 1]);
+        index++;
+        continue;
+      }
+      if (["-p", "--b-password"].includes(rest[index])) {
+        if (index + 1 >= rest.length) { passwordValues.push("<missing>"); break; }
+        passwordValues.push(rest[index + 1]);
+        index++;
+        continue;
+      }
+      targets.push(rest[index]);
+    }
+    const identityValues = credValues.concat(userValues, passwordValues);
+    const host = targets[0] || "";
+    const mode = targets.length > 1 ? targets[1].toLowerCase() : "";
+    const identityValid = !identityValues.length ||
+      (credValues.length <= 1 && userValues.length <= 1 && passwordValues.length <= 1 &&
+       ((credValues.length && !userValues.length && !passwordValues.length) ||
+        (userValues.length && !credValues.length)));
+    if (!host || targets.length > 2 || targets.some((target) => target.startsWith("-")) ||
+        (mode && !["held", "cycled", "switch"].includes(mode)) ||
+        (identityValues.length && mode !== "switch") || !identityValid) {
+      showError("Usage: /wmi_probe <host> [held|cycled|switch] [-i <b_cred_id> | -u <b_user> [-p <b_password>] (switch only: validates two accounts)]");
+      return true;
+    }
+    if (!target.sessionId) {
+      showError("Select a Go agent session before running the WMI probe.");
+      return true;
+    }
+    echoCommand();
+    if (target.isCurrent()) {
+      appendShellLine("output", `<pre>WMI probe ${escapeHtml(mode || "isolated")} against ${escapeHtml(host)} — waiting for the next beacon…</pre>`);
+    }
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/wmi-probe`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          host, mode,
+          ...(credValues.length ? { b_cred_id: credValues[0] } : {}),
+          ...(userValues.length ? { b_user: userValues[0], b_password: passwordValues.length ? passwordValues[0] : "" } : {}),
+        }),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) {
+        showError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      if (!data.ok) {
+        showError(data.output || "wmi probe failed");
+        return true;
+      }
+      const report = (data.output || "").trim() || "(no output)";
+      appendShellLine("output", `<pre>${escapeHtml(report)}</pre>`);
+    } catch (error) {
+      if (target.isCurrent()) showError(error.message || "WMI probe request failed.");
     }
     return true;
   }

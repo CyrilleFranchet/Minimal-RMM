@@ -1,5 +1,136 @@
 # Progress Log
 
+## 2026-11-23 — Review fixes before Windows validation: balanced COM teardown and enforced identity cleanup
+
+- Review finding (diff inspection, state unchanged): the lifecycle runner
+  called `CoUninitialize` twice on success — once explicitly on the
+  success path and once through a blanket defer — leaving the pooled OS
+  thread's apartment refcount unbalanced; and identity cleanup was
+  observed rather than enforced — a failed `RevertToSelf` or a residual
+  thread token was only logged, execution continued, and a final cleanup
+  failure did not invalidate the verdict. Both defects would have made
+  the Windows validation runs untrustworthy.
+- Balanced teardown: the deferred `CoUninitialize` now fires only when
+  the explicit success teardown did not (`comClosed` guard), so every
+  exit path tears the apartment down exactly once. The held/cycled
+  runners already used a single deferred closure teardown and were
+  untouched by this class.
+- Enforced identity cleanup: a failed revert between steps, a thread
+  token surviving a revert, or a leftover token seen before a step
+  aborts the run with the remaining steps marked not_run; a final
+  cleanup failure (revert failure or a residual thread token) sets the
+  new `CleanupFailed` result flag, and every verdict — default, held,
+  cycled, switch, dual — returns "verdict invalid: the run failed its
+  identity-cleanup enforcement" before reading any HRESULT. The same
+  failure raises the agent's identity-boundary fault through the
+  established `identityBoundaryFailure` path, mirroring the lateral
+  worker, because a pooled OS thread must never return to the Go
+  scheduler still carrying the probe's impersonation. Enforcement
+  applied to all runners: the lifecycle runner's per-step checks and
+  final cleanup, the cycled runner's mid-run revert verification, and
+  the held and isolated runners' final cleanup.
+- Regression: `TestWmiProbeVerdictsInvalidatedByCleanupFailure` pins
+  that every verdict leads with the invalid text when `CleanupFailed`
+  is set and keeps its normal reading otherwise. Host suites,
+  rmmdebug, all Windows build variants, and the probe binary pass;
+  `docs/go-agent.md` cleanup wording now states enforcement instead of
+  the previous stronger-than-code guarantee.
+
+## 2026-11-23 — Two-account switch validation on every operator surface (`/wmi-probe`)
+
+- Operator request: run the A → B → A two-account validation through
+  `__WMI_PROBE__` itself, not only the standalone binary. The blocker was
+  credential transport: a typed password in a raw `exec` command lands
+  verbatim in the exec audit, which the logging boundary forbids. The
+  solution follows the forced-identity template end to end.
+- Agent: `__WMI_PROBE__ <host> [held|cycled|switch]` accepts an optional
+  JSON body (`{"domain","user","password"}` — account B, switch mode
+  only) below the command line, transported like `__MAKE_TOKEN__`'s body:
+  beacon command only, never logs, errors, or report text
+  (`parseWmiProbeCommand` splits combined `DOMAIN\user` values and
+  rejects misplaced or userless bodies without echoing the password).
+  `wmiProbeExecute` materializes account B as a fresh network-only logon
+  (`captureLateralExplicitIdentity`), wipes it after the run, and runs
+  the dual through the existing lifecycle runner (`wmiProbeDual`); the
+  source-B token summary prints alongside account A's.
+- Server: `wmi_probe` method and `POST /api/v1/sessions/{id}/wmi-probe`
+  route. The route resolves `b_cred_id` from the workspace credential
+  store (or takes the direct `b_*` fields; mutually exclusive, switch
+  mode only) exactly like the lateral forced identity —
+  `session.workspace_id` scoping, `cred_not_found` and
+  `credential_store_unavailable` mappings — and audits
+  `__WMI_PROBE__ <host> <mode> b_identity=DOMAIN\user` only. The
+  workspace service proxies the route automatically; its timeout table
+  gained the `wmi-probe` path.
+- Surfaces: CLI `wmi-probe` subcommand (`--mode`, `-i`/`--b-user`/
+  `--b-password`), interactive `/wmi_probe` with the same flags, MCP
+  `wmi_probe` tool (`tool_wmi_probe` + catalog entry), WebUI
+  `/wmi_probe` dispatch with credential-ID completion after `-i`
+  (switch-mode gated), parity registration
+  (`scripts/check_operator_parity.py`: tool, client method, shell meta),
+  and docs: README REST + protocol rows, `docs/go-agent.md`,
+  `docs/mcp-parity.md`, `docs/web-shell-completion.md`.
+- Tests: `tests/test_wmi_probe.py` (wire command and audit redaction —
+  the password is in the command body and absent from the recorded
+  label; DOMAIN\user split; rejection matrix including
+  `invalid_identity_method` for non-switch modes; credential-store
+  resolution, `cred_not_found`, status-code table, invalid options)
+  registered in `make check-agent-deployment`;
+  `test_cli_slash_commands.py` gains the `/wmi_probe` dispatch matrix
+  (valid flag combinations and the full rejection set);
+  `TestParseWmiProbeCommand` and `TestParseWmiProbeCommandSwitchBody`
+  pin the agent parser; the WebUI completion test count updates for the
+  new command. Parity, CLI, web-contract, host Go suites, and all
+  Windows build variants pass.
+
+## 2026-11-22 — Controlled implementation phase: lifecycle runner, two-account validation, cleanup verification
+
+- Operator direction: move from diagnosis to a controlled implementation —
+  keep a continuous COM lifetime for ambient WMI operations with explicit
+  impersonation and reversion per operation; validate two distinct
+  make_token accounts under that lifetime; exercise failure cleanup; only
+  then apply the lifecycle change to the production WMI path and replay
+  the original failing deployment sequence. The tests support the
+  direction without establishing the internal cause, the
+  explicit-credential path stays available while validating, and another
+  repetition of the single-identity probe adds little.
+- Foundation: the switch, held, and cycled diagnostics now run through a
+  generic lifecycle runner (`wmiProbeLifecycleRun`,
+  `agent-go/wmi_probe_windows.go`): one locked OS thread and one
+  `CoInitializeEx`/`CoInitializeSecurity` held across every step, explicit
+  impersonation and reversion scoped to each operation, a token snapshot
+  after every revert that must show no thread token, a final
+  `token-after-cleanup` verification recorded on every exit path — failure
+  paths included — and `not_run` markers for any step whose identity
+  handling failed. This runner is the pattern the production change will
+  follow once the validations below pass; the production path (wmiCreateProcess
+  lifecycle) is deliberately untouched and stays per-operation until then.
+- Two-account validation: `wmiProbeDual` runs A → B → A over two distinct
+  network-only identities through the same runner. It is exposed by the
+  standalone probe binary only (`RMM_WMI_PROBE_MODE=switch` plus
+  `RMM_WMI_PROBE_B_DOMAIN`/`_B_USER`/`_B_PASSWORD`): carrying
+  second-account credentials through the generic exec route would place
+  them in the exec audit text, which the logging boundary forbids. The
+  pre-registered reading: either B HRESULT is expected on its own (the
+  accounts carry different target permissions); the validation is the
+  per-step account presentation, settled only by the target's
+  authentication events; the critical failure is a step presenting the
+  other account's name. Without the `_B_*` variables the B step uses the
+  process identity, matching the agent mode.
+- Failure-cleanup protocol folded into the stages: each revert is
+  verified by a snapshot, the final cleanup records `RevertToSelf` plus a
+  token snapshot that must show no thread token, proxies release per
+  connect sequence by construction, and the unreachable-host /
+  denied-connection / failed-query / account-change-after-failure cases
+  all surface through the same `not_run` and verification stages.
+- Docs and regressions: `docs/go-agent.md` lifecycle bullet extended with
+  the runner contract, the dual variant, and the explicit statement that
+  the production lifecycle stays per-operation until the validations pass;
+  the README row notes the standalone dual variables. Host suites,
+  rmmdebug, all Windows build variants, and the probe binary pass; parser
+  regressions unchanged (`held`, `cycled`, `switch`; unknown modes
+  rejected).
+
 ## 2026-11-22 — Switch mode: the A → B → A account-switch diagnostic under one COM lifetime
 
 - Operator analysis: the held and cycled modes cannot establish correct

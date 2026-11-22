@@ -106,6 +106,7 @@ from rmm_tools import (
     tool_lateral_move,
     tool_session_uid,
     tool_session_whoami,
+    tool_wmi_probe,
     tool_start_socks,
     tool_start_tun,
     tool_stop_persistent,
@@ -638,6 +639,18 @@ def session_uid(session_ref: str, timeout: float = 120) -> str:
 def session_whoami(session_ref: str, timeout: float = 120, tickets: bool = False) -> str:
     """Read Windows process, tokens, groups, privileges, and logon metadata; optionally ticket metadata."""
     return tool_session_whoami(_client(), session_ref, timeout=timeout, tickets=tickets)
+
+
+@mcp.tool()
+@_offload_tool
+def wmi_probe(session_ref: str, host: str, mode: str = "", b_cred_id: str = "",
+              b_domain: str = "", b_user: str = "", b_password: str = "", timeout: float = 120) -> str:
+    """Run the read-only WMI lifecycle diagnostic on a live Go agent session: read-only WMI connections under the active make_token identity with per-stage evidence (timestamps, thread identity, raw HRESULTs, token snapshots, not_run markers) and a verdict that never attributes a cause the evidence does not support. mode=held/cycled run the COM lifetime vs impersonation-cycling comparisons; mode=switch runs the A to B to A account-switch sequence, validating two distinct accounts when account-B credentials are supplied (b_cred_id from the workspace store, or b_domain/b_user/b_password — switch mode only). Deploys nothing and never echoes credentials."""
+    return tool_wmi_probe(
+        _client(), session_ref, host,
+        mode=mode, b_cred_id=b_cred_id, b_domain=b_domain,
+        b_user=b_user, b_password=b_password, timeout=timeout,
+    )
 
 
 # ── Credential store (workspace-scoped, passwords never logged or returned) ───

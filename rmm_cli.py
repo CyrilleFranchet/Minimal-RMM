@@ -79,6 +79,7 @@ RMM_CLI_COMMANDS = [
     "make_token",
     "rev2self",
     "lateral",
+    "wmi_probe",
     "uid",
     "whoami",
     "persist",
@@ -305,6 +306,37 @@ class RmmApiClient:
         return self.request(
             "POST", f"/api/v1/sessions/{session_id}/whoami",
             {"timeout": timeout, "tickets": tickets}, timeout=timeout + 5,
+        )
+
+    def wmi_probe(self, session_id: str, host: str, mode: str = "", b_cred_id: str = "",
+                  b_domain: str = "", b_user: str = "", b_password: str = "", timeout: float = 120):
+        """Run the read-only WMI lifecycle diagnostic on a Go session.
+
+        The switch mode validates account switching; the account-B
+        credentials come from the workspace credential store (b_cred_id) or
+        the direct fields, exactly like a forced lateral identity.
+        """
+        mode = (mode or "").strip().lower()
+        if mode and mode not in ("held", "cycled", "switch"):
+            raise ValueError("mode must be held, cycled, or switch")
+        b_domain = str(b_domain or "").strip()
+        b_user = str(b_user or "").strip()
+        if b_cred_id and (b_domain or b_user or b_password):
+            raise ValueError("Use either b_cred_id or the b_* fields, not both")
+        if not b_cred_id and not b_user and (b_domain or b_password):
+            raise ValueError("b_* credentials require a user")
+        if (b_cred_id or b_user) and mode != "switch":
+            raise ValueError("account-B credentials require the switch mode")
+        body = {
+            "host": host,
+            "mode": mode,
+            "timeout": timeout,
+            **({"b_cred_id": b_cred_id} if b_cred_id else {}),
+            **({"b_domain": b_domain, "b_user": b_user, "b_password": b_password}
+               if (b_user and not b_cred_id) else {}),
+        }
+        return self.request(
+            "POST", f"/api/v1/sessions/{session_id}/wmi-probe", body, timeout=timeout + 10,
         )
 
     # ── Credential store (workspace-scoped) ───────────────────────────────────
@@ -1341,6 +1373,38 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
     say(f"registered: {'yes' if data.get('registered') else 'no'}")
     if not data.get("registered"):
         warn("Lateral registration was not confirmed.")
+
+
+def cmd_wmi_probe(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    host = (args.host or "").strip()
+    if not host or host.startswith("-"):
+        die("A target hostname or IP address is required", 1)
+    b_cred_id = (getattr(args, "b_cred_id", None) or "").strip()
+    b_user = (getattr(args, "b_user", None) or "").strip()
+    b_password = getattr(args, "b_password", None) or ""
+    if b_cred_id and (b_user or b_password):
+        die("Use either -i <b_cred_id> or --b-user/--b-password, not both", 1)
+    if (b_cred_id or b_user) and args.mode != "switch":
+        die("Account-B credentials are supported only with the switch mode", 1)
+    say(f"WMI probe {args.mode or 'isolated'} against {host} (waits for the next beacon)...", err=True)
+    code, data = client.wmi_probe(
+        sid, host, args.mode,
+        timeout=args.timeout,
+        **({"b_cred_id": b_cred_id} if b_cred_id else {}),
+        **({"b_user": b_user, "b_password": b_password} if (b_user and not b_cred_id) else {}),
+    )
+    if args.json:
+        print_json(data)
+        if code != 200 or not data.get("ok"):
+            raise SystemExit(1)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"wmi probe failed ({code})" + (f": {detail}" if detail else ""), 1)
+    if not data.get("ok"):
+        die(f"wmi probe failed: {data.get('output')}", 1)
+    print(data.get("output") or "")
 
 
 def cmd_uid(client: RmmApiClient, state: dict, args):
@@ -2537,6 +2601,61 @@ def run_interactive(
                             warn("Lateral registration was not confirmed.")
                     _refresh_completion_sessions(client, state)
                 continue
+            if cmd == "wmi_probe":
+                parts = line.split()[1:]
+                cred_values = []
+                user_values = []
+                password_values = []
+                targets = []
+                index = 0
+                while index < len(parts):
+                    if parts[index] in ("-i", "--cred") and index + 1 < len(parts):
+                        cred_values.append(parts[index + 1])
+                        index += 2
+                        continue
+                    if parts[index] in ("-u", "--b-user") and index + 1 < len(parts):
+                        user_values.append(parts[index + 1])
+                        index += 2
+                        continue
+                    if parts[index] in ("-p", "--b-password") and index + 1 < len(parts):
+                        password_values.append(parts[index + 1])
+                        index += 2
+                        continue
+                    targets.append(parts[index])
+                    index += 1
+                identity_values = cred_values + user_values + password_values
+                host = targets[0] if targets else ""
+                mode = targets[1] if len(targets) > 1 else ""
+                identity_valid = (not identity_values or
+                                  (len(cred_values) <= 1 and len(user_values) <= 1 and len(password_values) <= 1 and
+                                   ((cred_values and not user_values and not password_values) or
+                                    (user_values and not cred_values))))
+                if (not host or len(targets) > 2 or
+                        any(target.startswith("-") for target in targets) or
+                        (mode and mode not in ("held", "cycled", "switch")) or
+                        (identity_values and mode != "switch") or
+                        not identity_valid):
+                    warn("Usage: /wmi_probe <host> [held|cycled|switch] [-i <b_cred_id> | -u <b_user> [-p <b_password>] (switch only: validates two accounts)]")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                say(f"WMI probe {mode or 'isolated'} against {host} (waits for the next beacon)...")
+                code, data = client.wmi_probe(
+                    sid, host, mode,
+                    **({"b_cred_id": cred_values[0]} if cred_values else {}),
+                    **({"b_user": user_values[0],
+                        "b_password": (password_values[0] if password_values else "")}
+                       if (user_values and not cred_values) else {}))
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"wmi probe failed ({code})" + (f": {detail}" if detail else ""))
+                elif not data.get("ok"):
+                    warn(data.get("output") or "wmi probe failed")
+                else:
+                    say(data.get("output") or "(no output)")
+                continue
             if cmd == "whoami":
                 options = line.split()[1:]
                 if options not in ([], ["--tickets"]):
@@ -3220,6 +3339,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")
     sp_lat.add_argument("--verify-timeout", type=float, default=120, help="Deprecated compatibility option; no probe is sent")
     sp_lat.set_defaults(func=cmd_lateral)
+
+    sp_wmi_probe = sub.add_parser(
+        "wmi-probe",
+        parents=[shared],
+        help="Run the read-only WMI lifecycle diagnostic on a Go session",
+    )
+    sp_wmi_probe.add_argument("host", help="Target hostname or IP address")
+    sp_wmi_probe.add_argument("--mode", choices=("held", "cycled", "switch"), default="",
+                              help="Lifecycle comparison: held (COM held, impersonation held), cycled (COM held, impersonation reverted/reapplied), switch (A-B-A account switch)")
+    sp_wmi_probe.add_argument("--session", "-s", default=None, help="Source session ID")
+    sp_wmi_probe.add_argument("-i", dest="b_cred_id", default=None,
+                              help="Credential ID for account B (switch mode only: validates two accounts)")
+    sp_wmi_probe.add_argument("--b-user", dest="b_user", default=None,
+                              help="Account B as DOMAIN\\user or plain user (switch mode only, if no credential ID)")
+    sp_wmi_probe.add_argument("--b-password", dest="b_password", default=None,
+                              help="Password for account B (if no credential ID)")
+    sp_wmi_probe.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the probe report")
+    sp_wmi_probe.set_defaults(func=cmd_wmi_probe)
 
     sp_uid = sub.add_parser("uid", parents=[shared], help="Show the identity used by a Go agent session")
     sp_uid.add_argument("--session", "-s", default=None)
