@@ -3,9 +3,75 @@
 package main
 
 import (
+	"errors"
 	"strings"
+	"syscall"
 	"testing"
 )
+
+func TestWMIProbePreservesCallerIdentity(t *testing.T) {
+	// No target or valid credential is needed: NEW_CREDENTIALS creates a
+	// local logon context without validating this fixture against a domain.
+	restoreTest, err := suspendServerIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		procRevertToSelf.Call()
+		if err := restoreTest(); err != nil {
+			t.Error(err)
+		}
+	}()
+	token, _, err := captureLateralExplicitIdentity(winrmCredentials{domain: "LAB", user: "probe-fixture", password: "unused"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer token.Close()
+	failure := errors.New("fixture early failure")
+	for _, callerToken := range []bool{false, true} {
+		for _, runErr := range []error{nil, failure} {
+			procRevertToSelf.Call()
+			if callerToken {
+				if ok, _, err := procImpersonateLoggedOnUser.Call(uintptr(token)); ok == 0 {
+					t.Fatal(err)
+				}
+			}
+			before := wmiProbeCaptureThreadToken()
+			called := false
+			result, gotErr := wmiProbeWithCallerIdentity(func() (string, error) {
+				called = true
+				idle := wmiProbeCaptureThreadToken()
+				if idle.err != nil || idle.present {
+					t.Errorf("run did not enter clean: %+v", idle)
+				}
+				// Model a runner applying and clearing a step token before
+				// returning either evidence or an early machinery error.
+				if ok, _, err := procImpersonateLoggedOnUser.Call(uintptr(token)); ok == 0 {
+					t.Fatal(err)
+				}
+				if ok, _, err := procRevertToSelf.Call(); ok == 0 {
+					t.Fatal(err)
+				}
+				return "fixture evidence", runErr
+			})
+			after := wmiProbeCaptureThreadToken()
+			if !called || result != "fixture evidence" || !errors.Is(gotErr, runErr) {
+				t.Fatalf("callerToken=%v: result=%q err=%v", callerToken, result, gotErr)
+			}
+			if before.err != nil || after.err != nil || before.present != after.present ||
+				(before.present && (before.authID != after.authID || before.sid != after.sid || before.impLevel != after.impLevel)) {
+				t.Fatalf("caller identity was not preserved: before=%+v after=%+v", before, after)
+			}
+		}
+	}
+}
+
+func TestWMIProbeTokenCaptureFailureIsNotAbsence(t *testing.T) {
+	snapshot := wmiProbeCaptureToken(syscall.Token(^uintptr(0) - 100))
+	if snapshot.err == nil || !strings.Contains(snapshot.identityDetail(wmiProbeToken{}), "token capture failed") {
+		t.Fatalf("invalid handle must not report no thread token: %+v", snapshot)
+	}
+}
 
 func TestWMIProbeProxyImpersonationLabels(t *testing.T) {
 	for level, want := range []string{"default", "anonymous", "identification", "impersonation", "delegation", "other"} {

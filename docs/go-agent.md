@@ -523,8 +523,31 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   raises the agent's identity-boundary fault the way the lateral worker
   does, so a pooled OS thread never returns carrying the impersonation
   silently. COM teardown is balanced: the deferred `CoUninitialize`
-  only fires when the explicit success teardown did not. An unexecuted
-  stage is never reported with a result. Failure-cleanup validation is
+  only fires when the explicit success teardown did not. Entry and exit
+  follow a consistent ownership contract: `wmiProbeExecute` first
+  suspends the caller's incoming thread impersonation through the
+  established `suspendServerIdentity` pattern — capture the caller's
+  token, revert it, and restore it on every exit path — so the probe
+  never destroys the command thread's make_token state, its own revert
+  enforcement operates on a verified clean entry, and a failure to
+  suspend or to restore raises the identity-boundary fault like the
+  server-request path (the report is kept next to the failure notice). In
+  particular, `wmiProbeWithCallerIdentity` keeps the boundary pinned,
+  checks the restored logon ID, SID, and impersonation level, and calls
+  `wmiProbeExecuteBody` only after verifying clean entry. Token-capture
+  errors are distinct from token absence; failed captures cannot satisfy
+  a lifecycle clean-entry or cleanup check. Windows regression
+  `TestWMIProbePreservesCallerIdentity` exercises real local token handling
+  with and without an incoming token, on successful and early-error exits;
+  `TestWMIProbeTokenCaptureFailureIsNotAbsence` covers invalid-handle reporting.
+  In
+  the two-account variant, identical SIDs between A and B are normal for
+  network-only logons of the same account — the AuthenticationId
+  distinguishes the logon sessions, and the target events establish the
+  actual outbound accounts. A report rendered twice by a client surface
+  (identical PID, OS thread, timestamps, and token identifiers) is the
+  same execution displayed twice, not two runs. An unexecuted stage is
+  never reported with a result. Failure-cleanup validation is
   part of the protocol: an unreachable host (connect denied, downstream
   stages not_run, cleanup verified), a denied connection (the switch B
   step), and account changes after a failure (the A2 step following the

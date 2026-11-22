@@ -49,6 +49,7 @@ type wmiProbeStage struct {
 // with every token modification, catching changes an unchanged logon ID
 // would miss.
 type wmiProbeToken struct {
+	err        error
 	present    bool
 	tokenID    uint64
 	authID     uint64
@@ -197,6 +198,9 @@ func (r wmiProbeResult) report() string {
 // reference: the invariant identity fields (logon session and SID) and the
 // change detector (ModifiedId).
 func (t wmiProbeToken) identityDetail(reference wmiProbeToken) string {
+	if t.err != nil {
+		return "token capture failed: " + t.err.Error()
+	}
 	if !t.present {
 		return "no thread token"
 	}
@@ -284,10 +288,63 @@ func wmiProbeVerdict(host string, first, second wmiProbeResult) string {
 // credentials travel like make_token's: beacon command body only, never
 // logs or report text). Neither the report nor the verdict names a cause
 // beyond the recorded evidence.
-func wmiProbeExecute(host, mode string, bIdentity *lateralIdentity) (string, error) {
+// wmiProbeExecute runs the diagnostic against one host under a consistent
+// entry/exit identity contract: the caller's incoming thread impersonation
+// (the active make_token on the command thread) is captured and reverted
+// at entry — the established suspendServerIdentity pattern — and restored
+// on every exit path, so the stored make_token state and the effective
+// thread identity stay in agreement and the probe's own revert
+// enforcement operates on a verified clean entry instead of destroying the
+// caller's state. A failure to suspend or restore raises the agent's
+// identity-boundary fault, like the server-request path.
+func wmiProbeExecute(host, mode string, bIdentity *lateralIdentity) (result string, err error) {
+	return wmiProbeWithCallerIdentity(func() (string, error) {
+		return wmiProbeExecuteBody(host, mode, bIdentity)
+	})
+}
+
+// wmiProbeWithCallerIdentity owns the diagnostic's clean entry and restores
+// the exact incoming logon context on success and early errors alike.
+func wmiProbeWithCallerIdentity(run func() (string, error)) (result string, err error) {
 	if identityBoundaryFault.Load() {
 		return "", errIdentityUnsafe
 	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	entry := wmiProbeCaptureThreadToken()
+	if entry.err != nil {
+		return "", fmt.Errorf("capture the caller identity for the probe: %w", entry.err)
+	}
+	restore, suspendErr := suspendServerIdentity()
+	if suspendErr != nil {
+		return "", identityBoundaryFailure(fmt.Errorf("suspend the caller identity for the probe: %w", suspendErr))
+	}
+	defer func() {
+		restoreErr := restore()
+		if restoreErr == nil {
+			after := wmiProbeCaptureThreadToken()
+			if after.err != nil {
+				restoreErr = after.err
+			} else if after.present != entry.present || (entry.present &&
+				(after.authID != entry.authID || after.sid != entry.sid || after.impLevel != entry.impLevel)) {
+				restoreErr = errors.New("the caller identity did not match its entry snapshot")
+			}
+		}
+		if restoreErr != nil {
+			err = errors.Join(err, identityBoundaryFailure(fmt.Errorf("restore the caller identity after the probe: %w", restoreErr)))
+			result += "\nPROBE EXIT CONTRACT FAILED: the caller's thread identity could not be restored; the agent's identity boundary is now terminal"
+		}
+	}()
+	idle := wmiProbeCaptureThreadToken()
+	if idle.err != nil || idle.present {
+		return "", errors.New("the probe could not verify a clean entry thread")
+	}
+	return run()
+}
+
+// wmiProbeExecuteBody dispatches read-only modes after entry impersonation
+// has been suspended by wmiProbeWithCallerIdentity.
+func wmiProbeExecuteBody(host, mode string, bIdentity *lateralIdentity) (string, error) {
 	if mode == "held" || mode == "cycled" || mode == "switch" {
 		if bIdentity != nil && mode != "switch" {
 			return "", errors.New("the account-B identity is valid only with the switch mode")
@@ -526,7 +583,7 @@ func wmiProbeHeld(host string, token syscall.Token, source wmiProbeToken) (resul
 		start = time.Now()
 		after := wmiProbeCaptureThreadToken()
 		result.stageInfo("token-after-cleanup", time.Since(start), after.identityDetail(wmiProbeToken{}))
-		if after.present {
+		if after.err != nil || after.present {
 			result.CleanupFailed = true
 			result.stageNotRun("cleanup-enforcement", "a thread token remains after the final revert — identity-boundary fault raised; the run's verdict is invalid")
 			result.Err = errors.Join(result.Err, identityBoundaryFailure(errors.New("thread token remains after the held run's cleanup")))
@@ -648,7 +705,7 @@ func wmiProbeCycled(host string, token syscall.Token, source wmiProbeToken) (res
 		start = time.Now()
 		after := wmiProbeCaptureThreadToken()
 		result.stageInfo("token-after-cleanup", time.Since(start), after.identityDetail(wmiProbeToken{}))
-		if after.present {
+		if after.err != nil || after.present {
 			result.CleanupFailed = true
 			result.stageNotRun("cleanup-enforcement", "a thread token remains after the final revert — identity-boundary fault raised; the run's verdict is invalid")
 			result.Err = errors.Join(result.Err, identityBoundaryFailure(errors.New("thread token remains after the cycled run's cleanup")))
@@ -804,7 +861,7 @@ func wmiProbeLifecycleRun(host string, steps []wmiProbeLifecycleStep) (result wm
 		start = time.Now()
 		after := wmiProbeCaptureThreadToken()
 		result.stageInfo("token-after-cleanup", time.Since(start), after.identityDetail(wmiProbeToken{}))
-		if after.present {
+		if after.err != nil || after.present {
 			result.CleanupFailed = true
 			result.stageNotRun("cleanup-enforcement", "a thread token remains after the final revert — identity-boundary fault raised; the run's verdict is invalid")
 			result.Err = errors.Join(result.Err, identityBoundaryFailure(errors.New("thread token remains after the final cleanup")))
@@ -854,7 +911,7 @@ func wmiProbeLifecycleRun(host string, steps []wmiProbeLifecycleStep) (result wm
 		start = time.Now()
 		idle := wmiProbeCaptureThreadToken()
 		result.stageInfo("token-idle@"+step.label, time.Since(start), idle.identityDetail(wmiProbeToken{}))
-		if idle.present {
+		if idle.err != nil || idle.present {
 			result.Err = fmt.Errorf("a thread token remained before step %s: the identity state this report would claim is not enforceable", step.label)
 			result.notRunRemainingSteps(steps, index, "identity contract violated: leftover thread token")
 			return result
@@ -996,6 +1053,7 @@ func wmiProbeDualVerdict(host string, run wmiProbeResult) string {
 	return fmt.Sprintf("verdict: A → B → A over two distinct accounts completed with HRESULTs A1=0x%08x B=0x%08x A2=0x%08x under one COM lifetime held throughout."+
 		" With different target permissions per account, either B outcome is expected on its own; the validation is the presentation, which the client cannot observe:"+
 		" correlate the target's authentication events per step — the B step must present account B's name (its HRESULT then reflects account B's permissions) and A2 must present account A's."+
+		" Identical SIDs between A and B are normal for network-only logons of the same account: the AuthenticationId (logon session) distinguishes the steps, and the target events establish the actual outbound accounts."+
 		" The critical failure is a step presenting the other account's name — unintended identity reuse; an A2 failure after a well-formed B step implicates the identity-return step.",
 		run.ConnectHR, run.SecondConnectHR, run.ThirdConnectHR)
 }
@@ -1079,7 +1137,7 @@ func wmiProbeRun(host string, identity *winrmCredentials, token syscall.Token, s
 			start = time.Now()
 			after := wmiProbeCaptureThreadToken()
 			result.stageInfo("token-after-cleanup", time.Since(start), after.identityDetail(wmiProbeToken{}))
-			if after.present {
+			if after.err != nil || after.present {
 				result.CleanupFailed = true
 				result.stageNotRun("cleanup-enforcement", "a thread token remains after the final revert — identity-boundary fault raised; the run's verdict is invalid")
 				result.Err = errors.Join(result.Err, identityBoundaryFailure(errors.New("thread token remains after the probe's cleanup")))
@@ -1102,7 +1160,7 @@ func wmiProbeCaptureThreadToken() wmiProbeToken {
 		if errno, valid := openErr.(syscall.Errno); valid && errno == syscall.Errno(1008) {
 			return wmiProbeToken{}
 		}
-		return wmiProbeToken{sid: fmt.Sprintf("capture-error: %v", openErr)}
+		return wmiProbeToken{err: fmt.Errorf("open thread token: %w", openErr)}
 	}
 	defer handle.Close()
 	return wmiProbeReadToken(syscall.Token(handle))
@@ -1138,7 +1196,7 @@ func wmiProbeReadToken(handle syscall.Token) wmiProbeToken {
 	ok, _, statsErr := get.Call(uintptr(handle), 10, uintptr(unsafe.Pointer(&statistics)),
 		unsafe.Sizeof(statistics), uintptr(unsafe.Pointer(&returned)))
 	if ok == 0 {
-		return wmiProbeToken{sid: fmt.Sprintf("stats-error: %v", statsErr)}
+		return wmiProbeToken{err: fmt.Errorf("query token statistics: %w", statsErr)}
 	}
 	result := wmiProbeToken{
 		present:    true,
@@ -1152,6 +1210,7 @@ func wmiProbeReadToken(handle syscall.Token) wmiProbeToken {
 	get.Call(uintptr(handle), 1, 0, 0, uintptr(unsafe.Pointer(&needed)))
 	if needed == 0 || needed > 4096 {
 		result.sid = fmt.Sprintf("sid-query-error: needed=%d", needed)
+		result.err = errors.New(result.sid)
 		return result
 	}
 	buffer := make([]byte, needed)
@@ -1159,6 +1218,7 @@ func wmiProbeReadToken(handle syscall.Token) wmiProbeToken {
 		uintptr(needed), uintptr(unsafe.Pointer(&returned)))
 	if ok == 0 {
 		result.sid = fmt.Sprintf("user-query-error: %v", userErr)
+		result.err = errors.New(result.sid)
 		return result
 	}
 	sidPtr := *(*uintptr)(unsafe.Pointer(&buffer[0]))
@@ -1166,6 +1226,7 @@ func wmiProbeReadToken(handle syscall.Token) wmiProbeToken {
 	convOk, _, convErr := procProbeConvertSidToStringSidW.Call(sidPtr, uintptr(unsafe.Pointer(&stringPtr)))
 	if convOk == 0 || stringPtr == nil {
 		result.sid = fmt.Sprintf("sid-convert-error: %v", convErr)
+		result.err = errors.New(result.sid)
 		return result
 	}
 	result.sid = wmiProbeReadWide(stringPtr)

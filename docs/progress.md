@@ -1,5 +1,58 @@
 # Progress Log
 
+## 2026-11-22 — Probe caller-identity verification and regressions
+
+- Reviewed the pending preserve/restore fix for the incoming make_token
+  thread token. `wmiProbeWithCallerIdentity` now owns a pinned entry/exit
+  scope, verifies the clean entry, and compares the restored caller's logon
+  ID, SID, and impersonation level with the entry snapshot.
+  `wmiProbeExecuteBody` handles diagnostic dispatch inside that scope.
+- Token inspection errors are explicit errors, not an absent thread token.
+  Lifecycle entry and cleanup checks reject failed token observations.
+- Added Windows-only regressions for callers with and without impersonation,
+  successful and early-error diagnostic exits, preservation of recorded
+  evidence, and failed token inspection. The tests use local network-only
+  fixture logons without contacting a target or domain controller.
+- Native Windows execution of these regressions and a rebuilt-agent switch
+  probe remain required; cross-compilation alone does not validate runtime
+  token restoration.
+
+## 2026-11-23 — Probe entry/exit ownership contract; review clarifications
+
+- Review finding: the probe's RevertToSelf removes the caller's incoming
+  thread impersonation. Since the diagnostic can run on the command
+  goroutine's OS thread — the thread the active make_token impersonates —
+  the probe would leave the stored make_token state (activeToken,
+  tokenActive) disagreeing with the effective thread identity, and the
+  per-step entry check correctly refused un-owned state (the field A → B
+  → A attempt aborted before any connect with all three connect stages
+  not_run, exactly because the incoming make_token impersonation was
+  present at entry).
+- Fix: `wmiProbeExecute` now follows the repo's established preserve/
+  restore contract — `suspendServerIdentity` captures the caller's
+  incoming thread token, reverts it for the run, and the deferred restore
+  re-applies it on every exit path — so the probe owns its thread state:
+  verified clean entry (the abort-on-leftover-token check stays, now
+  deterministic instead of tripping on the caller's state), enforced
+  cleanup inside, and the caller's make_token identity returned at exit.
+  A suspend or restore failure raises the identity-boundary fault like
+  the server-request path, and a restore failure keeps the report next to
+  the exit-contract notice (`main.go` appends the recorded evidence
+  above the failure text instead of discarding it).
+- Review clarifications recorded with the fix: identical SIDs between
+  accounts A and B are normal for network-only logons of the same
+  account — the AuthenticationId (logon session) distinguishes the steps,
+  and target events establish the actual outbound accounts (noted in the
+  dual verdict text); and a report rendered twice by a client surface —
+  identical PID, OS thread, timestamps, and token identifiers — is the
+  same execution displayed twice, not two runs. The A → B → A experiment
+  remains untested until the entry/exit contract lands in a rebuilt agent
+  and the run reaches its connect stages.
+- Validations: host suites (default and rmmdebug), all four Windows build
+  variants, the probe test binary, and `go vet` on the probe files pass;
+  `docs/go-agent.md` states the entry/exit contract, the same-SID note,
+  and the duplicated-render note.
+
 ## 2026-11-23 — Review fixes before Windows validation: balanced COM teardown and enforced identity cleanup
 
 - Review finding (diff inspection, state unchanged): the lifecycle runner
