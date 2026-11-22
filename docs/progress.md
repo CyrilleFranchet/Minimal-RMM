@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-11-22 — Switch mode: the A → B → A account-switch diagnostic under one COM lifetime
+
+- Operator analysis: the held and cycled modes cannot establish correct
+  account switching — they reuse one identity — and chaining separate
+  probe commands does not work either, because each run ends its own COM
+  lifetime. The missing experiment is a read-only A → B → A sequence
+  inside one continuous COM initialization, with the readings bound before
+  the run: A1 (the make_token identity, ARCHER\Administrator in the lab)
+  must connect and query; B (the process identity, ARCHER\cfranchet142 —
+  no thread token, verified) is expected to be denied, matching the
+  baseline; A2 must reconnect as Administrator. The critical failure is B
+  succeeding while the target still sees the Administrator identity —
+  unintended identity reuse. Conversely, B authenticating as the process
+  account and being denied, followed by A2 succeeding, supports correct
+  identity switching for that sequence.
+- New `switch` mode (`__WMI_PROBE__ <host> switch`; `wmiProbeSwitch`,
+  `wmiProbeSwitchVerdict`): one locked OS thread and one
+  `CoInitializeEx`/`CoInitializeSecurity` held across three fully
+  instrumented read-only connect sequences (`@1`/`@2`/`@3`, with the same
+  token-snapshot/blanket/HRESULT evidence); the B step reverts and records
+  a token snapshot that must show no thread token (a present token during
+  B makes the verdict declare the run unreliable instead of reading the
+  comparison), each step's WMI proxies are released before the identity
+  changes, and A2 reimpersonates from a fresh duplicate. The verdict
+  keeps the discipline: B-succeeding names both readings (unintended
+  reuse versus under-assumed process rights) with the target events as
+  arbiter; the B-denied-then-A2-success path is phrased as support for
+  this sequence, never a general claim; an A2 denial names the
+  identity-return step as implicated. Switch requires an active make_token;
+  the standalone binary exposes it through `RMM_WMI_PROBE_MODE=switch`.
+- Docs: `docs/go-agent.md` lifecycle-mode bullet extended with the
+  three-step contract; the README lateral-mode row lists `switch`. Parser
+  and regressions: `TestParseWmiProbeCommand` accepts `switch` and still
+  rejects unknown modes; host suites, rmmdebug, all Windows build variants,
+  and the probe binary pass.
+
 ## 2026-11-22 — Display stored passwords when editing credentials
 
 - Edit explicitly fetches stored passwords and displays the selected credential's

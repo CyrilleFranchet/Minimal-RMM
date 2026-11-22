@@ -16,6 +16,7 @@ func TestParseWmiProbeCommand(t *testing.T) {
 		"__WMI_PROBE__ fd00::8",
 		"__WMI_PROBE__ 10.254.100.32 HELD",
 		"__WMI_PROBE__ 10.254.100.32 cycled",
+		"__WMI_PROBE__ 10.254.100.32 switch",
 	} {
 		host, mode, err := parseWmiProbeCommand(line)
 		if err != nil {
@@ -25,11 +26,10 @@ func TestParseWmiProbeCommand(t *testing.T) {
 			t.Fatalf("%q: empty host", line)
 		}
 		want := ""
-		if strings.Contains(strings.ToLower(line), "held") {
-			want = "held"
-		}
-		if strings.Contains(strings.ToLower(line), "cycled") {
-			want = "cycled"
+		for _, word := range []string{"held", "cycled", "switch"} {
+			if strings.Contains(strings.ToLower(line), word) {
+				want = word
+			}
 		}
 		if mode != want {
 			t.Fatalf("%q: mode=%q, want %q", line, mode, want)

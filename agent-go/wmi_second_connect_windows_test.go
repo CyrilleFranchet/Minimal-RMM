@@ -65,20 +65,24 @@ func TestWMISecondConnectProbe(t *testing.T) {
 	t.Logf("source token authID=0x%016x modifiedID=0x%016x sid=%s",
 		source.authID, source.modifiedID, source.sid)
 
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("RMM_WMI_PROBE_MODE")), "held") ||
-		strings.EqualFold(strings.TrimSpace(os.Getenv("RMM_WMI_PROBE_MODE")), "cycled") {
-		mode := strings.ToLower(strings.TrimSpace(os.Getenv("RMM_WMI_PROBE_MODE")))
-		if mode == "held" {
+	if mode := strings.ToLower(strings.TrimSpace(os.Getenv("RMM_WMI_PROBE_MODE"))); mode == "held" || mode == "cycled" || mode == "switch" {
+		switch mode {
+		case "held":
 			held := wmiProbeHeld(target, token, source)
 			t.Logf("[held COM lifetime: one continuous initialization, impersonation held]\n%s", held.report())
 			t.Log(wmiProbeHeldVerdict(target, held))
 			t.Log(wmiProbeChecklist(target, held.StartUTC, held.EndUTC))
-			return
+		case "cycled":
+			cycled := wmiProbeCycled(target, token, source)
+			t.Logf("[cycled: one continuous COM initialization, impersonation reverted and reapplied between the connects]\n%s", cycled.report())
+			t.Log(wmiProbeCycledVerdict(target, cycled))
+			t.Log(wmiProbeChecklist(target, cycled.StartUTC, cycled.EndUTC))
+		default:
+			switched := wmiProbeSwitch(target, token, source)
+			t.Logf("[switch: one continuous COM initialization, A → B → A: make_token identity, process identity, make_token identity]\n%s", switched.report())
+			t.Log(wmiProbeSwitchVerdict(target, switched))
+			t.Log(wmiProbeChecklist(target, switched.StartUTC, switched.EndUTC))
 		}
-		cycled := wmiProbeCycled(target, token, source)
-		t.Logf("[cycled: one continuous COM initialization, impersonation reverted and reapplied between the connects]\n%s", cycled.report())
-		t.Log(wmiProbeCycledVerdict(target, cycled))
-		t.Log(wmiProbeChecklist(target, cycled.StartUTC, cycled.EndUTC))
 		return
 	}
 

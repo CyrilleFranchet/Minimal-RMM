@@ -486,30 +486,34 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   as an ambient wmiexec — which is the point of running it in the live
   agent. Success of the explicit comparison establishes only that this
   connection succeeded; it does not guarantee later deployments.
-- The optional lifecycle modes (`__WMI_PROBE__ <host> held` and
-  `__WMI_PROBE__ <host> cycled`; the parser accepts exactly those words)
-  both run their connections inside one continuous COM initialization on a
-  single locked OS thread: one `CoInitializeEx` and one
-  `CoInitializeSecurity`, two complete instrumented connect sequences
-  (stages suffixed `@1`/`@2`, same token/blanket/HRESULT evidence), and a
-  single `CoUninitialize` teardown at the end. The difference is the
-  impersonation: `held` keeps one impersonation across both connects,
-  while `cycled` reverts and reapplies a fresh duplicate between them —
-  mirroring the default mode's per-attempt identity handling. Held
-  therefore changes two variables at once versus the isolated mode (the
-  COM lifecycle and the impersonation continuity), so its success narrows
-  the suspect set to the two without attributing the failure to
-  `CoUninitialize` specifically; `cycled` separates the variables:
-  both connects succeeding there makes the COM initialization/teardown
-  lifecycle the stronger suspect (impersonation cycling alone does not
-  reproduce the denial), while a denied second connect makes the
-  impersonation cycling — or its interaction with COM/RPC state — the
-  stronger suspect. Verdicts keep the evidence discipline: suspects, never
-  proven causes, with fresh-process reruns and target-event correlation
-  named for corroboration. Both modes are ambient-only; `cycled` requires
-  an active make_token and refuses without one. The standalone probe
-  binary exposes them through `RMM_WMI_PROBE_MODE=held` and
-  `RMM_WMI_PROBE_MODE=cycled`. The target-evidence checklist includes
+- The optional lifecycle modes (`__WMI_PROBE__ <host> held`,
+  `__WMI_PROBE__ <host> cycled`, and `__WMI_PROBE__ <host> switch`; the
+  parser accepts exactly those words) run their connections inside one
+  continuous COM initialization on a single locked OS thread: one
+  `CoInitializeEx` and one `CoInitializeSecurity`, complete instrumented
+  connect sequences (stages suffixed `@1`/`@2`/`@3`, same
+  token/blanket/HRESULT evidence), and a single `CoUninitialize` teardown
+  at the end. Held keeps one impersonation across both connects; cycled
+  reverts and reapplies a fresh duplicate between them (the default mode's
+  identity handling with the held COM lifetime), separating the COM-
+  lifecycle suspect from the impersonation-cycling suspect. Switch is the
+  A → B → A account-switch diagnostic: A is the active make_token identity,
+  B is the process identity (revert with a token snapshot that verifies the
+  absence of a thread token), and A2 reapplies the make_token identity from
+  a fresh duplicate — three read-only class queries under one continuous
+  COM lifetime, each step's proxies released before the identity changes.
+  Its readings are bound before the run: B succeeding under the process
+  identity is only decipherable through the target events (unintended
+  identity reuse — the target still seeing the make_token account — versus
+  the process account having more rights than the baseline assumed); B
+  authenticating as the process account and being denied followed by A2
+  reconnecting supports correct identity switching for this sequence, and
+  the verdict never generalizes beyond it. Switch requires an active
+  make_token and refuses without one. Verdicts keep the evidence
+  discipline: suspects, never proven causes, with fresh-process reruns
+  and target-event correlation named for corroboration. The standalone
+  probe binary exposes the modes through `RMM_WMI_PROBE_MODE=held`,
+  `=cycled`, and `=switch`. The target-evidence checklist includes
   `RecordId` and the round-trip timestamp form: Security events can carry
   subsecond precision that CSV formatting can discard, and `RecordId`
   establishes event order within the log without identifying which probe
