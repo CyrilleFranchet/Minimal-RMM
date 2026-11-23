@@ -142,14 +142,19 @@ only at source-agent shutdown (`stopHeldWinRMShells`). Consequences:
 The agent runs inside `powershell.exe`, so `os.Executable()` and
 `os.Args[0]` name the host process. Operations that relaunch or copy the
 agent binary are refused with a clear operator-facing error (guarded by the
-`RMM_IN_MEMORY` marker): `spawn`, `spawnas`, the legacy `wmiexec`/`winrm`
-lateral wire methods from the deployed session, PE plugin execution
-(socks/tun channels), and persistence install. Lateral deployments are
-guarded on the real dependency, not the hosting mode: loader wire methods
-stream a server-staged artifact, and `psexec` stages the embedded dedicated
-lateral service with a PowerShell cleanup worker, so an in-memory source may
-run them; the loader chain still requires native Windows validation in this
-hosting mode. Command execution, file operations, exfiltration, and
+`RMM_IN_MEMORY` marker): `spawn`, the legacy `wmiexec`/`winrm` lateral wire
+methods from the deployed session, PE plugin execution (socks/tun channels),
+and persistence install. Lateral deployments and `spawnas` are guarded on
+the real dependency, not the hosting mode: loader wire methods stream a
+server-staged artifact, `psexec` stages the embedded dedicated lateral
+service with a PowerShell cleanup worker, and `spawnas` fetches the
+server-staged agent build and starts it off disk under the requested
+identity, so an in-memory source may run all three (the staged variants
+still require native Windows validation in this hosting mode). The
+deployed session itself remains memory-hosted, so it cannot spawn or
+install persistence; a staged `spawnas` from it creates a full on-disk
+session under the new identity when that is what the objective needs.
+Command execution, file operations, exfiltration, and
 beaconing are intended
 to remain available, but have not been validated in this hosting mode.
 Redeploy on disk (wmiexec/psexec, staged build) when a session

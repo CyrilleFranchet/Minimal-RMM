@@ -2314,7 +2314,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "spawnas",
-            "description": "Spawn a new agent copy on the same host under a different process identity using CreateProcessWithLogonW. Children inherit source build tracing without a debug flag; normal sources do not trace by default. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly.",
+            "description": "Spawn a new agent session on the same host under a different process identity using CreateProcessWithLogonW. The deployment streams the server-staged workspace agent build instead of relaunching the source binary, so memory-hosted source sessions can run it; the spawned child is a full on-disk session that outlives its source. Children inherit source build tracing without a debug flag; normal sources do not trace by default. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly.",
             "parameters": {
                 "type": "object",
                 "properties": {

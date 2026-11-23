@@ -57,9 +57,10 @@ class DebugDeploymentTests(unittest.TestCase):
                             command = server.exec_and_wait.call_args.args[1]
                             payload = json.loads(command.split("\n", 1)[1])
                             self.assertNotIn("debug", payload)
-                # Every wmiexec/winrm deployment now stages the workspace
-                # artifact once: two methods across the two build modes.
-                self.assertEqual(server.create_staging.call_count, 4)
+                # Every staged deployment now reads the workspace artifact
+                # once: spawnas plus the two lateral loader methods, across
+                # the two build modes.
+                self.assertEqual(server.create_staging.call_count, 6)
 
     def test_psexec_uses_exact_source_variant_and_workspace_owner(self):
         server = self._server()

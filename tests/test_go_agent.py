@@ -26,6 +26,7 @@ class GoAgentTests(unittest.TestCase):
                 "platform_other.go",
                 "platform_windows.go",
                 "spawn.go",
+                "spawnas_staged.go",
                 "runas_output.go",
                 "make_token.go",
                 "make_token_windows.go",

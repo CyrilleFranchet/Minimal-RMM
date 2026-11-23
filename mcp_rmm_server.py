@@ -725,7 +725,7 @@ def spawnas(
     register_timeout: float = 60,
     verify_timeout: float = 120,
 ) -> str:
-    """Spawn under a different identity using CreateProcessWithLogonW. Children inherit the source agent's compiled debug mode, selected only at build time. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly."""
+    """Spawn under a different identity using CreateProcessWithLogonW. The deployment streams the server-staged workspace agent build instead of relaunching the source binary, so memory-hosted source sessions can run it; the spawned child is a full on-disk session that outlives its source. Children inherit the source agent's compiled debug mode, selected only at build time. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly."""
     return tool_spawnas(
         _client(), session_ref,
         cred_id=cred_id, user=user, domain=domain, password=password,

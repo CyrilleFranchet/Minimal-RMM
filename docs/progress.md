@@ -1,5 +1,53 @@
 # Progress Log
 
+## 2026-11-23 — Staged spawnas for memory-hosted sources
+
+- Compatibility review: the legacy `__SPAWNAS__` command launches
+  `os.Executable()` under CreateProcessWithLogonW, so from a memory-hosted
+  source it would relaunch `powershell.exe` without any agent capability —
+  it failed closed with the `RMM_IN_MEMORY` guard by design.
+- Implemented the in-memory-capable variant (`agent-go/spawnas_staged.go`,
+  `__SPAWNAS_STAGED__` wire command): the source agent fetches the masked,
+  digest-verified, workspace-owned agent build from the listener's
+  single-use staging endpoint, writes it to the session-scoped path
+  `%TEMP%\minimal-rmm-agent-<session>.exe` with `O_EXCL` (never overwriting
+  an existing image), and starts that image under the explicit credentials
+  through the unchanged `spawnWithLogonDetached` machinery — no fallback,
+  no make_token substitution, the same
+  `spawned session=<id> pid=<pid> identity=<label>` reply. The guard now
+  follows the dependency, not the hosting mode: the staged command works
+  identically from an on-disk agent and from inside a loader host, and the
+  spawned child is a full on-disk session with the complete command set
+  that outlives its source.
+- Wire compatibility follows the loader-chain rule: the new fields travel
+  under a new wire name, so older agents reject the request instead of
+  ignoring the staging fields and relaunching their own image; the legacy
+  `__SPAWNAS__` command remains implemented for old control planes and
+  keeps refusing from an in-memory session (fail-closed pairing). Rebuild
+  agents when upgrading the control plane.
+- Control plane: `spawnas` now stages the workspace-owned build exactly like
+  the lateral chain — debug-mode- and workspace-matched artifact selection
+  (`agent_payload_unavailable` / `debug_payload_unavailable` without one),
+  masked staging with digest, beacon-delivery allowance inside the agent's
+  worker budget, `stage_status` in the result, and 503 mapping on the REST
+  route. No operator-facing parameter changed (identity via `cred_id` or
+  direct credentials on every surface, REST → CLI → MCP unchanged).
+- Validation on the host: Go tests pin the staged payload contract (stage
+  reference and digest required, debug rejected, identity split, timeout
+  clamp), the session-scoped `O_EXCL` image path, and that the command never
+  returns the memory-hosted refusal (the hosting-mode guard is gone from the
+  staged path; the legacy command keeps it). Python tests pin the staged wire
+  command, artifact staging with digest, worker budget, build inheritance,
+  payload-unavailable failures, and audit retention of identity/password.
+  `make check-agent-deployment check-cli check-parity` pass.
+- Native Windows validation (CreateProcessWithLogonW actually launching the
+  staged image under a second account, from both hosting modes) remains
+  open per the platform policy; no combination may be claimed supported
+  until that runs. Docs updated: `go-agent.md` (staged spawnas section and
+  in-memory capability list), `winrm-transfer.md`, `lateral-loader.md` §7
+  table, `README.md` (wire, REST, CLI rows), `web-shell-completion.md`,
+  tool docstrings, and the `lateral-movement` AI skill.
+
 ## 2026-11-23 — WMI local activation: bounded retry for transient ERROR_KEY_DELETED
 
 - Field deployments from in-memory agents (WinRM-hosted loader chain) observed

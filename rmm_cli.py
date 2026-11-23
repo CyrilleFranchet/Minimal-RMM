@@ -3357,7 +3357,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_spawnas = sub.add_parser(
         "spawnas",
         parents=[shared],
-        help="Spawn a Go agent copy under a different process identity (CreateProcessAsUser cascade)",
+        help="Spawn the server-staged Go agent under a different process identity (CreateProcessWithLogonW)",
     )
     sp_spawnas.add_argument("-i", dest="cred_id", default=None, help="Credential ID from 'creds add'")
     sp_spawnas.add_argument("--user", default=None, help="Identity as DOMAIN\\user or plain user (if no cred_id)")

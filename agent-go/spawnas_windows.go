@@ -76,46 +76,12 @@ type spawnasProcessInformation struct {
 	ThreadId  uint32
 }
 
-// spawnasPayload carries a __SPAWNAS__ command's JSON body.
-type spawnasPayload struct {
-	SessionID   string  `json:"session_id"`
-	WorkspaceID *string `json:"workspace_id,omitempty"`
-	Domain      string  `json:"domain"`
-	User        string  `json:"user"`
-	Password    string  `json:"password"`
-}
-
 // runasPayload carries a __RUNAS__ command's JSON body.
 type runasPayload struct {
 	Command  string `json:"command"`
 	Domain   string `json:"domain"`
 	User     string `json:"user"`
 	Password string `json:"password"`
-}
-
-func parseSpawnasPayload(command string) (spawnasPayload, error) {
-	var payload spawnasPayload
-	parts := strings.SplitN(command, "\n", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
-		return payload, errors.New("missing JSON payload")
-	}
-	if err := rejectCommandDebugOption([]byte(parts[1])); err != nil {
-		return payload, err
-	}
-	if err := json.Unmarshal([]byte(parts[1]), &payload); err != nil {
-		return payload, err
-	}
-	payload.Domain = strings.TrimSpace(payload.Domain)
-	payload.User = strings.TrimSpace(payload.User)
-	if payload.Domain == "" && strings.Contains(payload.User, `\`) {
-		p := strings.SplitN(payload.User, `\`, 2)
-		payload.Domain = strings.TrimSpace(p[0])
-		payload.User = strings.TrimSpace(p[1])
-	}
-	if payload.User == "" {
-		return payload, errors.New("user is required")
-	}
-	return payload, nil
 }
 
 func parseRunasPayload(command string) (runasPayload, error) {
@@ -404,14 +370,6 @@ func runWithPipesLogonW(ctx context.Context, user, domain, password string, args
 		}
 	}
 	return out, err
-}
-
-// identityLabel builds a DOMAIN\user label (or just user if no domain).
-func identityLabel(domain, user string) string {
-	if domain != "" {
-		return domain + `\` + user
-	}
-	return user
 }
 
 // spawnasCommand handles __SPAWNAS__: spawn a new agent copy under a different

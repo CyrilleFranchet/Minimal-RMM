@@ -190,6 +190,27 @@ not support a LocalSystem caller. `make_token` behavior is unchanged.
 none was provided, including UPN usernames. `createInheritablePipe` uses the
 native security-attributes size on both supported 64-bit targets.
 
+The operator-facing `spawnas` now uses the **staged** wire command
+(`__SPAWNAS_STAGED__`, `agent-go/spawnas_staged.go`): the source agent
+fetches the masked, digest-verified workspace agent build from the
+listener's single-use staging endpoint, writes it to the session-scoped path
+`%TEMP%\minimal-rmm-agent-<session>.exe` with `O_EXCL` (an existing image is
+never overwritten), and starts that image under the requested identity with
+CreateProcessWithLogonW — the same identity machinery, no fallback, and the
+unchanged `spawned session=<id> pid=<pid> identity=<label>` reply. Because
+the deployed image comes from the server instead of `os.Executable()`, a
+memory-hosted source session can run it; the spawned child is a full
+on-disk agent session with the complete command set, outliving its source.
+The command's worker budget reserves beacon-delivery time exactly like the
+staged lateral chain, and the result payload carries `stage_status`. The
+legacy `__SPAWNAS__` wire command remains implemented for old control
+planes: it deploys a copy of the source binary and therefore keeps refusing
+from an in-memory session, so an old server paired with a memory-hosted
+agent fails closed instead of relaunching the PowerShell host. Older agents
+reject `__SPAWNAS_STAGED__` as an unknown command; rebuild agents when
+upgrading the control plane. A server-staged workspace build is required
+(`agent_payload_unavailable` / `debug_payload_unavailable` otherwise).
+
 Runas retains its 120-second execution deadline. `collectRunasOutput` polls
 available pipe bytes and process completion on one goroutine, preserving stdout,
 stderr, nonzero exit codes, and cancellation errors without a blocking reader.
@@ -739,7 +760,7 @@ implementation runs. `make check-agent-deployment` includes that test.
 |--------|-----------|
 | `psexec` | Two-stage RemCom-style deployment: push the dedicated lateral service host to `ADMIN$`, start it as a demand-start service; its linked stage1 worker fetches the masked stage2 agent payload from the listener's staging endpoint, decodes it in memory, installs and starts the agent, then stops. The calling agent waits for successful service completion and removes the temporary service and host binary itself; the server cleanup command is only a retry path when that immediate cleanup stays pending |
 | `wmiexec` | Loader chain (default, `wmiexec_loader`): the worker starts a Windows PowerShell receiver through the native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`. The source then streams the framed loader and artifact halves over a session-specific named pipe and waits for the `RMM_LOADER_READY` marker; the receiver maps the agent in memory and blocks on its thread. Nothing is written to the target's disk; the created process is independent of the source agent and ends at target shutdown or an explicit kill. The legacy ADMIN$ copy path remains for old servers only |
-| `winrm` | Loader chain (default, `winrm_loader` and its HTTPS wire variants): native WSMan client through `WsmSvc.dll`: create an authenticated session and shell, run a Windows PowerShell receiver, stream a framed payload (loader source + agent binary) with `WSManSendShellInput`, verify each half's length and SHA-256, then load the agent **in memory**: one `VirtualAlloc(PAGE_EXECUTE_READWRITE)` image, a full PE32+ amd64 mapping (sections, relocations, imports, TLS), and a detached `CreateThread` on the entry point. The agent executable is not staged on disk; `Add-Type` can create compiler scratch files in `%TEMP%`. Native runtime validation remains outstanding. The tethered opt-in (`--tethered`) instead keeps the shell open for the deployment's lifetime; the in-memory session cannot spawn, spawnas, lateral, load PE plugins, or install persistence (guarded with a clear error, except the loader chain itself, which a memory-hosted source may run). WinRM loader deployments are independent by default: the receiver re-stages the deployment through a local WMI process create so the target escapes the shell job — the source closes the WinRM session right after readiness and the deployment survives it, ending like a WMI loader deployment; `--tethered` (`independent: false`) restores the source-tethered lifetime. Transfer and launch both use WinRM; no SMB, WMI network calls, `winrs.exe`, or `wmic.exe` (the default independent variant uses WMI on the target machine only) |
+| `winrm` | Loader chain (default, `winrm_loader` and its HTTPS wire variants): native WSMan client through `WsmSvc.dll`: create an authenticated session and shell, run a Windows PowerShell receiver, stream a framed payload (loader source + agent binary) with `WSManSendShellInput`, verify each half's length and SHA-256, then load the agent **in memory**: one `VirtualAlloc(PAGE_EXECUTE_READWRITE)` image, a full PE32+ amd64 mapping (sections, relocations, imports, TLS), and a detached `CreateThread` on the entry point. The agent executable is not staged on disk; `Add-Type` can create compiler scratch files in `%TEMP%`. Native runtime validation remains outstanding. The tethered opt-in (`--tethered`) instead keeps the shell open for the deployment's lifetime; the in-memory session cannot spawn, run legacy lateral moves, load PE plugins, or install persistence (guarded with a clear error, except the loader chain itself, staged `psexec`, and staged `spawnas`, which a memory-hosted source may run). WinRM loader deployments are independent by default: the receiver re-stages the deployment through a local WMI process create so the target escapes the shell job — the source closes the WinRM session right after readiness and the deployment survives it, ending like a WMI loader deployment; `--tethered` (`independent: false`) restores the source-tethered lifetime. Transfer and launch both use WinRM; no SMB, WMI network calls, `winrs.exe`, or `wmic.exe` (the default independent variant uses WMI on the target machine only) |
 
 WMI and explicit-credential WSMan execution select authentication using the target's written
 form (`lateralHostIsIP` in `lateral.go`). This selection does not govern SMB

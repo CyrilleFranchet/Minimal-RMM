@@ -72,10 +72,9 @@ shutdown or an explicit kill, exactly like a `wmiexec` deployment. Pass
 restore the tethered lifetime, where the deployment lives only as long as
 the source holds the shell — use it for targets whose WinRM session cannot
 create local WMI processes. The deployed session is memory-hosted, so it
-cannot spawn, spawnas, run further legacy lateral moves, load PE plugins,
-or install persistence (the loader chain itself and `lateral psexec` work
-from it: psexec stages the embedded dedicated service host, and its cleanup
-retry runs a separate bounded PowerShell worker — never the source binary).
+cannot spawn, load PE plugins, or install persistence; `spawnas` now works
+from it through the staged variant (the server-staged agent build, started
+off disk under the requested identity), as do the loader chain and `psexec`.
 Loader
 deployments of either kind require a server-staged agent build for the
 source workspace; the request fails with `agent_payload_unavailable` if none

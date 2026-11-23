@@ -89,6 +89,52 @@ func rejectCommandDebugOption(body []byte) error {
 	return nil
 }
 
+// spawnasPayload carries a __SPAWNAS__ command's JSON body. It is shared by
+// the legacy copy-of-self command and the staged-artifact variant, so both
+// parse on every platform.
+type spawnasPayload struct {
+	SessionID   string  `json:"session_id"`
+	WorkspaceID *string `json:"workspace_id,omitempty"`
+	Domain      string  `json:"domain"`
+	User        string  `json:"user"`
+	Password    string  `json:"password"`
+}
+
+// parseSpawnasPayload validates the shared spawnas identity fields: a
+// required user, optional domain, and DOMAIN\user splitting.
+func parseSpawnasPayload(command string) (spawnasPayload, error) {
+	var payload spawnasPayload
+	parts := strings.SplitN(command, "\n", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+		return payload, errors.New("missing JSON payload")
+	}
+	if err := rejectCommandDebugOption([]byte(parts[1])); err != nil {
+		return payload, err
+	}
+	if err := json.Unmarshal([]byte(parts[1]), &payload); err != nil {
+		return payload, err
+	}
+	payload.Domain = strings.TrimSpace(payload.Domain)
+	payload.User = strings.TrimSpace(payload.User)
+	if payload.Domain == "" && strings.Contains(payload.User, `\`) {
+		p := strings.SplitN(payload.User, `\`, 2)
+		payload.Domain = strings.TrimSpace(p[0])
+		payload.User = strings.TrimSpace(p[1])
+	}
+	if payload.User == "" {
+		return payload, errors.New("user is required")
+	}
+	return payload, nil
+}
+
+// identityLabel renders the operator-facing identity for spawnas replies.
+func identityLabel(domain, user string) string {
+	if domain != "" {
+		return domain + `\` + user
+	}
+	return user
+}
+
 // parseSpawnCommand validates a server-selected session and workspace before
 // any process is created. Legacy commands retain local identity generation.
 func parseSpawnCommand(command string, cfg *config) (*config, string, error) {
