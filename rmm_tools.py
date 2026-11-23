@@ -1393,12 +1393,23 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "exec_command",
-            "description": "Run a command on the agent and wait for output (blocking, up to timeout seconds).",
+            "description": (
+                "Run a command on the agent and wait for output (blocking, up to timeout seconds). "
+                "Managed agents are Windows-only. No prefix uses cmd.exe. "
+                "Use 'PS: <command>' or 'powershell: <command>' for Windows PowerShell "
+                "(powershell.exe), including cmdlets and $variables. "
+                "Use 'pwsh: <command>' for PowerShell 7; it falls back to powershell.exe "
+                "if pwsh is unavailable. Use 'cmd: <command>' to select cmd.exe explicitly. "
+                "PowerShell syntax requires a PowerShell prefix; use 'pwsh:' when PowerShell 7 is needed."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "session_ref": {"type": "string"},
-                    "command": {"type": "string"},
+                    "command": {
+                        "type": "string",
+                        "description": "Command string. Default: cmd.exe. Prefix with 'PS:', 'powershell:', 'pwsh:', or 'cmd:' to select the shell.",
+                    },
                     "timeout": {"type": "number", "description": "Max wait seconds (default 120)"},
                 },
                 "required": ["session_ref", "command"],

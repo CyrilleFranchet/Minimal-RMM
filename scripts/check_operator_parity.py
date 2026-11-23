@@ -253,6 +253,19 @@ def main() -> int:
     handler_tools = set(tools_mod.TOOL_HANDLERS)
     openai_tools = openai_tool_names(tools_mod)
     mcp_tools = mcp_tools_from_server()
+    # MCP advertises docstrings, while web AI advertises OPENAI_TOOLS descriptions.
+    mcp_tree = ast.parse((ROOT / "mcp_rmm_server.py").read_text(encoding="utf-8"))
+    exec_doc = next((ast.get_docstring(node) or "" for node in mcp_tree.body
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                     and node.name == "exec_command"), "")
+    exec_schema = next(entry["function"] for entry in tools_mod.OPENAI_TOOLS
+                       if entry["function"]["name"] == "exec_command")
+    for label, description in (("MCP", exec_doc), ("web AI", exec_schema["description"])):
+        for required in ("PS:", "powershell:", "pwsh:", "cmd:", "cmd.exe", "falls back", "Windows-only"):
+            if required not in description:
+                errors.append(f"{label} exec_command description missing shell guidance: {required}")
+    if " ".join(exec_doc.split()) != " ".join(exec_schema["description"].split()):
+        errors.append("exec_command shell guidance differs between MCP and web AI")
     api_methods = client_methods()
     cli = sys.modules["rmm_cli_parity"]
     cli_parser = cli.build_parser()

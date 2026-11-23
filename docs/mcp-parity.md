@@ -8,6 +8,14 @@ Every **operator REST capability** exposed by `server_rmm.py` under `/api/v1/*` 
 
 ## Workspace routing and scope
 
+The `exec_command` MCP docstring and web AI description explain the same shell
+selection contract. Managed agents are Windows-only: commands use `cmd.exe`
+unless prefixed with `PS:` or `powershell:` for Windows PowerShell, `pwsh:` for
+PowerShell 7 (falling back to Windows PowerShell when unavailable), or `cmd:`
+for explicit CMD selection. Use a PowerShell prefix for cmdlets and `$variables`.
+The parity checker verifies required guidance and matching descriptions across
+both surfaces; FastMCP reads the function docstring rather than `OPENAI_TOOLS`.
+
 Only the Go agent build tools expose a boolean `debug` option. They compile the
 main executable with the `rmmdebug` tag and return a full-agent ZIP. Normal
 builds exclude diagnostics. The WebUI generator exposes the same setting as

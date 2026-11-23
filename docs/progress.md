@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-11-23 — MCP command shell guidance
+
+- Aligned `exec_command` shell-prefix guidance in the MCP docstring and web AI
+  schema, including CMD defaults and the `pwsh:` fallback. Removed Linux target
+  guidance to match the supported Windows-only agent contract.
+- Extended operator parity checks to require shell guidance on both surfaces
+  and detect description drift without importing or starting the MCP server.
+- Validation: `make check-parity test` and `git diff --check` pass. This change
+  updates advertised guidance only; Windows command execution was not retested.
+
 ## 2026-11-23 — WMI COM architecture documentation audit
 
 - Added [WMI COM lifetime](wmi-com-lifecycle.md): worker ownership, temporary
