@@ -30,6 +30,7 @@ class GoAgentTests(unittest.TestCase):
                 "make_token.go",
                 "make_token_windows.go",
                 "lateral.go",
+                "lateral_cleanup.go",
                 "lateral_results.go",
                 "lateral_windows.go",
                 "service_windows.go",

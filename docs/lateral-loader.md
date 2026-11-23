@@ -194,10 +194,12 @@ failure.
   registration's `process_name` reporting (cosmetic — a memory-hosted session
   reports `powershell.exe`, a documented display quirk), and the
   self-relaunching operations that keep their guards ([§7](#7-capability-checks-instead-of-the-blanket-restriction)).
-- The cleanup retry child that re-executes `os.Executable()`
-  (`lateralCleanupCommand`) must be redesigned to run the bounded cleanup on
-  the pinned worker instead of spawning a copy of self, so the path stays
-  correct for any source that can own cleanup artifacts.
+- The cleanup retry child has been redesigned as designed in this plan and
+  shipped: `__LATERAL_CLEANUP__` now runs a tightly scoped PowerShell
+  worker (`agent-go/lateral_cleanup.go`) in a bounded child process instead
+  of re-executing `os.Executable()`, and cleanup ownership is persisted by
+  the control plane as durable deployment records, so the path is correct
+  for every source, memory-hosted or not, including after source restarts.
 
 ## 5. Transport and loader responsibilities
 
@@ -283,7 +285,7 @@ actually needs:
 | Operation | Real dependency | Disposition |
 | --- | --- | --- |
 | `lateral wmiexec` / `lateral winrm` (new chain) | A server-sourced payload and a channel to the target — not the source binary | **Allowed for memory-hosted sources** once [§4](#4-removing-the-copy-of-self-assumption) lands; legacy wire methods without artifact-source fields keep the old refusal so old payloads never copy the host binary silently |
-| `lateral psexec` | Embedded service host (an in-image constant, so the bytes exist even in memory), ADMIN$ write, SCM — and today, a cleanup retry that re-executes the source binary | **Unchanged in this change.** Reviewed assumptions: the deploy path itself has no `os.Executable()` dependence; the blockers are the cleanup child and the current blanket guard. Once the cleanup child is redesigned, lifting the psexec guard for memory-hosted sources is a small, separately-validated follow-on |
+| `lateral psexec` | Embedded service host (an in-image constant, so the bytes exist even in memory), ADMIN$ write, SCM — and a cleanup worker that requires Windows PowerShell (`powershell.exe` in System32), never the source binary | **Implemented follow-on:** the deployment stages the embedded lateral service and the cleanup retry runs the dedicated PowerShell worker with a beacon-secret ownership tag, so a memory-hosted source may run psexec; the blanket guard is gone. Any missing capability (embedded service bytes, PowerShell worker) fails with an explicit capability error. Native Windows validation of the from-memory combination is still pending |
 | `spawn` / `spawnas` | Exec/copy the actual agent binary (`os.Args[0]` / `os.Executable()` name the PowerShell host when in memory) | Guard stays; error text already explains the host-binary problem |
 | Persistence install | Copies `os.Executable()` to disk | Guard stays |
 | PE plugin execution | Child processes run `os.Args[0]` | Guard stays — but an in-memory target spawned by *this* plan is a memory-hosted agent, so its own plugin path needs the server-sourced plugin PE loader (already loader-based) rather than os.Args[0] children; review during implementation |
@@ -440,5 +442,9 @@ The `loader` parameter is exposed consistently, per the repository parity rule
   the same protocol version.
 - **arm64:** horizon and precedence — mapper support first, or an explicit
   long-term amd64 statement in the docs.
-- **PsExec from memory-hosted sources:** small follow-on once the cleanup
-  child no longer re-executes the source binary; needs its own validation.
+- **PsExec from memory-hosted sources:** implemented follow-on. The cleanup
+  retry no longer re-executes the source binary (it runs the dedicated
+  PowerShell worker with a beacon-secret ownership tag), the hosting-mode
+  guard for psexec is lifted, and cleanup ownership is persisted in the
+  control plane's deployment records. The from-memory combination still
+  needs its own native Windows validation before being claimed as supported.

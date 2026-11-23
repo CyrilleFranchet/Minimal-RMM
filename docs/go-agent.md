@@ -629,8 +629,12 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   digest-verified agent artifact from the listener's staging endpoint and
   stream it through the target's Windows PowerShell; the source session's
   own binary is never deployed. Because the artifact no longer comes from
-  `os.Executable()`, a memory-hosted source can deploy through them; the
-  legacy methods keep refusing from an in-memory session. Only the `csharp`
+  `os.Executable()`, a memory-hosted source can deploy through them, as can
+  `psexec` (its deployment stages the embedded dedicated lateral service and
+  its cleanup retry runs a separate PowerShell worker — neither touches the
+  source binary). Only the legacy `wmiexec`/`winrm` wire methods, which copy
+  or stream the source executable, keep refusing from an in-memory session.
+  Only the `csharp`
   loader is supported; `powershell` is a reserved value that every surface
   rejects explicitly. The loader wire names are unknown to older agents,
   which reject the whole command instead of ignoring the new fields.
@@ -1042,21 +1046,96 @@ Listener staging (`server_rmm.py`):
   allowed on the beacon listener without a beacon token; expired or
   already-fetched entries answer 404.
 
-Cleanup is owned by the calling agent. After starting the service it uses
-`waitStage1Stopped` and `launcherServiceOutcome` to observe SCM worker
-completion, then calls `lateralCleanup` to delete the temporary service
-and its exact binary. `removeStoppedLauncher` retries sharing/access errors
-briefly while Windows releases image handles. It does not wait for a server
-beacon round trip, run a shell, or delete the new agent executable.
+Deployment and cleanup are distinct operations with separate outcomes. The
+deployment result is the acknowledgment line plus an explicit cleanup line
+(`lateral cleanup: <detail>` on success, `lateral cleanup pending: <reason>`
+when immediate cleanup stayed incomplete); a deployment whose artifacts
+cannot immediately be removed is still a deployment, and its cleanup becomes
+`pending` rather than forcing the source to relaunch itself.
+
+Immediate cleanup is owned by the calling agent. After starting the service
+it uses `waitStage1ServiceStopped` on the retained handle and
+`launcherServiceOutcome` to observe SCM worker completion, then calls
+`lateralCleanupStopped` to delete the temporary service and its exact binary.
+`removeStoppedLauncher` retries sharing/access errors briefly while Windows
+releases image handles. It does not wait for a server beacon round trip, run
+a shell, or delete the new agent executable.
+
+The `__LATERAL_CLEANUP__` retry runs a **dedicated cleanup worker**, not a
+child of the agent executable (`agent-go/lateral_cleanup.go`):
+
+- The worker is a tightly scoped PowerShell script executed by
+  `powershell.exe` from System32 as a bounded child process. It works
+  identically whether the agent runs from its own executable or inside a
+  loader host, because it never re-executes `os.Executable()` — the old
+  retry design relaunched the source binary, which would have relaunched
+  the PowerShell host for a memory-hosted session.
+- A separate process is deliberate. Native SCM and SMB calls cannot be
+  canceled when a Go context expires, so running the retry as a goroutine
+  would leave a blocked native call pinned to an unkillable thread with no
+  termination boundary. The bounded child keeps the hard kill boundary
+  (two-minute context) the self-relaunching child provided.
+- The child runs under the active make_token identity when the agent holds
+  the process-creation privilege (`applyCommandToken`, then
+  `reestablishThreadToken`), matching the previous child's identity
+  semantics.
+- The worker accepts only the record's three names (host, service, binary),
+  embedded through single-quoted literals as a UTF-16LE `-EncodedCommand`
+  value, and performs exactly three steps: wait for the service to stop
+  (15 s), delete the service, remove the ADMIN$ launcher binary (5 s
+  sharing-error retry). Missing artifacts are success states (idempotent
+  retries), and the result line contract (`lateral cleanup: …`) is
+  unchanged from the previous child.
+
+Cleanup authority survives agent restarts through control-plane records.
+The server persists a durable deployment record per psexec deployment
+(`RMM_logs/lateral_deployments.json`): owner workspace, source session,
+target host, the exact acknowledged service and binary names, deployment
+status, and cleanup state with attempt count. Records with an unfinished
+cleanup are never pruned; retention applies to the in-memory store and the
+file together, so listings match what a restart loads. The store itself is
+protected against silent loss: a missing file is a normal first run, while an
+unreadable or corrupt file is preserved (corrupt files rotate to a
+`.corrupt-*` sibling) and persistence is disabled with an operator-visible
+error rather than replacing the damaged history.
+
+The cleanup response carries two deliberately distinct states: `status`
+describes this call's attempt (`ok`/`skipped`/`failed` or a transport
+status), while `record_status` exposes the durable record state
+(`untracked`/`pending`/`ok`/`failed`, also what
+`GET /api/v1/lateral/deployments` lists). A skipped call never strands
+acknowledged artifacts: it persists them as `pending` with the skip reason
+as detail, so a later retry finishes the operation; without acknowledged
+names the record stays `untracked` because there is nothing to recover.
+The cleanup command carries the deployment id and
+an `ownership_tag`: the HMAC-SHA256 (keyed by the shared beacon secret) over
+the deployment identity and its exact artifact names. The agent accepts a
+cleanup request when its own in-process record of the acknowledged artifacts
+matches, or when the tag verifies — so a restarted source agent recovers an
+operation its process memory lost, while unowned, unsigned commands from
+operator command traffic fail closed. The tag binds the deployment id and
+both artifact names, so no request can ever remove another deployment's
+artifacts.
+
+Operator surface for recovery:
+
+- `GET /api/v1/lateral/deployments` lists the records (workspace-scoped
+  through the workspace relay; `lateral-deployments` in the CLI;
+  `list_lateral_deployments` in MCP/AI).
+- `POST /api/v1/lateral/deployments/{deployment_id}/cleanup` retries one
+  record's cleanup, idempotently: an already cleaned deployment returns its
+  state without contacting the agent. The command is built only from the
+  record's own artifact names, and an alternate executor session of the
+  same workspace may run it when the recorded source is gone
+  (`lateral-cleanup <deployment_id> [--session <ref>]` in the CLI;
+  `retry_lateral_cleanup` in MCP/AI).
 
 The result reports immediate cleanup success or pending/failure details. The
 server recognizes completed source-agent cleanup without queuing another
-command. Pending cleanup retains exact-artifact ownership, allowing the existing
-`__LATERAL_CLEANUP__` retry even when target registration failed. Arbitrary service
-names and paths
-remain rejected. Service deletion takes effect after outstanding SCM handles
-close. A stopped worker permits cleanup even after a staging failure; running or
-unreachable workers block deletion.
+command and records it (`performed_by: source_agent`). Service deletion
+takes effect after outstanding SCM handles close. A stopped worker permits
+cleanup even after a staging failure; running or unreachable workers block
+deletion.
 
 ## Workspace ownership
 

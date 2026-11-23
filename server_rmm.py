@@ -24,6 +24,7 @@ if __name__ == "__main__":
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import argparse
 import hashlib
+import hmac
 import re
 import secrets
 import struct
@@ -148,6 +149,16 @@ LATERAL_RESULT_RE = re.compile(r"target session=(?P<session_id>[A-Za-z0-9_-]{8,1
 LATERAL_SERVICE_RE = re.compile(r"service=(?P<service_name>[A-Za-z0-9][A-Za-z0-9._-]{0,127})")
 LATERAL_BINARY_RE = re.compile(r"binary=(?P<binary_name>[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.exe)")
 LATERAL_CLEANUP_COMMAND = "__LATERAL_CLEANUP__"
+# Durable psexec deployment records: the control plane owns cleanup state so
+# agent restarts, lost responses, and server restarts leave a recoverable,
+# idempotent operation scoped to one deployment's artifacts.
+LATERAL_DEPLOYMENT_LIMIT = 400
+LATERAL_DEPLOYMENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+LATERAL_CLEANUP_TAG_DOMAIN = "lateral-cleanup-v1"
+LATERAL_CLEANUP_TAG_RE = re.compile(r"^[a-f0-9]{64}$")
+LATERAL_CLEANUP_RETRY_TIMEOUT = 150
+# Guards lazy initialization of the per-server deployment record store.
+_LATERAL_DEPLOYMENT_INIT_LOCK = threading.Lock()
 # Spawnas / runas: spawn or run a command under a different process identity.
 # The Go agent answers __SPAWNAS__ with "spawned session=<id> pid=<pid> identity=<label>".
 SPAWNAS_COMMAND = "__SPAWNAS__"
@@ -172,6 +183,26 @@ def staging_mask(payload: bytes, staging_id: str) -> bytes:
         for index in range(min(digest_size, len(masked) - offset)):
             masked[offset + index] ^= block[index]
     return bytes(masked)
+
+
+def lateral_cleanup_ownership_tag(deployment_id: str, host: str,
+                                   service_name: str, binary_name: str) -> str:
+    """Mint the HMAC ownership proof for one deployment's cleanup.
+
+    The tag lets an agent authorize a cleanup retry from the control plane's
+    durable deployment record - including after the source agent restarts
+    and its in-process ownership memory is gone. Only the beacon secret's
+    holder can mint it, and it binds the deployment identity plus the exact
+    artifact names, so a cleanup request can never target another
+    deployment's service or binary. The wire contract lives in
+    agent-go/lateral_cleanup.go (lateralCleanupOwnershipMessage).
+    """
+    message = "\n".join([
+        LATERAL_CLEANUP_TAG_DOMAIN,
+        str(deployment_id or ""), str(host or ""),
+        str(service_name or ""), str(binary_name or ""),
+    ]).encode("utf-8")
+    return hmac.new(BEACON_SECRET.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 def latest_go_agent_binary(debug: bool = False, workspace_id: str | None = None) -> str | None:
@@ -233,6 +264,7 @@ def go_build_workspace(binary_name: str) -> str | None:
     return owner
 TUN_HELPER = settings_getenv("RMM_TUN_HELPER", "").strip() or os.path.join(SERVER_TOOLS_DIR, "rmm-tun")
 SESSION_FILE = os.path.join(LOG_DIR, "sessions.json")
+LATERAL_DEPLOYMENT_FILE = os.path.join(LOG_DIR, "lateral_deployments.json")
 HISTORY_DIR = os.path.join(LOG_DIR, "history")
 WEB_MIME = {
     ".html": "text/html; charset=utf-8",
@@ -3545,6 +3577,14 @@ class RMMServer:
             **({"identity": {"domain": identity_domain, "user": identity_user,
                              "password": str(identity_password or "")}} if identity_user else {})}, separators=(",", ":"))
         identity_label = (identity_domain + "\\" if identity_domain else "") + identity_user
+        if method == "psexec":
+            # Record the deployment before dispatch so cleanup ownership lives
+            # in the control plane: a lost response, a server restart, or a
+            # source agent restart still leaves a recoverable operation tied
+            # to this exact deployment identity.
+            self.record_lateral_deployment(
+                target_id, getattr(session, "workspace_id", None) or "",
+                session.id, method, host, debug=debug)
         self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else "") + (f" loader={loader}" if method != "psexec" else "") + (" --tethered" if method == "winrm" and not independent else "") + (f" identity={identity_label} password={json.dumps(identity_password or '', ensure_ascii=False)}" if identity_user else ""), "lateral")
         event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
         if status not in ("ok", "timeout"):
@@ -3564,35 +3604,371 @@ class RMMServer:
         payload, verify_status = self._verify_deployment(session, target_id, payload, verify, register_timeout)
         if method == "psexec":
             payload["stage_status"] = self.staging_status(stage_id) if stage_id else None
+            payload["deployment_id"] = target_id
+            self.update_lateral_deployment_result(
+                target_id, payload["launch_status"],
+                service_match.group("service_name") if service_match else "",
+                binary_match.group("binary_name") if binary_match else "")
             payload["cleanup"] = self._lateral_cleanup(
                 session, payload, host,
                 service_match.group("service_name") if service_match else "",
                 binary_match.group("binary_name") if binary_match else "")
         return payload, verify_status
 
+    # ------------------------------------------------------------------
+    # Durable psexec deployment records (cleanup ownership lives here)
+    # ------------------------------------------------------------------
+
+    def _lateral_deployments_locked(self) -> dict[str, dict]:
+        """Return the deployment record store while holding its lock.
+
+        Callers must release with _release_lateral_deployments. The lock and
+        the loaded records initialize lazily, so instances built without
+        __init__ (test fixtures) still behave correctly.
+        """
+        if getattr(self, "_lateral_deployment_lock", None) is None:
+            with _LATERAL_DEPLOYMENT_INIT_LOCK:
+                if getattr(self, "_lateral_deployment_lock", None) is None:
+                    self._lateral_deployment_lock = threading.RLock()
+        lock = self._lateral_deployment_lock
+        lock.acquire()
+        try:
+            if getattr(self, "_lateral_deployments", None) is None:
+                self._lateral_deployments = self._load_lateral_deployments()
+            return self._lateral_deployments
+        except BaseException:
+            lock.release()
+            raise
+
+    def _release_lateral_deployments(self) -> None:
+        """Release the deployment store lock taken by the accessor above."""
+        self._lateral_deployment_lock.release()
+
+    @staticmethod
+    def _read_lateral_deployment_store(path: str) -> str:
+        """Read the raw deployment record store file."""
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def _load_lateral_deployments(self) -> dict[str, dict]:
+        """Load deployment records, distinguishing a missing store from a damaged one.
+
+        A missing file is a normal first run. An unreadable or corrupt store
+        is never silently replaced by a fresh save: a corrupt file rotates to
+        an unused `.corrupt-*` backup so the damaged history stays
+        inspectable, and an unreadable file is left untouched. When
+        preservation on disk is impossible, persistence is disabled (with an
+        operator-visible error) until the file is fixed; in either case the
+        in-memory store starts empty, so new records accumulate normally.
+        """
+        try:
+            raw = self._read_lateral_deployment_store(LATERAL_DEPLOYMENT_FILE)
+        except FileNotFoundError:
+            return {}
+        except OSError as exc:
+            self.log(f"The lateral deployment record store {LATERAL_DEPLOYMENT_FILE} is unreadable ({exc}); "
+                     "leaving it untouched and keeping deployment records in memory only", "ERROR")
+            self._lateral_deployments_preserved = True
+            return {}
+        if not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            self._preserve_lateral_deployment_store()
+            return {}
+        if not isinstance(data, dict):
+            # A structurally invalid store loses no data silently either.
+            self._preserve_lateral_deployment_store()
+            return {}
+        records: dict[str, dict] = {}
+        for deployment_id, record in data.items():
+            if (isinstance(deployment_id, str) and LATERAL_DEPLOYMENT_ID_RE.match(deployment_id)
+                    and isinstance(record, dict)):
+                record.setdefault("deployment_id", deployment_id)
+                records[deployment_id] = record
+        return records
+
+    def _preserve_lateral_deployment_store(self) -> None:
+        """Keep a damaged deployment store inspectable instead of replacing it.
+
+        A corrupt file moves to an unused `.corrupt-*` sibling name. When even
+        that fails (permissions, path problems), the file is left exactly as
+        it is; in both cases a follow-up save must not overwrite the damaged
+        history, so the preserve flag disables persistence for this server
+        run.
+        """
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = f"{LATERAL_DEPLOYMENT_FILE}.corrupt-{stamp}"
+        index = 0
+        while os.path.exists(backup):
+            index += 1
+            backup = f"{LATERAL_DEPLOYMENT_FILE}.corrupt-{stamp}-{index}"
+        try:
+            os.replace(LATERAL_DEPLOYMENT_FILE, backup)
+        except OSError as exc:
+            self.log(f"The lateral deployment record store {LATERAL_DEPLOYMENT_FILE} is damaged and cannot be "
+                     f"preserved at {backup} ({exc}); leaving it untouched and keeping deployment records "
+                     "in memory only", "ERROR")
+            self._lateral_deployments_preserved = True
+        else:
+            self.log(f"The lateral deployment record store {LATERAL_DEPLOYMENT_FILE} was damaged; the "
+                     f"original file is preserved at {backup}", "ERROR")
+
+    def _save_lateral_deployments_locked(self, records: dict[str, dict]) -> None:
+        """Persist the deployment records atomically, bounded in size.
+
+        Records with an unfinished cleanup are never pruned, so a recoverable
+        operation stays recoverable; only finished records drop off oldest
+        first. Retention applies to the in-memory store as well (independently
+        of whether the file can be written), so listings, memory use, and the
+        durable file stay consistent across restarts. A damaged store file
+        disables persistence instead of replacing the damaged history;
+        other persistence failures degrade to in-memory tracking with a
+        warning.
+        """
+        def finished(record: dict) -> bool:
+            status = (record.get("cleanup") or {}).get("status")
+            return status in ("ok", "skipped", "untracked")
+
+        rows = [dict(record) for record in records.values()]
+        pending = [row for row in rows if not finished(row)]
+        done = [row for row in rows if finished(row)]
+        done.sort(key=lambda row: str(row.get("created") or ""), reverse=True)
+        keep = pending + done[:max(0, LATERAL_DEPLOYMENT_LIMIT - len(pending))]
+        kept_ids = {row["deployment_id"] for row in keep}
+        # Apply the same retention in memory so the visible history and memory
+        # use cannot drift from what a restart will load from disk.
+        for deployment_id in list(records):
+            if deployment_id not in kept_ids:
+                del records[deployment_id]
+        if getattr(self, "_lateral_deployments_preserved", False):
+            # One warning per server run: the load path already explained the
+            # damaged file, and every save attempt would repeat the same fact.
+            if not getattr(self, "_lateral_deployments_preserve_warned", False):
+                self._lateral_deployments_preserve_warned = True
+                self.log("Lateral deployment records stay in memory only: the store file on disk is damaged "
+                         "and preserved for inspection", "WARNING")
+            return
+        try:
+            os.makedirs(os.path.dirname(LATERAL_DEPLOYMENT_FILE) or ".", exist_ok=True)
+            temp_path = LATERAL_DEPLOYMENT_FILE + ".tmp"
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump({row["deployment_id"]: row for row in keep}, handle, indent=2)
+            os.replace(temp_path, LATERAL_DEPLOYMENT_FILE)
+        except OSError as exc:
+            self.log(f"Persisting lateral deployment records failed: {exc}", "WARNING")
+
+    def _update_lateral_deployment(self, deployment_id: str, mutator) -> dict | None:
+        """Apply one mutation to a deployment record and persist it."""
+        if not deployment_id:
+            return None
+        records = self._lateral_deployments_locked()
+        try:
+            record = records.get(deployment_id)
+            if record is None:
+                return None
+            mutator(record)
+            self._save_lateral_deployments_locked(records)
+            return dict(record)
+        finally:
+            self._release_lateral_deployments()
+
+    def record_lateral_deployment(self, deployment_id: str, workspace_id: str,
+                                  source_session_id: str, method: str, host: str,
+                                  debug: bool = False) -> None:
+        """Persist a deployment shell before dispatch so recovery stays possible.
+
+        Written before the command is queued: even a lost response leaves a
+        record identifying the deployment, its owner workspace, and its
+        target host.
+        """
+        now = datetime.now().isoformat(timespec="seconds")
+        records = self._lateral_deployments_locked()
+        try:
+            record = records.get(deployment_id) or {
+                "deployment_id": deployment_id,
+                "artifacts": {},
+                "cleanup": {"status": "untracked", "attempts": 0, "detail": None,
+                            "performed_by": None, "updated": now},
+            }
+            record.update({
+                "workspace_id": str(workspace_id or ""),
+                "source_session_id": str(source_session_id or ""),
+                "method": str(method or ""),
+                "host": str(host or ""),
+                "debug": debug is True,
+                "created": record.get("created") or now,
+                "deployment": {"status": "submitted", "updated": now},
+            })
+            records[deployment_id] = record
+            self._save_lateral_deployments_locked(records)
+        finally:
+            self._release_lateral_deployments()
+
+    def update_lateral_deployment_result(self, deployment_id: str, status: str,
+                                         service_name: str = "", binary_name: str = "") -> None:
+        """Record the deployment outcome and its exact acknowledged artifacts."""
+        def apply(record: dict) -> None:
+            record["deployment"] = {
+                "status": str(status or ""),
+                "updated": datetime.now().isoformat(timespec="seconds"),
+            }
+            if service_name and binary_name:
+                record["artifacts"] = {
+                    "service_name": str(service_name),
+                    "binary_name": str(binary_name),
+                }
+
+        self._update_lateral_deployment(deployment_id, apply)
+
+    def update_lateral_cleanup(self, deployment_id: str, status: str, detail: str | None = None,
+                               performed_by: str | None = None, count_attempt: bool = False) -> None:
+        """Record one durable cleanup state transition for a deployment."""
+        def apply(record: dict) -> None:
+            cleanup = record.setdefault("cleanup", {})
+            cleanup.setdefault("attempts", 0)
+            cleanup["status"] = str(status or "")
+            cleanup["updated"] = datetime.now().isoformat(timespec="seconds")
+            if detail is not None:
+                cleanup["detail"] = str(detail)
+            if performed_by is not None:
+                cleanup["performed_by"] = str(performed_by)
+            if count_attempt:
+                cleanup["attempts"] = int(cleanup.get("attempts") or 0) + 1
+
+        self._update_lateral_deployment(deployment_id, apply)
+
+    def lateral_deployment_records(self, workspace_id: str = "") -> list[dict]:
+        """List deployment records newest first, scoped to an owner workspace."""
+        records = self._lateral_deployments_locked()
+        try:
+            rows = [dict(record) for record in records.values()]
+        finally:
+            self._release_lateral_deployments()
+        if workspace_id:
+            rows = [row for row in rows if row.get("workspace_id") == workspace_id]
+        rows.sort(key=lambda row: str(row.get("created") or ""), reverse=True)
+        return rows
+
+    def retry_lateral_cleanup(self, deployment_id: str, session_id_or_prefix: str = "",
+                              workspace_id: str = ""):
+        """Retry the recorded cleanup of one psexec deployment.
+
+        Cleanup is idempotent: a record already cleaned returns its state
+        without dispatching, and the agent worker treats absent artifacts
+        as success, so duplicate retries are safe. The command is built
+        only from the record's own artifact names, so a retry can never
+        affect another deployment's artifacts. An alternate executor
+        session of the same workspace may run the retry when the original
+        source agent is gone.
+        """
+        deployment_id = str(deployment_id or "").strip()
+        if not LATERAL_DEPLOYMENT_ID_RE.match(deployment_id):
+            return None, "invalid_deployment"
+        records = self._lateral_deployments_locked()
+        try:
+            record = records.get(deployment_id)
+            if record is None or (workspace_id and record.get("workspace_id") != workspace_id):
+                return None, "deployment_not_found"
+            record = dict(record)
+        finally:
+            self._release_lateral_deployments()
+        cleanup = dict(record.get("cleanup") or {})
+        if cleanup.get("status") == "ok":
+            return {"ok": True, "deployment": record, "cleanup": cleanup}, "ok"
+        artifacts = record.get("artifacts") or {}
+        if not (artifacts.get("service_name") and artifacts.get("binary_name")):
+            return {"ok": False, "deployment": record,
+                    "detail": "the deployment never acknowledged its artifact names"}, "untracked"
+        session_ref = str(session_id_or_prefix or "").strip() or str(record.get("source_session_id") or "")
+        session = self.resolve_session(session_ref) if session_ref else None
+        if not session:
+            return None, "session_not_found"
+        if workspace_id and getattr(session, "workspace_id", None) != workspace_id:
+            return None, "session_not_found"
+        result, status = self._dispatch_lateral_cleanup(
+            session, deployment_id, str(record.get("host") or ""),
+            str(artifacts.get("service_name")), str(artifacts.get("binary_name")))
+        return {"ok": result.get("status") == "ok", "deployment": record, "cleanup": result}, status
+
     def _lateral_cleanup(self, session, payload, host, service_name, binary_name):
-        """Remove exact acknowledged artifacts after their worker stops."""
+        """Resolve and record the cleanup outcome of an acknowledged psexec move.
+
+        Two states travel together, with distinct meanings: the response
+        `status` describes this call's attempt (ok/skipped/failed or a
+        transport status), while `record_status` exposes the durable
+        operation state the control plane keeps across calls and restarts
+        (untracked/pending/ok/failed). A skipped call never strands
+        acknowledged artifacts: when the deployment names are known the
+        record is persisted as pending (with the reason as its detail) so a
+        later retry can finish the operation; without acknowledged names the
+        record stays untracked because there is nothing to recover.
+        """
+        deployment_id = str(payload.get("deployment_id") or "")
         owned = payload.get("launch_status") in ("acknowledged", "failed") and service_name and binary_name
         if owned:
             for line in str(payload.get("output") or "").splitlines()[1:]:
                 if line.startswith("lateral cleanup: "):
-                    return {"status": "ok", "output": line, "performed_by": "source_agent"}
+                    self.update_lateral_cleanup(deployment_id, "ok", detail=line,
+                                                performed_by="source_agent")
+                    return {"status": "ok", "output": line, "performed_by": "source_agent",
+                            "deployment_id": deployment_id, "record_status": "ok"}
+
+        def skip(detail, acknowledged):
+            # Record the durable state a later retry will see: pending for
+            # acknowledged artifacts, untracked without them.
+            if acknowledged:
+                self.update_lateral_cleanup(deployment_id, "pending", detail=f"cleanup skipped: {detail}")
+            return {"status": "skipped", "detail": detail, "deployment_id": deployment_id,
+                    "record_status": "pending" if acknowledged else "untracked"}
+
         if not payload.get("verify"):
-            return {"status": "skipped", "detail": "verification disabled"}
+            return skip("verification disabled", bool(service_name and binary_name))
         if not payload.get("registered") and not owned:
-            return {"status": "skipped", "detail": "target session never registered"}
+            return skip("target session never registered", bool(service_name and binary_name))
         if not (service_name and binary_name):
-            return {"status": "skipped", "detail": "deployment names not acknowledged"}
-        command = LATERAL_CLEANUP_COMMAND + "\n" + json.dumps(
-            {"host": host, "service_name": service_name, "binary_name": binary_name},
-            separators=(",", ":"))
+            return {"status": "skipped", "detail": "deployment names not acknowledged",
+                    "deployment_id": deployment_id, "record_status": "untracked"}
+        cleanup, _ = self._dispatch_lateral_cleanup(session, deployment_id, host, service_name, binary_name)
+        cleanup["record_status"] = self.lateral_deployment_cleanup_status(deployment_id) or cleanup.get("status")
+        return cleanup
+
+    def lateral_deployment_cleanup_status(self, deployment_id: str) -> str | None:
+        """Current durable cleanup state of one deployment record, if any."""
+        records = self._lateral_deployments_locked()
+        try:
+            record = records.get(str(deployment_id or ""))
+            return (record.get("cleanup") or {}).get("status") if record else None
+        finally:
+            self._release_lateral_deployments()
+
+    def _dispatch_lateral_cleanup(self, session, deployment_id, host, service_name, binary_name):
+        """Send one authorized cleanup retry and durably record its outcome.
+
+        The command carries the ownership tag minted from the beacon secret,
+        so the source agent accepts it even after a restart wiped its
+        in-process ownership record, and every retry stays scoped to this
+        deployment's exact artifacts.
+        """
+        command = LATERAL_CLEANUP_COMMAND + "\n" + json.dumps({
+            "host": host, "service_name": service_name, "binary_name": binary_name,
+            "deployment_id": deployment_id,
+            "ownership_tag": lateral_cleanup_ownership_tag(deployment_id, host, service_name, binary_name),
+        }, separators=(",", ":"))
         self.record_operator_action(session, f"{LATERAL_CLEANUP_COMMAND} {host}", "lateral_cleanup")
-        event, status = self.exec_and_wait(session.id, command, timeout=150)
+        self.update_lateral_cleanup(deployment_id, "pending", count_attempt=True)
+        event, status = self.exec_and_wait(session.id, command, timeout=LATERAL_CLEANUP_RETRY_TIMEOUT)
         if status != "ok":
-            return {"status": status, "detail": None}
+            self.update_lateral_cleanup(deployment_id, "failed", detail=f"dispatch ended with {status}")
+            return {"status": status, "detail": None, "deployment_id": deployment_id}, status
         output = str((event or {}).get("body") or "").strip()
-        return {"status": "ok" if output.startswith("lateral cleanup: ") else "failed",
-                "output": output}
+        ok = output.startswith("lateral cleanup: ")
+        self.update_lateral_cleanup(deployment_id, "ok" if ok else "failed",
+                                    detail=output or None,
+                                    performed_by="cleanup_worker" if ok else None)
+        return {"status": "ok" if ok else "failed", "output": output,
+                "deployment_id": deployment_id}, "ok"
 
     def create_staging(self, payload: bytes, ttl_seconds: int = STAGING_TTL_SECONDS) -> str:
         """Register a masked stage2 payload; the id is the only capability."""
@@ -4989,6 +5365,14 @@ class RMMHandler(BaseHTTPRequestHandler):
             self._json(200, {"count": len(relays), "relays": relays})
             return True
 
+        if parts == ["lateral", "deployments"]:
+            try:
+                rows = srv.lateral_deployment_records(workspace_id=workspace_id)
+            except TypeError:
+                rows = srv.lateral_deployment_records()
+            self._json(200, {"count": len(rows), "deployments": rows})
+            return True
+
         if len(parts) == 2 and parts[0] == "sessions":
             session = _resolve_api_session(self, parts[1])
             if not session:
@@ -5908,6 +6292,34 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(503, {"error": status})
             elif status == "timeout":
                 self._json(408, {"error": status, "command": LATERAL_COMMAND})
+            else:
+                self._json(200, result)
+            return True
+
+        if (len(parts) == 4 and parts[0] == "lateral" and parts[1] == "deployments"
+                and parts[3] == "cleanup"):
+            # Idempotent cleanup retry for one recorded psexec deployment.
+            executor = body.get("session_id", "")
+            if executor is not None and not isinstance(executor, str):
+                self._json(400, {"error": "invalid_cleanup_options"})
+                return True
+            result, status = srv.retry_lateral_cleanup(
+                parts[2], str(executor or "").strip(), workspace_id=self._workspace_scope())
+            if status == "invalid_deployment":
+                self._json(400, {"error": status})
+            elif status in ("deployment_not_found", "session_not_found"):
+                self._json(404, {"error": status})
+            elif status == "untracked":
+                self._json(409, {"error": "cleanup_untracked",
+                                 "detail": result.get("detail") if isinstance(result, dict) else None})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": LATERAL_CLEANUP_COMMAND})
+            elif status == "session_busy":
+                self._json(409, {"error": status})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
             else:
                 self._json(200, result)
             return True

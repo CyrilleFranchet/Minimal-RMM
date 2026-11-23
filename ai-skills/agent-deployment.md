@@ -93,8 +93,16 @@ beacon URL and beacon secret. Report artifact paths and metadata.
   streaming the server-staged workspace agent build through the
   authenticated transport (WSMan stdin for WinRM, an SMB named pipe for WMI)
   and loading it without SMB file staging or any file on the target's disk.
-  Both loader deployments work from memory-hosted source sessions, so a
-  WinRM-deployed agent can continue moving laterally. WinRM deployments are
+  Both loader deployments work from memory-hosted source sessions, and so
+  does agent-side `lateral psexec` (its deployment stages the embedded
+  dedicated service host; its cleanup retry runs a separate bounded
+  PowerShell worker), so a
+  WinRM-deployed agent can continue moving laterally with any method.
+  PsExec deployments leave a temporary SCM service and an ADMIN$ launcher
+  binary on the target; the control plane records them durably, and
+  `retry_lateral_cleanup` recovers a pending or failed cleanup after source
+  restarts — idempotently and only for that deployment's exact artifacts.
+  WinRM deployments are
   independent by default (the source closes its session right after
   readiness); `--tethered` restores the source-held lifetime for targets
   whose WinRM session cannot create local WMI processes. Manual deployment

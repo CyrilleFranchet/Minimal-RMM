@@ -133,8 +133,22 @@ A stopped worker permits cleanup even when staging failed; failure results retai
 the exact deployment names and report failure separately from cleanup success.
 The source records cleanup authority before waiting and removes it on successful
 cleanup. It does not restore that authority from a stale timeout result. The
-server can retry owned cleanup without target registration; the source checks
+server can retry owned cleanup without target registration; the retry's cleanup
+worker (a bounded PowerShell child, never a copy of the agent executable) checks
 that the service is stopped before removing artifacts.
+
+Cleanup ownership is persisted by the control plane, not only by the source
+process. The server records every psexec deployment (`lateral_deployments.json`
+in the log directory): owner workspace, source session, target host, the exact
+acknowledged service and binary names, deployment status, cleanup state, and
+attempt count. The `__LATERAL_CLEANUP__` retry carries the deployment id and a
+beacon-secret ownership tag, so a restarted source agent recovers the operation
+its process memory lost; unowned and unsigned cleanup commands fail closed.
+Retries are idempotent (missing artifacts are success states) and scoped to the
+record's own artifact names. Operators list records with
+`GET /api/v1/lateral/deployments` and retry one with
+`POST /api/v1/lateral/deployments/{deployment_id}/cleanup`, including from an
+alternate session of the same workspace when the source is gone.
 
 For PsExec, the worker budget is shorter than the server response timeout by the
 source beacon sleep plus maximum jitter and 15 seconds, capped at half the total

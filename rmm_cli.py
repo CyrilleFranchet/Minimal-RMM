@@ -293,6 +293,21 @@ class RmmApiClient:
             timeout=exec_timeout + register_timeout + 2 * verify_timeout + 30,
         )
 
+    def list_lateral_deployments(self):
+        """List recorded psexec deployments and their durable cleanup state."""
+        return self.request("GET", "/api/v1/lateral/deployments")
+
+    def retry_lateral_cleanup(self, deployment_id: str, session_id: str = ""):
+        """Retry one recorded deployment's cleanup; idempotent per record."""
+        return self.request(
+            "POST",
+            f"/api/v1/lateral/deployments/{urllib.parse.quote(str(deployment_id or ''), safe='')}/cleanup",
+            {"session_id": str(session_id or "")} if session_id else {},
+            # Mirrors the workspace relay budget: cleanup worker wait plus
+            # beacon delivery margin.
+            timeout=240,
+        )
+
     def session_uid(self, session_id: str, timeout: float = 120):
         return self.request(
             "POST",
@@ -1373,6 +1388,58 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
     say(f"registered: {'yes' if data.get('registered') else 'no'}")
     if not data.get("registered"):
         warn("Lateral registration was not confirmed.")
+
+
+def cmd_lateral_deployments(client: RmmApiClient, state: dict, args):
+    """List recorded psexec deployments and their durable cleanup state."""
+    code, data = client.list_lateral_deployments()
+    if args.json:
+        print_json(data)
+        if code != 200:
+            raise SystemExit(1)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"lateral deployments failed ({code})" + (f": {detail}" if detail else ""), 1)
+    rows = data.get("deployments") or []
+    if not rows:
+        say("No psexec deployment records.")
+        return
+    say(f"{'deployment':<36} {'host':<18} {'cleanup':<9} {'tries':<5} created")
+    for row in rows:
+        cleanup = row.get("cleanup") or {}
+        say(f"{str(row.get('deployment_id') or ''):<36} "
+            f"{str(row.get('host') or ''):<18} "
+            f"{str(cleanup.get('status') or ''):<9} "
+            f"{str(cleanup.get('attempts') or 0):<5} "
+            f"{str(row.get('created') or '')}")
+    recoverable = [row for row in rows if (row.get("cleanup") or {}).get("status") not in ("ok", "skipped", "untracked")]
+    if recoverable:
+        warn(f"{len(recoverable)} deployment(s) still need cleanup; retry with: lateral-cleanup <deployment_id>")
+
+
+def cmd_lateral_cleanup(client: RmmApiClient, state: dict, args):
+    """Retry the recorded cleanup of one psexec deployment (idempotent)."""
+    deployment_id = (args.deployment_id or "").strip()
+    if not deployment_id or deployment_id.startswith("-"):
+        die("A deployment ID is required (see lateral-deployments)", 1)
+    executor = (getattr(args, "session", None) or "").strip()
+    say(f"Retrying cleanup of deployment {deployment_id}" +
+        (f" through {executor}" if executor else "") + " (waits for the next beacon)...", err=True)
+    code, data = client.retry_lateral_cleanup(deployment_id, session_id=executor)
+    if args.json:
+        print_json(data)
+        if code != 200 or not data.get("ok"):
+            raise SystemExit(1)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"lateral cleanup failed ({code})" + (f": {detail}" if detail else ""), 1)
+    cleanup = data.get("cleanup") or {}
+    if not data.get("ok"):
+        output = cleanup.get("output") or cleanup.get("detail") or cleanup.get("status")
+        die(f"lateral cleanup failed: {output}", 1)
+    say(cleanup.get("output") or f"cleanup complete for {deployment_id}")
 
 
 def cmd_wmi_probe(client: RmmApiClient, state: dict, args):
@@ -3342,6 +3409,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")
     sp_lat.add_argument("--verify-timeout", type=float, default=120, help="Deprecated compatibility option; no probe is sent")
     sp_lat.set_defaults(func=cmd_lateral)
+
+    sp_lat_deploy = sub.add_parser(
+        "lateral-deployments",
+        parents=[shared],
+        help="List recorded psexec deployments and their cleanup state",
+    )
+    sp_lat_deploy.set_defaults(func=cmd_lateral_deployments)
+
+    sp_lat_cleanup = sub.add_parser(
+        "lateral-cleanup",
+        parents=[shared],
+        help="Retry the recorded cleanup of one psexec deployment (idempotent)",
+    )
+    sp_lat_cleanup.add_argument("deployment_id", help="Deployment ID from 'lateral-deployments'")
+    sp_lat_cleanup.add_argument("--session", "-s", default="",
+                                help="Optional executor session; defaults to the recorded source session")
+    sp_lat_cleanup.set_defaults(func=cmd_lateral_cleanup)
 
     sp_wmi_probe = sub.add_parser(
         "wmi-probe",

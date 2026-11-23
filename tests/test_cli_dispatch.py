@@ -86,6 +86,46 @@ class CliDispatchTests(unittest.TestCase):
             self.invoke(["lateral", "wmiexec", "target", "--tethered", "--session", "source"], client)
         client.lateral_move.assert_not_called()
 
+    def test_lateral_deployments_lists_cleanup_state(self):
+        client = Mock()
+        client.list_lateral_deployments.return_value = (200, {"count": 2, "deployments": [
+            {"deployment_id": "srv-target-session-12345678", "host": "ws01", "created": "2026-11-23 10:00:00",
+             "workspace_id": "alice", "cleanup": {"status": "pending", "attempts": 1}},
+            {"deployment_id": "srv-other-session-87654321", "host": "ws02", "created": "2026-11-23 09:00:00",
+             "workspace_id": "alice", "cleanup": {"status": "ok", "attempts": 1}},
+        ]})
+        output, diagnostics = self.invoke(["lateral-deployments"], client)
+        client.list_lateral_deployments.assert_called_once_with()
+        self.assertIn("srv-target-session-12345678", output)
+        self.assertIn("pending", output)
+        self.assertIn("still need cleanup", diagnostics)
+
+    def test_lateral_cleanup_cli_dispatch_and_json(self):
+        client = Mock()
+        client.retry_lateral_cleanup.return_value = (200, {"ok": True, "deployment": {},
+                                                           "cleanup": {"status": "ok",
+                                                                       "output": "lateral cleanup: service deleted"}})
+        output, _ = self.invoke(["lateral-cleanup", "srv-target-session-12345678", "--json"], client)
+        client.retry_lateral_cleanup.assert_called_once_with("srv-target-session-12345678", session_id="")
+        self.assertTrue(json.loads(output)["ok"])
+        client.reset_mock()
+        client.retry_lateral_cleanup.return_value = (200, {"ok": True, "deployment": {},
+                                                           "cleanup": {"status": "ok", "output": ""}})
+        output, _ = self.invoke(["lateral-cleanup", "srv-target-session-12345678",
+                                "--session", "go-alt-session"], client)
+        client.retry_lateral_cleanup.assert_called_once_with(
+            "srv-target-session-12345678", session_id="go-alt-session")
+        client.reset_mock()
+        client.retry_lateral_cleanup.return_value = (404, {"error": "deployment_not_found"})
+        with self.assertRaises(SystemExit):
+            self.invoke(["lateral-cleanup", "unknown-deployment-1"], client)
+
+    def test_lateral_cleanup_rejects_missing_deployment(self):
+        client = Mock()
+        with self.assertRaises(SystemExit):
+            self.invoke(["lateral-cleanup", "  "], client)
+        client.retry_lateral_cleanup.assert_not_called()
+
     def test_go_build_http_persistence_and_workspace(self):
         client = Mock()
         client.build_go_agent.return_value = (200, {"filename": "agent.zip"})

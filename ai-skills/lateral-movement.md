@@ -73,10 +73,21 @@ restore the tethered lifetime, where the deployment lives only as long as
 the source holds the shell — use it for targets whose WinRM session cannot
 create local WMI processes. The deployed session is memory-hosted, so it
 cannot spawn, spawnas, run further legacy lateral moves, load PE plugins,
-or install persistence (the loader chain itself works from it). Loader
+or install persistence (the loader chain itself and `lateral psexec` work
+from it: psexec stages the embedded dedicated service host, and its cleanup
+retry runs a separate bounded PowerShell worker — never the source binary).
+Loader
 deployments of either kind require a server-staged agent build for the
 source workspace; the request fails with `agent_payload_unavailable` if none
 exists.
+PsExec deployments leave two temporary artifacts on the target — the
+`MinimalRmmAgent-<random>` SCM service and its ADMIN$ launcher binary. The
+control plane records them durably with the deployment's cleanup state:
+`list_lateral_deployments` shows pending or failed cleanups, and
+`retry_lateral_cleanup` (idempotent, scoped to the record's exact artifact
+names) recovers them after a source restart, a lost response, or a failed
+first attempt — optionally through another live session of the same
+workspace when the recorded source is gone.
 Actions requiring existing target control are not substitutes for reaching it.
 
 Execution surface matters: commands launched through the Windows agent use

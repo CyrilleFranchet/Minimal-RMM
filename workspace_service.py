@@ -1902,6 +1902,10 @@ def operator_proxy_timeout(path: str, body: dict | None) -> float:
         if options.get("verify", True):
             wait += seconds("register_timeout", 60) + 2 * seconds("verify_timeout", 120)
         return wait + 30
+    if re.fullmatch(r"/api/v1/lateral/deployments/[^/]+/cleanup", path):
+        # Mirror the central cleanup retry budget (LATERAL_CLEANUP_RETRY_TIMEOUT
+        # = 150 in server_rmm.py) plus a beacon delivery margin.
+        return 240
     if re.fullmatch(r"/api/v1/sessions/[^/]+/(make_token|rev2self|uid|whoami|wmi-probe)", path):
         return seconds("timeout", 120) + 30
     if path.endswith("/exec") or path.endswith("/ai/chat") or path == "/api/v1/agent/go/build":

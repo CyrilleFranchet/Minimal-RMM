@@ -238,16 +238,22 @@ func TestParseLateralLoaderSelection(t *testing.T) {
 	}
 }
 
-// The hosting-mode guard follows the real dependency: only loader
-// deployments free an in-memory source; psexec and the legacy methods keep
-// refusing because they deploy or re-execute this binary.
+// The hosting-mode guard follows the real dependency: loader deployments
+// stream a server-staged artifact and psexec stages the embedded lateral
+// service with a dedicated cleanup worker, so neither touches this binary;
+// the legacy non-loader wmiexec and winrm paths still copy or stream it and
+// keep refusing to run from an in-memory host.
 func TestLateralUsesSelfBinaryFollowsTheDeploymentChain(t *testing.T) {
-	loader := lateralPayload{Method: "wmiexec", loaderDeploy: true}
-	if lateralUsesSelfBinary(loader) {
-		t.Fatal("loader deployments must not depend on the source binary")
+	for _, freed := range []lateralPayload{
+		{Method: "psexec", Stage: "0123456789abcdef0123456789abcdef"},
+		{Method: "wmiexec", loaderDeploy: true},
+		{Method: "winrm", loaderDeploy: true, HTTPS: true},
+	} {
+		if lateralUsesSelfBinary(freed) {
+			t.Fatalf("method %s must not depend on the source binary", freed.Method)
+		}
 	}
 	for _, legacy := range []lateralPayload{
-		{Method: "psexec"},
 		{Method: "wmiexec"},
 		{Method: "winrm", HTTPS: true},
 	} {
@@ -360,16 +366,34 @@ func TestParseLateralCleanupPayload(t *testing.T) {
 		t.Fatal("cleanup without a JSON body must be rejected")
 	}
 	payload, err := parseLateralCleanupPayload(`__LATERAL_CLEANUP__` + "\n" +
-		`{"host":"\\\\ws01","service_name":"MinimalRmmAgent-0011223344556677","binary_name":"minimal-rmm-agent-0011223344556677.exe"}`)
+		`{"host":"\\\\ws01","service_name":"MinimalRmmAgent-0011223344556677","binary_name":"minimal-rmm-agent-0011223344556677.exe","deployment_id":"aabbccddeeff00112233","ownership_tag":"` +
+		strings.Repeat("ab", 32) + `"}`)
 	if err != nil {
 		t.Fatalf("valid cleanup payload must parse: %v", err)
 	}
 	if payload.Host != "ws01" || payload.ServiceName == "" || payload.BinaryName == "" {
 		t.Fatalf("cleanup payload not parsed: %#v", payload)
 	}
+	if payload.DeploymentID != "aabbccddeeff00112233" || payload.OwnershipTag != strings.Repeat("ab", 32) {
+		t.Fatalf("deployment ownership fields not parsed: %#v", payload)
+	}
 	if _, err := parseLateralCleanupPayload(`__LATERAL_CLEANUP__` + "\n" +
 		`{"host":"ws01","service_name":"bad service","binary_name":"a.exe"}`); err == nil {
 		t.Fatal("invalid service names must be rejected")
+	}
+	for _, invalid := range []string{
+		`{"host":"ws01","service_name":"MinimalRmmAgent-0011223344556677","binary_name":"a.exe","deployment_id":"bad id"}`,
+		`{"host":"ws01","service_name":"MinimalRmmAgent-0011223344556677","binary_name":"a.exe","ownership_tag":"not-hex"}`,
+	} {
+		if _, err := parseLateralCleanupPayload(`__LATERAL_CLEANUP__` + "\n" + invalid); err == nil {
+			t.Fatalf("invalid ownership fields must be rejected: %s", invalid)
+		}
+	}
+	// Both ownership fields stay optional so an old control plane can keep
+	// relying on the same-process ownership record.
+	if _, err := parseLateralCleanupPayload(`__LATERAL_CLEANUP__` + "\n" +
+		`{"host":"ws01","service_name":"MinimalRmmAgent-0011223344556677","binary_name":"minimal-rmm-agent-0011223344556677.exe"}`); err != nil {
+		t.Fatalf("tag-free cleanup payload must still parse: %v", err)
 	}
 }
 

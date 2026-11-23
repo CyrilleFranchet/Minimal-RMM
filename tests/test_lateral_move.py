@@ -1,5 +1,6 @@
 """Verify lateral_move and session_uid server flow, REST routing, and redaction."""
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -29,6 +30,7 @@ class LateralFlowTests(unittest.TestCase):
         self.server = object.__new__(server_rmm.RMMServer)
         self.server.staging_lock = threading.Lock()
         self.server.staging_entries = {}
+        self.server.log = Mock()
         self.source = SimpleNamespace(id="go-source-session", agent_type="go", workspace_id="alice", hostname="source")
         self.target_id = "srv-target-session-12345678"
         self.target = SimpleNamespace(id=self.target_id, workspace_id="alice", hostname="target")
@@ -49,6 +51,18 @@ class LateralFlowTests(unittest.TestCase):
         patcher = patch.object(server_rmm, "latest_go_agent_binary", return_value=self.agent_binary_path)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Durable deployment records must not touch the repository's log
+        # directory during unit tests, and every test needs a fresh store.
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as records_file:
+            records_file.write(b"{}")
+            self.deployment_records_path = records_file.name
+        self.addCleanup(os.unlink, self.deployment_records_path)
+        records_patcher = patch.object(server_rmm, "LATERAL_DEPLOYMENT_FILE", self.deployment_records_path)
+        records_patcher.start()
+        self.addCleanup(records_patcher.stop)
+        beacon_secret_patcher = patch.object(server_rmm, "BEACON_SECRET", "fixture-beacon-secret")
+        beacon_secret_patcher.start()
+        self.addCleanup(beacon_secret_patcher.stop)
 
     def execute(self, sid, command, timeout=None):
         if command.startswith("__LATERAL_CLEANUP__"):
@@ -144,6 +158,266 @@ class LateralFlowTests(unittest.TestCase):
         self.assertEqual(result["launch_status"], "failed")
         self.assertEqual(result["cleanup"]["performed_by"], "source_agent")
         self.server.exec_and_wait.assert_called_once()
+
+    def test_cleanup_retry_carries_signed_deployment_ownership(self):
+        self.ack_output += "\nlateral cleanup pending: launcher still running"
+        result, _ = self.call()
+        self.assertEqual(result["cleanup"]["status"], "ok")
+        self.assertEqual(result["deployment_id"], self.target_id)
+        cleanup = [c.args[1] for c in self.server.exec_and_wait.call_args_list
+                   if c.args[1].startswith("__LATERAL_CLEANUP__")][-1]
+        request = json.loads(cleanup.split("\n", 1)[1])
+        self.assertEqual(request["deployment_id"], self.target_id)
+        self.assertEqual(request["host"], "target")
+        self.assertEqual(request["service_name"], "MinimalRmmAgent-0011223344556677")
+        self.assertEqual(request["binary_name"], "minimal-rmm-agent-0011223344556677.exe")
+        # The agent verifies an HMAC over the deployment identity and its exact
+        # artifacts keyed by the shared beacon secret; pin that wire contract.
+        message = "\n".join(["lateral-cleanup-v1", self.target_id, "target",
+                             "MinimalRmmAgent-0011223344556677",
+                             "minimal-rmm-agent-0011223344556677.exe"]).encode("utf-8")
+        expected = hmac.new(b"fixture-beacon-secret", message, hashlib.sha256).hexdigest()
+        self.assertEqual(request["ownership_tag"], expected)
+
+    def test_ownership_tag_binds_the_deployment_only(self):
+        tag = server_rmm.lateral_cleanup_ownership_tag(
+            self.target_id, "target", "MinimalRmmAgent-0011223344556677",
+            "minimal-rmm-agent-0011223344556677.exe")
+        self.assertNotEqual(tag, server_rmm.lateral_cleanup_ownership_tag(
+            "another-deployment-00001", "target", "MinimalRmmAgent-0011223344556677",
+            "minimal-rmm-agent-0011223344556677.exe"), "another deployment must never reuse a tag")
+        self.assertNotEqual(tag, server_rmm.lateral_cleanup_ownership_tag(
+            self.target_id, "target", "MinimalRmmAgent-ffeeddccbbaa99887766",
+            "minimal-rmm-agent-0011223344556677.exe"), "another service must never be removable")
+        self.assertNotEqual(tag, server_rmm.lateral_cleanup_ownership_tag(
+            self.target_id, "target", "MinimalRmmAgent-0011223344556677",
+            "other-agent-0011223344556677.exe"), "another binary must never be removable")
+
+    def test_deployment_record_tracks_artifacts_and_cleanup_state(self):
+        result, _ = self.call()
+        records = self.server.lateral_deployment_records()
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["deployment_id"], self.target_id)
+        self.assertEqual(record["workspace_id"], "alice")
+        self.assertEqual(record["source_session_id"], self.source.id)
+        self.assertEqual(record["host"], "target")
+        self.assertEqual(record["artifacts"], {"service_name": "MinimalRmmAgent-0011223344556677",
+                                              "binary_name": "minimal-rmm-agent-0011223344556677.exe"})
+        self.assertEqual(record["deployment"]["status"], "acknowledged")
+        self.assertEqual(record["cleanup"]["status"], "ok")
+        self.assertEqual(record["cleanup"]["performed_by"], "cleanup_worker")
+        self.assertEqual(record["cleanup"]["attempts"], 1)
+        # The record survives on disk, so a server restart can recover it.
+        with open(self.deployment_records_path, "r", encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)[self.target_id]["cleanup"]["status"], "ok")
+
+    def test_cleanup_retry_recovers_after_source_restart(self):
+        self.ack_output += "\nlateral cleanup pending: launcher port busy"
+        self.cleanup_output = "lateral cleanup failed: remove launcher binary on target (denied)"
+        result, _ = self.call()
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        restarted = object.__new__(server_rmm.RMMServer)
+        restarted.log = Mock()
+        restarted.resolve_session = Mock(return_value=self.source)
+        restarted.record_operator_action = Mock()
+        restarted.exec_and_wait = Mock(return_value=(
+            {"body": "lateral cleanup: service deleted; launcher binary removed from ADMIN$"}, "ok"))
+        outcome, status = restarted.retry_lateral_cleanup(self.target_id)
+        self.assertEqual(status, "ok")
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["deployment"]["host"], "target")
+        # The restarted server loaded the record from disk and sent exactly
+        # one signed cleanup command for the recorded artifacts.
+        command = restarted.exec_and_wait.call_args.args[1]
+        self.assertTrue(command.startswith("__LATERAL_CLEANUP__"))
+        request = json.loads(command.split("\n", 1)[1])
+        self.assertEqual(request["service_name"], "MinimalRmmAgent-0011223344556677")
+        self.assertEqual(request["binary_name"], "minimal-rmm-agent-0011223344556677.exe")
+        self.assertEqual(request["deployment_id"], self.target_id)
+        record = restarted.lateral_deployment_records()[0]
+        self.assertEqual(record["cleanup"]["status"], "ok")
+        self.assertEqual(record["cleanup"]["attempts"], 2)
+        restarted.exec_and_wait.assert_called_once()
+
+    def test_duplicate_retry_after_success_is_idempotent(self):
+        self.ack_output += "\nlateral cleanup pending: launcher still running"
+        self.call()
+        self.server.exec_and_wait.reset_mock()
+        outcome, status = self.server.retry_lateral_cleanup(self.target_id)
+        self.assertEqual(status, "ok")
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(outcome["cleanup"]["status"], "ok")
+        self.server.exec_and_wait.assert_not_called()
+        record = self.server.lateral_deployment_records()[0]
+        self.assertEqual(record["cleanup"]["attempts"], 1, "an idempotent retry dispatches nothing")
+
+    def test_retry_accepts_alternate_executor_of_the_same_workspace(self):
+        self.ack_output += "\nlateral cleanup pending: launcher still running"
+        self.cleanup_output = "lateral cleanup failed: remove launcher binary on target (denied)"
+        self.call()
+        alternate = SimpleNamespace(id="go-alternate-session", agent_type="go", workspace_id="alice")
+        self.server.resolve_session = Mock(return_value=alternate)
+        self.server.exec_and_wait = Mock(return_value=(
+            {"body": "lateral cleanup: service not found or already removed; launcher binary not found on ADMIN$"},
+            "ok"))
+        outcome, status = self.server.retry_lateral_cleanup(self.target_id, "go-alternate")
+        self.assertEqual(status, "ok")
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(self.server.exec_and_wait.call_args.args[0], "go-alternate-session")
+
+    def test_unacknowledged_deployment_names_stay_untrackable(self):
+        self.ack_status = "timeout"
+        self.ack_output = ""
+        result, _ = self.call()
+        self.assertEqual(result["cleanup"]["status"], "skipped")
+        self.assertEqual(result["cleanup"]["record_status"], "untracked")
+        record = self.server.lateral_deployment_records()[0]
+        self.assertEqual(record["artifacts"], {})
+        self.assertEqual(record["cleanup"]["status"], "untracked")
+        outcome, status = self.server.retry_lateral_cleanup(self.target_id)
+        self.assertEqual(status, "untracked")
+        self.assertFalse(outcome["ok"])
+        self.server.exec_and_wait.assert_called_once()
+
+    def test_retry_listing_is_workspace_scoped(self):
+        self.call()
+        self.assertEqual([row["deployment_id"] for row in self.server.lateral_deployment_records()],
+                         [self.target_id])
+        self.assertEqual(self.server.lateral_deployment_records(workspace_id="alice"),
+                         self.server.lateral_deployment_records())
+        self.assertEqual(self.server.lateral_deployment_records(workspace_id="bob"), [])
+        # A foreign workspace cannot even see that the deployment exists.
+        self.assertEqual(self.server.retry_lateral_cleanup(self.target_id, workspace_id="bob"),
+                         (None, "deployment_not_found"))
+
+    def test_retry_rejects_malformed_identifiers(self):
+        self.assertEqual(self.server.retry_lateral_cleanup("../pwn"), (None, "invalid_deployment"))
+        self.assertEqual(self.server.retry_lateral_cleanup("short"), (None, "invalid_deployment"))
+        self.assertEqual(self.server.retry_lateral_cleanup("0123456789abcdef0123456789abcdef"),
+                         (None, "deployment_not_found"))
+
+    def test_skipped_cleanup_call_records_a_recoverable_state(self):
+        self.ack_output += "\nlateral cleanup pending: launcher still running"
+        result, _ = self.call(verify=False)
+        self.assertEqual(result["cleanup"]["status"], "skipped")
+        self.assertEqual(result["cleanup"]["record_status"], "pending")
+        record = self.server.lateral_deployment_records()[0]
+        self.assertEqual(record["cleanup"]["status"], "pending")
+        self.assertIn("verification disabled", record["cleanup"]["detail"])
+        # The persisted pending state keeps the operation recoverable later.
+        self.server.exec_and_wait = Mock(return_value=({"body": self.cleanup_output}, "ok"))
+        outcome, status = self.server.retry_lateral_cleanup(self.target_id)
+        self.assertEqual(status, "ok")
+        self.assertTrue(outcome["ok"])
+
+    def test_cleanup_response_status_and_record_status_travel_together(self):
+        # An immediate source-agent cleanup is ok in both views.
+        self.ack_output += "\n" + self.cleanup_output
+        result, _ = self.call()
+        self.assertEqual(result["cleanup"]["status"], "ok")
+        self.assertEqual(result["cleanup"]["record_status"], "ok")
+        # A transport failure during the retry is a delivery failure in the
+        # response and a durable failed state in the record.
+        full_output = self.handshake() + "\nlateral cleanup pending: still running"
+        self.ack_output = full_output
+        self.ack_status = "ok"
+
+        def execute(sid, command, timeout=None):
+            if command.startswith("__LATERAL_CLEANUP__"):
+                return None, "timeout"
+            return {"body": full_output}, "ok"
+
+        self.server.exec_and_wait = Mock(side_effect=execute)
+        result, _ = self.call()
+        self.assertEqual(result["cleanup"]["status"], "timeout")
+        self.assertEqual(result["cleanup"]["record_status"], "failed")
+        record = self.server.lateral_deployment_records()[0]
+        self.assertEqual(record["cleanup"]["status"], "failed")
+        self.assertIn("dispatch ended with timeout", record["cleanup"]["detail"])
+
+    def test_corrupt_record_store_is_preserved_not_replaced(self):
+        corrupt = b"{ not valid json"
+        with open(self.deployment_records_path, "wb") as handle:
+            handle.write(corrupt)
+        restarted = object.__new__(server_rmm.RMMServer)
+        restarted.log = Mock()
+        restarted.record_lateral_deployment("srv-record-target-1", "alice",
+                                            self.source.id, "psexec", "ws01")
+        # The damaged file rotated aside instead of being overwritten.
+        directory = os.path.dirname(self.deployment_records_path)
+        base = os.path.basename(self.deployment_records_path)
+        backups = [name for name in os.listdir(directory)
+                   if name.startswith(base + ".corrupt-")]
+        self.assertEqual(len(backups), 1)
+        with open(os.path.join(directory, backups[0]), "rb") as handle:
+            self.assertEqual(handle.read(), corrupt)
+        # A fresh store takes over without losing the new record.
+        with open(self.deployment_records_path, "r", encoding="utf-8") as handle:
+            self.assertEqual(list(json.load(handle)), ["srv-record-target-1"])
+        self.assertEqual([row["deployment_id"] for row in restarted.lateral_deployment_records()],
+                         ["srv-record-target-1"])
+        messages = " ".join(str(call.args[0]) for call in restarted.log.call_args_list if call.args)
+        self.assertIn("preserved", messages)
+
+    def test_unreadable_record_store_disables_persistence(self):
+        with open(self.deployment_records_path, "wb") as handle:
+            handle.write(b"legacy-bytes")
+        fresh = object.__new__(server_rmm.RMMServer)
+        fresh.log = Mock()
+        with patch.object(server_rmm.RMMServer, "_read_lateral_deployment_store",
+                          side_effect=PermissionError(13, "Permission denied")):
+            fresh.record_lateral_deployment("srv-record-target-2", "alice",
+                                            self.source.id, "psexec", "ws01")
+            fresh.record_lateral_deployment("srv-record-target-3", "alice",
+                                            self.source.id, "psexec", "ws02")
+        # The unreadable file is untouched, and records stay in memory only.
+        with open(self.deployment_records_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"legacy-bytes")
+        self.assertEqual([row["deployment_id"] for row in fresh.lateral_deployment_records()],
+                         ["srv-record-target-2", "srv-record-target-3"])
+        warnings = [call for call in fresh.log.call_args_list
+                    if call.args and "stay in memory only" in str(call.args[0])]
+        self.assertEqual(len(warnings), 1, "the preservation warning is logged once per server run")
+
+    def test_retention_bounds_memory_and_history_consistently(self):
+        import datetime as datetime_module
+        counter = {"seconds": 0}
+
+        def fake_now():
+            counter["seconds"] += 1
+            return datetime_module.datetime(2026, 11, 23, 12, 0, counter["seconds"])
+
+        with patch.object(server_rmm, "LATERAL_DEPLOYMENT_LIMIT", 3), \
+                patch.object(server_rmm, "datetime", SimpleNamespace(now=fake_now)):
+            deployment_ids = [f"srv-record-target-{index:08d}" for index in range(5)]
+            for deployment_id in deployment_ids:
+                self.server.record_lateral_deployment(deployment_id, "alice",
+                                                      self.source.id, "psexec", "ws01")
+                self.server.update_lateral_deployment_result(
+                    deployment_id, "acknowledged",
+                    "MinimalRmmAgent-0011223344556677", "minimal-rmm-agent-0011223344556677.exe")
+                self.server.update_lateral_cleanup(deployment_id, "ok", detail="lateral cleanup: done")
+            # The finished records drop off oldest first, in memory and on disk,
+            # so listings match what a restart will load.
+            rows = self.server.lateral_deployment_records()
+            self.assertEqual([row["deployment_id"] for row in rows],
+                             list(reversed(deployment_ids[-3:])))
+            with open(self.deployment_records_path, "r", encoding="utf-8") as handle:
+                self.assertEqual(sorted(json.load(handle)), sorted(deployment_ids[-3:]))
+            # Unfinished cleanups are never pruned, so recovery outlives the limit.
+            pending_id = "srv-record-target-p"
+            self.server.record_lateral_deployment(pending_id, "alice", self.source.id, "psexec", "ws02")
+            self.server.update_lateral_deployment_result(
+                pending_id, "acknowledged",
+                "MinimalRmmAgent-0011223344556677", "minimal-rmm-agent-0011223344556677.exe")
+            self.server.update_lateral_cleanup(pending_id, "pending", detail="busy")
+            rows = self.server.lateral_deployment_records()
+            self.assertEqual([row["deployment_id"] for row in rows],
+                             [pending_id] + list(reversed(deployment_ids[-2:])))
+            with open(self.deployment_records_path, "r", encoding="utf-8") as handle:
+                self.assertEqual(sorted(json.load(handle)),
+                                 sorted([pending_id] + deployment_ids[-2:]))
 
     def test_psexec_without_staged_build_is_reported(self):
         with patch.object(server_rmm, "latest_go_agent_binary", return_value=None):
@@ -312,6 +586,38 @@ class LateralFlowTests(unittest.TestCase):
         client.lateral_move.assert_not_called()
         definition = next(tool['function'] for tool in rmm_tools.OPENAI_TOOLS if tool['function']['name'] == 'lateral_move')
         self.assertEqual(definition['parameters']['properties']['method']['enum'], ['psexec', 'wmiexec', 'winrm'])
+
+    def test_cleanup_retry_tools_and_ai_schema(self):
+        import rmm_tools
+        client = Mock()
+        client.list_lateral_deployments.return_value = (
+            200, {"count": 1, "deployments": [{
+                "deployment_id": self.target_id, "workspace_id": "alice", "host": "target",
+                "created": "2026-11-23 10:00:00",
+                "deployment": {"status": "acknowledged"},
+                "artifacts": {"service_name": "MinimalRmmAgent-0011223344556677",
+                              "binary_name": "minimal-rmm-agent-0011223344556677.exe"},
+                "cleanup": {"status": "failed", "attempts": 1}}]})
+        listed = json.loads(rmm_tools.tool_list_lateral_deployments(client))
+        self.assertTrue(listed["ok"])
+        self.assertTrue(listed["deployments"][0]["retriable"])
+        client.list_lateral_deployments.assert_called_once_with()
+        handlers = rmm_tools.TOOL_HANDLERS
+        client.retry_lateral_cleanup.return_value = (
+            200, {"ok": True, "deployment": {},
+                  "cleanup": {"status": "ok", "attempts": 2, "output": "lateral cleanup: service deleted"}})
+        retried = json.loads(handlers["retry_lateral_cleanup"](
+            client, {"deployment_id": self.target_id, "session_ref": "go-alternate"}))
+        self.assertTrue(retried["ok"])
+        client.retry_lateral_cleanup.assert_called_once_with(self.target_id, session_id="go-alternate")
+        schema_names = {tool["function"]["name"] for tool in rmm_tools.OPENAI_TOOLS}
+        self.assertIn("list_lateral_deployments", schema_names)
+        self.assertIn("retry_lateral_cleanup", schema_names)
+        # A missing deployment id is rejected without contacting the server.
+        client.reset_mock()
+        invalid = json.loads(rmm_tools.tool_retry_lateral_cleanup(client, "  "))
+        self.assertEqual(invalid["error"], "invalid_deployment")
+        client.retry_lateral_cleanup.assert_not_called()
 
     def test_fractional_timeout_reserves_response_budget(self):
         self.call(exec_timeout=12.5)
@@ -774,6 +1080,84 @@ class LateralHttpRoutingTests(unittest.TestCase):
             with self.subTest(body=body):
                 match = server_rmm.LATERAL_RESULT_RE.search(body)
                 self.assertEqual(match.group("session_id") if match else None, expected)
+
+    def test_lateral_deployments_route_lists_records(self):
+        handler = object.__new__(server_rmm.RMMHandler)
+        handler._api_authorized = Mock(return_value=True)
+        handler._api_path_parts = Mock(return_value=["lateral", "deployments"])
+        handler._workspace_scope = Mock(return_value="alice")
+        handler._json = Mock()
+        handler.server_instance = SimpleNamespace(
+            lateral_deployment_records=Mock(return_value=[
+                {"deployment_id": "srv-target-session-12345678", "workspace_id": "alice",
+                 "cleanup": {"status": "pending", "attempts": 1}}]))
+        handler._handle_api_get("/api/v1/lateral/deployments", {})
+        code, payload = handler._json.call_args.args
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["deployments"][0]["deployment_id"], "srv-target-session-12345678")
+        handler.server_instance.lateral_deployment_records.assert_called_once_with(workspace_id="alice")
+
+    def test_lateral_cleanup_retry_route_status_codes(self):
+        cases = [
+            ("invalid_deployment", 400),
+            ("deployment_not_found", 404),
+            ("session_not_found", 404),
+            ("untracked", 409),
+            ("session_busy", 409),
+            ("timeout", 408),
+            ("session_killed", 410),
+            ("server_stopped", 503),
+        ]
+        record = {"deployment_id": "srv-target-session-12345678", "cleanup": {"status": "failed"}}
+        cleanup_result = {"ok": False, "deployment": record,
+                          "detail": "the deployment never acknowledged its artifact names"}
+        for status, expected_code in cases:
+            with self.subTest(status=status):
+                handler = object.__new__(server_rmm.RMMHandler)
+                handler._api_authorized = Mock(return_value=True)
+                handler._api_path_parts = Mock(
+                    return_value=["lateral", "deployments", "srv-target-session-12345678", "cleanup"])
+                handler._workspace_scope = Mock(return_value=None)
+                handler._json = Mock()
+                handler.server_instance = SimpleNamespace(
+                    retry_lateral_cleanup=Mock(return_value=(cleanup_result, status)))
+                handler._handle_api_post(
+                    "/api/v1/lateral/deployments/srv-target-session-12345678/cleanup", {})
+                code, payload = handler._json.call_args.args
+                self.assertEqual(code, expected_code)
+                handler.server_instance.retry_lateral_cleanup.assert_called_once_with(
+                    "srv-target-session-12345678", "", workspace_id=None)
+        # A completed retry returns the record without an error status.
+        handler = object.__new__(server_rmm.RMMHandler)
+        handler._api_authorized = Mock(return_value=True)
+        handler._api_path_parts = Mock(
+            return_value=["lateral", "deployments", "srv-target-session-12345678", "cleanup"])
+        handler._workspace_scope = Mock(return_value=None)
+        handler._json = Mock()
+        handler.server_instance = SimpleNamespace(
+            retry_lateral_cleanup=Mock(return_value=(
+                {"ok": True, "deployment": record,
+                 "cleanup": {"status": "ok", "output": "lateral cleanup: service deleted"}}, "ok")))
+        handler._handle_api_post(
+            "/api/v1/lateral/deployments/srv-target-session-12345678/cleanup", {})
+        code, payload = handler._json.call_args.args
+        self.assertEqual(code, 200)
+        self.assertTrue(payload["ok"])
+
+    def test_lateral_cleanup_retry_route_validates_executor(self):
+        handler = object.__new__(server_rmm.RMMHandler)
+        handler._api_authorized = Mock(return_value=True)
+        handler._api_path_parts = Mock(
+            return_value=["lateral", "deployments", "srv-target-session-12345678", "cleanup"])
+        handler._workspace_scope = Mock(return_value=None)
+        handler._json = Mock()
+        handler.server_instance = SimpleNamespace(retry_lateral_cleanup=Mock())
+        handler._handle_api_post(
+            "/api/v1/lateral/deployments/srv-target-session-12345678/cleanup",
+            {"session_id": ["not", "a", "string"]})
+        self.assertEqual(handler._json.call_args.args[0], 400)
+        handler.server_instance.retry_lateral_cleanup.assert_not_called()
 
     def test_psexec_deployment_names_are_parsed_for_cleanup(self):
         body = ("lateral started: method=psexec host=ws01 target session=go-x-lateral-1 "

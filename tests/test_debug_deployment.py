@@ -24,6 +24,15 @@ class DebugDeploymentTests(unittest.TestCase):
         server.create_staging = Mock(return_value="staging-fixture")
         server.staging_status = Mock(return_value={})
         server.log = Mock()
+        # Durable deployment records must not touch the repository's log
+        # directory during unit tests.
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as records_file:
+            records_file.write(b"{}")
+            self.addCleanup(os.unlink, records_file.name)
+        records_patcher = patch.object(server_rmm, "LATERAL_DEPLOYMENT_FILE", records_file.name)
+        records_patcher.start()
+        self.addCleanup(records_patcher.stop)
+        server._lateral_deployments = {}
         return server
 
     def test_all_descendants_inherit_source_build_without_json_control(self):

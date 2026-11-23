@@ -18,6 +18,113 @@
   verify preferences and submission. Pivot plugin connection lifetimes remain
   independent of beacon HTTP persistence.
 
+## 2026-11-23 — PsExec cleanup isolation and durable control-plane ownership
+
+- Commit review corrected remote `sc.exe` targets to use the required double
+  backslash prefix and made ADMIN$ existence-probe errors fail cleanup instead
+  of reporting successful absence. Executable PowerShell regressions cover
+  absent/present files, access denial, SMB failure, and remote SCM arguments.
+
+- Lifted the PsExec restriction for memory-hosted sources. The hosting-mode
+  guard now models the real dependency: `psexec` stages the embedded
+  dedicated lateral service (an in-image constant available in any hosting
+  mode), and its cleanup retry no longer re-executes the agent executable —
+  so only the legacy `wmiexec`/`winrm` wire methods, which copy or stream the
+  source binary, keep refusing from an in-memory session. The guard is a
+  capability check, not a hosting-mode check; missing capabilities (embedded
+  service bytes, the PowerShell worker) fail with explicit errors.
+- Replaced the self-relaunching cleanup child (`--lateral-cleanup-child`) with
+  a dedicated cleanup worker (`agent-go/lateral_cleanup.go`): a tightly
+  scoped PowerShell script run by System32 `powershell.exe` as a bounded
+  child (two-minute kill boundary, make_token identity via
+  `applyCommandToken`). A separate process was a deliberate decision: native
+  SCM/SMB calls cannot be canceled when a Go context expires, so a goroutine
+  would lose the termination boundary while unblocking the executable
+  dependency. The worker embeds the record's three names through
+  single-quoted literals as a UTF-16LE `-EncodedCommand`, and treats absent
+  artifacts as success, so duplicate retries are idempotent. It works
+  identically from an on-disk agent and from inside a loader host.
+- Separated deployment from cleanup outcomes. A psexec deployment returns
+  its ack plus an explicit cleanup line; a deployment whose immediate
+  cleanup stays incomplete reports `lateral cleanup pending:` without
+  requiring the source to relaunch itself.
+- Persisted cleanup ownership in the control plane. The server records every
+  psexec deployment durably (`lateral_deployments.json` in the log
+  directory): owner workspace, source session, target host, exact
+  acknowledged artifact names, deployment status, cleanup state, and attempt
+  count; unfinished cleanups are never pruned. The `__LATERAL_CLEANUP__`
+  command carries the deployment id and an `ownership_tag` (HMAC-SHA256 keyed
+  by the shared beacon secret over the deployment id and exact artifact
+  names), so a restarted source agent recovers the operation its process
+  memory lost; unowned, unsigned requests fail closed, and no tag can
+  authorize another deployment's artifacts. Old servers and old agents stay
+  compatible: the new fields are ignored downgrade, and missing tags retain
+  today's same-process fail-closed behavior.
+- New operator surface for recovery, exposed REST → CLI → MCP
+  (`make check-parity` updated): `GET /api/v1/lateral/deployments`
+  (CLI `lateral-deployments`, MCP `list_lateral_deployments`) and
+  `POST /api/v1/lateral/deployments/{id}/cleanup` (CLI
+  `lateral-cleanup <id> [--session <ref>]`, MCP `retry_lateral_cleanup`);
+  the retry accepts an alternate executor session of the same workspace when
+  the recorded source is gone, and the workspace relay reserves a full
+  worker budget for it.
+- Store safety for the durable records (review fix): a missing
+  `lateral_deployments.json` is a normal first run, but an unreadable or
+  corrupt file is never replaced by a fresh save — a corrupt file rotates
+  to an unused `.corrupt-*` sibling for inspection, an unreadable file is
+  left untouched, and both are reported with an operator-visible error.
+  When preservation on disk is impossible, persistence is disabled for the
+  server run (records stay in memory only, one warning per run) instead of
+  silently discarding stored history.
+- Consistent retention (review fix): the finished-record cap now prunes the
+  in-memory store as well as the serialized file, so operator listings,
+  memory use, and the history a restart loads cannot drift apart.
+  Recoverable (pending) records are never pruned.
+- Reconciled response and record status (review fix): the lateral cleanup
+  response now carries `record_status` alongside its call-attempt `status`
+  — the durable record state (`untracked`/`pending`/`ok`/`failed`) that the
+  deployments listing also shows. A skipped call with acknowledged artifact
+  names persists the record as `pending` (skip reason as detail) so the
+  operation stays recoverable; without acknowledged names it stays
+  `untracked`. Both review-flagged follow-ups are resolved here, so no
+  follow-up ticket remains.
+- New validation on the host covers the store-safety and status fixes: Python tests
+  for the rotated/preserved corrupt store, the disabled-persistence mode
+  (single warning per run, untouched file), consistent in-memory/disk
+  retention (including unrecoverable-vs-pending ordering), skipped-call
+  pending records, and response/record agreement across immediate,
+  dispatched, transport-failed, and untracked outcomes.
+- Validation on the host: Go unit tests cover the tag contract and
+  fail-closed authorization (in-process ownership, signed recovery after a
+  simulated restart, cross-deployment isolation), worker script escaping and
+  encoding, in-memory psexec guard changes, and the removed child dispatch —
+  `go test ./...` and the Windows amd64 test cross-compile pass. Python
+  tests cover durable records, restart recovery, idempotent duplicate
+  retries, blocked-then-recovered cleanups, alternate executors, untracked
+  deployments, workspace scoping, the signed wire command, REST routing, and
+  CLI/MCP dispatch. `make check-agent-deployment check-cli check-parity`
+  pass.
+- Native Windows validation of the from-memory psexec combination, the
+  PowerShell worker against a live target, agent-restart recovery on real
+  beacons, and cleanup-vs-other-deployment isolation on a real SMB target
+  remain open; per the repository's platform policy, none may be claimed
+  supported until that matrix runs. Docs updated: `go-agent.md`
+  (deployment/cleanup separation and worker design), `lateral-loader.md`
+  (§4/§7 follow-on marked implemented pending native validation),
+  `staged-deployment.md`, `winrm-transfer.md` (in-memory capability list),
+  `README.md` (wire command, REST, CLI), `mcp-parity.md`, and the
+  `lateral-movement` / `agent-deployment` AI skills.
+
+## 2026-11-23 — Identity report readability
+
+- Split dense `/whoami` process, token statistics, logon, group, privilege,
+  and ticket output into labeled lines with visible token section headings.
+  Preserve all fields and privilege-state distinctions across operator surfaces.
+- Updated Windows report assertions. Portable `TestWhoami` tests, Windows amd64
+  test cross-compilation, operator parity, and diff whitespace checks pass.
+  Native Windows runtime and visual shell validation remain unverified.
+- Rebuild and redeploy Go agents for the new format; stored reports are unchanged.
+
 ## 2026-11-23 — Follow-up audit of secret-suppression instructions
 
 - Removed remaining credential-suppression instructions from bundled AI skills,

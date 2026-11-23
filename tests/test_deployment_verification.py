@@ -8,6 +8,20 @@ import test_agent_workspace_binding as binding_fixtures
 
 
 class DeploymentVerificationTests(unittest.TestCase):
+    def setUp(self):
+        # Durable deployment records must not touch the repository's log
+        # directory during unit tests.
+        import os as _os
+        import tempfile as _tempfile
+        import server_rmm as _server_rmm
+        with _tempfile.NamedTemporaryFile(suffix=".json", delete=False) as records_file:
+            records_file.write(b"{}")
+            self.deployment_records_path = records_file.name
+        self.addCleanup(_os.unlink, self.deployment_records_path)
+        patcher = patch.object(_server_rmm, "LATERAL_DEPLOYMENT_FILE", self.deployment_records_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def run_deployment(self, kind, *, acknowledge=True, register=True):
         server = binding_fixtures.AgentRegistrationWorkspaceTests().server()
         server.staging_lock = threading.Lock()

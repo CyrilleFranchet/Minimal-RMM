@@ -104,6 +104,8 @@ from rmm_tools import (
     tool_make_token,
     tool_rev2self,
     tool_lateral_move,
+    tool_list_lateral_deployments,
+    tool_retry_lateral_cleanup,
     tool_session_uid,
     tool_session_whoami,
     tool_wmi_probe,
@@ -634,6 +636,20 @@ def lateral_move(
         identity_user=identity_user,
         identity_password=identity_password,
     )
+
+
+@mcp.tool()
+@_offload_tool
+def list_lateral_deployments() -> str:
+    """List the control plane's durable psexec deployment records: deployment and host, acknowledged service and binary artifact names, deployment status, durable cleanup state (untracked/pending/ok/failed), retry attempts, and whether cleanup is still retriable. A skipped call leaves acknowledged artifacts pending, so they stay recoverable. Loader-based wmiexec/winrm deployments leave no remote artifacts and therefore have no records. Use retry_lateral_cleanup with a retriable deployment_id."""
+    return tool_list_lateral_deployments(_client())
+
+
+@mcp.tool()
+@_offload_tool
+def retry_lateral_cleanup(deployment_id: str, session_ref: str = "") -> str:
+    """Retry the recorded cleanup of one psexec deployment: removes its temporary launcher service and staged ADMIN$ binary on the target. Idempotent: an already cleaned deployment returns its state without contacting the agent, and missing artifacts count as success. Cleanup is scoped to the record's exact artifact names, never another deployment's. Defaults to the recorded source session; pass session_ref to run it from another live session of the same workspace when the source agent is gone."""
+    return tool_retry_lateral_cleanup(_client(), deployment_id, session_ref)
 
 
 @mcp.tool()

@@ -898,6 +898,71 @@ def tool_lateral_move(
     })
 
 
+def tool_list_lateral_deployments(client: RmmApiClient) -> str:
+    """List recorded psexec deployments and their durable cleanup state."""
+    code, data = client.list_lateral_deployments()
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "data": data})
+    rows = data.get("deployments") or []
+    return _json_result({
+        "ok": True,
+        "count": len(rows),
+        "deployments": [
+            {
+                "deployment_id": row.get("deployment_id"),
+                "workspace_id": row.get("workspace_id"),
+                "source_session_id": row.get("source_session_id"),
+                "host": row.get("host"),
+                "created": row.get("created"),
+                "deployment_status": (row.get("deployment") or {}).get("status"),
+                "service_name": (row.get("artifacts") or {}).get("service_name"),
+                "binary_name": (row.get("artifacts") or {}).get("binary_name"),
+                "cleanup_status": (row.get("cleanup") or {}).get("status"),
+                "cleanup_attempts": (row.get("cleanup") or {}).get("attempts"),
+                "retriable": ((row.get("cleanup") or {}).get("status")
+                              not in ("ok", "skipped", "untracked")),
+            }
+            for row in rows
+        ],
+    })
+
+
+def tool_retry_lateral_cleanup(client: RmmApiClient, deployment_id: str,
+                               session_ref: str = "") -> str:
+    """Retry the recorded cleanup of one psexec deployment.
+
+    Idempotent per record: an already cleaned deployment returns its state
+    without contacting the agent. An optional session_ref selects an
+    alternate executor from the same workspace when the recorded source
+    agent is gone.
+    """
+    deployment_id = (deployment_id or "").strip() if isinstance(deployment_id, str) else ""
+    if not deployment_id:
+        return _json_result({"ok": False, "error": "invalid_deployment",
+                             "detail": "a deployment_id from list_lateral_deployments is required"})
+    session_id = (session_ref or "").strip() if isinstance(session_ref, str) else ""
+    code, data = client.retry_lateral_cleanup(deployment_id, session_id=session_id)
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "deployment_id": deployment_id,
+                             "command": "__LATERAL_CLEANUP__"})
+    if code in (404, 409, 410, 503, 400):
+        detail = data.get("detail") or data.get("error") if isinstance(data, dict) else data
+        return _json_result({"ok": False, "status": code, "deployment_id": deployment_id,
+                             "error": data.get("error") if isinstance(data, dict) else None,
+                             "detail": detail})
+    if code != 200 or not data.get("ok"):
+        return _json_result({"ok": False, "status": code, "deployment_id": deployment_id,
+                            "cleanup": data.get("cleanup") if isinstance(data, dict) else None})
+    cleanup = data.get("cleanup") or {}
+    return _json_result({
+        "ok": True,
+        "deployment_id": deployment_id,
+        "cleanup_status": cleanup.get("status"),
+        "attempts": cleanup.get("attempts"),
+        "output": cleanup.get("output"),
+    })
+
+
 def tool_session_uid(client: RmmApiClient, session_ref: str, timeout: float = 120) -> str:
     """Show the identity a Go agent runs under, plus any make_token identity."""
     sid, info = _resolve_session_id(client, session_ref)
@@ -1261,6 +1326,12 @@ TOOL_HANDLERS = {
         float(a.get("verify_timeout", 120)),
         a.get("https", False),
         a.get("insecure", False),
+    ),
+    "list_lateral_deployments": lambda c, a: tool_list_lateral_deployments(c),
+    "retry_lateral_cleanup": lambda c, a: tool_retry_lateral_cleanup(
+        c,
+        a["deployment_id"],
+        a.get("session_ref", ""),
     ),
     "session_whoami": lambda c, a: tool_session_whoami(
         c, a["session_ref"], float(a.get("timeout", 120)), a.get("tickets", False),
@@ -2103,6 +2174,32 @@ OPENAI_TOOLS: list[dict] = [
                     "identity_password": {"type": "string", "description": "Plaintext password for a direct forced identity"},
                 },
                 "required": ["session_ref", "method", "host"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_lateral_deployments",
+            "description": "List the control plane's durable psexec deployment records: deployment and host, acknowledged service and binary artifact names, deployment status, durable cleanup state (untracked/pending/ok/failed), retry attempts, and whether cleanup is still retriable. A skipped call leaves acknowledged artifacts pending, so they stay recoverable. Loader-based wmiexec/winrm deployments leave no artifacts and therefore have no records. Use retry_lateral_cleanup with a retriable deployment_id.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retry_lateral_cleanup",
+            "description": "Retry the recorded cleanup of one psexec deployment (removes its temporary launcher service and staged ADMIN$ binary on the target). Idempotent: an already cleaned deployment returns its state without contacting the agent, and missing artifacts count as success. Cleanup is scoped to the record's exact artifact names, never another deployment's. Defaults to the recorded source session; pass session_ref to run it from another live session of the same workspace when the source agent is gone.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deployment_id": {"type": "string", "description": "Deployment ID from list_lateral_deployments"},
+                    "session_ref": {"type": "string", "default": "", "description": "Optional alternate executor session"},
+                },
+                "required": ["deployment_id"],
             },
         },
     },

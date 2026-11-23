@@ -18,6 +18,12 @@ class OperatorProxyTimeoutTests(unittest.TestCase):
         self.assertEqual(operator_proxy_timeout('/api/v1/sessions', {}), 30)
         self.assertEqual(operator_proxy_timeout('/api/v1/agent/go/build', {}), 300)
 
+    def test_lateral_cleanup_retry_gets_a_full_worker_budget(self):
+        self.assertEqual(operator_proxy_timeout('/api/v1/lateral/deployments/deployment-1/cleanup', {}), 240)
+        self.assertEqual(operator_proxy_timeout('/api/v1/lateral/deployments/deployment-1/cleanup',
+                                                {'timeout': 1}), 240)
+        self.assertEqual(operator_proxy_timeout('/api/v1/lateral/deployments', {}), 30)
+
     def test_real_handler_uses_operation_timeout(self):
         handler = object.__new__(WorkspaceRequestHandler)
         handler.path = '/api/v1/sessions/abc/spawn'

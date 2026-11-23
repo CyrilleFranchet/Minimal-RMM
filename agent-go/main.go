@@ -154,17 +154,6 @@ func main() {
 		debugEvent("process.exit.graceful", nil)
 		return
 	}
-	if len(os.Args) > 2 && os.Args[1] == "--lateral-cleanup-child" {
-		initAgentDebug(false)
-		defer closeAgentDebug()
-		if err := runLateralCleanupChild(os.Args[1:]); err != nil {
-			debugEvent("lateral.cleanup_child.failed", err)
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(3)
-		}
-		debugEvent("process.exit.graceful", nil)
-		return
-	}
 	if len(os.Args) > 1 && os.Args[1] == "--lateral-session" {
 		// A lateral move started this copy on another host; the target must
 		// register under its own identity instead of the embedded default.
