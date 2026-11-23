@@ -27,7 +27,7 @@ class WmiProbeMethodTests(unittest.TestCase):
     def call(self, **options):
         return self.server.wmi_probe(self.session.id, "10.0.0.8", **options)
 
-    def test_wire_command_and_redacted_audit(self):
+    def test_wire_command_and_credential_audit(self):
         result, status = self.call(mode="switch", b_domain="LAB", b_user="svc-b", b_password="s3cret")
         self.assertEqual(status, "ok")
         self.assertTrue(result["ok"])
@@ -38,7 +38,7 @@ class WmiProbeMethodTests(unittest.TestCase):
         audit = self.server.record_operator_action.call_args
         label = audit.args[1]
         self.assertIn("b_identity=LAB\\svc-b", label)
-        self.assertNotIn("s3cret", label)
+        self.assertIn('b_password="s3cret"', label)
         self.assertEqual(audit.args[2], "wmi_probe")
 
     def test_default_mode_omits_body(self):

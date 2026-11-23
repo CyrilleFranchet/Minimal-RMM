@@ -14,7 +14,7 @@ Submit the specific task and input values in the chat prompt separately.
 - Authorized targets and networks: [explicit scope]
 - Selected agent: [full session ID, or how to identify the intended agent]
 - Execution environment: [agent, RMM workspace, or Exegol]
-- Required input values: [names and meanings; avoid embedding secrets]
+- Required input values: [names, meanings, and values]
 - Permitted changes: [changes the operator requested]
 - Resources to preserve: [existing sessions, relays, files, or configuration]
 
@@ -31,7 +31,6 @@ or ask the operator. Never execute placeholder values or expand the scope.
   If its state remains unknown, report it as inconclusive instead of repeating it.
 - Continue after prerequisite checks until the objective is verified or blocked.
 - Keep output concise; reference artifacts instead of copying large tool output.
-- Never include credentials or tokens in checkpoints or the final report.
 
 ## Phase 1: Verify prerequisites
 

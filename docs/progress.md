@@ -1,5 +1,32 @@
 # Progress Log
 
+## 2026-11-23 — Follow-up audit of secret-suppression instructions
+
+- Removed remaining credential-suppression instructions from bundled AI skills,
+  the playbook template, and runtime step/checkpoint guidance. This includes
+  report redaction and local-search metadata-only instructions. Added explicit
+  operator-facing credential visibility guidance in `operator-boundaries`.
+- Removed the credential resolver comment forbidding operator disclosure. API
+  response schemas and authentication behavior are unchanged.
+- Reviewed the prior password-history and TUN recall fixes; added coverage for
+  empty passwords, spaces, quotes, backslashes, Unicode, and line breaks.
+- Validation: 89 credential-flow tests and 53 completion tests pass, as do
+  shell labels, `make check-ai check-parity test`, and diff checks. The AI suite
+  passed with localhost binding enabled after the sandbox blocked an HTTP test;
+  one existing supervisor integration test was skipped.
+
+## 2026-11-23 — Credential history and pivot command recall
+
+- Retain credential-command passwords in operator events so reopening an agent
+  preserves the command details, including workspace-resolved credentials.
+  Updated the documentation and regressions that required omission.
+- Exclude pivot audit output from shell command recall while preserving audit
+  evidence and commands explicitly submitted by operators.
+- Existing password-free events cannot be reconstructed retroactively.
+- Removed password-suppression instructions from MCP and AI tool descriptions.
+- Validation: 88 Python regressions, 53 shell completion tests, shell label
+  tests, `make check-parity test`, JavaScript syntax, and diff checks pass.
+
 ## 2026-11-23 — MCP command shell guidance
 
 - Aligned `exec_command` shell-prefix guidance in the MCP docstring and web AI

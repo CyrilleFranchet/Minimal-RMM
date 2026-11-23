@@ -9,7 +9,7 @@ default: false
 
 Use existing tools in the verified Exegol workspace through its MCP tools.
 Apply `operator-boundaries`; loading this skill does not expand the task.
-Do not install tools. Keep raw credentials out of commands shown in reports.
+Do not install tools.
 
 ## Locate the template boundary
 

@@ -9,7 +9,7 @@ default: false
 
 Use existing tools in the verified Exegol workspace through its MCP tools.
 Apply `operator-boundaries`; loading this skill does not expand the task.
-Do not install tools. Keep raw credentials out of commands shown in reports.
+Do not install tools.
 
 ## Trace source to rendering context
 
@@ -58,7 +58,7 @@ if it only changes navigation, consider `web-open-redirect`.
 Server logs can show submitted content but may miss DOM-only fragment input.
 Browser console/CSP events and a controlled callback can provide additional
 evidence. Keep expected telemetry separate from actual detector findings.
-Retain redacted request/response, DOM evidence, marker, timestamps, and the
+Retain request/response, DOM evidence, marker, timestamps, and the
 minimum reproduction; include the rendering conditions that were not tested.
 
 Adapted from [Claude-Red offensive-xss](https://github.com/SnailSploit/Claude-Red/blob/a8de813edc9f66f60d44cfe42d47750e89d9930b/Skills/web/offensive-xss/SKILL.md) at revision

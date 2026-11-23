@@ -9,7 +9,7 @@ default: false
 
 Use existing tools in the verified Exegol workspace through its MCP tools.
 Apply `operator-boundaries`; loading this skill does not expand the task.
-Do not install tools. Keep raw credentials out of commands shown in reports.
+Do not install tools.
 
 ## Establish the suspected execution sink
 
@@ -63,7 +63,7 @@ Configuration changes and pre-existing file mutations remain governed by
 
 Expected evidence may include inbound HTTP, application errors, child-process
 creation, or a controlled outbound connection, depending on the actual proof.
-Preserve correlated timestamps, request/task IDs, redacted output, and observed
+Preserve correlated timestamps, request/task IDs, output, and observed
 detector results. State missing visibility and the minimum verified capability.
 
 Adapted from [Claude-Red offensive-rce](https://github.com/SnailSploit/Claude-Red/blob/a8de813edc9f66f60d44cfe42d47750e89d9930b/Skills/web/offensive-rce/SKILL.md) at revision

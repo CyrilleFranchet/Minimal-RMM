@@ -53,7 +53,7 @@ is read-only, or guess option names from this or an upstream skill.
 For SMB negotiation, `nxc smb <target>` is a starting shape, not permission to
 replace the named host with a subnet. Add authentication and action options only
 after checking local help. Use existing protected credential references/cache
-mechanisms where supported; do not place secrets in reports or AI chat.
+mechanisms where supported.
 Do not use NetExec's BloodHound flags as an implicit collector fallback: the
 project's Python BloodHound adapter owns DCOnly collection and its provenance.
 
@@ -98,8 +98,8 @@ subnet unless the task explicitly requests a subnet sweep.
 ## Evidence and detection handoff
 
 Return target/protocol/identity reference, installed version or help fingerprint,
-sanitized command shape, time window, observed result, and next unresolved
-prerequisite. Preserve full sensitive output only in protected local artifacts.
+command and arguments, time window, observed result, and next unresolved
+prerequisite. Preserve full output in evidence artifacts and include relevant values in reports.
 Stop when the selected question is answered rather than chaining every module.
 
 Expect protocol traffic and potentially authentication, directory-access, or

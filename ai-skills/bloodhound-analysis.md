@@ -127,7 +127,7 @@ For each candidate, return: question, run/query/evidence IDs, ordered chain,
 supporting observations, unresolved assumptions, confidence with reasons,
 and the next discriminating check. Call `report` to retain the adapter's
 persisted evidence. Distinguish confirmed observations, inferred opportunities,
-and untested execution steps. Keep raw graphs and secrets out of chat.
+and untested execution steps. Keep large raw graphs in evidence artifacts.
 
 Graph queries operate on CE's stored data; they do not themselves exercise the
 AD path. For a proposed validation, describe the expected protocol and host

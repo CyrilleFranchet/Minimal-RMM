@@ -9,7 +9,7 @@ default: false
 
 Use existing tools in the verified Exegol workspace through its MCP tools.
 Apply `operator-boundaries`; loading this skill does not expand the task.
-Do not install tools. Keep raw credentials out of commands shown in reports.
+Do not install tools.
 
 ## Start from a query hypothesis
 
@@ -59,7 +59,7 @@ behavior before loading `web-waf-bypass`.
 Expected evidence includes web requests, edge decisions, and possibly database
 errors or query telemetry. HTTPS may hide request contents from a passive
 sensor. Link actual timestamps/request IDs to observed logs; never infer a
-detection from the payload name. Preserve the smallest redacted reproduction,
+detection from the payload name. Preserve the smallest reproduction,
 confirmed scope, untested branches, and the next specific hypothesis.
 
 Adapted from [Claude-Red offensive-sqli](https://github.com/SnailSploit/Claude-Red/blob/a8de813edc9f66f60d44cfe42d47750e89d9930b/Skills/web/offensive-sqli/SKILL.md) at revision

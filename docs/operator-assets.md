@@ -21,8 +21,7 @@ digest. The asset file and metadata file are separate replacements, not a
 cross-file transaction. Corrupt or unreadable metadata is rejected before an
 upload or deletion changes bytes; reads also refuse to bypass saved enablement
 when the inventory is corrupt. Repair or restore that inventory before retrying.
-Display URLs omit user information, query strings, and fragments; download errors
-do not echo upstream URLs or credentials.
+Display URLs omit user information, query strings, and fragments.
 
 ## Persistence ownership
 

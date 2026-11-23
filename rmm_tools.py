@@ -766,7 +766,7 @@ def tool_make_token(
         return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__MAKE_TOKEN__"})
     if code != 200:
         return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
-    # Report only the identity label and agent output; never the password.
+    # Return the identity label and agent output.
     return _json_result({
         "ok": bool(data.get("ok")),
         "session_id": sid,
@@ -2041,7 +2041,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "make_token",
-            "description": "Create a runas /netonly style network identity on a live Go agent session: subsequent spawned commands keep the agent's local identity but authenticate on the network as DOMAIN\\user. Pass user as DOMAIN\\user or split domain and user. LogonUser does not validate the credentials, so success does not prove the password is correct; test with a network command. NEVER repeat or log the password in responses; report only the identity label and agent output. PowerShell sessions are rejected.",
+            "description": "Create a runas /netonly style network identity on a live Go agent session: subsequent spawned commands keep the agent's local identity but authenticate on the network as DOMAIN\\user. Pass user as DOMAIN\\user or split domain and user. LogonUser does not validate the credentials, so success does not prove the password is correct; test with a network command. PowerShell sessions are rejected.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2049,7 +2049,7 @@ OPENAI_TOOLS: list[dict] = [
                     "cred_id": {"type": "string", "description": "Workspace credential ID; alternative to user/password"},
                     "user": {"type": "string", "description": "Identity as DOMAIN\\user or plain user"},
                     "domain": {"type": "string", "default": ""},
-                    "password": {"type": "string", "description": "Plaintext password; never echo it back"},
+                    "password": {"type": "string", "description": "Plaintext password"},
                     "timeout": {"type": "number", "default": 120},
                 },
                 "required": ["session_ref"],
@@ -2091,10 +2091,10 @@ OPENAI_TOOLS: list[dict] = [
                     "exec_timeout": {"type": "number", "default": 300},
                     "register_timeout": {"type": "number", "default": 60},
                     "verify_timeout": {"type": "number", "default": 120},
-                    "identity_cred_id": {"type": "string", "description": "Workspace credential ID forcing the deployment identity (wmiexec/winrm only); alternative to identity_user/identity_password. NEVER echo the stored password."},
+                    "identity_cred_id": {"type": "string", "description": "Workspace credential ID forcing the deployment identity (wmiexec/winrm only); alternative to identity_user/identity_password."},
                     "identity_domain": {"type": "string", "default": "", "description": "Domain of the forced deployment identity (wmiexec/winrm only)"},
                     "identity_user": {"type": "string", "description": "Forced deployment identity as user or DOMAIN\\user (wmiexec/winrm only); overrides an active make_token"},
-                    "identity_password": {"type": "string", "description": "Plaintext password for a direct forced identity; never echo it back"},
+                    "identity_password": {"type": "string", "description": "Plaintext password for a direct forced identity"},
                 },
                 "required": ["session_ref", "method", "host"],
             },
@@ -2104,17 +2104,17 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "wmi_probe",
-            "description": "Run the read-only WMI lifecycle diagnostic on a live Go agent session: read-only WMI connections under the active make_token identity with per-stage evidence (UTC timestamps, OS thread, raw HRESULTs, durations, token snapshots around every connect, unexecuted stages reported as not_run), ending in a verdict that never attributes a cause the evidence does not support and a target-side event correlation checklist. Default: two ambient probes plus one explicit-credential comparison. mode=held or cycled run the COM-lifetime comparisons; mode=switch runs the A to B to A account-switch sequence (account A is the active make_token, account B the process identity), or validates two distinct accounts when account-B credentials are supplied (switch mode only). Deploys nothing, writes nothing to the target, never echoes credentials.",
+            "description": "Run the read-only WMI lifecycle diagnostic on a live Go agent session: read-only WMI connections under the active make_token identity with per-stage evidence (UTC timestamps, OS thread, raw HRESULTs, durations, token snapshots around every connect, unexecuted stages reported as not_run), ending in a verdict that never attributes a cause the evidence does not support and a target-side event correlation checklist. Default: two ambient probes plus one explicit-credential comparison. mode=held or cycled run the COM-lifetime comparisons; mode=switch runs the A to B to A account-switch sequence (account A is the active make_token, account B the process identity), or validates two distinct accounts when account-B credentials are supplied (switch mode only). Deploys nothing, writes nothing to the target.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "session_ref": {"type": "string"},
                     "host": {"type": "string", "description": "Target hostname or IP address"},
                     "mode": {"type": "string", "enum": ["held", "cycled", "switch"], "default": "", "description": "Lifecycle comparison; empty runs the default isolated pair"},
-                    "b_cred_id": {"type": "string", "description": "Workspace credential ID for account B (switch mode only); alternative to the b_* fields. NEVER echo the stored password."},
+                    "b_cred_id": {"type": "string", "description": "Workspace credential ID for account B (switch mode only); alternative to the b_* fields."},
                     "b_domain": {"type": "string", "default": "", "description": "Domain of account B (switch mode only)"},
                     "b_user": {"type": "string", "description": "Account B as user or DOMAIN\\user (switch mode only)"},
-                    "b_password": {"type": "string", "description": "Plaintext password for account B; never echo it back"},
+                    "b_password": {"type": "string", "description": "Plaintext password for account B"},
                     "timeout": {"type": "number", "default": 120},
                 },
                 "required": ["session_ref", "host"],
@@ -2156,13 +2156,13 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "creds_add",
-            "description": "Add credentials to the workspace store. Returns a cred_id to pass to make_token, spawnas, or runas. Passwords are stored server-side only and never returned. NEVER log passwords in responses.",
+            "description": "Add credentials to the workspace store. Returns a cred_id to pass to make_token, spawnas, or runas. Passwords are stored server-side only and never returned.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "user": {"type": "string", "description": "Username, optionally as DOMAIN\\user"},
                     "domain": {"type": "string", "default": ""},
-                    "password": {"type": "string", "description": "Plaintext password; never echo"},
+                    "password": {"type": "string", "description": "Plaintext password"},
                 },
                 "required": ["user", "password"],
             },
@@ -2172,7 +2172,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "creds_update",
-            "description": "Edit a stored identity preserving its ID. Omit password to keep it; never echo secrets.",
+            "description": "Edit a stored identity preserving its ID. Omit password to keep it.",
             "parameters": {"type": "object", "properties": {
                 "cred_id": {"type": "string"}, "user": {"type": "string"},
                 "domain": {"type": "string"}, "password": {"type": "string"}},
@@ -2211,7 +2211,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "spawnas",
-            "description": "Spawn a new agent copy on the same host under a different process identity using CreateProcessWithLogonW. Children inherit source build tracing without a debug flag; normal sources do not trace by default. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly. NEVER repeat credentials in responses.",
+            "description": "Spawn a new agent copy on the same host under a different process identity using CreateProcessWithLogonW. Children inherit source build tracing without a debug flag; normal sources do not trace by default. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2233,7 +2233,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "runas",
-            "description": "Run a shell command on a Go agent under a different process identity using the cascade. Returns the command output. Pass cred_id from creds_add, or domain/user/password directly. NEVER repeat credentials in responses.",
+            "description": "Run a shell command on a Go agent under a different process identity using the cascade. Returns the command output. Pass cred_id from creds_add, or domain/user/password directly.",
             "parameters": {
                 "type": "object",
                 "properties": {

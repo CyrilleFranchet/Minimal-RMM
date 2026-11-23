@@ -9,7 +9,7 @@ default: false
 
 Use existing tools in the verified Exegol workspace through its MCP tools.
 Apply `operator-boundaries`; loading this skill does not expand the task.
-Do not install tools. Keep raw credentials out of commands shown in reports.
+Do not install tools.
 
 ## Build an ownership matrix
 
@@ -62,7 +62,7 @@ Document field-level exposure even when the whole object is not returned.
 Expected evidence is ordinary authenticated application traffic, often without
 distinctive payload strings. Record actor, object owner, tenant, route, time,
 request ID, and application audit outcome. Do not claim detection from HTTP
-success. Handoff the ownership matrix and smallest redacted reproduction.
+success. Handoff the ownership matrix and smallest reproduction.
 
 Adapted from [Claude-Red offensive-idor](https://github.com/SnailSploit/Claude-Red/blob/a8de813edc9f66f60d44cfe42d47750e89d9930b/Skills/web/offensive-idor/SKILL.md) at revision
 `a8de813edc9f66f60d44cfe42d47750e89d9930b`; see [adaptation notes](../docs/claude-red-adaptations.md)

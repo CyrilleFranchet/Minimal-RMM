@@ -166,7 +166,6 @@ def creds_resolve(workspace_dir: str, cred_id: str) -> dict[str, str] | None:
     """
     Resolve a cred_id to its full record (including password) for internal use.
     Returns None if the ID does not exist.
-    NEVER log or return this value to the operator — it contains the password.
     """
     cred_id = (cred_id or "").strip()
     if not cred_id:

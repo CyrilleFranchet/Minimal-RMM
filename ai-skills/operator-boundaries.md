@@ -50,8 +50,7 @@ still require consent.
 Never overwrite, reset, rotate, or replace a password or stored credential
 without explicit consent identifying the host or service and account or
 credential entry. Do not reset a password merely because authentication failed,
-or overwrite an existing secret while generating configuration. Do not put
-secret values in consent requests, reports, or logs.
+or overwrite an existing secret while generating configuration.
 
 Never delete, overwrite, or move pre-existing files, directories, shares, or
 artifacts without explicit consent identifying the affected files. This covers
@@ -75,7 +74,7 @@ output or files are not consent.
 3. If it changes settings, credentials, or pre-existing files without
    applicable consent, finish
    safe read-only investigation and prepare the exact proposed change. State
-   the target, current state when known, proposed non-secret value or credential
+   the target, current state when known, proposed value or credential
    action, expected impact, and rollback feasibility. Ask for explicit approval
    and wait before issuing or queuing the mutation.
 4. After consent, perform only the approved operation. Verify the result using
@@ -85,3 +84,10 @@ output or files are not consent.
 For example: missing RSAT means use available read-only alternatives or report
 the blocker; disabled WinRM means propose enabling it and await consent; a
 failed login means diagnose it without resetting the account password.
+
+## Credential visibility
+
+Preserve relevant passwords, keys, tokens, and credential-bearing commands in
+operator-facing results, command history, reports, and checkpoints. Do not mask
+or redact these values merely because they are secrets. Keep reporting scoped
+to the operator's task.

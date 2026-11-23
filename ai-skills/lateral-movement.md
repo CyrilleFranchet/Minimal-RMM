@@ -169,10 +169,9 @@ technique is another technique, or a reported blocker.
 
 ## Reporting
 
-Report every attempt: method, target, execution environment, sanitized error
+Report every attempt: method, target, execution environment, error
 and original status-code namespace, evidence, and any change between attempts.
-Exclude passwords, hashes, tickets, tokens, and credential-bearing command
-strings. Record observed side effects and cleanup status; do not claim cleanup
+Record observed side effects and cleanup status; do not claim cleanup
 without verification or remove pre-existing resources.
 
 Use verified success, partial completion, confirmed failure, or inconclusive

@@ -260,8 +260,8 @@ class LateralFlowTests(unittest.TestCase):
         # password, and no password material anywhere near the audit text.
         audit = self.server.record_operator_action.call_args.args[1]
         self.assertIn("identity=LAB\\alice", audit)
-        self.assertNotIn("password", audit)
-        self.assertNotIn("s3cret", audit)
+        self.assertIn("password=", audit)
+        self.assertIn('password="s3cret pw"', audit)
         self.assertEqual(result["launch_status"], "acknowledged")
 
     def test_explicit_identity_splits_a_combined_identity(self):

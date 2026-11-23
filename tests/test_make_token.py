@@ -1,4 +1,5 @@
-"""Verify make_token/rev2self server flow, REST routing, and secret redaction."""
+"""Verify make_token/rev2self server flow, REST routing, and credential history."""
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -28,7 +29,7 @@ class MakeTokenFlowTests(unittest.TestCase):
         with patch.object(server_rmm.RMMServer, "resolve_session", return_value=_session()):
             self.assertEqual(server.make_token("prefix1", "", "  ", "pw"), (None, "invalid_credentials"))
 
-    def test_success_never_records_the_password(self):
+    def test_success_records_the_password(self):
         server = self._server()
         recorded = []
         with patch.object(server_rmm.RMMServer, "resolve_session", return_value=_session()), \
@@ -43,11 +44,11 @@ class MakeTokenFlowTests(unittest.TestCase):
         self.assertIn("token created", payload["output"])
         session_id, command, action = recorded[0]
         self.assertEqual(action, "make_token")
-        self.assertEqual(command, "__MAKE_TOKEN__ LAB\\alice")
-        self.assertNotIn("s3cret-pw", command)
+        self.assertEqual(command, '__MAKE_TOKEN__ LAB\\alice "s3cret-pw"')
+        self.assertIn("s3cret-pw", command)
         self.assertNotIn("s3cret-pw", payload["output"])
 
-    def test_queued_command_carries_password_but_events_do_not(self):
+    def test_queued_command_and_events_carry_password(self):
         server = self._server()
         beacon_commands = []
         recorded = []
@@ -65,8 +66,20 @@ class MakeTokenFlowTests(unittest.TestCase):
         self.assertEqual(len(beacon_commands), 1)
         self.assertTrue(beacon_commands[0].startswith("__MAKE_TOKEN__\n"))
         self.assertIn("s3cret-pw", beacon_commands[0])
-        # ...while operator events record only the identity label.
-        self.assertEqual(recorded, ["__MAKE_TOKEN__ LAB\\alice"])
+        # Operator events retain the password for transcript recovery.
+        self.assertEqual(recorded, ['__MAKE_TOKEN__ LAB\\alice "s3cret-pw"'])
+
+    def test_history_preserves_exact_password_without_extra_event_lines(self):
+        server = self._server()
+        for password in ('', 'two words', 'quote"and\\path', 'line\nbreak', 'pässword'):
+            with self.subTest(password=password), \
+                    patch.object(server_rmm.RMMServer, "resolve_session", return_value=_session()), \
+                    patch.object(server_rmm.RMMServer, "exec_and_wait", return_value=({"body": "token created"}, "ok")), \
+                    patch.object(server_rmm.RMMServer, "record_operator_action") as record:
+                server.make_token("prefix1", "LAB", "alice", password)
+                command = record.call_args.args[1]
+                self.assertEqual(json.loads(command.split(" ", 2)[2]), password)
+                self.assertNotIn("\n", command)
 
     def test_combined_identity_is_split_and_agent_failure_is_reported(self):
         server = self._server()

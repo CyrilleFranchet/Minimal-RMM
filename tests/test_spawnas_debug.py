@@ -28,7 +28,7 @@ class SpawnasDebugTests(unittest.TestCase):
                 self.assertNotIn("debug", payload)
                 self.assertEqual(payload["password"], "fixture-secret")
                 self.assertEqual(payload["session_id"], "target-session")
-                self.assertNotIn("fixture-secret", str(server.record_operator_action.call_args))
+                self.assertIn("fixture-secret", str(server.record_operator_action.call_args))
 
     def test_deployment_tool_schemas_have_no_debug_control(self):
         for name in ("spawn_session", "spawnas", "lateral_move"):

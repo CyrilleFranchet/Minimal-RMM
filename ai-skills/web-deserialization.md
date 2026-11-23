@@ -9,7 +9,7 @@ default: false
 
 Use existing tools in the verified Exegol workspace through its MCP tools.
 Apply `operator-boundaries`; loading this skill does not expand the task.
-Do not install tools. Keep raw credentials out of commands shown in reports.
+Do not install tools.
 
 ## Identify format and reachability
 
@@ -61,7 +61,7 @@ from the weaker finding.
 
 Expected evidence includes encoded request bodies, parser/class errors, and
 application events. Process or network telemetry is expected only if the proof
-actually invokes those behaviors. Preserve hashes and sanitized parser evidence,
+actually invokes those behaviors. Preserve hashes and parser evidence,
 dependency assumptions, exact control/probe bytes, and detector observations.
 
 Adapted from [Claude-Red offensive-deserialization](https://github.com/SnailSploit/Claude-Red/blob/a8de813edc9f66f60d44cfe42d47750e89d9930b/Skills/web/offensive-deserialization/SKILL.md) at revision

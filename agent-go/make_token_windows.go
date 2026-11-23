@@ -103,13 +103,13 @@ func makeTokenAction(domain, user, password string) (string, error) {
 	if previousToken != 0 {
 		_ = previousToken.Close()
 		return fmt.Sprintf(
-			"token replaced: %s (was: %s); network operations on this thread use this identity",
-			identity, previousIdentity,
+			"token replaced: %s password=%s (was: %s); network operations on this thread use this identity",
+			identity, password, previousIdentity,
 		), nil
 	}
 	return fmt.Sprintf(
-		"token created: %s; network operations on this thread use this identity",
-		identity,
+		"token created: %s password=%s; network operations on this thread use this identity",
+		identity, password,
 	), nil
 }
 

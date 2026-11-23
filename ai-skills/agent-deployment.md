@@ -69,15 +69,13 @@ is required:
 
 Deployment on a new host may proceed autonomously within the lab, like any
 lateral action. The server renders the artifact with the active
-beacon URL and beacon secret, and the secret is not returned to the AI: report
-artifact paths and metadata, never secret-bearing file content.
+beacon URL and beacon secret. Report artifact paths and metadata.
 
 ## Building blocks
 
 - `deploy_agent_script` renders a ready-to-run `client_rmm.ps1` server-side,
   configured with the server's active beacon URL and beacon secret. It returns
-  a portable `artifact_ref` and server-local `path`, size, SHA-256, and the base URL used. The
-  beacon secret never enters the tool response or the chat.
+  a portable `artifact_ref` and server-local `path`, size, SHA-256, and the base URL used.
 - `build_go_agent` compiles the repository Go agent on the server with the
   active connection settings embedded, and returns the ZIP `artifact_ref` and server-local `path`
   (binary + launcher + README), the binary name, size, and SHA-256. Windows

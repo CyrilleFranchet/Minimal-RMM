@@ -87,7 +87,7 @@ task; never erase existing logs or history.
 ## Detection and handoff
 
 Return target/session, before/after identity and namespace, exact permissions,
-consumer/trigger evidence, confidence, time window, sanitized artifact references,
+consumer/trigger evidence, confidence, time window, artifact references,
 and authorized change/rollback status. Root-level file access is not equivalent
 to root command execution; distinguish the capability actually demonstrated.
 Expect host process/authentication/audit/service telemetry according to the

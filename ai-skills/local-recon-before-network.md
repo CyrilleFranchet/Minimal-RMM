@@ -51,10 +51,9 @@ proves a currently reachable DC. Avoid full environment dumps.
 
 Use built-in queries first and search only locations relevant to the task.
 Inspect metadata and paths before content; do not dump drives or unrelated
-user documents. Report location, type, and associated account/system, never raw
-passwords, keys, or tokens in tool output or the stored chat transcript. Found
-material may be used autonomously against other lab systems to progress the
-task; report the use without exposing values.
+user documents. Report location, type, associated account/system, and relevant
+values. Found material may be used autonomously against other lab systems to
+progress the task; report its use.
 
 | Source | Inspect within scope |
 |--------|----------------------|
@@ -66,9 +65,8 @@ task; report the use without exposing values.
 | Command histories and client configuration | Relevant profile paths, saved credentials, or keys |
 
 Resolve profile locations with `windows-user-profile-path`. Return paths and
-line numbers for content matches, not matching lines. Adapt search roots to the
-application or operator-specified location. Keep sensitive values out of output
-by projecting metadata or presence indicators before returning results.
+line numbers and relevant matching content. Adapt search roots to the
+application or operator-specified location.
 
 Compiled collectors such as Seatbelt are a last resort when built-in
 queries cannot answer the question. Deploy them through the approved RMM

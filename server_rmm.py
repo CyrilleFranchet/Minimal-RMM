@@ -121,7 +121,7 @@ SPAWN_COMMAND = "__SPAWN__"
 SPAWN_RESULT_RE = re.compile(r"session=(?P<session_id>[A-Za-z0-9_-]{8,128})\s+pid=(?P<pid>\d+)")
 # Network identity commands. The agent answers __MAKE_TOKEN__ with a
 # "token created:" / "token replaced:" prefix on success; the password is
-# never recorded in operator events, only the identity label is.
+# retained alongside the identity label in operator history.
 MAKE_TOKEN_COMMAND = "__MAKE_TOKEN__"
 REV2SELF_COMMAND = "__REV2SELF__"
 MAKE_TOKEN_OK_PREFIXES = ("token created:", "token replaced:")
@@ -134,7 +134,7 @@ WHOAMI_COMMAND = "__WHOAMI__"
 # WMI probe: the Go agent answers __WMI_PROBE__ with a stage-by-stage report
 # of the requested lifecycle comparison. The switch mode's account-B
 # credentials ride the beacon command's JSON body like __MAKE_TOKEN__'s;
-# operator events record the identity label only, never the credentials.
+# operator events retain the supplied credentials for command history.
 WMI_PROBE_COMMAND = "__WMI_PROBE__"
 WMI_PROBE_MODES = frozenset({"held", "cycled", "switch"})
 LATERAL_METHODS = frozenset({"psexec", "wmiexec", "winrm"})
@@ -3238,9 +3238,8 @@ class RMMServer:
     ):
         """Create a runas /netonly style network identity on a live Go session.
 
-        The password travels to the agent inside the beacon command, which
-        lives only in the in-memory command queue. Operator events and
-        history record the identity label, never the credentials.
+        The password travels in the beacon command and is retained in operator
+        events and command history.
         """
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3258,7 +3257,7 @@ class RMMServer:
             {"domain": domain, "user": user, "password": password or ""},
             separators=(",", ":"),
         )
-        self.record_operator_action(session, f"{MAKE_TOKEN_COMMAND} {identity}", "make_token")
+        self.record_operator_action(session, f"{MAKE_TOKEN_COMMAND} {identity} {json.dumps(password or '', ensure_ascii=False)}", "make_token")
         event, status = self.exec_and_wait(session.id, command, timeout=timeout)
         if status != "ok":
             return None, status
@@ -3292,8 +3291,7 @@ class RMMServer:
         make_token state and never deploys anything. The switch mode's
         account-B credentials travel to the agent inside the beacon
         command's JSON body, which lives only in the in-memory command
-        queue; operator events record the identity label, never the
-        credentials.
+        queue; operator events retain the supplied credentials.
         """
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3330,7 +3328,7 @@ class RMMServer:
             b_label = (b_domain + "\\" if b_domain else "") + b_user
         self.record_operator_action(
             session,
-            f"{WMI_PROBE_COMMAND} {host}" + (f" {mode}" if mode else "") + (f" b_identity={b_label}" if b_user else ""),
+            f"{WMI_PROBE_COMMAND} {host}" + (f" {mode}" if mode else "") + (f" b_identity={b_label} b_password={json.dumps(b_password, ensure_ascii=False)}" if b_user else ""),
             "wmi_probe",
         )
         event, status = self.exec_and_wait(session.id, command, timeout=timeout)
@@ -3343,8 +3341,7 @@ class RMMServer:
                 verify=True, spawn_timeout=120.0, register_timeout=60.0, verify_timeout=120.0):
         """Spawn under a different identity, inheriting a debug source build.
 
-        Credentials are resolved server-side; only the identity label travels in
-        operator events, never the password.
+        Credentials are resolved server-side and retained in operator events.
         """
         session = self.resolve_session(session_id_or_prefix)
         if not session:
@@ -3366,7 +3363,7 @@ class RMMServer:
              "domain": domain, "user": user, "password": password or ""},
             separators=(",", ":"),
         )
-        self.record_operator_action(session, f"{SPAWNAS_COMMAND} {identity}", "spawnas")
+        self.record_operator_action(session, f"{SPAWNAS_COMMAND} {identity} {json.dumps(password or '', ensure_ascii=False)}", "spawnas")
         event, status = self.exec_and_wait(session.id, command, timeout=spawn_timeout)
         if status not in ("ok", "timeout"):
             return None, status
@@ -3388,7 +3385,7 @@ class RMMServer:
     def runas(self, session_id_or_prefix, command_str, domain, user, password, timeout=120.0):
         """Run an arbitrary command on a Go session under a different identity.
 
-        The password is sent in the beacon command and never logged.
+        The password is sent in the beacon command and retained in operator history.
         Output is returned to the operator.
         """
         session = self.resolve_session(session_id_or_prefix)
@@ -3410,7 +3407,7 @@ class RMMServer:
              "user": user, "password": password or ""},
             separators=(",", ":"),
         )
-        self.record_operator_action(session, f"{RUNAS_COMMAND} {identity} {command_str.strip()}", "runas")
+        self.record_operator_action(session, f"{RUNAS_COMMAND} {identity} {json.dumps(password or '', ensure_ascii=False)} {command_str.strip()}", "runas")
         event, status = self.exec_and_wait(session.id, command, timeout=timeout)
         if status != "ok":
             return None, status
@@ -3542,7 +3539,7 @@ class RMMServer:
             **({"identity": {"domain": identity_domain, "user": identity_user,
                              "password": str(identity_password or "")}} if identity_user else {})}, separators=(",", ":"))
         identity_label = (identity_domain + "\\" if identity_domain else "") + identity_user
-        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else "") + (f" loader={loader}" if method != "psexec" else "") + (" --tethered" if method == "winrm" and not independent else "") + (f" identity={identity_label}" if identity_user else ""), "lateral")
+        self.record_operator_action(session, f"{LATERAL_COMMAND} {method} {host}" + (" -s" if https else "") + (" -k" if insecure else "") + (f" loader={loader}" if method != "psexec" else "") + (" --tethered" if method == "winrm" and not independent else "") + (f" identity={identity_label} password={json.dumps(identity_password or '', ensure_ascii=False)}" if identity_user else ""), "lateral")
         event, status = self.exec_and_wait(session.id, command, timeout=exec_timeout)
         if status not in ("ok", "timeout"):
             return None, status

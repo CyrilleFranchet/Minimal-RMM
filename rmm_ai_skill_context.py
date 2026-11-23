@@ -17,7 +17,7 @@ def _tool(name, description, properties, required):
 LOAD_SKILL_TOOL = _tool('load_skill', 'Read one enabled skill before choosing the current step. Does not prepare execution.',
                        {'skill_id': {'type': 'string'}}, ['skill_id'])
 PREPARE_STEP_TOOL = _tool('prepare_step',
-    'Before EACH operational tool batch, select relevant enabled skills for this immediate step, not just the high-level task. Returns full instructions. Call alone; inspect the result before execution. Explicitly requested enabled skills must be selected. Empty selection requires explaining why no optional skill applies. Do not include secrets or private reasoning.',
+    'Before EACH operational tool batch, select relevant enabled skills for this immediate step, not just the high-level task. Returns full instructions. Call alone; inspect the result before execution. Explicitly requested enabled skills must be selected. Empty selection requires explaining why no optional skill applies. Do not include private reasoning.',
     {'summary': {'type': 'string', 'maxLength': 500},
      'skill_ids': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 100},
      'tools': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1},
@@ -225,7 +225,7 @@ def prepare_skill_context(documents, tools, call_tool, progress=None, external_t
                 'Disabled skills must never be loaded or reconstructed. Missing dependencies are blockers. '
                 'Higher numeric priority wins conflicting workflow preferences; operator instructions and core boundaries prevail. '
                 'If same-priority instructions conflict, report the conflict. Never silently substitute another workflow on failure. '
-                'Use summary for a brief public operational rationale, never secrets or private reasoning. '
+                'Use summary for a brief public operational rationale, never private reasoning. '
                 'Use checkpoint for completed actions, pending operations and evidence IDs; never repeat an uncertain operation.\n')
     catalog += json.dumps([{'id': s['id'], 'title': s.get('title', s['id']),
                             'description': s.get('description', ''), 'requires': s.get('requires', []),

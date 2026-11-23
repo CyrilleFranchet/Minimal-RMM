@@ -160,7 +160,7 @@ A profile contains:
 - `auth.method`: `none` for public downloads or `env` to use `HF_TOKEN`
   **already present in the agent process environment**. This preference does
   not provision a token on the target. Raw tokens and unknown configuration
-  fields are rejected. Do not put credentials in prompts or label text.
+  fields are rejected. Prompts and labels may contain operator-provided values.
 - `prompt` and `label_prompt`: literal embedding prefixes, up to 512 UTF-8
   bytes each. Empty label prefix uses the document prefix. These are not
   generative chat instructions.

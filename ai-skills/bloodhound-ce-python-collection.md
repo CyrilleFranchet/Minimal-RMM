@@ -93,8 +93,7 @@ across imports, so older relationships may remain after verification passes.
 Return the `report` and a compact acquisition record: run ID, domain, source
 and target SIDs, collector identity/version evidence, method **DCOnly**,
 timestamps, observed CE version, hashes/counts, ingestion/verification status,
-and any uncertainty. Keep raw directory artifacts local and secrets out of
-chat. Load `bloodhound-analysis` only when interpretation is requested.
+and any uncertainty. Keep large raw directory artifacts local. Load `bloodhound-analysis` only when interpretation is requested.
 
 DCOnly supplies directory-oriented Group, ACL, Trusts, ObjectProps, and
 Container coverage; it does not establish live sessions or host-local admin

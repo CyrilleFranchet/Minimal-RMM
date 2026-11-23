@@ -37,7 +37,7 @@ Idempotent requests for the original job continue to return its recorded state.
 States are queued, running, succeeded, failed, and interrupted. Progress records
 model rounds, tool names/status, active skill IDs, a public step summary and a
 bounded execution checkpoint. It does not record tool arguments or raw outputs;
-step summaries and checkpoints must not contain secrets. Final
+step summaries and checkpoints can retain relevant credential values. Final
 results can include the chat transcript, tool-call trace, final step state,
 and a manifest of scoped evidence artifacts. A tool error
 can still be handled by the model; job success means the model returned a final

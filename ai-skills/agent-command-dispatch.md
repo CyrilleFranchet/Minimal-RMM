@@ -57,8 +57,7 @@ process death.
 On Go agent sessions, `make_token` switches the network identity of
 subsequently spawned commands (`runas /netonly` semantics); `rev2self`
 restores the agent identity. Credentials are passed as explicit
-parameters on every surface; never repeat the password in responses or
-resubmit it — report the identity label and agent output only. Use
+parameters on every surface. Report the command details and agent output. Use
 `session_uid` to confirm which identity is active.
 
 `lateral_move` starts a Go agent on another host (psexec, wmiexec, winrm) and verifies that both sessions answer a harmless

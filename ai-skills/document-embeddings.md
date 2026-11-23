@@ -56,8 +56,7 @@ Report what was queued, completed, and verified separately.
   files, outbound HTTPS to Hugging Face/CDN, and writable temporary storage.
   Windows loads a staged DLL; execution is not memory-only.
 - Keep pinned model revision and SHA-256 settings. `auth.method=env` uses an
-  existing agent-side `HF_TOKEN`; it does not provision one. Exclude credentials
-  from profile text and output.
+  existing agent-side `HF_TOKEN`; it does not provision one.
 - Supports text, Markdown, CSV, JSON, logs, and DOCX; PDF/OCR are unsupported.
 - One to 32 explicit paths, including UNC, with at most 32 documents after
   directory expansion. Configuration plus paths must fit 4096 UTF-8 bytes.

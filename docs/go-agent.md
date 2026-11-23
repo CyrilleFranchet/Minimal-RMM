@@ -574,13 +574,11 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   settled only by the target's authentication events. The two-account
   variant runs in the agent too: `__WMI_PROBE__ <host> switch` accepts an
   optional JSON body (`{"domain","user","password"}`, account B) that
-  rides the beacon command like `__MAKE_TOKEN__`'s — the password never
-  enters logs, errors, or report text. Because a typed password in a raw
-  `exec` command would land verbatim in the exec audit, the body is
-  supplied through the dedicated `POST /api/v1/sessions/{id}/wmi-probe`
+  rides the beacon command like `__MAKE_TOKEN__`'s and is retained in
+  operator history. The body is supplied through the dedicated `POST /api/v1/sessions/{id}/wmi-probe`
   route (`b_cred_id` from the workspace credential store or the direct
   `b_*` fields, mutually exclusive, switch mode only), which audits the
-  identity label only; every surface reaches it (CLI `wmi-probe`,
+  identity and password; every surface reaches it (CLI `wmi-probe`,
   interactive `/wmi_probe`, MCP `wmi_probe`, WebUI `/wmi_probe` with
   credential-ID completion). The standalone binary keeps the same
   contract through `RMM_WMI_PROBE_B_DOMAIN`/`_B_USER`/`_B_PASSWORD` with

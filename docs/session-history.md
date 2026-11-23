@@ -158,3 +158,12 @@ or read the preserved archive. The current server does not rehydrate these files
 - Sessions absent from a successful central session synchronization become local
   history; a failed synchronization must not be treated as an empty session list.
 - History list shows **ended** sessions only; active sessions stay in the live sidebar.
+
+## Credential commands
+
+Operator history retains passwords for `make_token`, `spawnas`, `runas`,
+explicit lateral identities, and WMI probe account B, including credentials
+resolved from the workspace store. Passwords use JSON string quoting so spaces,
+quotes, backslashes, and empty values remain visible without adding transcript
+lines. Reopening a session displays the recorded values. Older events that
+omitted passwords cannot recover those values retroactively.

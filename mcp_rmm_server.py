@@ -584,7 +584,7 @@ def spawn_session(
 @mcp.tool()
 @_offload_tool
 def make_token(session_ref: str, user: str = "", domain: str = "", password: str = "", timeout: float = 120, cred_id: str = "") -> str:
-    """Create a runas /netonly style network identity on a Go agent session; never repeat the password in responses."""
+    """Create a runas /netonly style network identity on a Go agent session."""
     return tool_make_token(_client(), session_ref, user, domain=domain, password=password, timeout=timeout, cred_id=cred_id)
 
 
@@ -653,7 +653,7 @@ def session_whoami(session_ref: str, timeout: float = 120, tickets: bool = False
 @_offload_tool
 def wmi_probe(session_ref: str, host: str, mode: str = "", b_cred_id: str = "",
               b_domain: str = "", b_user: str = "", b_password: str = "", timeout: float = 120) -> str:
-    """Run the read-only WMI lifecycle diagnostic on a live Go agent session: read-only WMI connections under the active make_token identity with per-stage evidence (timestamps, thread identity, raw HRESULTs, token snapshots, not_run markers) and a verdict that never attributes a cause the evidence does not support. mode=held/cycled run the COM lifetime vs impersonation-cycling comparisons; mode=switch runs the A to B to A account-switch sequence, validating two distinct accounts when account-B credentials are supplied (b_cred_id from the workspace store, or b_domain/b_user/b_password — switch mode only). Deploys nothing and never echoes credentials."""
+    """Run the read-only WMI lifecycle diagnostic on a live Go agent session: read-only WMI connections under the active make_token identity with per-stage evidence (timestamps, thread identity, raw HRESULTs, token snapshots, not_run markers) and a verdict that never attributes a cause the evidence does not support. mode=held/cycled run the COM lifetime vs impersonation-cycling comparisons; mode=switch runs the A to B to A account-switch sequence, validating two distinct accounts when account-B credentials are supplied (b_cred_id from the workspace store, or b_domain/b_user/b_password — switch mode only). Deploys nothing."""
     return tool_wmi_probe(
         _client(), session_ref, host,
         mode=mode, b_cred_id=b_cred_id, b_domain=b_domain,
@@ -661,7 +661,7 @@ def wmi_probe(session_ref: str, host: str, mode: str = "", b_cred_id: str = "",
     )
 
 
-# ── Credential store (workspace-scoped, passwords never logged or returned) ───
+# ── Credential store (workspace-scoped, password metadata and explicit reveal) ───
 
 @mcp.tool()
 def creds_add(user: str, domain: str = "", password: str = "") -> str:
@@ -671,7 +671,7 @@ def creds_add(user: str, domain: str = "", password: str = "") -> str:
 
 @mcp.tool()
 def creds_update(cred_id: str, user: str, domain: str = "", password: str | None = None) -> str:
-    """Edit a stored identity preserving its ID; omit password to keep it. Never echo secrets."""
+    """Edit a stored identity preserving its ID; omit password to keep it."""
     return tool_creds_update(_client(), cred_id, user, domain, password)
 
 
@@ -708,7 +708,7 @@ def spawnas(
     register_timeout: float = 60,
     verify_timeout: float = 120,
 ) -> str:
-    """Spawn under a different identity using CreateProcessWithLogonW. Children inherit the source agent's compiled debug mode, selected only at build time. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly. Never repeat credentials in responses."""
+    """Spawn under a different identity using CreateProcessWithLogonW. Children inherit the source agent's compiled debug mode, selected only at build time. Diagnostic events are sanitized; raw runtime crash output may contain sensitive data. Pass cred_id from creds_add, or domain/user/password directly."""
     return tool_spawnas(
         _client(), session_ref,
         cred_id=cred_id, user=user, domain=domain, password=password,
@@ -728,7 +728,7 @@ def runas(
     password: str = "",
     timeout: float = 120,
 ) -> str:
-    """Run a shell command on a Go agent under a different process identity using the cascade. Pass cred_id from creds_add, or domain/user/password directly. Never repeat credentials in responses."""
+    """Run a shell command on a Go agent under a different process identity using the cascade. Pass cred_id from creds_add, or domain/user/password directly."""
     return tool_runas(
         _client(), session_ref, command,
         cred_id=cred_id, user=user, domain=domain, password=password,
