@@ -9,6 +9,13 @@ thread token reports. Without a thread token the process token supplies the
 effective identity. A thread-token access failure is explicitly unavailable;
 it does not imply that no thread token exists.
 
+Reports use visible process/token section headings and separate lines for
+process, token statistics, logon, and ticket fields. Group attributes and
+privilege states/descriptions are indented below their names to reduce long
+wrapped lines in both operator shells. All collected fields remain visible.
+This formatting is produced by the Go agent; rebuild and redeploy existing
+agents to use it. Previously stored transcripts retain their original text.
+
 Each token report includes user account/SID; primary or impersonation type;
 Windows session ID; elevation type/state, restrictions, linked-token availability,
 UAC virtualization, UIAccess and AppContainer state; integrity SID; token,

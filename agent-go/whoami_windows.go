@@ -190,7 +190,7 @@ func whoamiGroups(out *strings.Builder, token syscall.Token, class uint32, label
 	for i := 0; i < int(count); i++ {
 		entry := (*group)(unsafe.Pointer(&buf[offset+i*stride]))
 		a := entry.Attributes
-		fmt.Fprintf(out, "  %s enabled=%t default=%t deny-only=%t integrity=%t logon-id=%t attributes=0x%08x\n", whoamiBufferSID(buf, offset+i*stride), a&4 != 0, a&2 != 0, a&16 != 0, a&32 != 0, a&0xc0000000 == 0xc0000000, a)
+		fmt.Fprintf(out, "  %s\n    enabled=%t  default=%t  deny-only=%t\n    integrity=%t  logon-id=%t  attributes=0x%08x\n", whoamiBufferSID(buf, offset+i*stride), a&4 != 0, a&2 != 0, a&16 != 0, a&32 != 0, a&0xc0000000 == 0xc0000000, a)
 	}
 	runtime.KeepAlive(buf)
 }
@@ -241,7 +241,7 @@ func whoamiPrivileges(out *strings.Builder, token syscall.Token) {
 				description = syscall.UTF16ToString(text)
 			}
 		}
-		fmt.Fprintf(out, "  %s: %s — %s\n", name, whoamiPrivilegeState(a, present), description)
+		fmt.Fprintf(out, "  %s:\n    %s\n    %s\n", name, whoamiPrivilegeState(a, present), description)
 	}
 }
 
@@ -263,7 +263,7 @@ func whoamiLogon(out *strings.Builder, luid uint64) {
 		return
 	}
 	types := map[uint32]string{0: "Undefined", 2: "Interactive", 3: "Network", 4: "Batch", 5: "Service", 7: "Unlock", 8: "NetworkCleartext", 9: "NewCredentials", 10: "RemoteInteractive", 11: "CachedInteractive", 12: "CachedRemoteInteractive", 13: "CachedUnlock"}
-	fmt.Fprintf(out, "Logon session: LUID=0x%016x type=%d (%s) Windows-session=%d\n  account=%s\\%s SID=%s\n  authentication-package=%s logon-time=%s\n  logon-server=%s DNS-domain=%s UPN=%s\n", luid, data.LogonType, types[data.LogonType], data.Session, whoamiText(data.Domain), whoamiText(data.User), whoamiSID(data.SID), whoamiText(data.Package), whoamiTime(data.LogonTime), whoamiText(data.Server), whoamiText(data.DNSDomain), whoamiText(data.UPN))
+	fmt.Fprintf(out, "\nLogon session\n  LUID: 0x%016x\n  Type: %d (%s)\n  Windows session: %d\n  Account: %s\\%s\n  SID: %s\n  Authentication package: %s\n  Logon time: %s\n  Logon server: %s\n  DNS domain: %s\n  UPN: %s\n\n", luid, data.LogonType, types[data.LogonType], data.Session, whoamiText(data.Domain), whoamiText(data.User), whoamiSID(data.SID), whoamiText(data.Package), whoamiTime(data.LogonTime), whoamiText(data.Server), whoamiText(data.DNSDomain), whoamiText(data.UPN))
 }
 
 // whoamiTickets queries only the caller's effective Kerberos cache metadata.
@@ -313,13 +313,13 @@ func whoamiTickets(out *strings.Builder) {
 	fmt.Fprintf(out, "Kerberos tickets (effective caller cache; metadata only): %d\n", count)
 	for i := uint32(0); i < count; i++ {
 		t := (*whoamiTicket)(unsafe.Add(response, uintptr(8+i*stride)))
-		fmt.Fprintf(out, "  %s@%s -> %s@%s encryption=%d flags=0x%08x\n    start=%s end=%s renew-until=%s\n", whoamiTextWithin(t.Client, response, size), whoamiTextWithin(t.ClientRealm, response, size), whoamiTextWithin(t.Server, response, size), whoamiTextWithin(t.ServerRealm, response, size), t.Encryption, t.Flags, whoamiTime(t.Start), whoamiTime(t.End), whoamiTime(t.Renew))
+		fmt.Fprintf(out, "  Client: %s@%s\n  Server: %s@%s\n    Encryption: %d  flags: 0x%08x\n    Start: %s\n    End: %s\n    Renew until: %s\n\n", whoamiTextWithin(t.Client, response, size), whoamiTextWithin(t.ClientRealm, response, size), whoamiTextWithin(t.Server, response, size), whoamiTextWithin(t.ServerRealm, response, size), t.Encryption, t.Flags, whoamiTime(t.Start), whoamiTime(t.End), whoamiTime(t.Renew))
 	}
 }
 
 // whoamiDescribeToken emits independent token fields so errors remain explicit.
 func whoamiDescribeToken(out *strings.Builder, label string, token syscall.Token) {
-	fmt.Fprintf(out, "\n%s\n", label)
+	fmt.Fprintf(out, "\n=== %s ===\n", label)
 	if buf, err := whoamiTokenInfo(token, 1); err == nil {
 		fmt.Fprintf(out, "User: %s\n", whoamiBufferSID(buf, 0))
 	} else {
@@ -367,7 +367,7 @@ func whoamiDescribeToken(out *strings.Builder, label string, token syscall.Token
 	}
 	if b, err := whoamiTokenInfo(token, 10); err == nil && len(b) >= 56 {
 		luid := binary.LittleEndian.Uint64(b[8:])
-		fmt.Fprintf(out, "Token ID: 0x%016x Authentication LUID: 0x%016x Modified ID: 0x%016x\n", binary.LittleEndian.Uint64(b), luid, binary.LittleEndian.Uint64(b[48:]))
+		fmt.Fprintf(out, "Token ID: 0x%016x\nAuthentication LUID: 0x%016x\nModified ID: 0x%016x\n", binary.LittleEndian.Uint64(b), luid, binary.LittleEndian.Uint64(b[48:]))
 		if binary.LittleEndian.Uint32(b[24:]) == 2 {
 			level := binary.LittleEndian.Uint32(b[28:])
 			names := []string{"anonymous", "identification", "impersonation", "delegation"}
@@ -396,7 +396,7 @@ func whoamiAction(tickets bool) (string, error) {
 	defer runtime.UnlockOSThread()
 	var out strings.Builder
 	path, pathErr := os.Executable()
-	fmt.Fprintf(&out, "Process: PID=%d PPID=%d architecture=%s executable=%s\n", os.Getpid(), os.Getppid(), runtime.GOARCH, path)
+	fmt.Fprintf(&out, "=== Process ===\nPID: %d\nParent PID: %d\nArchitecture: %s\nExecutable: %s\n", os.Getpid(), os.Getppid(), runtime.GOARCH, path)
 	if pathErr != nil {
 		fmt.Fprintf(&out, "Executable path unavailable: %v\n", pathErr)
 	}

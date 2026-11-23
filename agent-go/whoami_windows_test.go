@@ -70,7 +70,7 @@ func TestWhoamiReadOnlySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Process: PID=", "Process token", "Authentication LUID:", "Integrity:", "Groups (", "Restricted SIDs (", "SeDebugPrivilege:", "Kerberos tickets"} {
+	for _, want := range []string{"=== Process ===\nPID:", "=== Process token ===", "Authentication LUID:", "Integrity:", "Groups (", "Restricted SIDs (", "SeDebugPrivilege:\n    ", "Kerberos tickets"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing report field %q", want)
 		}
