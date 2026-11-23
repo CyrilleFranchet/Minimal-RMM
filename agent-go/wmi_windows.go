@@ -396,15 +396,19 @@ func wmiCocreateRaw() (locator, hr uintptr) {
 }
 
 // cocreateWbemLocator creates the local in-process WbemLocator, retrying the
-// transient ERROR_KEY_DELETED class-store failure on the bounded schedule
-// decided by cocreateRetryDelay. The call is purely local — it resolves
-// CLSID_WbemLocator through the registry (the merged per-user and machine
-// classes view) and loads the in-proc server — so retries never resend
-// anything to the destination host. The retried failure mode is a
-// delete-pending registry key under the caller's profile, the observed
-// 0x800703FA from in-memory agents whose WinRM host kept the user token
-// without owning the profile hive. An activation that still fails after the
-// schedule is exhausted keeps reporting the raw HRESULT.
+// ERROR_KEY_DELETED class-store failure on the bounded schedule decided by
+// cocreateRetryDelay. The call is purely local — it resolves CLSID_WbemLocator
+// through the registry (the merged per-user and machine classes view) and
+// loads the in-proc server — so retries never resend anything to the
+// destination host. The retried failure mode is a local registry key marked
+// for deletion; which key — under the caller's profile (for example an
+// in-memory agent whose WinRM host kept the user token without owning the
+// profile hive) or under the machine classes store — only registry-level
+// evidence can tell, per docs/wmi-key-deleted-diagnosis.md. The deletion
+// completes only when the last handle to the key closes, so a failure that
+// persists through the schedule proves persistence, not a different cause.
+// An activation that still fails after the schedule is exhausted keeps
+// reporting the raw HRESULT.
 func cocreateWbemLocator() (uintptr, error) {
 	var lastHR uintptr
 	for attempt := 0; ; attempt++ {

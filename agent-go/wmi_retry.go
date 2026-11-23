@@ -2,17 +2,20 @@ package main
 
 import "time"
 
-// hrErrorKeyDeleted is HRESULT_FROM_WIN32(ERROR_KEY_DELETED): local COM
-// class resolution read a registry key marked for deletion. CoCreateInstance
-// resolves the CLSID through the merged machine and per-user classes view,
-// and the per-user half tracks the caller's profile: a profile hive unloading
-// underneath a long-lived process (an in-memory agent deployed over WinRM
-// runs with the user's token without owning the profile) leaves keys in the
-// delete-pending state for as long as the registry handles pinning them stay
-// open. The failure is purely local and transient: it happens before any
-// network traffic, the destination host contributes nothing, and a later
-// call ordinarily succeeds once the deferred deletion completes. It is not a
-// COM initialization failure and not an authentication failure.
+// hrErrorKeyDeleted is HRESULT_FROM_WIN32(ERROR_KEY_DELETED): Win32 error
+// 1018 (0x3FA), "illegal operation attempted on a registry key that has been
+// marked for deletion". Local COM class resolution reads the registry through
+// the merged machine and per-user classes view, and one of those reads hit a
+// marked-for-deletion key. The failure is purely local: it happens before any
+// network traffic, the destination host contributes nothing, and it is
+// neither a COM initialization failure nor an authentication failure. A
+// deleted key is not removed until the last handle to it closes
+// (RegDeleteKey), so the tombstone can outlive any bounded retry schedule:
+// exhausted retries never imply a different cause, and which key was
+// tombstoned — the per-user classes hive, a machine classes key, or a handle
+// cached against a stale view — cannot be read out of the HRESULT. That
+// question takes registry-level evidence; see
+// docs/wmi-key-deleted-diagnosis.md.
 const hrErrorKeyDeleted uintptr = 0x800703FA
 
 // wmiCocreateRetryDelays bounds the retry schedule of the local WbemLocator

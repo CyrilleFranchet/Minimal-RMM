@@ -84,23 +84,33 @@ A reply timeout does not cancel an executing Windows call or prove that remote
 work stopped. Do not describe this implementation as a fully bounded queue or
 as enforcing an end-to-end deployment deadline.
 
-## Transient local activation failure (HRESULT 0x800703FA)
+## Local activation failure (HRESULT 0x800703FA, ERROR_KEY_DELETED)
 
 Field deployments from an in-memory agent (a Go binary hosted by Windows
 PowerShell through the loader chain, deployed over WinRM) observed
 `CoCreateInstance(CLSID_WbemLocator)` failing with `0x800703FA`, before any
 connection to the destination host. That HRESULT is
-`HRESULT_FROM_WIN32(ERROR_KEY_DELETED)`: the local registry-based class
-resolution read a key marked for deletion. It is not a COM initialization
-failure and not an authentication failure — the in-process activation never
-leaves the host, and the destination machine is not a factor.
+`HRESULT_FROM_WIN32(ERROR_KEY_DELETED)`: Win32 error 1018, an operation hit a
+registry key marked for deletion during the local class resolution. It is not
+a COM initialization failure and not an authentication failure — the in-process
+activation never leaves the host, and the destination machine is not a factor.
 
-The mechanism: the per-user half of the merged classes view tracks the calling
-token's profile. A process that keeps a user token without owning the profile
-lifetime — exactly a WinRM-hosted, in-memory deployment — can observe a
-profile hive unloading mid-process, leaving class-store keys in the
-delete-pending state until the handles pinning them close. The state is
-transient and identity-coupled; retries after the window succeed.
+One candidate mechanism — a hypothesis, not a confirmed cause: the per-user
+half of the merged classes view tracks the calling token's profile, and a
+process that keeps a user token without owning the profile lifetime — exactly
+a WinRM-hosted, in-memory deployment — can observe a profile hive unloading
+mid-process, leaving class-store keys in the delete-pending state. Two
+properties of that state matter and are documented Windows behavior, not
+assumptions:
+
+- A deleted key is not removed until the last handle to it closes
+  (`RegDeleteKey`), so the tombstone can outlive any bounded retry schedule:
+  a failure persisting through the retries proves persistence, never a
+  different cause.
+- The HRESULT carries no information about which key was tombstoned — the
+  per-user classes hive, a machine classes key, and a handle cached against a
+  stale view all produce the same code. Only registry-level evidence
+  separates them.
 
 The production response is a bounded, local-only retry:
 
@@ -117,13 +127,16 @@ The production response is a bounded, local-only retry:
   `0x800703FA` it annotates the stage so the operator knows the production
   chain retried it.
 
-The retry is a targeted mitigation, not a root-cause proof. Confirming the
-profile-lifetime mechanism still requires registry-level evidence
-(Process Monitor or the Microsoft-Windows-Kernel-Registry ETW provider
-identifying the delete-pending key under the caller's profile, correlated
-with profile load/unload events around the failure). A persistent failure
-after three retries points at a different registry mechanism and should be
-diagnosed rather than retried harder.
+The retry is a targeted mitigation, not a root-cause proof. Identifying the
+tombstoned key, its hive, and what marked it for deletion requires
+registry-level evidence (Process Monitor or the
+Microsoft-Windows-Kernel-Registry ETW provider), correlated with the process
+identity and profile lifetime of the caller. A persistent failure calls for
+that evidence collection — never for a different assumed cause or stronger
+retries. The full procedure — facts-versus-hypotheses table, a read-only
+reproducer, numbered diagnostic steps, and the decision table mapping
+observations to conclusions — lives in
+[wmi-key-deleted-diagnosis.md](wmi-key-deleted-diagnosis.md).
 
 ## Alternatives and decision
 

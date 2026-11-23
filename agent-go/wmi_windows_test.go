@@ -139,12 +139,12 @@ func TestWMICreateProcessCleanupFailureInvalidatesResult(t *testing.T) {
 	}
 }
 
-// TestCocreateWbemLocatorRetriesTransientKeyDeleted drives the bounded retry
-// of the local WbemLocator activation with a scripted seam: two transient
-// ERROR_KEY_DELETED results then success, proving the production chain rides
-// out the delete-pending class-store window instead of failing the
-// deployment. The sleep seam keeps the test instantaneous.
-func TestCocreateWbemLocatorRetriesTransientKeyDeleted(t *testing.T) {
+// TestCocreateWbemLocatorRetriesKeyDeleted drives the bounded retry of the
+// local WbemLocator activation with a scripted seam: two ERROR_KEY_DELETED
+// results then success, proving the production chain rides out the
+// delete-pending class-store window instead of failing the deployment. The
+// sleep seam keeps the test instantaneous.
+func TestCocreateWbemLocatorRetriesKeyDeleted(t *testing.T) {
 	defer func() {
 		cocreateWbemLocatorRaw = wmiCocreateRaw
 		wmiCocreateRetrySleep = time.Sleep

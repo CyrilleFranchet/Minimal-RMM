@@ -1369,9 +1369,11 @@ func (r *wmiProbeResult) connectSequence(host string, identity *winrmCredentials
 	cocreateLabel := "WbemLocator in-proc"
 	if hr == hrErrorKeyDeleted {
 		// The probe records the raw failing HRESULT: the production chain
-		// retries this transient local class-store state, so this report is
-		// the only place the operator still observes it.
-		cocreateLabel = "WbemLocator in-proc (transient ERROR_KEY_DELETED; production chain retries it)"
+		// retries this local class-store failure on a bounded schedule, so
+		// this report is the only place the operator still observes it. The
+		// failure persists as long as a handle pins the tombstoned key, so
+		// catching it here proves nothing about the underlying cause.
+		cocreateLabel = "WbemLocator in-proc (ERROR_KEY_DELETED; production chain retries it)"
 	}
 	r.stageHR("cocreate"+suffix, hr, time.Since(start), cocreateLabel)
 	if hr != 0 || locator == 0 {
