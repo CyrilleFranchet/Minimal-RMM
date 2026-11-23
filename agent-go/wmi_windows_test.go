@@ -138,3 +138,86 @@ func TestWMICreateProcessCleanupFailureInvalidatesResult(t *testing.T) {
 		t.Fatal("a failed cleanup verification must raise the identity-boundary fault")
 	}
 }
+
+// TestCocreateWbemLocatorRetriesTransientKeyDeleted drives the bounded retry
+// of the local WbemLocator activation with a scripted seam: two transient
+// ERROR_KEY_DELETED results then success, proving the production chain rides
+// out the delete-pending class-store window instead of failing the
+// deployment. The sleep seam keeps the test instantaneous.
+func TestCocreateWbemLocatorRetriesTransientKeyDeleted(t *testing.T) {
+	defer func() {
+		cocreateWbemLocatorRaw = wmiCocreateRaw
+		wmiCocreateRetrySleep = time.Sleep
+	}()
+	attempts := 0
+	cocreateWbemLocatorRaw = func() (uintptr, uintptr) {
+		attempts++
+		if attempts <= 2 {
+			return 0, hrErrorKeyDeleted
+		}
+		return 0x42, 0
+	}
+	slept := 0
+	wmiCocreateRetrySleep = func(time.Duration) { slept++ }
+	locator, err := cocreateWbemLocator()
+	if err != nil {
+		t.Fatalf("the transient activation must succeed on retry: %v", err)
+	}
+	if locator != 0x42 {
+		t.Fatalf("locator = 0x%x, want the scripted out pointer", locator)
+	}
+	if attempts != 3 || slept != 2 {
+		t.Fatalf("attempts = %d sleeps = %d, want 3 attempts and 2 bounded sleeps", attempts, slept)
+	}
+}
+
+// TestCocreateWbemLocatorFailsFastOnDeterministicHR pins that nothing but
+// the transient HRESULT is retried: a class-not-registered failure must
+// surface on the first attempt with the raw HRESULT and no retry context.
+func TestCocreateWbemLocatorFailsFastOnDeterministicHR(t *testing.T) {
+	defer func() {
+		cocreateWbemLocatorRaw = wmiCocreateRaw
+		wmiCocreateRetrySleep = time.Sleep
+	}()
+	calls := 0
+	cocreateWbemLocatorRaw = func() (uintptr, uintptr) {
+		calls++
+		return 0, 0x80040154 // REGDB_E_CLASSNOTREG
+	}
+	wmiCocreateRetrySleep = func(time.Duration) { t.Fatal("a deterministic failure must not sleep") }
+	_, err := cocreateWbemLocator()
+	if err == nil || !strings.Contains(err.Error(), "0x80040154") {
+		t.Fatalf("the raw HRESULT must surface, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want exactly one attempt", calls)
+	}
+}
+
+// TestCocreateWbemLocatorExhaustedRetriesKeepsHR pins the bounded schedule's
+// terminal path: an unresolvable delete-pending state still reports the raw
+// HRESULT with the retry context, after exactly the scheduled attempts.
+func TestCocreateWbemLocatorExhaustedRetriesKeepsHR(t *testing.T) {
+	defer func() {
+		cocreateWbemLocatorRaw = wmiCocreateRaw
+		wmiCocreateRetrySleep = time.Sleep
+	}()
+	calls := 0
+	cocreateWbemLocatorRaw = func() (uintptr, uintptr) {
+		calls++
+		return 0, hrErrorKeyDeleted
+	}
+	slept := 0
+	wmiCocreateRetrySleep = func(time.Duration) { slept++ }
+	_, err := cocreateWbemLocator()
+	if err == nil || !strings.Contains(err.Error(), "0x800703fa") {
+		t.Fatalf("the exhausted transient HRESULT must surface, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "retries") {
+		t.Fatalf("the exhaustion error must name the retries, got %v", err)
+	}
+	if calls != 1+len(wmiCocreateRetryDelays) || slept != len(wmiCocreateRetryDelays) {
+		t.Fatalf("calls = %d sleeps = %d, want %d attempts and %d sleeps",
+			calls, slept, 1+len(wmiCocreateRetryDelays), len(wmiCocreateRetryDelays))
+	}
+}

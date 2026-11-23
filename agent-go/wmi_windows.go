@@ -377,6 +377,55 @@ func wmiCreateProcess(host, command string, identity *winrmCredentials, ambient 
 // operation's result into an error, without manipulating real tokens.
 var wmiCleanupTokenPresent = wmiThreadTokenPresent
 
+// wmiCocreateRetrySleep is the bounded-backoff sleep seam: Windows tests
+// substitute an instant stub so retry coverage does not wait real time.
+var wmiCocreateRetrySleep = time.Sleep
+
+// cocreateWbemLocatorRaw is the raw activation seam: production always calls
+// the real ole32 CoCreateInstance through wmiCocreateRaw; Windows tests
+// substitute scripted HRESULTs to drive the retry path.
+var cocreateWbemLocatorRaw = wmiCocreateRaw
+
+// wmiCocreateRaw performs one raw in-process activation of the WbemLocator
+// class and returns the out pointer and the HRESULT without interpretation.
+func wmiCocreateRaw() (locator, hr uintptr) {
+	hr, _, _ = procCoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&clsidWbemLocator)), 0, clsctxInprocServer,
+		uintptr(unsafe.Pointer(&iidIWbemLocator)), uintptr(unsafe.Pointer(&locator)))
+	return locator, hr
+}
+
+// cocreateWbemLocator creates the local in-process WbemLocator, retrying the
+// transient ERROR_KEY_DELETED class-store failure on the bounded schedule
+// decided by cocreateRetryDelay. The call is purely local — it resolves
+// CLSID_WbemLocator through the registry (the merged per-user and machine
+// classes view) and loads the in-proc server — so retries never resend
+// anything to the destination host. The retried failure mode is a
+// delete-pending registry key under the caller's profile, the observed
+// 0x800703FA from in-memory agents whose WinRM host kept the user token
+// without owning the profile hive. An activation that still fails after the
+// schedule is exhausted keeps reporting the raw HRESULT.
+func cocreateWbemLocator() (uintptr, error) {
+	var lastHR uintptr
+	for attempt := 0; ; attempt++ {
+		locator, hr := cocreateWbemLocatorRaw()
+		if hr == 0 {
+			return locator, nil
+		}
+		lastHR = hr
+		delay, retry := cocreateRetryDelay(hr, attempt)
+		if !retry {
+			break
+		}
+		wmiCocreateRetrySleep(delay)
+	}
+	if lastHR == hrErrorKeyDeleted {
+		return 0, fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x: local class-store delete-pending state persisted through %d retries",
+			lastHR, len(wmiCocreateRetryDelays))
+	}
+	return 0, fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x", lastHR)
+}
+
 // wmiCreateProcessChain runs one Win32_Process.Create on the COM worker
 // thread. The COM apartment and process security are already initialized
 // there; this chain owns only the per-operation identity: a verified clean
@@ -425,12 +474,9 @@ func wmiCreateProcessChain(host, command string, identity *winrmCredentials, amb
 	defer sysFreeString(identityPassword)
 	defer sysFreeString(identityAuthority)
 	defer runtime.KeepAlive(identityBlanket)
-	var locator uintptr
-	if hr, _, _ := procCoCreateInstance.Call(
-		uintptr(unsafe.Pointer(&clsidWbemLocator)), 0, clsctxInprocServer,
-		uintptr(unsafe.Pointer(&iidIWbemLocator)), uintptr(unsafe.Pointer(&locator)),
-	); hr != 0 {
-		return fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x", hr)
+	locator, err := cocreateWbemLocator()
+	if err != nil {
+		return err
 	}
 	defer comRelease(locator)
 	namespace := sysAllocString(`\\` + host + `\root\cimv2`)

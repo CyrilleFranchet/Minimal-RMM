@@ -39,6 +39,7 @@ class GoAgentTests(unittest.TestCase):
                 "whoami.go",
                 "whoami_windows.go",
                 "whoami_other.go",
+                "wmi_retry.go",
                 "wmi_windows.go",
                 "wmi_probe.go",
                 "wmi_probe_windows.go",

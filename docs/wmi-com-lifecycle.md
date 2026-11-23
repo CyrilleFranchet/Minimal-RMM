@@ -84,6 +84,47 @@ A reply timeout does not cancel an executing Windows call or prove that remote
 work stopped. Do not describe this implementation as a fully bounded queue or
 as enforcing an end-to-end deployment deadline.
 
+## Transient local activation failure (HRESULT 0x800703FA)
+
+Field deployments from an in-memory agent (a Go binary hosted by Windows
+PowerShell through the loader chain, deployed over WinRM) observed
+`CoCreateInstance(CLSID_WbemLocator)` failing with `0x800703FA`, before any
+connection to the destination host. That HRESULT is
+`HRESULT_FROM_WIN32(ERROR_KEY_DELETED)`: the local registry-based class
+resolution read a key marked for deletion. It is not a COM initialization
+failure and not an authentication failure — the in-process activation never
+leaves the host, and the destination machine is not a factor.
+
+The mechanism: the per-user half of the merged classes view tracks the calling
+token's profile. A process that keeps a user token without owning the profile
+lifetime — exactly a WinRM-hosted, in-memory deployment — can observe a
+profile hive unloading mid-process, leaving class-store keys in the
+delete-pending state until the handles pinning them close. The state is
+transient and identity-coupled; retries after the window succeed.
+
+The production response is a bounded, local-only retry:
+
+- `cocreateRetryDelay` (`agent-go/wmi_retry.go`) is the retry policy: exactly
+  `0x800703FA` follows the `wmiCocreateRetryDelays` schedule
+  (250 ms, 1 s, 3 s, then fail); every other HRESULT surfaces on the first
+  attempt. The policy is platform-independent and host-tested.
+- `cocreateWbemLocator` (`agent-go/wmi_windows.go`) applies the policy around
+  the raw in-process activation (`wmiCocreateRaw`) used by the production
+  `wmiCreateProcessChain`. Retries happen only before any network traffic, so
+  nothing is ever resent to the destination. Exhausted retries still report
+  the raw HRESULT.
+- The read-only probe keeps recording the raw stage result; when it catches
+  `0x800703FA` it annotates the stage so the operator knows the production
+  chain retried it.
+
+The retry is a targeted mitigation, not a root-cause proof. Confirming the
+profile-lifetime mechanism still requires registry-level evidence
+(Process Monitor or the Microsoft-Windows-Kernel-Registry ETW provider
+identifying the delete-pending key under the caller's profile, correlated
+with profile load/unload events around the failure). A persistent failure
+after three retries points at a different registry mechanism and should be
+diagnosed rather than retried harder.
+
 ## Alternatives and decision
 
 The dedicated worker closely follows the successful same-thread probe lifecycle

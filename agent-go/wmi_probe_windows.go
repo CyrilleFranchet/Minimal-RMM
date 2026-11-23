@@ -1366,7 +1366,14 @@ func (r *wmiProbeResult) connectSequence(host string, identity *winrmCredentials
 	hr, _, _ := procCoCreateInstance.Call(
 		uintptr(unsafe.Pointer(&clsidWbemLocator)), 0, clsctxInprocServer,
 		uintptr(unsafe.Pointer(&iidIWbemLocator)), uintptr(unsafe.Pointer(&locator)))
-	r.stageHR("cocreate"+suffix, hr, time.Since(start), "WbemLocator in-proc")
+	cocreateLabel := "WbemLocator in-proc"
+	if hr == hrErrorKeyDeleted {
+		// The probe records the raw failing HRESULT: the production chain
+		// retries this transient local class-store state, so this report is
+		// the only place the operator still observes it.
+		cocreateLabel = "WbemLocator in-proc (transient ERROR_KEY_DELETED; production chain retries it)"
+	}
+	r.stageHR("cocreate"+suffix, hr, time.Since(start), cocreateLabel)
 	if hr != 0 || locator == 0 {
 		r.Err = fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x", hr)
 		r.markRemainingNotRun("cocreate"+suffix, suffix)

@@ -1,5 +1,26 @@
 # Progress Log
 
+## 2026-11-23 — WMI local activation: bounded retry for transient ERROR_KEY_DELETED
+
+- Field deployments from in-memory agents (WinRM-hosted loader chain) observed
+  `CoCreateInstance(CLSID_WbemLocator)` returning `0x800703FA` before any
+  connection: `HRESULT_FROM_WIN32(ERROR_KEY_DELETED)`, a delete-pending
+  registry key hit during local class resolution. The failure is local and
+  transient — not COM initialization, not authentication, and not attributable
+  to the destination host.
+- Added a bounded, local-only retry: `cocreateRetryDelay`
+  (`agent-go/wmi_retry.go`, host-tested retry policy) retries exactly
+  `0x800703FA` on a 250 ms / 1 s / 3 s schedule; `cocreateWbemLocator`
+  (`agent-go/wmi_windows.go`) applies it around the raw activation used by
+  `wmiCreateProcessChain`. Retries happen only before any network traffic;
+  exhausted retries keep the raw HRESULT in the error.
+- The read-only probe stays raw: catching `0x800703FA` annotates the stage so
+  the operator knows the production chain retried it.
+- Documented the failure class, the retry design, and the evidence still
+  needed to confirm the profile-lifetime mechanism (registry-level traces) in
+  `docs/wmi-com-lifecycle.md`. The retry is a mitigation, not a root-cause
+  proof.
+
 ## 2026-11-23 — Restore short HTTP connections in the Go agent
 
 - Added Go persistence parity with PowerShell: short connections by default,
