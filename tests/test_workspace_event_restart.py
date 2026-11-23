@@ -1,5 +1,8 @@
 """Restarted central streams cannot hide or overwrite migrated workspace events."""
 import base64
+import json
+import os
+from datetime import datetime, timezone
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -11,6 +14,115 @@ from workspace_service import WorkspaceService, WorkspaceStore
 
 
 class WorkspaceRestartTests(unittest.TestCase):
+    def test_central_download_storage_preserves_both_copies(self):
+        with tempfile.TemporaryDirectory() as directory, patch('server_rmm.LOG_DIR', directory):
+            os.mkdir(os.path.join(directory, 'downloads'))
+            paths = []
+            for content in (b'old', b'new'):
+                paths.append(RMMServer._save_file_upload(SimpleNamespace(), SimpleNamespace(id='session'), {
+                    'filename': 'Logfile.PML', 'content': base64.b64encode(content).decode()}, 'same-time'))
+            self.assertNotEqual(paths[0], paths[1])
+            for path, content in zip(paths, (b'old', b'new')):
+                with open(path, 'rb') as handle:
+                    self.assertEqual(handle.read(), content)
+                entry = RMMServer._make_download_entry(path, 'C:/Logfile.PML')
+                self.assertIsNotNone(datetime.fromisoformat(entry['received_at']).tzinfo)
+
+    def test_repeated_downloads_preserve_versions_and_replay_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkspaceStore(directory, 'alice')
+            self.addCleanup(store.close)
+            store.sync_sessions([{'id': 'session'}])
+            for chunked in (False, True):
+                for index, content in enumerate((b'old bytes', b'new bytes'), 1):
+                    data = {'filename': 'Logfile.PML', 'content': base64.b64encode(content).decode()}
+                    if chunked:
+                        data.update(offset=0, eof=True, upload_id=f'upload-{index}')
+                    event = {'id': index, 'type': 'file_upload', 'workspace_payload': {
+                        'kind': 'file_upload', 'remote_path': 'C:/Logfile.PML', 'data': data}}
+                    epoch = f'epoch-{chunked}'
+                    store.apply_stream_event('session', event, epoch, index)
+                    store.apply_stream_event('session', event, epoch, index)
+            downloads = store.list_downloads('session')
+            self.assertEqual(len(downloads), 4)
+            self.assertEqual(len({row['artifact'] for row in downloads}), 4)
+            self.assertCountEqual([store.artifact_path('downloads', row['artifact']).read_bytes()
+                                   for row in downloads], [b'old bytes', b'new bytes'] * 2)
+            self.assertEqual(len(store.list_artifacts('downloads')), 4)
+            long_name = 'a' * 196 + '.txt'
+            event = {'id': 3, 'type': 'file_upload', 'workspace_payload': {'kind': 'file_upload',
+                'data': {'filename': long_name, 'content': base64.b64encode(b'long').decode()}}}
+            store.apply_stream_event('session', event, 'long-name', 1)
+            artifact = store.get_events('session')[-1]['artifact']
+            self.assertLessEqual(len(artifact), 200)
+            self.assertTrue(artifact.endswith('.txt'))
+            self.assertEqual(store.artifact_path('downloads', artifact).read_bytes(), b'long')
+
+    def test_receipt_timestamps_are_absolute_and_legacy_values_use_file_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkspaceStore(directory, 'alice')
+            self.addCleanup(store.close)
+            store.sync_sessions([{'id': 'session'}])
+            store.apply_event('session', {'id': 1, 'type': 'file_upload', 'workspace_payload': {
+                'kind': 'file_upload', 'data': {'filename': 'report.txt', 'content': ''}}})
+            row = store.list_downloads('session')[0]
+            received = datetime.fromisoformat(row['received_at'])
+            self.assertIsNotNone(received.tzinfo)
+            self.assertLess(abs((datetime.now(timezone.utc) - received).total_seconds()), 5)
+            path = store.artifact_path('downloads', row['artifact'])
+            instant = 1795435200
+            os.utime(path, (instant, instant))
+            store._db.execute('UPDATE downloads SET received_at=?', ('2026-11-23T12:00:00',))
+            for rows in (store.list_downloads('session'), store.list_artifacts('downloads')):
+                self.assertEqual(datetime.fromisoformat(rows[0]['received_at']).timestamp(), instant)
+            store._db.execute('UPDATE downloads SET received_at=?', ('2026-11-23T13:00:00+01:00',))
+            self.assertEqual(store.list_downloads('session')[0]['received_at'], '2026-11-23T12:00:00+00:00')
+
+    def test_live_progress_crosses_broker_without_transcript_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkspaceStore(directory, 'alice')
+            self.addCleanup(store.close)
+            store.sync_sessions([{'id': 'session'}, {'id': 'other'}])
+            broker = WorkspaceEventBroker()
+            session = SimpleNamespace(id='session', workspace_id='alice')
+            central = SimpleNamespace(
+                get_session=lambda sid: session,
+                event_hub=Mock(),
+                workspace_publish_event=lambda session, event: broker.publish('alice', session.id, event),
+            )
+            progress = {'type': 'download_progress', 'body': json.dumps({
+                'remote_path': 'C:/Logfile.PML', 'bytes': 2097152, 'percent': 50}),
+                'command': 'download C:/Logfile.PML'}
+            RMMServer._broadcast_ephemeral_event(central, 'session', progress)
+            envelope = broker.read('alice', epoch=broker.epoch)['events'][0]
+            store.apply_stream_event('session', envelope['event'], broker.epoch, envelope['cursor'])
+            self.assertEqual(len(store.get_progress('session')), 1)
+            store.apply_stream_event('session', {'type': 'download_progress', 'body': '{truncated'}, broker.epoch, 9)
+            self.assertEqual(len(store.get_progress('session')), 1)
+            self.assertEqual(store.get_progress('other'), [])
+            self.assertEqual(store.get_events('session'), [])
+            self.assertEqual(store._db.execute('SELECT COUNT(*) FROM event_receipts').fetchone()[0], 0)
+            service = WorkspaceService.__new__(WorkspaceService)
+            service.store = store
+            status, response, _ = service.get_json('/api/v1/sessions/session/events', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(len(response['progress']), 1)
+            _, archived, _ = service.get_json('/api/v1/history/session/events', {})
+            self.assertNotIn('progress', archived)
+            store.apply_stream_event('session', {'id': 1, 'body': 'after'}, broker.epoch, 2)
+            self.assertEqual(store.get_events('session')[0]['id'], 1)
+            store.apply_stream_event('session', {'id': 2, 'type': 'file_upload', 'workspace_payload': {
+                'kind': 'file_upload', 'remote_path': 'C:/Logfile.PML',
+                'data': {'filename': 'Logfile.PML', 'content': '', 'eof': True}}}, broker.epoch, 3)
+            self.assertEqual(store.get_progress('session'), [])
+            store.apply_stream_event('session', envelope['event'], broker.epoch, 4)
+            store.apply_stream_event('session', {'id': 3, 'type': 'output',
+                'command': '__DOWNLOAD__ C:/Logfile.PML', 'body': 'Download failed: denied'}, broker.epoch, 5)
+            self.assertEqual(store.get_progress('session'), [])
+            store.apply_stream_event('session', envelope['event'], broker.epoch, 6)
+            with patch('workspace_service.time.monotonic', return_value=10**15):
+                self.assertEqual(store.get_progress('session'), [])
+
     def test_central_intermediate_chunk_syncs_and_replays_without_history(self):
         with tempfile.TemporaryDirectory() as directory:
             store = WorkspaceStore(directory, 'alice')

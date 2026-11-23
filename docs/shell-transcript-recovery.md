@@ -63,3 +63,21 @@ Validation: `tests/test_shell_recovery.py` covers merging more than 500 events,
 out-of-order persisted records, and a partially persisted tail;
 `tests/test_shell_recovery.cjs` covers 1,205 events across pages, ordering, and
 responses arriving after session selection changes.
+
+## Command timestamps
+
+Shell command headers show **Submitted** date/time, including seconds. A local
+command echo uses the browser's submission time; restored command blocks use the
+persisted operator event timestamp. Live operator events show **Recorded** time.
+Matched results and unmatched output, file, screenshot, and cloud upload results
+show **Result received** time from
+the event. These mark submission and result receipt, not the precise start of
+execution on the agent (which the protocol does not report).
+
+`shellTimestampHtml` renders offset-aware timestamps in UTC. Server events
+without an offset preserve their wall time and are labeled **server time** rather
+than interpreted in the browser's time zone. Missing or invalid timestamps are
+omitted; restoring history never substitutes the current time. Timestamps stay
+visible after results replace queued/progress messages. Only ISO date/time values
+with valid calendar dates are accepted. This is an operator UI
+change and requires a WebUI reload; no agent rebuild is required.

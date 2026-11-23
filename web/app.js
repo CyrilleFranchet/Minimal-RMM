@@ -308,7 +308,8 @@ async function downloadArtifactEntry(entry) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(objUrl);
+  // Let the browser consume the URL before releasing the downloaded blob.
+  setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
 }
 
 function show(el) {
@@ -1419,6 +1420,7 @@ async function readShellEvents(path, since, isCurrent, render) {
     if (status !== 200) throw new Error(`Transcript retrieval failed: HTTP ${status}`);
     const events = (data.events || []).sort((a, b) => a.id - b.id);
     for (const event of events) render(event);
+    for (const progress of data.progress || []) render(progress);
     const next = events.reduce((value, event) => Math.max(value, event.id), cursor);
     if (events.length < 500 || next <= cursor) return;
     cursor = next;
@@ -1791,6 +1793,13 @@ function fillCommandBlock(block, ev) {
   }
   const evType = ev.type || "output";
   const resultEl = block.resultEl;
+  const receipt = shellTimestampHtml(ev.timestamp, "Result received");
+  if (receipt) {
+    const line = document.createElement("div");
+    line.className = "shell-line shell-line-meta";
+    line.innerHTML = receipt;
+    resultEl.appendChild(line);
+  }
   if (evType === "cloud_upload") {
     const line = document.createElement("div");
     line.className = "shell-line shell-line-output";
@@ -1829,14 +1838,14 @@ function fillCommandBlock(block, ev) {
   return true;
 }
 
-function createCommandBlock(cmd, { meta = null, kind = null, remotePath = null, matchKeys = null } = {}) {
+function createCommandBlock(cmd, { meta = null, kind = null, remotePath = null, matchKeys = null, timestamp = new Date().toISOString() } = {}) {
   const log = shellOutputEl();
   const blockEl = document.createElement("div");
   blockEl.className = "shell-command-block";
 
   const echoLine = document.createElement("div");
   echoLine.className = "shell-line shell-line-echo";
-  echoLine.innerHTML = `<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(cmd)}`;
+  echoLine.innerHTML = `${shellTimestampHtml(timestamp, "Submitted")}<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(cmd)}`;
   blockEl.appendChild(echoLine);
 
   let metaLine = null;
@@ -1880,6 +1889,10 @@ function appendUnmatchedEvent(ev) {
   const evType = ev.type || "output";
   const body = String(ev.body || "").trim();
   const cmdEcho = shellCommandLabel(ev.command);
+  const receipt = shellTimestampHtml(ev.timestamp, "Result received");
+  if (receipt && ["output", "screenshot", "file_upload", "cloud_upload"].includes(evType)) {
+    appendShellLine("meta", receipt);
+  }
 
   if (evType === "output") {
     if (cmdEcho) {
@@ -1983,7 +1996,7 @@ function appendShellEcho(cmd, { block = false, meta = null, kind = null, remoteP
   }
   appendShellLine(
     "echo",
-    `<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(cmd)}`
+    `${shellTimestampHtml(new Date().toISOString(), "Submitted")}<span class="prompt-char">${escapeHtml($("#shell-prompt").textContent)}</span> ${escapeHtml(cmd)}`
   );
   return null;
 }
@@ -2520,6 +2533,21 @@ function operatorCommandFromBody(body) {
   return b.slice(idx + 1).trim();
 }
 
+function shellTimestampHtml(timestamp, label) {
+  if (typeof timestamp !== "string" || !timestamp.trim()) return "";
+  const parts = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?$/.exec(timestamp);
+  if (!parts) return "";
+  // Reject impossible calendar dates that Date would otherwise normalize.
+  const wallTime = new Date(parts[1] + "Z");
+  if (!Number.isFinite(wallTime.getTime()) || wallTime.toISOString().slice(0, 19) !== parts[1]) return "";
+  // Events without an offset retain their wall time without guessing a zone.
+  const naive = !parts[2];
+  const date = new Date(naive ? timestamp + "Z" : timestamp);
+  if (!Number.isFinite(date.getTime())) return "";
+  const text = date.toISOString().slice(0, 19).replace("T", " ") + (naive ? " server time" : " UTC");
+  return `<span class="shell-timestamp" title="${escapeHtml(label)}">[${escapeHtml(label)}: ${text}]</span> `;
+}
+
 function renderEventBodyHtml(ev) {
   const body = String(ev.body || "");
   if (ev.type === "screenshot" && ev.artifact_url) {
@@ -2951,14 +2979,14 @@ function appendEvent(ev, { local = false, history = false, allowPast = false } =
       const matchKeys = [opCmd];
       if (kind === "download") matchKeys.push(`download ${remotePath}`);
       if (kind === "exfil") matchKeys.push(`exfil ${remotePath}`);
-      createCommandBlock(shellCommandLabel(opCmd), { meta, kind, remotePath, matchKeys });
+      createCommandBlock(shellCommandLabel(opCmd), { meta, kind, remotePath, matchKeys, timestamp: ev.timestamp || null });
       return;
     }
     if (!history && opCmd && state.echoedCommands.has(opCmd)) {
       return;
     }
     const label = body || "operator action";
-    appendShellLine("operator", escapeHtml(label));
+    appendShellLine("operator", shellTimestampHtml(ev.timestamp, "Recorded") + escapeHtml(label));
     return;
   }
 
@@ -4299,11 +4327,18 @@ document.addEventListener("DOMContentLoaded", () => {
     const link = e.target.closest("a.artifact-download");
     if (!link) return;
     e.preventDefault();
+    if (link.dataset.downloading) return;
+    const label = link.textContent;
+    link.dataset.downloading = "1";
+    link.textContent = "Preparing download…";
     downloadArtifactEntry({
       artifact_url: link.dataset.artifactUrl,
       remote_path: link.dataset.downloadName,
     }).catch((err) => {
       appendShellError(err.message || String(err));
+    }).finally(() => {
+      delete link.dataset.downloading;
+      link.textContent = label;
     });
   });
 

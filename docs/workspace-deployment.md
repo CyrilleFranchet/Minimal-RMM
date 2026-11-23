@@ -178,6 +178,20 @@ replay receipt. Final chunks and ordinary history events require positive source
 event IDs. This keeps multi-chunk downloads (Go files larger than 2 MiB) moving
 through workspace synchronization without adding intermediate transcript rows.
 
+Live download progress also crosses the owning workspace broker.
+`WorkspaceStore.get_progress` returns the latest in-memory update per session
+and remote path in the live session-events API's separate `progress` array.
+Archived history excludes these updates. The cache is bounded to 256 transfers
+and expires updates after 120 seconds; progress consumes no transcript IDs or
+replay receipt rows. Completed and failed downloads clear matching updates.
+Malformed advisory updates are skipped so they cannot block synchronization.
+
+Download receipt filenames derive from the session and source epoch/cursor;
+direct imported events use their event ID. This preserves separate downloads of
+the same remote path and a stable filename during receipt transaction replay.
+`_artifact_received_at` normalizes aware receipt times to UTC and uses filesystem
+mtime for legacy naive timestamps. Inventory ordering uses normalized times.
+
 With exactly one registered workspace, new agents are assigned immediately.
 With multiple workspaces, agents start unassigned. Existing persisted ownership
 is retained. A workspace can claim an unassigned live

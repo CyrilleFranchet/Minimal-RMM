@@ -929,6 +929,11 @@ body.sidebar-resizing iframe {
   color: var(--text);
 }
 
+.shell-timestamp {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
 .shell-line-echo .prompt-char {
   color: var(--accent);
   user-select: none;

@@ -140,6 +140,8 @@ check-web-contracts:
 	@node tests/test_go_agent_ui.cjs
 	@node tests/test_assets_ui.cjs
 	@node tests/test_agent_redirects.cjs
+	@node --test tests/test_download_ui.cjs tests/test_shell_recovery.cjs
+	@$(PYTHON) -m unittest discover -s tests -p 'test_workspace_event_restart.py'
 
 check-pivot:
 	@$(PYTHON) -m unittest tests.test_rmm_socks tests.test_pivot_full_duplex tests.test_rmm_tun tests.test_helper_shutdown tests.test_workspace_shutdown

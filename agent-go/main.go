@@ -847,6 +847,31 @@ func sendFileDownload(client *http.Client, cfg *config, path string) error {
 	uploadID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 	const chunkSize = 2 * 1024 * 1024
 	var offset int64
+	started := time.Now()
+	progress := func() {
+		elapsed := time.Since(started).Seconds()
+		speed, percent, eta := float64(0), float64(0), float64(-1)
+		if elapsed > 0 {
+			speed = float64(offset) / elapsed
+		}
+		if info.Size() > 0 {
+			percent = 100 * float64(offset) / float64(info.Size())
+		}
+		if speed > 0 {
+			eta = float64(info.Size()-offset) / speed
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"remote_path": path, "bytes": offset, "total_bytes": info.Size(),
+			"percent": percent, "speed_bps": speed, "eta_seconds": eta,
+		})
+		query := values(cfg)
+		query.Set("type", "download_progress")
+		// Progress is advisory; an unavailable update must not abort the file transfer.
+		ctx, cancel := context.WithTimeout(agentContext, 2*time.Second)
+		defer cancel()
+		_, _ = requestContext(ctx, client, cfg, http.MethodPost, "/result", query, payload)
+	}
+	progress()
 	for {
 		chunk := make([]byte, chunkSize)
 		n, readErr := file.Read(chunk)
@@ -871,6 +896,7 @@ func sendFileDownload(client *http.Client, cfg *config, path string) error {
 		if eof || readErr == io.EOF {
 			return nil
 		}
+		progress()
 	}
 }
 

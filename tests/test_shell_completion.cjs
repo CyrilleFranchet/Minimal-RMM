@@ -29,6 +29,7 @@ function fixture() {
   };
   vm.createContext(context);
   vm.runInContext(source.match(/const SHELL_META_COMMANDS = \[.*?\];/s)[0] +
+    source.slice(source.indexOf('function shellTimestampHtml('), source.indexOf('function renderEventBodyHtml(')) +
     source.match(/const SHELL_DISPATCH_PREFIXES = \[.*?\];/s)[0] +
     source.slice(source.indexOf('function appendShellEcho('), source.indexOf('// --- Shell history')) +
     source.slice(source.indexOf('function longestCommonPrefix('), source.indexOf('function appendShellOutput(')) +

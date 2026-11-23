@@ -34,7 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from rmm_rclone import (
@@ -90,6 +90,20 @@ def _session_prefix(session_id: str) -> str:
     return hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()[:12]
 
 
+def _artifact_received_at(value, path):
+    """Return an absolute receipt time, using file mtime for legacy naive values."""
+    try:
+        parsed = datetime.fromisoformat(value) if value else None
+        if parsed is not None and parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).isoformat()
+    except (ValueError, TypeError):
+        pass
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return None
+
+
 class WorkspaceStore:
     """SQLite-backed workspace-local sessions, events, chats, and artifacts."""
 
@@ -114,6 +128,7 @@ class WorkspaceStore:
                 pass
         self.assets = AssetStore(self.data_dir / "assets")
         self._lock = threading.RLock()
+        self._progress = {}
         self._db = sqlite3.connect(self.data_dir / "workspace.db", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
@@ -290,6 +305,20 @@ class WorkspaceStore:
 
     def apply_stream_event(self, session_id, event, epoch, cursor):
         """Deduplicate stream envelopes while preserving locally monotonic history IDs."""
+        if event.get('type') == 'download_progress' and cursor > 0:
+            try:
+                progress = json.loads(event.get('body', ''))
+            except (ValueError, TypeError):
+                return
+            if not isinstance(progress, dict) or not isinstance(progress.get('remote_path'), str):
+                return
+            key = (session_id, event['type'], progress['remote_path'])
+            with self._lock:
+                self._progress.pop(key, None)
+                self._progress[key] = (time.monotonic(), dict(event))
+                while len(self._progress) > 256:
+                    self._progress.pop(next(iter(self._progress)))
+            return
         payload = event.get('workspace_payload')
         data = payload.get('data') if isinstance(payload, dict) and payload.get('kind') == 'file_upload' else None
         # Intermediate chunks have no transcript ID; their stream cursor identifies replays.
@@ -308,7 +337,7 @@ class WorkspaceStore:
                 return
             last_id = self._db.execute('SELECT COALESCE(MAX(event_id),0) FROM events WHERE session_id=?',
                                        (session_id,)).fetchone()[0]
-            local = dict(event, id=last_id + 1, source_event_id=event.get('id'), source_epoch=epoch)
+            local = dict(event, id=last_id + 1, source_event_id=event.get('id'), source_epoch=epoch, source_cursor=cursor)
             try:
                 self.apply_event(session_id, local, commit=False)
                 self._db.execute('INSERT INTO event_receipts VALUES(?,?)', (epoch, cursor))
@@ -321,6 +350,16 @@ class WorkspaceStore:
             if isinstance(data, dict) and 'offset' in data and data.get('eof'):
                 # Keep complete staging bytes until the replay receipt is durable.
                 self._upload_staging_path(session_id, data).unlink(missing_ok=True)
+
+    def get_progress(self, session_ref):
+        """Read recent live transfer progress without changing transcript cursors."""
+        session = self.resolve_session(session_ref)
+        if not session:
+            return []
+        with self._lock:
+            cutoff = time.monotonic() - 120
+            self._progress = {key: value for key, value in self._progress.items() if value[0] >= cutoff}
+            return [dict(value[1]) for key, value in self._progress.items() if key[0] == session['id']]
 
     def sync_sessions(self, records: list[dict[str, Any]]) -> None:
         """Upsert active central sessions and archive rows absent from a fresh sync."""
@@ -445,12 +484,25 @@ class WorkspaceStore:
         local_event["artifact"] = None
         local_event["artifact_url"] = None
 
+        command = str(event.get('command') or '')
+        if event.get('type') == 'output' and command.startswith('__DOWNLOAD__ '):
+            with self._lock:
+                self._progress.pop((session_id, 'download_progress', command[len('__DOWNLOAD__ '):].strip()), None)
+
         if isinstance(payload, dict):
             kind = payload.get("kind")
             if kind == "file_upload":
+                # Stable across interrupted receipt replay, distinct for each received event.
+                identity = [session_id, event.get('source_epoch', 'local'),
+                            event.get('source_cursor', event.get('id'))]
+                payload = dict(payload, _artifact_key=hashlib.sha256(
+                    json.dumps(identity).encode()).hexdigest()[:24])
                 materialized = self._apply_file_upload(session_id, payload, retain_staging=not commit)
                 if materialized is None:
                     return None
+                with self._lock:
+                    remote = str(payload.get('remote_path') or payload.get('data', {}).get('remote_path') or '')
+                    self._progress.pop((session_id, 'download_progress', remote), None)
                 local_event["artifact"] = materialized
                 local_event["artifact_url"] = f"/api/v1/artifacts/downloads/{urllib.parse.quote(materialized)}"
             elif kind == "screenshot":
@@ -492,14 +544,16 @@ class WorkspaceStore:
         raw_name = _safe_name(data.get("filename"), "download")
         remote_path = str(payload.get("remote_path") or data.get("remote_path") or raw_name)
         prefix = _session_prefix(session_id)
+        artifact_key = payload.get('_artifact_key') or os.urandom(16).hex()
+        raw_name = raw_name[-(200 - len(prefix) - len(artifact_key) - 2):]
+        filename = f"{prefix}_{artifact_key}_{raw_name}"
+        final_path = _safe_path(self.download_dir, filename)
         content_b64 = str(data.get("content") or "")
         try:
             content = base64.b64decode(content_b64, validate=True)
         except (ValueError, TypeError):
             return None
         if "offset" not in data:
-            filename = f"{prefix}_{raw_name}"
-            final_path = _safe_path(self.download_dir, filename)
             final_path.write_bytes(content)
             self._index_download(filename, session_id, remote_path, final_path.stat().st_size, commit=not retain_staging)
             return filename
@@ -524,8 +578,6 @@ class WorkspaceStore:
             os.fsync(handle.fileno())
         if not data.get("eof"):
             return None
-        filename = f"{prefix}_{raw_name}"
-        final_path = _safe_path(self.download_dir, filename)
         if retain_staging:
             publishing = staging.with_suffix('.publish')
             shutil.copyfile(staging, publishing)
@@ -563,7 +615,7 @@ class WorkspaceStore:
 
     def _index_download(self, filename: str, session_id: str, remote_path: str, size: int, *, commit=True) -> None:
         """Update the local download index after a file reaches EOF."""
-        received_at = datetime.now().isoformat()
+        received_at = datetime.now(timezone.utc).isoformat()
         with self._lock:
             self._db.execute(
                 "INSERT INTO downloads(artifact,session_id,remote_path,size,received_at) VALUES(?,?,?,?,?) "
@@ -650,16 +702,16 @@ class WorkspaceStore:
                 "WHERE session_id=? ORDER BY received_at DESC",
                 (session["id"],),
             ).fetchall()
-        return [
+        return sorted([
             {
                 "artifact": row["artifact"],
                 "remote_path": row["remote_path"],
                 "size": row["size"],
-                "received_at": row["received_at"],
+                "received_at": _artifact_received_at(row["received_at"], self.download_dir / row['artifact']),
                 "artifact_url": f"/api/v1/artifacts/downloads/{urllib.parse.quote(row['artifact'])}",
             }
             for row in rows
-        ]
+        ], key=lambda row: row['received_at'] or '', reverse=True)
 
     def list_artifacts(self, kind: str) -> list[dict[str, Any]]:
         """List workspace downloads or screenshots with their agent identity."""
@@ -701,10 +753,10 @@ class WorkspaceStore:
             try:
                 stat = path.stat()
                 size = stat.st_size
-                received_at = datetime.fromtimestamp(stat.st_mtime).isoformat()
+                received_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
             except OSError:
                 size = 0
-                received_at = datetime.now().isoformat()
+                received_at = datetime.now(timezone.utc).isoformat()
             session_id = str(session.get("session_id") or "") or None
             hostname = str(session.get("hostname") or "?")
             username = str(session.get("username") or "?")
@@ -714,7 +766,7 @@ class WorkspaceStore:
                     "artifact": path.name,
                     "remote_path": str(indexed["remote_path"] or "") if indexed else "",
                     "size": size,
-                    "received_at": str(indexed["received_at"] or received_at) if indexed else received_at,
+                    "received_at": _artifact_received_at(indexed['received_at'], path) if indexed else received_at,
                     "artifact_url": f"/api/v1/artifacts/{kind}/{urllib.parse.quote(path.name)}",
                     "session_id": session_id,
                     "hostname": hostname,
@@ -1563,7 +1615,7 @@ class WorkspaceService:
             except ValueError:
                 return 400, {"error": "invalid_cursor"}, "application/json"
             events = self.store.get_events(parts[1], since=since, limit=limit, forward=qs.get("forward", ["0"])[0] == "1")
-            return (200, {"events": events}, "application/json") if events is not None else (404, {"error": "session_not_found"}, "application/json")
+            return (200, {"events": events, "progress": self.store.get_progress(parts[1])}, "application/json") if events is not None else (404, {"error": "session_not_found"}, "application/json")
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "downloads":
             downloads = self.store.list_downloads(parts[1])
             session = self.store.resolve_session(parts[1])

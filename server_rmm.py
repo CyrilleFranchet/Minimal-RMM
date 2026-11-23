@@ -36,7 +36,7 @@ import urllib.parse
 import json
 import time
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import deque
 import os
 import readline
@@ -2130,10 +2130,10 @@ class RMMServer:
         basename = os.path.basename(filepath)
         try:
             size = os.path.getsize(filepath)
-            received_at = datetime.fromtimestamp(os.path.getmtime(filepath)).isoformat()
+            received_at = datetime.fromtimestamp(os.path.getmtime(filepath), timezone.utc).isoformat()
         except OSError:
             size = 0
-            received_at = datetime.now().isoformat()
+            received_at = datetime.now(timezone.utc).isoformat()
         return {
             "artifact": basename,
             "remote_path": remote_path,
@@ -2270,10 +2270,10 @@ class RMMServer:
             indexed = download_index.get(safe_name, {}) if kind == "downloads" else {}
             try:
                 size = os.path.getsize(path)
-                received_at = datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+                received_at = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).isoformat()
             except OSError:
                 size = 0
-                received_at = datetime.now().isoformat()
+                received_at = datetime.now(timezone.utc).isoformat()
             session_id = str(session.get("session_id") or session.get("id") or "") or None
             hostname = str(session.get("hostname") or "?")
             username = str(session.get("username") or "?")
@@ -2785,8 +2785,11 @@ class RMMServer:
         self._record_event(session, "operator", f"{action}: {command}{suffix}", command=command)
 
     def _broadcast_ephemeral_event(self, session_id: str, ev: dict) -> None:
-        """WebSocket-only event (not stored in transcript or session history)."""
+        """Publish live progress without adding it to transcript history."""
         ws_ev = _event_for_ws(ev)
+        session = self.get_session(session_id)
+        if session and ev.get('type') == 'download_progress':
+            self.workspace_publish_event(session, ws_ev)
         threading.Thread(
             target=self.event_hub.broadcast_event,
             args=(session_id, ws_ev),
@@ -4445,7 +4448,9 @@ class RMMServer:
         filename = safe_storage_filename(raw_name, f"unknown_{timestamp}")
         downloads_dir = os.path.join(LOG_DIR, "downloads")
         prefix = safe_session_storage_prefix(session.id)
-        final_path = safe_join_under(downloads_dir, f"{prefix}_{filename}")
+        receipt = os.urandom(12).hex()
+        filename = filename[-(200 - len(prefix) - len(receipt) - 2):]
+        final_path = safe_join_under(downloads_dir, f"{prefix}_{receipt}_{filename}")
         content = base64.b64decode(data.get("content", "") or "")
 
         if "offset" not in data:

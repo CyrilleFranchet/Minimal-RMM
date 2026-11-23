@@ -1,5 +1,22 @@
 # Agent artifact browser (web UI)
 
+Repeated downloads of the same remote filename are separate receipts, each with
+its own stored artifact and URL. Earlier bytes and shell links remain intact.
+Replaying the same workspace stream envelope reuses its receipt identity instead
+of creating another copy. Stored names include a receipt key and stay within the
+artifact API's 200-character limit; saving still uses the original remote name.
+
+**Received** timestamps include an explicit UTC offset, so the relative age is
+independent of the browser's time zone. Legacy workspace rows without a time
+zone use the file's absolute modification time as the best available fallback.
+
+The shell's **Download file** link fetches the completed artifact with workspace
+authentication, shows **Preparing download…** while buffering the response, and
+prevents repeated clicks during that fetch. Browser object URLs stay valid for
+60 seconds after the save is triggered. Errors appear in the shell and release
+the link for retry. `tests/test_download_ui.cjs` covers link delegation,
+authentication, filename, delayed URL release, retry, and live progress rendering.
+
 Operators can browse files pulled from agents (`__DOWNLOAD__`) and screenshots
 in the web console without digging through the shell transcript or the artifact
 directories on disk.
