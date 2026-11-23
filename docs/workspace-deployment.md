@@ -170,6 +170,14 @@ resolves session-scoped staging files; `_index_download` joins the receipt
 transaction during synchronization. A chunk with a missing prefix is rejected
 without acknowledgment rather than publishing an incomplete artifact.
 
+Intermediate `file_upload_chunk` events use source event ID `0` because they
+are not transcript entries. `WorkspaceStore.apply_stream_event` accepts that ID
+only for a `file_upload` payload with a nonnegative integer offset and
+`eof: false`. The positive broker cursor and epoch still identify the durable
+replay receipt. Final chunks and ordinary history events require positive source
+event IDs. This keeps multi-chunk downloads (Go files larger than 2 MiB) moving
+through workspace synchronization without adding intermediate transcript rows.
+
 With exactly one registered workspace, new agents are assigned immediately.
 With multiple workspaces, agents start unassigned. Existing persisted ownership
 is retained. A workspace can claim an unassigned live

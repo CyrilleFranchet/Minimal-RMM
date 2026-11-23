@@ -290,7 +290,18 @@ class WorkspaceStore:
 
     def apply_stream_event(self, session_id, event, epoch, cursor):
         """Deduplicate stream envelopes while preserving locally monotonic history IDs."""
-        if type(event.get('id')) is not int or event['id'] <= 0 or cursor <= 0:
+        payload = event.get('workspace_payload')
+        data = payload.get('data') if isinstance(payload, dict) and payload.get('kind') == 'file_upload' else None
+        # Intermediate chunks have no transcript ID; their stream cursor identifies replays.
+        intermediate_chunk = (
+            event.get('type') == 'file_upload_chunk'
+            and isinstance(data, dict)
+            and type(data.get('offset')) is int
+            and data['offset'] >= 0
+            and data.get('eof') is False
+        )
+        if (type(event.get('id')) is not int or event['id'] < 0
+                or (event['id'] == 0 and not intermediate_chunk) or cursor <= 0):
             raise ValueError('Invalid workspace event envelope')
         with self._lock:
             if self._db.execute('SELECT 1 FROM event_receipts WHERE epoch=? AND cursor=?', (epoch, cursor)).fetchone():

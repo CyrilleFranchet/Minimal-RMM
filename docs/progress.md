@@ -48,6 +48,22 @@
   table, `README.md` (wire, REST, CLI rows), `web-shell-completion.md`,
   tool docstrings, and the `lateral-movement` AI skill.
 
+## 2026-11-23 — Restore multi-chunk workspace downloads
+
+- Fixed `WorkspaceStore.apply_stream_event` rejecting the central server's
+  zero-ID intermediate `file_upload_chunk` events. Accept only nonfinal upload
+  chunks with a nonnegative integer offset; retain positive-ID validation for
+  history and final uploads, and cursor/epoch receipts for replay protection.
+- Added regression coverage from the real central chunk publisher through the
+  broker and workspace synchronization: a file larger than 2 MiB, restart and
+  replay, exact assembled bytes, no intermediate transcript rows, and continued
+  synchronization after download. Added malformed zero-ID rejection cases.
+- Deployment requires updating and restarting the workspace service. Agents and
+  the central server need no rebuild for this receiver compatibility fix.
+- Validation: all 76 workspace tests and `make check-parity` passed. The new
+  transfer test fails against the previous receiver with `Invalid workspace
+  event envelope`. Live Windows agent transfer validation remains outstanding.
+
 ## 2026-11-23 — WMI local activation: bounded retry for transient ERROR_KEY_DELETED
 
 - Field deployments from in-memory agents (WinRM-hosted loader chain) observed

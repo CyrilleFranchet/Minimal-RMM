@@ -3,12 +3,97 @@ import base64
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from rmm_workspace import WorkspaceEventBroker
+from server_rmm import RMMServer
 from workspace_service import WorkspaceService, WorkspaceStore
 
 
 class WorkspaceRestartTests(unittest.TestCase):
+    def test_central_intermediate_chunk_syncs_and_replays_without_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkspaceStore(directory, 'alice')
+            self.addCleanup(store.close)
+            broker = WorkspaceEventBroker()
+            central = SimpleNamespace(
+                storage_mode='workspace',
+                workspace_publish_event=lambda session, event: broker.publish('alice', session.id, event),
+            )
+            session = SimpleNamespace(id='session', workspace_id='alice')
+            first = b'a' * (2 * 1024 * 1024)
+            def payload(offset, content, eof):
+                return {'kind': 'file_upload', 'remote_path': 'C:/Logfile.PML', 'data': {
+                    'filename': 'Logfile.PML', 'upload_id': 'download', 'offset': offset,
+                    'content': base64.b64encode(content).decode(), 'eof': eof}}
+            RMMServer._publish_workspace_chunk(central, session, payload(0, first, False))
+            service = WorkspaceService.__new__(WorkspaceService)
+            service.store = store
+            service._running = True
+            service.auto_claim = False
+            service.log = Mock()
+            service._sync_pivot_state = Mock()
+            service.upstream = Mock()
+
+            def request(method, path, *args, **kwargs):
+                if path == '/api/v1/workspace/sessions':
+                    return 200, {'sessions': [{'id': 'session'}]}, 'application/json'
+                from urllib.parse import parse_qs, urlsplit
+                qs = parse_qs(urlsplit(path).query, keep_blank_values=True)
+                return 200, broker.read('alice', int(qs['since'][0]), epoch=qs['epoch'][0]), 'application/json'
+
+            service.upstream.request.side_effect = request
+            service.sync_once()
+            self.assertEqual(store.get_cursor(), 1)
+            self.assertEqual(store.get_events('session'), [])
+            self.assertEqual(store.list_downloads('session'), [])
+            first_envelope = broker.read('alice', epoch=broker.epoch)['events'][0]
+            middle = b'middle'
+            RMMServer._publish_workspace_chunk(central, session, payload(len(first), middle, False))
+            service.sync_once()
+            # A replay after reopening must not truncate bytes already staged.
+            store.close()
+            store = WorkspaceStore(directory, 'alice')
+            self.addCleanup(store.close)
+            service.store = store
+            store.apply_stream_event('session', first_envelope['event'], broker.epoch, first_envelope['cursor'])
+            staging = store._upload_staging_path('session', {'upload_id': 'download'})
+            self.assertEqual(staging.read_bytes(), first + middle)
+            store.set_event_checkpoint(broker.epoch, 0)
+            service.sync_once()
+            broker.publish('alice', 'session', {
+                'id': 1, 'type': 'file_upload',
+                'workspace_payload': payload(len(first + middle), b'last', True),
+            })
+            broker.publish('alice', 'session', {'id': 2, 'type': 'output', 'body': 'after download'})
+            service.sync_once()
+            self.assertEqual(store.get_cursor(), 4)
+            rows = store.get_events('session')
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[1]['body'], 'after download')
+            self.assertEqual(store.artifact_path('downloads', rows[0]['artifact']).read_bytes(), first + middle + b'last')
+            self.assertEqual(list(store.parts_dir.glob('*.part')), [])
+
+    def test_zero_id_remains_invalid_for_history_and_malformed_chunks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = WorkspaceStore(directory, 'alice')
+            self.addCleanup(store.close)
+            valid_payload = {'kind': 'file_upload', 'data': {'offset': 0, 'eof': False}}
+            events = [
+                {'id': 0, 'type': 'output'},
+                {'id': 0, 'type': 'file_upload_chunk'},
+                {'id': 0, 'type': 'file_upload_chunk', 'workspace_payload': {
+                    'kind': 'file_upload', 'data': {'offset': 0, 'eof': True}}},
+                {'id': 0, 'type': 'file_upload_chunk', 'workspace_payload': {
+                    'kind': 'file_upload', 'data': {'offset': -1, 'eof': False}}},
+                {'id': False, 'type': 'file_upload_chunk', 'workspace_payload': valid_payload},
+                {'id': -1, 'type': 'file_upload_chunk', 'workspace_payload': valid_payload},
+            ]
+            for event in events:
+                with self.subTest(event=event), self.assertRaisesRegex(ValueError, 'Invalid workspace event envelope'):
+                    store.apply_stream_event('session', event, 'epoch', 1)
+            self.assertEqual(store._db.execute('SELECT COUNT(*) FROM event_receipts').fetchone()[0], 0)
+
     def test_final_upload_chunk_replays_after_interrupted_receipt_without_truncation(self):
         with tempfile.TemporaryDirectory() as directory:
             store = WorkspaceStore(directory, 'alice')
