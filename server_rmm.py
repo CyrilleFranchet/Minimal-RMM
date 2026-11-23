@@ -3653,13 +3653,16 @@ class RMMServer:
     def _load_lateral_deployments(self) -> dict[str, dict]:
         """Load deployment records, distinguishing a missing store from a damaged one.
 
-        A missing file is a normal first run. An unreadable or corrupt store
-        is never silently replaced by a fresh save: a corrupt file rotates to
-        an unused `.corrupt-*` backup so the damaged history stays
-        inspectable, and an unreadable file is left untouched. When
-        preservation on disk is impossible, persistence is disabled (with an
-        operator-visible error) until the file is fixed; in either case the
-        in-memory store starts empty, so new records accumulate normally.
+        A missing file is a normal first run. Everything else that cannot be
+        loaded strictly is preserved, never silently replaced by a fresh
+        save: undecodable bytes, invalid JSON, a non-object top level, or
+        records with malformed nested fields all rotate the store to an
+        unused `.corrupt-*` backup (when possible) and log an operator-
+        visible error; an unreadable file is left untouched. When
+        preservation on disk is impossible, persistence is disabled (with
+        an operator-visible error) until the file is fixed. Valid records
+        from a structurally valid file with malformed entries carry over, so
+        one damaged record cannot strand the recoverable cleanups around it.
         """
         try:
             raw = self._read_lateral_deployment_store(LATERAL_DEPLOYMENT_FILE)
@@ -3669,6 +3672,11 @@ class RMMServer:
             self.log(f"The lateral deployment record store {LATERAL_DEPLOYMENT_FILE} is unreadable ({exc}); "
                      "leaving it untouched and keeping deployment records in memory only", "ERROR")
             self._lateral_deployments_preserved = True
+            return {}
+        except UnicodeError as exc:
+            self.log(f"The lateral deployment record store {LATERAL_DEPLOYMENT_FILE} holds "
+                     f"undecodable bytes ({exc}); preserving the damaged file", "ERROR")
+            self._preserve_lateral_deployment_store()
             return {}
         if not raw.strip():
             return {}
@@ -3682,12 +3690,72 @@ class RMMServer:
             self._preserve_lateral_deployment_store()
             return {}
         records: dict[str, dict] = {}
+        malformed: list[str] = []
         for deployment_id, record in data.items():
             if (isinstance(deployment_id, str) and LATERAL_DEPLOYMENT_ID_RE.match(deployment_id)
-                    and isinstance(record, dict)):
+                    and self._valid_lateral_deployment_record(record)):
                 record.setdefault("deployment_id", deployment_id)
                 records[deployment_id] = record
+            else:
+                malformed.append(deployment_id if isinstance(deployment_id, str) else repr(deployment_id))
+        if malformed:
+            preview = ", ".join(malformed[:5]) + ("…" if len(malformed) > 5 else "")
+            self.log(f"The lateral deployment record store {LATERAL_DEPLOYMENT_FILE} contains "
+                     f"{len(malformed)} malformed record(s) ({preview}); preserving the store and "
+                     f"loading its {len(records)} valid record(s)", "ERROR")
+            self._preserve_lateral_deployment_store()
+            if records and not getattr(self, "_lateral_deployments_preserved", False):
+                # Rewrite the live store with the valid records right away, so
+                # a restart does not re-rotate the same already-preserved
+                # damage.
+                self._save_lateral_deployments_locked(records)
         return records
+
+    @staticmethod
+    def _valid_lateral_deployment_record(record) -> bool:
+        """Strict nested-shape check for one hydrated deployment record.
+
+        Consumers call .get() on the nested cleanup, deployment, and
+        artifacts maps, so a record holding the wrong type there (for
+        example `"cleanup": "broken"`) must not enter the in-memory store:
+        it is preserved for inspection through the same rotation path as an
+        unreadable or corrupt file. Absent optional fields are fine; present
+        fields must have the documented type, and null detail/performed_by
+        values (written for fresh records) stay valid.
+        """
+        if not isinstance(record, dict):
+            return False
+
+        def typed_sections(mapping, *fields):
+            section = record.get(mapping)
+            if section is None:
+                return True
+            if not isinstance(section, dict):
+                return False
+            for field in fields:
+                if field in section:
+                    value = section[field]
+                    if value is not None and not isinstance(value, str):
+                        return False
+            return True
+
+        if not typed_sections("cleanup", "status", "detail", "performed_by", "updated"):
+            return False
+        cleanup = record.get("cleanup")
+        if isinstance(cleanup, dict) and "attempts" in cleanup:
+            attempts = cleanup["attempts"]
+            if attempts is not None and not isinstance(attempts, int):
+                return False
+        if not typed_sections("deployment", "status", "updated"):
+            return False
+        if not typed_sections("artifacts", "service_name", "binary_name"):
+            return False
+        for field in ("workspace_id", "source_session_id", "method", "host", "created", "deployment_id"):
+            if field in record and record[field] is not None and not isinstance(record[field], str):
+                return False
+        if "debug" in record and not isinstance(record["debug"], bool):
+            return False
+        return True
 
     def _preserve_lateral_deployment_store(self) -> None:
         """Keep a damaged deployment store inspectable instead of replacing it.

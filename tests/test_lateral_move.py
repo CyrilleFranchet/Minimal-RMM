@@ -380,6 +380,78 @@ class LateralFlowTests(unittest.TestCase):
                     if call.args and "stay in memory only" in str(call.args[0])]
         self.assertEqual(len(warnings), 1, "the preservation warning is logged once per server run")
 
+    def test_undecodable_record_store_is_preserved_not_replaced(self):
+        raw = b"\xff\xfe broken bytes \x81"
+        with open(self.deployment_records_path, "wb") as handle:
+            handle.write(raw)
+        restarted = object.__new__(server_rmm.RMMServer)
+        restarted.log = Mock()
+        restarted.record_lateral_deployment("srv-record-target-4", "alice",
+                                            self.source.id, "psexec", "ws01")
+        # The undecodable file rotated aside with its bytes intact.
+        directory = os.path.dirname(self.deployment_records_path)
+        base = os.path.basename(self.deployment_records_path)
+        backups = [name for name in os.listdir(directory) if name.startswith(base + ".corrupt-")]
+        self.assertEqual(len(backups), 1)
+        with open(os.path.join(directory, backups[0]), "rb") as handle:
+            self.assertEqual(handle.read(), raw)
+        # A fresh store takes over without losing the new record.
+        with open(self.deployment_records_path, "r", encoding="utf-8") as handle:
+            self.assertEqual(list(json.load(handle)), ["srv-record-target-4"])
+        self.assertEqual([row["deployment_id"] for row in restarted.lateral_deployment_records()],
+                         ["srv-record-target-4"])
+        messages = " ".join(str(call.args[0]) for call in restarted.log.call_args_list if call.args)
+        self.assertIn("undecodable", messages)
+
+    def test_malformed_nested_records_are_preserved_and_valid_ones_carry_over(self):
+        valid = {
+            "deployment_id": "srv-record-target-9",
+            "workspace_id": "alice", "source_session_id": self.source.id,
+            "method": "psexec", "host": "ws02", "debug": False,
+            "created": "2026-11-23T13:00:00",
+            "deployment": {"status": "acknowledged", "updated": "2026-11-23T13:00:01"},
+            "artifacts": {"service_name": "MinimalRmmAgent-0011223344556677",
+                          "binary_name": "minimal-rmm-agent-0011223344556677.exe"},
+            "cleanup": {"status": "pending", "attempts": 1, "detail": "launcher busy",
+                        "performed_by": None, "updated": "2026-11-23T13:00:02"},
+        }
+        wrong_section_type = {"deployment_id": "srv-record-target-8",
+                             "workspace_id": "alice", "host": "ws03", "cleanup": "broken"}
+        wrong_field_type = {"deployment_id": "srv-record-target-7",
+                            "workspace_id": "alice", "host": "ws04", "cleanup": {"attempts": "two"}}
+        original = {"srv-record-target-9": valid,
+                    "srv-record-target-8": wrong_section_type,
+                    "srv-record-target-7": wrong_field_type}
+        with open(self.deployment_records_path, "w", encoding="utf-8") as handle:
+            json.dump(original, handle)
+        restarted = object.__new__(server_rmm.RMMServer)
+        restarted.log = Mock()
+        restarted.resolve_session = Mock(return_value=self.source)
+        restarted.record_operator_action = Mock()
+        restarted.exec_and_wait = Mock(return_value=({"body": self.cleanup_output}, "ok"))
+        # The recoverable cleanup keeps working: a malformed sibling record
+        # cannot break consumers of the valid one.
+        outcome, status = restarted.retry_lateral_cleanup("srv-record-target-9")
+        self.assertEqual(status, "ok")
+        self.assertTrue(outcome["ok"])
+        # The damaged entries are preserved in a rotation backup...
+        directory = os.path.dirname(self.deployment_records_path)
+        base = os.path.basename(self.deployment_records_path)
+        backups = [name for name in os.listdir(directory) if name.startswith(base + ".corrupt-")]
+        self.assertEqual(len(backups), 1)
+        with open(os.path.join(directory, backups[0]), "r", encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle), original)
+        # ...and the live store carries only the valid record, immediately,
+        # so a restart does not re-rotate the same damage.
+        with open(self.deployment_records_path, "r", encoding="utf-8") as handle:
+            live = json.load(handle)
+        self.assertEqual(list(live), ["srv-record-target-9"])
+        self.assertEqual(live["srv-record-target-9"]["cleanup"]["status"], "ok")
+        messages = " ".join(str(call.args[0]) for call in restarted.log.call_args_list if call.args)
+        self.assertIn("malformed record", messages)
+        self.assertIn("srv-record-target-8", messages)
+        self.assertIn("srv-record-target-7", messages)
+
     def test_retention_bounds_memory_and_history_consistently(self):
         import datetime as datetime_module
         counter = {"seconds": 0}

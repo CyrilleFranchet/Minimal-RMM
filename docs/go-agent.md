@@ -1094,10 +1094,15 @@ target host, the exact acknowledged service and binary names, deployment
 status, and cleanup state with attempt count. Records with an unfinished
 cleanup are never pruned; retention applies to the in-memory store and the
 file together, so listings match what a restart loads. The store itself is
-protected against silent loss: a missing file is a normal first run, while an
-unreadable or corrupt file is preserved (corrupt files rotate to a
-`.corrupt-*` sibling) and persistence is disabled with an operator-visible
-error rather than replacing the damaged history.
+protected against silent loss: a missing file is a normal first run, while
+an unreadable, undecodable, corrupt, or malformed-nested-records file is
+preserved (rotated to a `.corrupt-*` sibling when possible; left untouched
+otherwise) with an operator-visible error instead of being replaced by a
+fresh save — malformed records are skipped, never hydrated, so a damaged
+sibling cannot break the valid recoverable cleanups around it, and the
+valid records are rewritten to the live store immediately. When preservation
+on disk is impossible, persistence is disabled for the server run: records
+stay in memory only, with one operator-visible warning.
 
 The cleanup response carries two deliberately distinct states: `status`
 describes this call's attempt (`ok`/`skipped`/`failed` or a transport

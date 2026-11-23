@@ -90,13 +90,19 @@
   the recorded source is gone, and the workspace relay reserves a full
   worker budget for it.
 - Store safety for the durable records (review fix): a missing
-  `lateral_deployments.json` is a normal first run, but an unreadable or
-  corrupt file is never replaced by a fresh save — a corrupt file rotates
-  to an unused `.corrupt-*` sibling for inspection, an unreadable file is
-  left untouched, and both are reported with an operator-visible error.
-  When preservation on disk is impossible, persistence is disabled for the
-  server run (records stay in memory only, one warning per run) instead of
-  silently discarding stored history.
+  `lateral_deployments.json` is a normal first run, but an unreadable,
+  undecodable, corrupt, or malformed-nested-records file is never replaced
+  by a fresh save — a damaged file rotates to an unused `.corrupt-*`
+  sibling for inspection, an unreadable file is left untouched, and each
+  case is reported with an operator-visible error (review follow-up on
+  invalid UTF-8 and nested schema validated here, closing both tickets).
+  Records with malformed nested sections (for example a string where the
+  `cleanup` map belongs) are skipped during hydration, so a damaged sibling
+  cannot break the valid recoverable cleanups around it; the valid records
+  are rewritten to the live store immediately so a restart does not
+  re-rotate the same damage. When preservation on disk is impossible,
+  persistence is disabled for the server run (records stay in memory only,
+  one warning per run) instead of silently discarding stored history.
 - Consistent retention (review fix): the finished-record cap now prunes the
   in-memory store as well as the serialized file, so operator listings,
   memory use, and the history a restart loads cannot drift apart.
@@ -110,9 +116,14 @@
   `untracked`. Both review-flagged follow-ups are resolved here, so no
   follow-up ticket remains.
 - New validation on the host covers the store-safety and status fixes: Python tests
-  for the rotated/preserved corrupt store, the disabled-persistence mode
+  for the rotated/preserved corrupt store, the undecodable-bytes store
+  (exact bytes preserved in the rotation backup, fresh store continues),
+  malformed nested records (string-where-a-map-belongs and wrong field
+  types skipped while valid siblings stay retryable and the backup keeps
+  the original content), the disabled-persistence mode
   (single warning per run, untouched file), consistent in-memory/disk
-  retention (including unrecoverable-vs-pending ordering), skipped-call
+  retention (finished records pruned oldest-first while pending records
+  survive the cap), skipped-call
   pending records, and response/record agreement across immediate,
   dispatched, transport-failed, and untracked outcomes.
 - Validation on the host: Go unit tests cover the tag contract and
