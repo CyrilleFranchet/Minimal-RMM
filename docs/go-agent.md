@@ -76,6 +76,19 @@ commands, posts `/result`, and accepts `__CONFIG__`. Downloads are sent in
 protocol. On Windows it supports `cmd.exe`, `cmd:`, `PS:`, `powershell:`, and
 `pwsh:` dispatch. The non-Windows command router exists only for development tests.
 
+## WebUI download
+
+Click **Download agent** to compile with the selected settings and automatically
+start the authenticated ZIP download. The button stays disabled through both
+steps. If downloading fails, use the generated download link to retry without
+recompiling. Browsers control the save location and may ask for download approval.
+
+The shared `download` helper in `web/go-agent.js` handles automatic downloads
+and link retries, preventing overlapping downloads and retaining completion
+guidance after retries. Blob URLs are released after a 60-second grace period
+to allow the browser to consume them. It retains connection checks so an old build cannot download
+after the operator reconnects. The status announces progress and errors.
+
 ## Quick Tunnel connection checks
 
 The generator refreshes transport status before compiling. If its selected

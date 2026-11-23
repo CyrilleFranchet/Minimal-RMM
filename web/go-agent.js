@@ -4,6 +4,8 @@
   const TOKEN_KEY = "rmm_api_token";
   const $ = (selector) => document.querySelector(selector);
   let downloadContext = null;
+  let downloadBusy = false;
+  let downloadMessage = "";
 
   function token() {
     return sessionStorage.getItem(TOKEN_KEY) || "";
@@ -156,7 +158,44 @@
     }
   }
 
+  async function download() {
+    if (downloadBusy) return;
+    const url = $("#agent-go-download")?.dataset.downloadUrl;
+    if (!url || !downloadContext || !isCurrent(downloadContext)) return;
+    const context = connectionContext();
+    downloadBusy = true;
+    const button = $("#agent-go-build");
+    const wasDisabled = button.disabled;
+    button.disabled = true;
+    try {
+      status("Downloading ZIP…");
+      const response = await fetch(url, { headers: headers(false, context) });
+      if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
+      const blob = await response.blob();
+      if (!isCurrent(context)) return;
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = url.split("/").pop() || "minimal-rmm-agent.zip";
+      try {
+        document.body.appendChild(anchor);
+        anchor.click();
+      } finally {
+        anchor.remove();
+        // Give the browser time to consume the URL before releasing the ZIP.
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      }
+      status(`Download started. ${downloadMessage}`.trim());
+    } catch (error) {
+      if (isCurrent(context)) status(`${error.message} Use the download link to retry without compiling again.`, true);
+    } finally {
+      downloadBusy = false;
+      button.disabled = wasDisabled;
+    }
+  }
+
   async function build() {
+    if ($("#agent-go-build")?.disabled) return;
     const context = connectionContext();
     if (!token()) {
       status("Connect with an API token before compiling.", true);
@@ -226,7 +265,8 @@
       link.textContent = `Download ZIP ${data.filename} (${data.size} bytes, SHA-256 ${data.sha256})`;
       link.dataset.downloadUrl = data.download_url;
       link.classList.remove("hidden");
-      status(`Build complete. Workspace: ${data.workspace_id || "unassigned"}. The URL and beacon secret are embedded. Use the ZIP launcher to override stale environment settings; launching the executable directly keeps environment overrides.`);
+      downloadMessage = `Workspace: ${data.workspace_id || "unassigned"}. The URL and beacon secret are embedded. Use the ZIP launcher to override stale environment settings; launching the executable directly keeps environment overrides.`;
+      await download();
     } catch (error) {
       if (isCurrent(context)) status(error.message, true);
     } finally {
@@ -263,27 +303,7 @@
     $("#agent-go-debug")?.addEventListener("change", savePrefs);
     $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
-      const url = event.currentTarget.dataset.downloadUrl;
-      if (!url || !downloadContext || !isCurrent(downloadContext)) return;
-      const context = connectionContext();
-      try {
-        status("Downloading ZIP…");
-        const response = await fetch(url, { headers: headers(false, context) });
-        if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
-        const blob = await response.blob();
-        if (!isCurrent(context)) return;
-        const objectUrl = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = objectUrl;
-        anchor.download = url.split("/").pop() || "minimal-rmm-agent.zip";
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        URL.revokeObjectURL(objectUrl);
-        status("ZIP downloaded.");
-      } catch (error) {
-        if (isCurrent(context)) status(error.message, true);
-      }
+      await download();
     });
     window.addEventListener("rmm-config-imported", applyPrefs);
   }

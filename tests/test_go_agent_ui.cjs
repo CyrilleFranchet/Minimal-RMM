@@ -29,6 +29,13 @@ function fixture(options = {}) {
   const storage = new Map([['rmm_api_token', 'operator-token']]);
   if (options.prefs) storage.set('rmm_go_agent_prefs', JSON.stringify(options.prefs));
   const calls = [];
+  const downloads = [];
+  const cleanupTimers = [];
+  const objectUrls = new Set();
+  class TestURL extends URL {
+    static createObjectURL() { const url = `blob:test-${objectUrls.size}`; objectUrls.add(url); return url; }
+    static revokeObjectURL(url) { objectUrls.delete(url); }
+  }
   const transport = () => ({ beacon_url: options.current || 'https://current.trycloudflare.com' });
   const api = async (url) => {
     calls.push({ url });
@@ -41,7 +48,15 @@ function fixture(options = {}) {
     return { status: 200, data: transport() };
   };
   const fetch = async (url, args) => {
-    calls.push({ url, body: args.body ? JSON.parse(args.body) : undefined });
+    calls.push({ url, headers: args.headers, body: args.body ? JSON.parse(args.body) : undefined });
+    if (url === '/api/v1/agent/go/download/test.zip') {
+      if (options.networkFailure) throw new Error('Network unavailable');
+      return { ok: !options.downloadFailure, status: options.downloadFailure ? 503 : 200, blob: async () => {
+        if (options.downloadGate) await options.downloadGate;
+        if (options.blobFailure) throw new Error('ZIP response interrupted');
+        return new Blob(['zip']);
+      } };
+    }
     if (url === '/api/v1/health') {
       return {ok: true, json: async () => ({workspace_id: options.workspaceId || null})};
     }
@@ -59,11 +74,18 @@ function fixture(options = {}) {
     rmmState: { authGeneration: 1 }, addEventListener() {}, persistRmmUiConfig() {} };
   if (!options.fetchFallback) window.rmmApi = api;
   vm.runInNewContext(fs.readFileSync(path.join(root, 'web/go-agent.js'), 'utf8'), {
-    document: { readyState: 'complete', querySelector: (selector) => elements.get(selector) },
-    window, fetch, URL, console,
+    document: { readyState: 'complete', querySelector: (selector) => elements.get(selector),
+      body: { appendChild() {} },
+      createElement: () => { const anchor = { click() {
+        assert.ok(objectUrls.has(anchor.href));
+        if (options.clickFailure) throw new Error('Browser download failed');
+        downloads.push(anchor.download);
+      }, remove() {} }; return anchor; } },
+    window, fetch, URL: TestURL, Blob, console,
+    setTimeout: (callback, delay) => cleanupTimers.push({callback, delay}),
     sessionStorage: { getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
   });
-  return { get, options, calls, storage, window, click: async (id) => get(id).handlers.click() };
+  return { get, options, calls, downloads, cleanupTimers, objectUrls, storage, window, click: async (id) => get(id).handlers.click() };
 }
 
 test('debug generation is explicit and requests a full-agent debug build', async () => {
@@ -206,4 +228,103 @@ test('administrator-selected workspace is included with a Windows-only build', a
   const build = ui.calls.find(call => call.url.endsWith('/build'));
   assert.equal(build.body.config.workspace_id, 'alice');
   assert.equal(build.body.goos, 'windows');
+});
+
+
+test('Download agent compiles and downloads the ZIP with authentication in one click', async () => {
+  const ui = fixture();
+  await ui.click('build');
+  assert.deepEqual(ui.downloads, ['test.zip']);
+  const requests = ui.calls.filter(call => call.url.includes('/agent/go/'));
+  assert.deepEqual(requests.map(call => call.url), ['/api/v1/agent/go/build', '/api/v1/agent/go/download/test.zip']);
+  assert.equal(requests[1].headers.Authorization, 'Bearer operator-token');
+  assert.match(ui.get('status').textContent, /Download started/);
+  assert.equal(ui.get('build').disabled, false);
+  assert.match(fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8'), /id="agent-go-build">Download agent/);
+});
+
+test('failed download can be retried without compiling again', async () => {
+  const ui = fixture({downloadFailure: true});
+  await ui.click('build');
+  assert.equal(ui.downloads.length, 0);
+  assert.match(ui.get('status').textContent, /Download failed.*retry without compiling again/);
+  assert.equal(ui.get('download').classes.has('hidden'), false);
+  assert.equal(ui.get('build').disabled, false);
+  ui.options.downloadFailure = false;
+  await ui.get('download').handlers.click({preventDefault() {}, currentTarget: ui.get('download')});
+  assert.deepEqual(ui.downloads, ['test.zip']);
+  assert.match(ui.get('status').textContent, /launcher to override stale environment/);
+  assert.equal(ui.calls.filter(call => call.url.endsWith('/build')).length, 1);
+});
+
+test('compile failure never starts a download', async () => {
+  const ui = fixture({buildFailure: {error: 'Compiler unavailable'}});
+  await ui.click('build');
+  assert.equal(ui.calls.filter(call => call.url.includes('/download/')).length, 0);
+  assert.equal(ui.downloads.length, 0);
+});
+
+test('connection change during ZIP fetch suppresses the old download and status', async () => {
+  let release;
+  const ui = fixture({downloadGate: new Promise(resolve => { release = resolve; })});
+  const pending = ui.click('build');
+  while (!ui.calls.some(call => call.url.includes('/download/'))) await Promise.resolve();
+  assert.equal(ui.get('build').disabled, true);
+  await ui.click('build');
+  assert.equal(ui.calls.filter(call => call.url.endsWith('/build')).length, 1);
+  ui.window.rmmState.authGeneration++;
+  ui.get('status').textContent = 'New connection';
+  release();
+  await pending;
+  assert.equal(ui.downloads.length, 0);
+  assert.equal(ui.get('status').textContent, 'New connection');
+  assert.equal(ui.get('build').disabled, false);
+});
+
+
+test('manual retries cannot overlap downloads or start another compilation', async () => {
+  const ui = fixture();
+  await ui.click('build');
+  let release;
+  ui.options.downloadGate = new Promise(resolve => { release = resolve; });
+  const retry = () => ui.get('download').handlers.click({preventDefault() {}});
+  const pending = retry();
+  assert.equal(ui.get('build').disabled, true);
+  await retry();
+  await ui.click('build');
+  assert.equal(ui.calls.filter(call => call.url.endsWith('/build')).length, 1);
+  assert.equal(ui.calls.filter(call => call.url.includes('/download/')).length, 2);
+  release();
+  await pending;
+  assert.equal(ui.get('build').disabled, false);
+  assert.deepEqual(ui.downloads, ['test.zip', 'test.zip']);
+});
+
+test('blob URLs are released after the browser has time to start the download', async () => {
+  for (const clickFailure of [false, true]) {
+    const ui = fixture({clickFailure});
+    await ui.click('build');
+    assert.equal(ui.objectUrls.size, 1);
+    assert.equal(ui.cleanupTimers.length, 1);
+    assert.equal(ui.cleanupTimers[0].delay, 60000);
+    ui.cleanupTimers[0].callback();
+    assert.equal(ui.objectUrls.size, 0);
+    assert.equal(ui.get('build').disabled, false);
+    if (clickFailure) assert.match(ui.get('status').textContent, /Browser download failed.*retry/);
+  }
+});
+
+
+test('network and interrupted ZIP failures release the busy state and allow retry', async () => {
+  for (const failure of ['networkFailure', 'blobFailure']) {
+    const ui = fixture({[failure]: true});
+    await ui.click('build');
+    assert.equal(ui.get('build').disabled, false);
+    assert.match(ui.get('status').textContent, /retry without compiling again/);
+    assert.equal(ui.downloads.length, 0);
+    ui.options[failure] = false;
+    await ui.get('download').handlers.click({preventDefault() {}});
+    assert.deepEqual(ui.downloads, ['test.zip']);
+    assert.equal(ui.calls.filter(call => call.url.endsWith('/build')).length, 1);
+  }
 });

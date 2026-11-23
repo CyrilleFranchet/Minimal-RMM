@@ -171,7 +171,7 @@
         <details class="agent-gen-panel agent-go-panel sidebar-footer" id="agent-go-panel">
           <summary>Deploy agent (Go)</summary>
           <div class="agent-gen-inner">
-            <p class="agent-gen-intro">Compile the checked-in Go agent on this RMM server for Windows and the selected architecture, then download the ZIP.</p>
+            <p class="agent-gen-intro">Download the Go agent ZIP for Windows and the selected architecture. The RMM server compiles it automatically with your settings.</p>
             <label for="agent-go-workspace-id">Workspace ID</label>
             <input type="text" id="agent-go-workspace-id" placeholder="Automatic for workspace connections" autocomplete="off" title="Workspace connections bind agents automatically. Administrators must choose an owner when multiple workspaces exist.">
             <label for="agent-go-server-url">Server URL</label>
@@ -207,9 +207,9 @@
               </label>
             </div>
             <div class="agent-gen-actions">
-              <button type="button" id="agent-go-build">Compile on server</button>
+              <button type="button" id="agent-go-build">Download agent</button>
             </div>
-            <p class="agent-gen-hint" id="agent-go-status">The server must have the Go toolchain installed.</p>
+            <p class="agent-gen-hint" id="agent-go-status" role="status" aria-live="polite">The server must have the Go toolchain installed.</p>
             <a id="agent-go-download" class="hidden" href="#" role="button">Download agent ZIP</a>
           </div>
         </details>

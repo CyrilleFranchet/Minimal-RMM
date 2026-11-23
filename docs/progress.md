@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-11-23 — One-click Go agent download
+
+- Renamed the Go generator action to **Download agent**; compilation now leads
+  directly to an authenticated ZIP download. Kept the link for retries without
+  recompiling and retained connection-change guards.
+- Added regression coverage for automatic download, compile/download failures,
+  retry, duplicate clicks, and reconnect during download.
+- Review fixes: serialize manual retries with builds/downloads, defer blob URL
+  cleanup, and preserve launcher guidance after retries. Added network and
+  interrupted-response failure coverage.
+- Validation: all 21 Go generator tests, WebUI contracts, operator parity,
+  JavaScript syntax, and diff whitespace checks pass. Browser save-dialog behavior
+  remains a manual check; automated UI tests use a simulated DOM.
+
 ## 2026-11-23 — Worker review fixes: cleanup failure fails the operation, bounded marshal wait, regression coverage
 
 - Review of the backport (three findings, all corrected):
