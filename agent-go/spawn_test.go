@@ -65,12 +65,13 @@ func TestSpawnEnvironmentOverridesIdentityAndConnection(t *testing.T) {
 	t.Setenv("RMM_SESSION_ID", "inherited-session")
 	t.Setenv("RMM_LOG_FILE", "")
 	cfg := &config{
-		BaseURL:       "http://127.0.0.1:8787",
-		BeaconSecret:  "beacon-secret",
-		SessionID:     "parent-session",
-		HTTPProxy:     "socks5://127.0.0.1:1080",
-		SleepSeconds:  45,
-		JitterPercent: 20,
+		BaseURL:        "http://127.0.0.1:8787",
+		BeaconSecret:   "beacon-secret",
+		SessionID:      "parent-session",
+		HTTPProxy:      "socks5://127.0.0.1:1080",
+		PersistentHTTP: true,
+		SleepSeconds:   45,
+		JitterPercent:  20,
 	}
 	env := spawnEnvironment(cfg, "child-session")
 	lookup := make(map[string]string)
@@ -87,6 +88,9 @@ func TestSpawnEnvironmentOverridesIdentityAndConnection(t *testing.T) {
 	if lookup["RMM_HTTP_PROXY"] != cfg.HTTPProxy {
 		t.Fatalf("spawn env lost the configured proxy, got %q", lookup["RMM_HTTP_PROXY"])
 	}
+	if lookup["RMM_PERSISTENT_HTTP"] != "true" {
+		t.Fatal("spawn environment lost the persistent HTTP opt-in")
+	}
 	if lookup["RMM_SLEEP_SECONDS"] != "45" || lookup["RMM_JITTER_PERCENT"] != "20" {
 		t.Fatalf("spawn env must pin current beacon timing, got %#v", lookup)
 	}
@@ -98,6 +102,21 @@ func TestSpawnEnvironmentOverridesIdentityAndConnection(t *testing.T) {
 		if strings.HasPrefix(entry, "RMM_SESSION_ID=inherited") {
 			t.Fatalf("spawn env kept the inherited session identity: %q", entry)
 		}
+	}
+}
+
+func TestSpawnEnvironmentShortHTTPOverridesInheritedPersistence(t *testing.T) {
+	t.Setenv("RMM_PERSISTENT_HTTP", "true")
+	cfg := &config{PersistentHTTP: false}
+	var values []string
+	for _, entry := range spawnEnvironment(cfg, "child-session") {
+		key, value, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, "RMM_PERSISTENT_HTTP") {
+			values = append(values, value)
+		}
+	}
+	if len(values) != 1 || values[0] != "false" {
+		t.Fatalf("effective short HTTP setting must override inherited persistence once, got %q", values)
 	}
 }
 

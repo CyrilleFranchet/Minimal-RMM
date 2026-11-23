@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -10,6 +13,107 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+func TestBeaconConnectionPersistence(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		tls, persistent bool
+	}{
+		{"http-short-default", false, false},
+		{"http-persistent-opt-in", false, true},
+		{"https-short-default", true, false},
+		{"https-persistent-opt-in", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var originConnections atomic.Int32
+			origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Closing each origin exchange must not determine the edge's pooling.
+				w.Header().Set("Connection", "close")
+				_, _ = w.Write([]byte("OK"))
+			}))
+			origin.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					originConnections.Add(1)
+				}
+			}
+			origin.Start()
+			defer origin.Close()
+			upstream, err := url.Parse(origin.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var connections atomic.Int32
+			server := httptest.NewUnstartedServer(httputil.NewSingleHostReverseProxy(upstream))
+			server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					connections.Add(1)
+				}
+			}
+			if tc.tls {
+				server.StartTLS()
+			} else {
+				server.Start()
+			}
+			defer server.Close()
+			cfg := &config{BaseURL: server.URL, BeaconSecret: "secret", SessionID: "connection-test", PersistentHTTP: tc.persistent}
+			client := newHTTPClient(cfg)
+			if tc.tls {
+				roots := x509.NewCertPool()
+				roots.AddCert(server.Certificate())
+				client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: roots}
+			}
+			defer client.CloseIdleConnections()
+			for i := 0; i < 3; i++ {
+				if err := register(client, cfg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := int32(3)
+			if tc.persistent {
+				want = 1
+			}
+			if got := connections.Load(); got != want {
+				t.Fatalf("got %d TCP connections, want %d", got, want)
+			}
+			if got := originConnections.Load(); got != 3 {
+				t.Fatalf("origin must close each exchange independently: got %d TCP connections, want 3", got)
+			}
+		})
+	}
+}
+
+func TestPersistentHTTPConfiguration(t *testing.T) {
+	old := defaultPersistentHTTPB64
+	t.Cleanup(func() { defaultPersistentHTTPB64 = old })
+	t.Setenv("RMM_BASE_URL", "http://example.invalid")
+	t.Setenv("RMM_BEACON_SECRET", "test-secret")
+	for _, tc := range []struct {
+		name, embedded, environment string
+		want                        bool
+	}{
+		{"default-short", "", "", false},
+		{"embedded-opt-in", "true", "", true},
+		{"environment-disable", "true", "0", false},
+		{"environment-enable", "false", "1", true},
+		{"case-insensitive", "", " TRUE ", true},
+		{"yes", "", "yes", true},
+		{"on", "", "on", true},
+		{"false", "true", "false", false},
+		{"invalid-is-short", "true", "invalid", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defaultPersistentHTTPB64 = base64.StdEncoding.EncodeToString([]byte(tc.embedded))
+			t.Setenv("RMM_PERSISTENT_HTTP", tc.environment)
+			cfg, err := loadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.PersistentHTTP != tc.want {
+				t.Fatalf("got PersistentHTTP=%v, want %v", cfg.PersistentHTTP, tc.want)
+			}
+		})
+	}
+}
 
 func TestBeaconRedirectDoesNotForwardSecret(t *testing.T) {
 	var contacted atomic.Bool

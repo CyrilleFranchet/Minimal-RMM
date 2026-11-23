@@ -532,9 +532,10 @@ def build_go_agent(
     workspace_id: str = "",
     stageless: bool = False,
     debug: bool = False,
+    persistent_http: bool = False,
 ) -> str:
     """Build the repository Go agent. Default (stageless=False): return a stage1 launcher ZIP that fetches the agent. stageless=True: return the full agent ZIP. debug=True builds the main agent with diagnostics and automatically selects the full-agent ZIP. Its spawn, spawnas, and lateral descendants inherit tracing automatically. Normal builds omit diagnostic implementation."""
-    return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy, workspace_id, stageless, debug)
+    return tool_build_go_agent(_client(), goos, goarch, session_id, sleep_seconds, jitter_percent, http_proxy, workspace_id, stageless, debug, persistent_http)
 
 
 @mcp.tool()

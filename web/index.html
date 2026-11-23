@@ -189,6 +189,10 @@
             <input type="number" id="agent-go-jitter" min="0" max="100" value="30" title="Percentage of variation applied to the check-in interval." aria-description="Percentage of variation applied to the check-in interval.">
             <label for="agent-go-proxy">HTTP proxy (optional)</label>
             <input type="text" id="agent-go-proxy" placeholder="http://proxy.corp:8080" autocomplete="off">
+            <label class="agent-gen-check" for="agent-go-persistent-http">
+              <input type="checkbox" id="agent-go-persistent-http">
+              Persistent HTTP (reuse TCP)
+            </label>
             <div class="agent-go-options">
               <label for="agent-goos">Operating system</label>
               <select id="agent-goos" aria-label="Go operating system">

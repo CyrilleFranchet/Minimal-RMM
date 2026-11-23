@@ -30,14 +30,15 @@ import (
 )
 
 type config struct {
-	BaseURL       string
-	BeaconSecret  string
-	SessionID     string
-	WorkspaceID   string
-	HTTPProxy     string
-	SleepSeconds  int
-	JitterPercent int
-	MaxRetries    int
+	BaseURL        string
+	BeaconSecret   string
+	SessionID      string
+	WorkspaceID    string
+	HTTPProxy      string
+	PersistentHTTP bool
+	SleepSeconds   int
+	JitterPercent  int
+	MaxRetries     int
 }
 
 type commandResponse struct {
@@ -63,16 +64,17 @@ type exfilJob struct {
 // are encoded to keep linker arguments safe; environment variables override
 // them at runtime.
 var (
-	defaultBaseURLB64       string
-	defaultBeaconSecretB64  string
-	defaultSessionIDB64     string
-	defaultWorkspaceIDB64   string
-	defaultHTTPProxyB64     string
-	defaultSleepSecondsB64  string
-	defaultJitterPercentB64 string
-	logMu                   sync.Mutex
-	logFile                 *os.File
-	agentContext            = context.Background()
+	defaultBaseURLB64        string
+	defaultBeaconSecretB64   string
+	defaultSessionIDB64      string
+	defaultWorkspaceIDB64    string
+	defaultHTTPProxyB64      string
+	defaultPersistentHTTPB64 string
+	defaultSleepSecondsB64   string
+	defaultJitterPercentB64  string
+	logMu                    sync.Mutex
+	logFile                  *os.File
+	agentContext             = context.Background()
 )
 
 var pluginCommandPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,127}$`)
@@ -365,14 +367,15 @@ func isPermanentHTTPError(err error) bool {
 
 func loadConfig() (*config, error) {
 	cfg := &config{
-		BaseURL:       strings.TrimRight(envOr("RMM_BASE_URL", embeddedValue(defaultBaseURLB64)), "/"),
-		BeaconSecret:  envOr("RMM_BEACON_SECRET", embeddedValue(defaultBeaconSecretB64)),
-		SessionID:     envOr("RMM_SESSION_ID", embeddedValue(defaultSessionIDB64)),
-		WorkspaceID:   strings.TrimSpace(envOr("RMM_AGENT_WORKSPACE_ID", embeddedValue(defaultWorkspaceIDB64))),
-		HTTPProxy:     strings.TrimSpace(envOr("RMM_HTTP_PROXY", embeddedValue(defaultHTTPProxyB64))),
-		SleepSeconds:  envInt("RMM_SLEEP_SECONDS", envIntValue(defaultSleepSecondsB64, 60)),
-		JitterPercent: envInt("RMM_JITTER_PERCENT", envIntValue(defaultJitterPercentB64, 30)),
-		MaxRetries:    envInt("RMM_MAX_RETRIES", 3),
+		BaseURL:        strings.TrimRight(envOr("RMM_BASE_URL", embeddedValue(defaultBaseURLB64)), "/"),
+		BeaconSecret:   envOr("RMM_BEACON_SECRET", embeddedValue(defaultBeaconSecretB64)),
+		SessionID:      envOr("RMM_SESSION_ID", embeddedValue(defaultSessionIDB64)),
+		WorkspaceID:    strings.TrimSpace(envOr("RMM_AGENT_WORKSPACE_ID", embeddedValue(defaultWorkspaceIDB64))),
+		HTTPProxy:      strings.TrimSpace(envOr("RMM_HTTP_PROXY", embeddedValue(defaultHTTPProxyB64))),
+		PersistentHTTP: enabledHTTPPersistence(envOr("RMM_PERSISTENT_HTTP", embeddedValue(defaultPersistentHTTPB64))),
+		SleepSeconds:   envInt("RMM_SLEEP_SECONDS", envIntValue(defaultSleepSecondsB64, 60)),
+		JitterPercent:  envInt("RMM_JITTER_PERCENT", envIntValue(defaultJitterPercentB64, 30)),
+		MaxRetries:     envInt("RMM_MAX_RETRIES", 3),
 	}
 	// An explicitly empty binding clears an embedded owner when the server
 	// launches an unassigned child; absent environment keeps the build default.
@@ -470,7 +473,7 @@ func pollOnce(
 }
 
 func newHTTPClient(cfg *config) *http.Client {
-	transport := &http.Transport{}
+	transport := &http.Transport{DisableKeepAlives: !cfg.PersistentHTTP}
 	if cfg.HTTPProxy != "" {
 		if proxyURL, err := url.Parse(cfg.HTTPProxy); err == nil && proxyURL.Scheme != "" && proxyURL.Host != "" {
 			transport.Proxy = http.ProxyURL(proxyURL)
@@ -1111,6 +1114,17 @@ func username() string {
 	}
 	return "unknown"
 }
+
+// enabledHTTPPersistence accepts the same opt-in values as the PowerShell agent.
+func enabledHTTPPersistence(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func envOr(name, fallback string) string {
 	if v := os.Getenv(name); v != "" {
 		return v

@@ -69,6 +69,20 @@ For the workspace ID, an explicitly empty variable clears the embedded value:
 | `RMM_SLEEP_SECONDS` | no | `60` |
 | `RMM_JITTER_PERCENT` | no | `30` |
 | `RMM_HTTP_PROXY` | no | direct connection |
+| `RMM_PERSISTENT_HTTP` | no | `0` (one TCP connection per HTTP request) |
+
+Go agents default to short HTTP connections, matching PowerShell. This also
+closes the agent-to-Cloudflare connection after each request; closing only the
+origin server connection cannot enforce that behavior through a reverse proxy.
+Enable **Persistent HTTP (reuse TCP)** in the Go generator, pass
+`config.persistent_http: true` to the build API, or use `--persistent-http` with
+`agent go-build` to allow connection reuse. MCP/AI `build_go_agent` accepts
+`persistent_http` as well. The build embeds this setting for staged and
+stageless agents; the stageless launcher explicitly applies it to the environment.
+At runtime, `RMM_PERSISTENT_HTTP` overrides the embedded setting; `1`, `true`,
+`yes`, and `on` enable reuse (case insensitive), and other nonempty values disable it.
+Existing binaries must be rebuilt and redeployed to receive this fix.
+SOCKS/TUN plugin connections have their own lifetimes and are unaffected.
 
 The agent registers before each command cycle, polls `/cmd`, executes shell
 commands, posts `/result`, and accepts `__CONFIG__`. Downloads are sent in

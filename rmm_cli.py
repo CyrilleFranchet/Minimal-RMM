@@ -1670,10 +1670,13 @@ def cmd_agent(client: RmmApiClient, state: dict, args):
             **({"workspace_id": args.workspace_id} if getattr(args, "workspace_id", None) else {}),
         )
     elif action == "go-build":
+        config = {"persistent_http": getattr(args, "persistent_http", False)}
+        if getattr(args, "workspace_id", None):
+            config["workspace_id"] = args.workspace_id
         code, data = client.build_go_agent(
             goos=getattr(args, "goos", "windows"),
             goarch=getattr(args, "goarch", "amd64"),
-            **({"config": {"workspace_id": args.workspace_id}} if getattr(args, "workspace_id", None) else {}),
+            config=config,
             use_server_config=not getattr(args, "no_server_config", False),
             stageless=getattr(args, "stageless", False),
             debug=getattr(args, "debug", False),
@@ -3491,6 +3494,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_agent_go.add_argument("--stageless", action="store_true", help="Embed the Go agent directly in the ZIP instead of staging it. Default: return a small stage1 launcher (~20 KB) that fetches the agent from the server at runtime.")
     sp_agent_go.add_argument("--debug", action="store_true", help="Build the main agent with inherited child tracing in a full-agent ZIP; normal builds exclude diagnostics")
     sp_agent_go.add_argument("--workspace-id", help="Administrator-selected owner; workspace authentication binds this automatically")
+    sp_agent_go.add_argument("--persistent-http", action="store_true", help="Reuse HTTP connections across beacon requests (default: close after each request)")
     sp_agent_go.set_defaults(func=cmd_agent)
     sp_agent_stage = sp_agent_sub.add_parser(
         "go-stage", parents=[shared],

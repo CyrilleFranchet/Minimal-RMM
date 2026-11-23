@@ -42,6 +42,7 @@ func spawnEnvironment(cfg *config, sessionID string) []string {
 		"RMM_AGENT_WORKSPACE_ID": cfg.WorkspaceID,
 		"RMM_SLEEP_SECONDS":      strconv.Itoa(cfg.SleepSeconds),
 		"RMM_JITTER_PERCENT":     strconv.Itoa(cfg.JitterPercent),
+		"RMM_PERSISTENT_HTTP":    strconv.FormatBool(cfg.PersistentHTTP),
 	}
 	if cfg.HTTPProxy != "" {
 		overrides["RMM_HTTP_PROXY"] = cfg.HTTPProxy

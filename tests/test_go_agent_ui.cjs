@@ -5,6 +5,19 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
 
+test('Go persistence defaults off and opt-in survives preferences and build submission', async () => {
+  const defaults = fixture();
+  await defaults.click('build');
+  assert.equal(defaults.calls.find(call => call.url.endsWith('/build')).body.config.persistent_http, false);
+  const ui = fixture({prefs: {persistentHttp: true}});
+  assert.equal(ui.get('persistent-http').checked, true);
+  await ui.click('build');
+  assert.equal(ui.calls.find(call => call.url.endsWith('/build')).body.config.persistent_http, true);
+  ui.get('persistent-http').checked = false;
+  ui.get('persistent-http').handlers.change();
+  assert.equal(JSON.parse(ui.storage.get('rmm_go_agent_prefs')).persistentHttp, false);
+});
+
 test('Go generator exposes the debug build checkbox and inherited tracing label', () => {
   const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
   assert.match(html, /<label for="agent-go-debug"[^>]*>[\s\S]*?<input type="checkbox" id="agent-go-debug"> Debug build \(child agents inherit\)/);

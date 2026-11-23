@@ -48,6 +48,7 @@
       sleepSeconds: Math.min(3600, Math.max(1, Number($("#agent-go-sleep")?.value) || 60)),
       jitterPercent: jitterValue(),
       httpProxy: $("#agent-go-proxy")?.value.trim() || "",
+      persistentHttp: Boolean($("#agent-go-persistent-http")?.checked),
       goos: $("#agent-goos")?.value || "windows",
       goarch: $("#agent-goarch")?.value || "amd64",
       stageless: $("#agent-go-stageless")?.checked || false,
@@ -82,6 +83,8 @@
       if (input && value !== undefined && value !== null) input.value = value;
     }
     const stagelessEl = $("#agent-go-stageless");
+    const persistentEl = $("#agent-go-persistent-http");
+    if (persistentEl) persistentEl.checked = prefs.persistentHttp === true;
     if (stagelessEl) stagelessEl.checked = prefs.stageless || false;
     const debugEl = $("#agent-go-debug");
     if (debugEl) debugEl.checked = prefs.debug || false;
@@ -253,6 +256,7 @@
             sleep_seconds: Math.min(3600, Math.max(1, Number($("#agent-go-sleep")?.value) || 60)),
             jitter_percent: jitterValue(),
             http_proxy: $("#agent-go-proxy")?.value.trim() || "",
+            persistent_http: Boolean($("#agent-go-persistent-http")?.checked),
           },
         }),
       });
@@ -301,6 +305,7 @@
     );
     $("#agent-go-stageless")?.addEventListener("change", savePrefs);
     $("#agent-go-debug")?.addEventListener("change", savePrefs);
+    $("#agent-go-persistent-http")?.addEventListener("change", savePrefs);
     $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
       await download();

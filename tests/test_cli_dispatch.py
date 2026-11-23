@@ -86,6 +86,15 @@ class CliDispatchTests(unittest.TestCase):
             self.invoke(["lateral", "wmiexec", "target", "--tethered", "--session", "source"], client)
         client.lateral_move.assert_not_called()
 
+    def test_go_build_http_persistence_and_workspace(self):
+        client = Mock()
+        client.build_go_agent.return_value = (200, {"filename": "agent.zip"})
+        self.invoke(["agent", "go-build"], client)
+        self.assertEqual(client.build_go_agent.call_args.kwargs["config"], {"persistent_http": False})
+        self.invoke(["agent", "go-build", "--persistent-http", "--workspace-id", "lab"], client)
+        self.assertEqual(client.build_go_agent.call_args.kwargs["config"],
+                         {"persistent_http": True, "workspace_id": "lab"})
+
     def test_debug_build_requests_separate_full_agent_artifact(self):
         client = Mock()
         client.build_go_agent.return_value = (200, {"filename": "debug.zip"})

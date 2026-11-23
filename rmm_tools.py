@@ -656,6 +656,7 @@ def tool_build_go_agent(
     workspace_id: str = "",
     stageless: bool = False,
     debug: bool = False,
+    persistent_http: bool = False,
 ) -> str:
     """Build the repository Go agent with the server's active connection settings embedded."""
     config = {
@@ -663,11 +664,14 @@ def tool_build_go_agent(
         "sleep_seconds": sleep_seconds,
         "jitter_percent": jitter_percent,
         "http_proxy": http_proxy,
+        "persistent_http": persistent_http,
     }
     if workspace_id:
         config["workspace_id"] = workspace_id
     if not isinstance(debug, bool):
         return _json_result({"ok": False, "error": "debug must be a boolean"})
+    if not isinstance(persistent_http, bool):
+        return _json_result({"ok": False, "error": "persistent_http must be a boolean"})
     code, data = client.build_go_agent(
         goos=goos,
         goarch=goarch,
@@ -1218,6 +1222,7 @@ TOOL_HANDLERS = {
         a.get("workspace_id", ""),
         bool(a.get("stageless", False)),
         a.get("debug", False),
+        a.get("persistent_http", False),
     ),
     "stage_status": lambda c, a: tool_stage_status(c, a["staging_id"]),
     "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
@@ -1925,6 +1930,7 @@ OPENAI_TOOLS: list[dict] = [
                 "http_proxy": {"type": "string", "description": "Optional HTTP proxy URL used by the deployed agent"},
                 "stageless": {"type": "boolean", "description": "false (default): return a small stage1 ZIP (~20 KB C launcher) that fetches the Go agent from the server at runtime. true: return a ZIP with the full Go agent binary embedded directly (no staging server required, larger file on target)."},
                 "debug": {"type": "boolean", "default": False, "description": "Build the main agent with the rmmdebug build tag in a full-agent ZIP. Spawn, spawnas, and lateral descendants inherit tracing automatically. Normal builds exclude diagnostic implementation."},
+                "persistent_http": {"type": "boolean", "default": False, "description": "Reuse HTTP connections across beacon requests. Default false closes each request connection, including connections to Cloudflare."},
             }},
         },
     },

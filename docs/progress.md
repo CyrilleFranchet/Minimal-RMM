@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-11-23 — Restore short HTTP connections in the Go agent
+
+- Added Go persistence parity with PowerShell: short connections by default,
+  including the client-facing connection to Cloudflare. Persistent connections
+  are an explicit opt-in through `RMM_PERSISTENT_HTTP` or build configuration
+  `persistent_http`. Existing agents require rebuilding and redeployment.
+- The Go generator saves a persistence checkbox. CLI `agent go-build
+  --persistent-http` and MCP/AI `build_go_agent` expose the same option.
+  Staged and stageless builds embed the choice, launchers override stale
+  inherited environment settings, and spawned agents retain the effective mode.
+- `enabledHTTPPersistence` parses the same true values as PowerShell. Connection
+  regression tests count actual HTTP and HTTPS TCP connections through a
+  reverse proxy while the origin closes every response, and verify that a
+  spawned agent's effective false overrides an inherited true setting;
+  build tests verify linker defaults and launcher environment, and UI tests
+  verify preferences and submission. Pivot plugin connection lifetimes remain
+  independent of beacon HTTP persistence.
+
 ## 2026-11-23 — Follow-up audit of secret-suppression instructions
 
 - Removed remaining credential-suppression instructions from bundled AI skills,

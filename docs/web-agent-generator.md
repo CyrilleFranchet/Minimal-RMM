@@ -65,6 +65,10 @@ section. It uses
 `POST /api/v1/agent/go/build` to compile a fixed target on the server. See
 `docs/go-agent.md` for the supported targets and current feature parity.
 
+Both generators provide **Persistent HTTP (reuse TCP)**, unchecked by default.
+For Go, this maps to build configuration `persistent_http` and runtime
+`RMM_PERSISTENT_HTTP`; the choice is saved with the Go generator preferences.
+
 ## Related
 
 - Agent config block: `client_rmm.ps1` (lines 45–83)
