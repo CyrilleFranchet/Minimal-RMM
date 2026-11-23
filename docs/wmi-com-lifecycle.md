@@ -1,0 +1,110 @@
+# WMI COM lifetime and identity ownership
+
+## Overview and evidence
+
+The Windows agent routes WMI process-creation calls through a persistent COM
+worker. This is a lifecycle change intended to address the observed second
+ambient connection failure under `make_token`. It does not change the operator
+authentication contract: `make_token` stays ambient through cloaking; explicit
+`-i` credentials remain a separate path and take precedence.
+
+The lab's read-only probes established this comparison:
+
+| Probe lifecycle | Impersonation between connections | Observed second connection |
+| --- | --- | --- |
+| COM initialized and uninitialized per attempt | Reverted and reapplied | Access denied |
+| COM kept initialized | Held continuously | Success |
+| COM kept initialized | Reverted and reapplied | Success |
+
+The A → B → A probe also completed all three connections and class queries.
+Target events confirmed authentication under Administrator and the second
+account. The supplied export did not independently establish A2's remote
+identity; reuse of an existing authenticated context can generate no new logon
+event. Local token snapshots alone do not prove the account used remotely.
+
+These results implicate the COM lifecycle. They do not prove a particular
+Windows cache defect or establish that a dedicated thread is the only solution.
+The read-only probe results do not establish end-to-end deployment acceptance.
+Replay of the original remote back-to-back execution regression remains a
+separate acceptance check.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Caller[Operation caller] --> Queue[Unbuffered request channel]
+    Queue --> Worker[Persistent WMI worker on one pinned OS thread]
+    Worker --> Identity[Check clean entry and apply operation identity]
+    Identity --> WMI[COM and WMI calls]
+    WMI --> Cleanup[Revert impersonation and verify cleanup]
+    Cleanup --> Reply[Return operation result]
+```
+
+`wmiComWorker` starts lazily on the first request. It owns one goroutine and one
+native thread for the process lifetime. The thread initializes COM as MTA and
+keeps that initialization alive between requests. MTA is a process-wide COM
+apartment that can contain multiple threads; this worker is not a private MTA.
+
+`wmiCreateProcess` submits work; `wmiCreateProcessChain` handles the individual
+operation. Each operation creates and releases its WMI interfaces while COM
+remains initialized. The captured ambient token is applied on the worker thread,
+not inherited from the caller's thread. Explicit credentials use their existing
+connection and proxy authentication path.
+
+The COM lifetime is persistent; impersonation is temporary. Entry checks reject
+an unexpected thread token. Ambient operations revert and verify their cleanup;
+cleanup failure joins the operation error and raises the identity-boundary fault.
+
+## Idle behavior and resource cost
+
+The idle worker waits on a Go channel. It has no polling timer, heartbeat, or
+application-level network keepalive. WMI requests cause authentication and
+RPC/DCOM traffic. Keeping COM initialized can retain Windows-managed connection
+state, so the worker's lack of polling is not a guarantee of complete process
+network silence. The agent's beacon transport continues independently.
+
+The direct idle cost is the goroutine, pinned native thread, and retained COM
+resources. Worker startup failure is cached by `sync.Once`. There is currently
+no explicit worker stop or restart path; the implementation relies on process
+termination for final reclamation.
+
+## Serialization and timeout limitations
+
+All process-creation requests through this worker serialize across targets.
+This is broader than the existing per-host deployment claim. A stalled Windows
+call can occupy the worker and delay other hosts.
+
+The current timeout bounds only waiting for a reply after submission. The
+unbuffered channel send occurs before the timeout select, and worker startup
+also precedes it. A caller waiting to submit to a busy worker is therefore not
+covered by that timer. A nonpositive supplied wait is replaced by 30 seconds,
+not treated as an already-expired deadline.
+
+A reply timeout does not cancel an executing Windows call or prove that remote
+work stopped. Do not describe this implementation as a fully bounded queue or
+as enforcing an end-to-end deployment deadline.
+
+## Alternatives and decision
+
+The dedicated worker closely follows the successful same-thread probe lifecycle
+and gives COM and identity cleanup a clear owner. Its simplicity comes with
+global serialization and a process-lifetime native thread.
+
+| Alternative | Tradeoff and evidence |
+| --- | --- |
+| Hold COM initialization on an existing long-lived thread | Avoids a separate application worker but couples COM lifetime to that thread; not validated by these probes |
+| Manage MTA support lifetime separately from operation threads | Windows provides `CoIncrementMTAUsage`; its documented lifetime guarantee does not prove it fixes this WMI failure or identity isolation |
+| Pass explicit credentials for each connection | Succeeded in the comparison probe, but changes ambient authentication semantics; the current explicit WMI path selects NTLM |
+
+COM does not inherently require a single serialized worker: an MTA can contain
+multiple threads. Neither the alternatives nor concurrent execution have been
+validated by the reported lab comparisons. This note records design options,
+not an instruction to replace the current implementation.
+
+## References
+
+- Implementation: `agent-go/wmi_windows.go`; callers: `lateral_windows.go` and
+  `wmi_loader_windows.go`.
+- Diagnostics and test limits: [Go agent](go-agent.md#lateral-movement-__lateral__).
+- Microsoft: [Processes, threads, and apartments](https://learn.microsoft.com/en-us/windows/win32/com/processes--threads--and-apartments).
+- Microsoft: [CoIncrementMTAUsage](https://learn.microsoft.com/en-us/windows/win32/api/combaseapi/nf-combaseapi-coincrementmtausage).

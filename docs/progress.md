@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-11-23 — WMI COM architecture documentation audit
+
+- Added [WMI COM lifetime](wmi-com-lifecycle.md): worker ownership, temporary
+  impersonation, lazy startup, idle resource/network behavior, global
+  serialization, cached startup failure, and process-exit reclamation.
+- Recorded the unbounded queue-submission gap, non-canceling reply timeout,
+  architectural alternatives, and the limits of probe and target-event
+  evidence. Removed unsupported cache-cause and deployment-reliability claims.
+- Linked the note from the Go agent guide, README, documentation index,
+  and lateral-movement guidance. Runtime code is unchanged by this audit.
+
 ## 2026-11-23 — One-click Go agent download
 
 - Renamed the Go generator action to **Download agent**; compilation now leads
@@ -14,9 +25,9 @@
   JavaScript syntax, and diff whitespace checks pass. Browser save-dialog behavior
   remains a manual check; automated UI tests use a simulated DOM.
 
-## 2026-11-23 — Worker review fixes: cleanup failure fails the operation, bounded marshal wait, regression coverage
+## 2026-11-23 — Worker review fixes: cleanup errors, reply timeout, regression coverage
 
-- Review of the backport (three findings, all corrected):
+- Review of the backport (cleanup handling and tests updated; queue-wait gap remains):
   1. The chain's deferred cleanup raised the identity-boundary fault but
      discarded its error, so reversion or verification failure could still
      return nil. `wmiCreateProcessChain` now returns a named error and the
@@ -35,25 +46,23 @@
      boundary flag (reset for the rest of the CI run). The remote
      wrong-account end-to-end regression remains the lab acceptance test —
      CI has no domain, second host, or second admin account.
-  3. The unbounded marshal wait let one stalled operation block every other
-     target's caller. `wmiCreateProcess` now selects on its reply channel
-     with the caller's remaining deployment deadline (both call sites pass
-     `time.Until(deadline)`), so a stalled chain cannot hold another
-     target's waiter past that target's own budget; the stalled chain
-     itself still owns the worker until the OS call returns — a
-     no-user-mode-preemption limitation the timeout error states.
+  3. A reply timeout was added using the caller's remaining deployment
+     budget, but the unbuffered request-channel send still occurs before
+     the timeout select. Queue submission and worker startup remain
+     unbounded by that timer; a running Windows call is not canceled.
+     The earlier claim that every caller's wait was bounded was incorrect.
 - Validations: host suites (default + rmmdebug), all four Windows build
   variants, the probe binary, `gofmt`, and `go vet` (pre-existing family
   only) pass; parity and web contracts unchanged and green. The three new
   tests run under the existing `WMICreateProcess` CI pattern.
 
-## 2026-11-23 — Backport: the validated WMI lifecycle runs the production wmiexec chain
+## 2026-11-23 — Backport: WMI worker follows the successful probe lifecycle
 
-- Operator validation passed (`"It now works correctly"`): the probe
-  lifecycle — one continuous COM initialization with explicit
-  impersonation and verified reversion per operation — behaves correctly
-  under the lab's two-account and account-switch diagnostics. Backported
-  to the production path per the controlled-implementation plan.
+- Read-only lab probes succeeded with a continuous COM lifetime, including
+  cycled impersonation and the A → B → A diagnostic. Target events showed
+  both accounts, but did not independently establish A2's remote identity.
+  These observations support the lifecycle choice; they do not establish
+  the internal Windows mechanism or end-to-end deployment acceptance.
 - Design: a dedicated WMI COM worker (`wmiComWorker`,
   `agent-go/wmi_windows.go`) — a process-lived goroutine pinned to one OS
   thread that owns the MTA initialization (single `CoInitializeEx`, never
@@ -61,9 +70,9 @@
   production `Win32_Process.Create` — legacy wmiexec and the chain's
   loader receiver start — funnels through that apartment
   (`wmiCreateProcess` marshals to `wmiCreateProcessChain` on the worker),
-  so the per-attempt initialization/teardown cycle that poisoned the
-  per-process WMI client state against cloaked netonly identities no
-  longer exists. The lateral worker passes its captured identity handle
+  so the per-attempt initialization/teardown cycle associated with the
+  observed second-connect failure no longer occurs. The exact mechanism
+  inside Windows remains unproven. The lateral worker passes its captured identity handle
   through the payload (`ambientToken`, an unexported, never-serialized
   uintptr field) instead of relying on its own thread for the connect;
   explicit-identity deployments keep their in-band credentials unchanged.
@@ -74,8 +83,8 @@
   fault rather than continuing; worker startup verifies its thread entry
   too (every identity-holding flow in the agent locks its thread, so a
   foreign token there is a leak by definition). WMI operations serialize
-  process-wide, matching the existing per-host claim and keeping the
-  validated same-thread held property across deployments.
+  process-wide, which is broader than the existing per-host claim and
+  keeps the same-thread held property across operations.
 - Semantics kept: an active make_token stays the ambient (cloaked) WMI
   identity; the forced identity (`-i` / `-u -p`) remains the explicit
   route and takes precedence. The former one-shot limitation statements

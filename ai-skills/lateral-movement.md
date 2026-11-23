@@ -44,9 +44,12 @@ execution method; possession alone establishes neither permission nor access.
 Agent-side WMI execution selects NTLM for IP literals and Kerberos for DNS
 names. An active make_token stays the ambient (cloaked) WMI identity: the
 deployment chain runs on a dedicated process-lifetime WMI COM thread with
-a held initialization and per-operation impersonation, so repeated WMI
-deployments under one make_token are reliable; the forced identity
-(`-i` / `-u -p`) remains the other route.
+a held initialization and per-operation impersonation. Read-only probes
+support that lifecycle; they do not prove the exact Windows mechanism or
+end-to-end deployment reliability. The worker serializes targets, and its
+reply timeout does not bound queue submission or cancel running OS calls.
+See [WMI COM lifetime](../docs/wmi-com-lifecycle.md). The forced identity
+(`-i` / `-u -p`) remains the explicit route.
 With make_token, WinRM selects Negotiate for IP literals and Kerberos
 for DNS names. Without make_token, WinRM uses process-default credentials
 and Windows negotiation; make_token is optional.

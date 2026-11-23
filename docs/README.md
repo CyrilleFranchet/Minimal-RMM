@@ -115,6 +115,7 @@ historical notes in `progress.md`.
 | --- | --- |
 | Product goals and commercial security gate | [Product requirements](prd.md) |
 | Planned work and feature designs | [Technical plan](tech-plan.md) |
+| WMI COM lifetime, identity ownership, idle traffic, alternatives, and timeout limits | [WMI COM lifecycle](wmi-com-lifecycle.md) |
 | Architecture and review plan for lateral wmiexec/WinRM loader independence | [Lateral loader plan](lateral-loader.md) |
 | Completed work, open gaps, and validation notes | [Progress log](progress.md) |
 
