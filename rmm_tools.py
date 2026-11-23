@@ -1602,7 +1602,7 @@ OPENAI_TOOLS: list[dict] = [
         "type": "function",
         "function": {
             "name": "queue_screenshot",
-            "description": "Queue a screenshot capture on the agent.",
+            "description": "Queue a screenshot capture on the agent. Memory-hosted Go sessions capture too: the plugin runs in a bounded Windows PowerShell child that maps the streamed plugin bytes in memory — crash isolation preserved, nothing written to disk.",
             "parameters": {
                 "type": "object",
                 "properties": {"session_ref": {"type": "string"}},

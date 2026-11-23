@@ -37,6 +37,12 @@ func loadPluginPE(*http.Client, *config, string, string, string) (string, error)
 	return "", errors.New("PE plugins require the Windows agent build")
 }
 
+// loadPluginPEPowershellHost is the non-Windows stub of the memory-hosted
+// screenshot path; the dispatch reaches the real host only on Windows.
+func loadPluginPEPowershellHost(*http.Client, *config, string, string, string) (string, error) {
+	return "", errors.New("PE plugins require the Windows agent build")
+}
+
 func loadPluginPEContext(context.Context, *http.Client, *config, string, string, string) (string, error) {
 	return "", errors.New("PE plugins require the Windows agent build")
 }

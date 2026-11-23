@@ -1,5 +1,13 @@
 # Go agent
 
+File downloads emit advisory `download_progress` results at the start and after
+each nonfinal 2 MiB chunk. They include the remote path, transferred and total
+bytes, percentage, speed, and ETA. Updates have a two-second request deadline;
+failed updates do not abort the file transfer. The final file artifact signals
+completion, so no trailing progress update can revive a completed transfer.
+`TestDownloadProgressAndExactChunks` checks progress and exact reassembled bytes;
+`TestDownloadProgressFailureDoesNotAbortEmptyFile` covers advisory failures.
+
 See the [documentation wiki](README.md) and the [architecture overview](architecture.md)
 for the agent's place in the control plane and plugin boundaries.
 
@@ -760,7 +768,7 @@ implementation runs. `make check-agent-deployment` includes that test.
 |--------|-----------|
 | `psexec` | Two-stage RemCom-style deployment: push the dedicated lateral service host to `ADMIN$`, start it as a demand-start service; its linked stage1 worker fetches the masked stage2 agent payload from the listener's staging endpoint, decodes it in memory, installs and starts the agent, then stops. The calling agent waits for successful service completion and removes the temporary service and host binary itself; the server cleanup command is only a retry path when that immediate cleanup stays pending |
 | `wmiexec` | Loader chain (default, `wmiexec_loader`): the worker starts a Windows PowerShell receiver through the native COM/DCOM chain (`wmi_windows.go`): `CoInitializeEx`, `CoCreateInstance(WbemLocator)`, `ConnectServer` to `\\host\root\cimv2`, `CoSetProxyBlanket` with packet privacy, then `GetObject("Win32_Process")` → `GetMethod("Create")` → `SpawnInstance` → `Put("CommandLine")` → `ExecMethod`, checking the provider `ReturnValue`. No `wmic.exe`. The source then streams the framed loader and artifact halves over a session-specific named pipe and waits for the `RMM_LOADER_READY` marker; the receiver maps the agent in memory and blocks on its thread. Nothing is written to the target's disk; the created process is independent of the source agent and ends at target shutdown or an explicit kill. The legacy ADMIN$ copy path remains for old servers only |
-| `winrm` | Loader chain (default, `winrm_loader` and its HTTPS wire variants): native WSMan client through `WsmSvc.dll`: create an authenticated session and shell, run a Windows PowerShell receiver, stream a framed payload (loader source + agent binary) with `WSManSendShellInput`, verify each half's length and SHA-256, then load the agent **in memory**: one `VirtualAlloc(PAGE_EXECUTE_READWRITE)` image, a full PE32+ amd64 mapping (sections, relocations, imports, TLS), and a detached `CreateThread` on the entry point. The agent executable is not staged on disk; `Add-Type` can create compiler scratch files in `%TEMP%`. Native runtime validation remains outstanding. The tethered opt-in (`--tethered`) instead keeps the shell open for the deployment's lifetime; the in-memory session cannot spawn, run legacy lateral moves, load PE plugins, or install persistence (guarded with a clear error, except the loader chain itself, staged `psexec`, and staged `spawnas`, which a memory-hosted source may run). WinRM loader deployments are independent by default: the receiver re-stages the deployment through a local WMI process create so the target escapes the shell job — the source closes the WinRM session right after readiness and the deployment survives it, ending like a WMI loader deployment; `--tethered` (`independent: false`) restores the source-tethered lifetime. Transfer and launch both use WinRM; no SMB, WMI network calls, `winrs.exe`, or `wmic.exe` (the default independent variant uses WMI on the target machine only) |
+| `winrm` | Loader chain (default, `winrm_loader` and its HTTPS wire variants): native WSMan client through `WsmSvc.dll`: create an authenticated session and shell, run a Windows PowerShell receiver, stream a framed payload (loader source + agent binary) with `WSManSendShellInput`, verify each half's length and SHA-256, then load the agent **in memory**: one `VirtualAlloc(PAGE_EXECUTE_READWRITE)` image, a full PE32+ amd64 mapping (sections, relocations, imports, TLS), and a detached `CreateThread` on the entry point. The agent executable is not staged on disk; `Add-Type` can create compiler scratch files in `%TEMP%`. Native runtime validation remains outstanding. The tethered opt-in (`--tethered`) instead keeps the shell open for the deployment's lifetime; the in-memory session cannot spawn, run legacy lateral moves, load channel PE plugins, or install persistence (guarded with a clear error, except the loader chain itself, staged `psexec`, staged `spawnas`, and the screenshot — which a memory-hosted source runs in a bounded Windows PowerShell child that hosts the identical plugin child contract, keeping the crash isolation with nothing written to disk). WinRM loader deployments are independent by default: the receiver re-stages the deployment through a local WMI process create so the target escapes the shell job — the source closes the WinRM session right after readiness and the deployment survives it, ending like a WMI loader deployment; `--tethered` (`independent: false`) restores the source-tethered lifetime. Transfer and launch both use WinRM; no SMB, WMI network calls, `winrs.exe`, or `wmic.exe` (the default independent variant uses WMI on the target machine only) |
 
 WMI and explicit-credential WSMan execution select authentication using the target's written
 form (`lateralHostIsIP` in `lateral.go`). This selection does not govern SMB
@@ -1222,6 +1230,80 @@ dispatch layer and actual CMD process in the dedicated Windows CI step.
 Prefix matching is case-insensitive and accepts optional whitespace before and
 after the colon. A prefix must be followed by a command body, for example
 `pwsh: Get-Date` or `PS:Get-Date`.
+
+## PowerShell-hosted one-shot plugin child for memory-hosted sessions
+
+Plugin implementations live in the plugin repository
+(`Minimal-RMM-plugins/screenshot`, `socks`, `tun`, …) as DLLs exporting the
+shared `Run` ABI; the agent contains only the loading machinery. For
+one-shot plugin commands — `__SCREENSHOT__`, `__PE_LOAD__`, and
+plugin-owned `__PLUGIN_COMMAND__` dispatches — `loadPluginPE`
+(`pe_loader_windows.go`) picks the child executable by hosting mode:
+
+- An on-disk session keeps the historical model: the parent streams or
+  stages the DLL for a sacrificial child process of this binary
+  (`--plugin-child` / `--plugin-library-child`), preserving the crash
+  isolation boundary and the killable child.
+- A memory-hosted session can neither relaunch `os.Args[0]` (inside a
+  loader host it names `powershell.exe`) nor write any binary to disk. It
+  keeps the child isolation by hosting the identical `--plugin-child`
+  contract in a bounded **Windows PowerShell child**
+  (`agent-go/plugin_powershell_host_windows.go`): the DLL bytes travel the
+  standard length-prefixed stdin frame (`framePluginForChild`, shared with
+  the copy-of-self child), and the child maps them in memory with an
+  Add-Type compiled C# mapper — the loading model the loader chain
+  established for streaming agent bytes into PowerShell. stdin/stdout match
+  the copy-of-self child byte for byte, so the parent-side result parsing
+  and every operator surface are unchanged.
+
+The C# mapper (`agent-go/plugin_powershell_host.go`) mirrors the agent's
+own manual mapper: PE32+ amd64 validation, header and section copy, DIR64
+relocations, import resolution, `DLL_PROCESS_ATTACH`, an export-table walk
+that rejects forwarded exports, and the shared `Run` ABI invoked through a
+delegate. Nothing is written to disk — no agent image, no plugin file —
+exactly like the copy-of-self `--plugin-child`; Add-Type compilation may
+create transient CodeDom compiler scratch under `%TEMP%`, the documented
+loader-chain exception. A bad plugin crashes only the child, never the
+agent or its host. Because the child maps manually, a plugin opting into
+the Windows loader (`RMMRequiresWindowsLoader`, which genuinely requires an
+on-disk library load) fails with an explicit error directing to a
+copy-of-self child. Long-lived channel plugins (socks/tun) start through
+`loadPluginPEContext` (the pluginController path), keep the copy-of-self
+child and their `RMM_IN_MEMORY` guard — the PowerShell host serves one-shot
+invocations only. `__SPAWNAS_STAGED__` remains the escape hatch that
+creates a full on-disk session when needed. Native Windows validation of
+the memory-hosted plugin path, including the screenshot capture, remains
+outstanding.
+
+## Plugin child identity
+
+Both isolated plugin paths (`--plugin-child` and `--plugin-library-child`)
+capture the actual calling OS thread token immediately before launching the
+child. With a thread token, the child receives a separately owned primary-token
+duplicate preserving that authentication session, including netonly network
+credentials. Without a thread token, the normal process identity applies.
+Global `make_token` state alone does not select a child identity: workers on
+other threads must already be impersonating the desired identity at launch.
+
+`agent-go/plugin_identity_windows.go` implements this boundary:
+`openPluginThreadToken` distinguishes no token from a capture error;
+`duplicatePluginPrimaryToken` prepares the primary token;
+`restorePluginThreadToken` restores the captured caller identity; and
+`startPluginCommand` pins capture and launch to one thread and restores that
+identity on success or failure. It copies process attributes and always replaces
+their token selection, so a preconfigured command token cannot override the
+runtime decision. `runPluginCommand` waits after launch-only token handles have
+closed and the extra thread lock has been released. A restoration
+failure stops further identity-sensitive work and kills/reaps the started child.
+
+Capture, duplication, or token-bearing process creation errors fail the plugin
+launch without retrying under the agent identity. `CreateProcessAsUser` requires
+the applicable Windows privileges (normally `SeAssignPrimaryTokenPrivilege`
+and `SeIncreaseQuotaPrivilege`); `SeImpersonatePrivilege` alone does not suffice.
+The OS decides whether launch is permitted. DLL staging ACLs remain unchanged,
+so an unrelated local account may lack access to a staged DLL. Running children
+retain their launch identity after later `make_token` or `rev2self` calls.
+The separate in-process plugin path does not create a child and is unaffected.
 
 ## Feature parity
 

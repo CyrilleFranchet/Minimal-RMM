@@ -10,6 +10,20 @@ import (
 
 const windowsLoaderMarker = "RMMRequiresWindowsLoader"
 
+// framePluginForChild renders the length-prefixed plugin child frame: the
+// plugin length, the input length, the plugin bytes, then the input. Both
+// plugin child hosts (the copy-of-self --plugin-child and the memory-hosted
+// PowerShell child) read this exact frame, so the plugin bytes never touch
+// the disk.
+func framePluginForChild(data []byte, input string) *bytes.Buffer {
+	var frame bytes.Buffer
+	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
+	_ = binary.Write(&frame, binary.LittleEndian, uint32(len(input)))
+	_, _ = frame.Write(data)
+	_, _ = frame.WriteString(input)
+	return &frame
+}
+
 // pluginRequiresWindowsLoader reads the opt-in export without running DLL code.
 func pluginRequiresWindowsLoader(data []byte) (bool, error) {
 	file, err := pe.NewFile(bytes.NewReader(data))

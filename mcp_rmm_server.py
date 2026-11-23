@@ -274,7 +274,7 @@ def get_rclone_config() -> str:
 
 @mcp.tool()
 def queue_screenshot(session_ref: str) -> str:
-    """Queue screenshot on agent."""
+    """Queue screenshot on agent. Memory-hosted Go sessions capture too: the plugin runs in a bounded Windows PowerShell child that maps the streamed plugin bytes in memory — crash isolation preserved, nothing written to disk."""
     return tool_queue_screenshot(_client(), session_ref)
 
 

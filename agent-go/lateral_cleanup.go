@@ -175,12 +175,11 @@ func lateralCleanupWorkerArguments(script string) []string {
 		"-EncodedCommand", winrmEncodedCommand(script)}
 }
 
-// lateralCleanupWorkerExecutable resolves the worker's host process. Windows
-// PowerShell is the worker binary, never this agent's image: that choice is
-// what makes the retry identical for an on-disk agent and an agent mapped
-// inside a loader host (re-executing os.Executable() there would relaunch
-// powershell.exe without any cleanup capability).
-func lateralCleanupWorkerExecutable() (string, error) {
+// windowsPowerShellExecutable resolves Windows PowerShell from System32.
+// It is the host process for native operations that must never depend on
+// this agent's own image: re-executing os.Executable() inside a loader host
+// would relaunch powershell.exe without any agent capability.
+func windowsPowerShellExecutable() (string, error) {
 	candidates := []string{
 		filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
 	}
@@ -195,7 +194,7 @@ func lateralCleanupWorkerExecutable() (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", errors.New("the cleanup worker requires Windows PowerShell (powershell.exe) in System32")
+	return "", errors.New("the operation requires Windows PowerShell (powershell.exe) in System32")
 }
 
 // runLateralCleanupWorker executes the PowerShell cleanup worker as a
@@ -210,7 +209,7 @@ func lateralCleanupWorkerExecutable() (string, error) {
 // privilege, exactly like the previous self-relaunching child.
 func runLateralCleanupWorker(payload lateralCleanupPayload) (string, error) {
 	debugEvent("lateral.cleanup_worker.begin", nil)
-	executable, err := lateralCleanupWorkerExecutable()
+	executable, err := windowsPowerShellExecutable()
 	if err != nil {
 		debugEvent("lateral.cleanup_worker.executable.missing", err)
 		return "", err

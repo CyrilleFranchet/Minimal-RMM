@@ -390,7 +390,7 @@ See sections below for command tokens and result types.
 | `__DOWNLOAD__ <path>` | Client uploads file (`type=file_upload`) |
 | `__EXFIL__` + newline + JSON | Agent rclone upload to configured profile (`cloud_upload` in events) |
 | `__UPLOAD__ <path>` + newline + JSON | Client writes remote file |
-| `__SCREENSHOT__` | Screenshot PNG |
+| `__SCREENSHOT__` | Capture a screenshot PNG through the screenshot plugin (`screenshot.ps1` for PowerShell agents; for Go agents the `screenshot.dll` from the plugin repository, fetched over the authenticated beacon channel). One-shot plugin commands always run in a sacrificial child process with nothing written to disk: an on-disk Go session uses a child of itself; a memory-hosted session hosts the identical stdin-framed child contract in a bounded Windows PowerShell child (System32) that maps the plugin bytes in memory — same `Run` export ABI. The same hosting rule applies to `__PE_LOAD__` and `__PLUGIN_COMMAND__` |
 | `__KEYLOG__ start\|stop\|dump` | Keylogger |
 | `__INSTALL_PERSIST__` / `__REMOVE_PERSIST__` | Client persistence hooks |
 | `__SPAWN__` + optional newline JSON `{"session_id","workspace_id"}` | Go agent only: start a detached copy of itself with a fresh session ID; answers `spawned session=<id> pid=<pid>` immediately |

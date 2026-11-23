@@ -143,14 +143,19 @@ The agent runs inside `powershell.exe`, so `os.Executable()` and
 `os.Args[0]` name the host process. Operations that relaunch or copy the
 agent binary are refused with a clear operator-facing error (guarded by the
 `RMM_IN_MEMORY` marker): `spawn`, the legacy `wmiexec`/`winrm` lateral wire
-methods from the deployed session, PE plugin execution (socks/tun channels),
-and persistence install. Lateral deployments and `spawnas` are guarded on
-the real dependency, not the hosting mode: loader wire methods stream a
-server-staged artifact, `psexec` stages the embedded dedicated lateral
-service with a PowerShell cleanup worker, and `spawnas` fetches the
-server-staged agent build and starts it off disk under the requested
-identity, so an in-memory source may run all three (the staged variants
-still require native Windows validation in this hosting mode). The
+methods from the deployed session, channel PE plugins (socks/tun), and
+persistence install. Guarded on the real dependency, not the hosting mode:
+the loader wire methods, `psexec`, `spawnas`, and the screenshot run from a
+memory-hosted source. The one-shot plugin commands (screenshot, `__PE_LOAD__`,
+`__PLUGIN_COMMAND__`) stay plugins and keep their sacrificial child
+process — from this hosting mode the child is a bounded Windows PowerShell
+host (System32 `powershell.exe`, the same binary the PowerShell cleanup
+worker uses) that maps the streamed plugin bytes in memory through an
+Add-Type compiled C# mapper, exactly like the copy-of-self
+`--plugin-child` mode: the plugin bytes travel the shared stdin frame,
+nothing is written to disk (no agent image, no plugin file), and a bad
+plugin crashes the child, never the agent. Long-lived channel plugins
+(socks/tun) keep the copy-of-self child and their guard. The
 deployed session itself remains memory-hosted, so it cannot spawn or
 install persistence; a staged `spawnas` from it creates a full on-disk
 session under the new identity when that is what the objective needs.

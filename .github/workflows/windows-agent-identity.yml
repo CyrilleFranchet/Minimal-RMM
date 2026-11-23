@@ -120,6 +120,7 @@ jobs:
         run: |
           $tests = 'Test(Callback|ExplicitRev2self|IdentityBoundary'
           $tests += '|RunCommandIdentity'
+          $tests += '|PluginIdentity'
           $tests += '|ServerRequest|SpawnUsesOnlyCreateProcessA'
           $tests += '|WindowsDetachedSpawn|WindowsExplicitLogonHasNoFallback'
           $tests += '|WindowsRunasOutputLifecycle'

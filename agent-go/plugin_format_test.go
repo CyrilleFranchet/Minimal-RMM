@@ -65,3 +65,23 @@ func FuzzPluginLoaderMarker(f *testing.F) {
 	f.Add([]byte("not a DLL"))
 	f.Fuzz(func(t *testing.T, data []byte) { _, _ = pluginRequiresWindowsLoader(data) })
 }
+
+// The stdin frame is shared by the copy-of-self plugin child and the
+// PowerShell host: plugin length, input length, plugin bytes, input.
+func TestFramePluginForChildIsTheSharedChildContract(t *testing.T) {
+	plugin := []byte("MZfake-plugin-bytes-payload")
+	frame := framePluginForChild(plugin, `{"a":1}`)
+	data := frame.Bytes()
+	if got := binary.LittleEndian.Uint32(data[0:4]); got != uint32(len(plugin)) {
+		t.Fatalf("plugin length prefix mismatch: %d", got)
+	}
+	if got := binary.LittleEndian.Uint32(data[4:8]); got != 7 {
+		t.Fatalf("input length prefix mismatch: %d", got)
+	}
+	if string(data[8:8+len(plugin)]) != string(plugin) {
+		t.Fatal("plugin bytes must follow the length prefixes")
+	}
+	if string(data[8+len(plugin):]) != `{"a":1}` {
+		t.Fatal("input bytes must terminate the frame")
+	}
+}
