@@ -403,6 +403,9 @@ test('event history excludes tool audit labels without rewriting real shell comm
     { type: 'operator', body: 'exfil: exfil C:\\Lab [mode=plugin]', command: 'exfil C:\\Lab' },
     { type: 'operator', body: 'socks: socks 1080', command: 'socks 1080' },
     { type: 'operator', body: 'tun: tun start rmm0', command: 'tun start rmm0' },
+    { type: 'output', body: 'RMM TUN relay enabled on rmm0', command: 'tun start rmm0' },
+    { type: 'operator', body: 'tun: tun stop', command: 'tun stop' },
+    { type: 'output', body: 'RMM TUN relay stopped', command: 'tun stop' },
     { type: 'operator', body: 'config: sleep 10', command: 'sleep 10' },
     { type: 'operator', body: 'persist: whoami', command: 'whoami' },
     { type: 'operator', body: 'queued: screenshot', command: 'screenshot' },
@@ -415,6 +418,25 @@ test('event history excludes tool audit labels without rewriting real shell comm
   assert.deepEqual(Array.from(c.rebuildShellHistoryFromEvents(events)), [
     'screenshot', 'cmd: type C:\\Lab\\notes.txt', 'PS: Get-Content "C:\\Lab Docs\\notes.txt"', 'whoami',
   ]);
+});
+test('tool result filtering preserves explicit shell submissions with the same text', () => {
+  const c = historyFixture();
+  assert.deepEqual(Array.from(c.rebuildShellHistoryFromEvents([
+    { type: 'operator', body: 'tun: tun stop', command: 'tun stop' },
+    { type: 'output', command: 'tun stop' },
+    { type: 'operator', body: 'exec: tun stop', command: 'tun stop' },
+    { type: 'output', command: 'tun stop' },
+  ])), ['tun stop']);
+});
+test('history seeding removes persisted pivot labels but preserves explicit shell input', () => {
+  const c = historyFixture({agent: ['tun start rmm0', '/uid', 'tun stop']});
+  c.seedShellHistory('agent', [
+    {type: 'operator', body: 'tun: tun start rmm0', command: 'tun start rmm0'},
+    {type: 'output', command: 'tun start rmm0'},
+    {type: 'operator', body: 'tun: tun stop', command: 'tun stop'},
+    {type: 'operator', body: 'exec: tun stop', command: 'tun stop'},
+  ]);
+  assert.deepEqual(Array.from(c.state.shellHistoryBySession.agent), ['/uid', 'tun stop']);
 });
 test('history seeding retains original slash action instead of appending incomplete tool audit', () => {
   const stored = { agent: ['/exfil "C:\\Lab Docs" profile', '/screenshot'] };

@@ -14,6 +14,12 @@ database and artifact directory own history in every deployment.
 
 ## Storage
 
+TUN and SOCKS panel actions remain visible in the audit transcript. Their
+output command labels are excluded from shell Up/Down recall. When a session
+loads, matching labels left in saved UI recall history by older versions are
+removed unless retained events include an explicit shell submission with the
+same text. Genuine shell commands are preserved.
+
 ### Legacy server data for migration
 
 Legacy installations stored the following under `RMM_logs/history/{session_id}/`.

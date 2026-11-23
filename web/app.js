@@ -2066,7 +2066,13 @@ function mergeShellHistoryLists(stored, fromEvents) {
 
 function rebuildShellHistoryFromEvents(events) {
   const list = [];
+  const pivotCommands = new Set((events || [])
+    .filter(ev => ev.type === "operator" && /^(tun|socks):/.test(String(ev.body || "").trim()))
+    .map(ev => typeof ev.command === "string" ? ev.command.trim() : operatorCommandFromBody(ev.body))
+    .filter(Boolean));
   for (const ev of events || []) {
+    // Pivot result labels describe server actions, not commands sent to the shell.
+    if (ev.type === "output" && pivotCommands.has(String(ev.command || "").trim())) continue;
     const cmd = extractShellCommandFromEvent(ev);
     if (!cmd) continue;
     if (list.length && list[list.length - 1] === cmd) continue;
@@ -2078,7 +2084,11 @@ function rebuildShellHistoryFromEvents(events) {
 function seedShellHistory(sessionId, events) {
   if (!sessionId) return;
   const fromEvents = rebuildShellHistoryFromEvents(events);
-  const stored = loadShellHistoryStore()[sessionId];
+  const pivotCommands = new Set((events || [])
+    .filter(ev => ev.type === "operator" && /^(tun|socks):/.test(String(ev.body || "").trim()))
+    .map(ev => typeof ev.command === "string" ? ev.command.trim() : operatorCommandFromBody(ev.body)));
+  const stored = (loadShellHistoryStore()[sessionId] || [])
+    .filter(cmd => !pivotCommands.has(cmd) || fromEvents.includes(cmd));
   state.shellHistoryBySession[sessionId] = mergeShellHistoryLists(stored, fromEvents);
   persistShellHistory(sessionId);
   resetShellHistoryNav();
