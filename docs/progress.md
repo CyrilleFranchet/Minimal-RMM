@@ -1,5 +1,155 @@
 # Progress Log
 
+## 2026-11-23 — Second review of plugin child identity
+
+- Two source reviews identified and fixed a contained launcher edge case:
+  preconfigured command tokens are now replaced even when the calling thread
+  has no token. Process attributes are copied to preserve other callers' state.
+- Split launch from waiting so captured and duplicated token handles close
+  immediately after launch/restoration, including for persistent plugins.
+- Strengthened Windows tests for stale command tokens, attribute preservation,
+  prepared primary-token authentication LUID, and exact parent authentication
+  LUID restoration before any missing-privilege skip.
+- Host Go tests, Windows amd64 normal/debug test compilation, and Windows vet
+  with the existing unsafe-pointer analyzer excluded passed. Native Windows execution remains
+  required; these cross-compilation checks do not establish runtime success.
+
+## 2026-11-23 — Preserve runtime thread identity in plugin children
+
+- Both isolated PE plugin launch paths now capture the actual calling OS thread
+  token at launch, duplicate it into an owned primary token, and assign it to
+  the child. With no thread token they retain the process identity. Global
+  `make_token` state is not used as a substitute for the actual thread token.
+- Capture and Start share one pinned thread; the exact captured caller token is
+  restored after successful or failed Start before waiting without the extra
+  thread lock. Restoration failure marks identity state unsafe, retires that
+  thread, and kills/reaps a started child without plugin lifecycle logging.
+- Capture, duplication, and privilege failures return errors with no fallback
+  to a different identity. Token-bearing launch uses CreateProcessAsUser and
+  therefore still needs the applicable Windows process-creation privileges.
+- Added Windows failure-path and native authentication-LUID child tests, wired
+  into the Windows identity workflow. Host `go test ./...`, Windows amd64 test
+  compilation (normal/debug), `go vet -unsafeptr=false` for Windows, and
+  `git diff --check` passed. Full Windows vet still reports existing unsafe
+  pointer warnings in the PE mapper, WMI, and WSMan code. Native Windows
+  execution remains required; the current development host is macOS. The native
+  inheritance test explicitly skips runners lacking creation privileges.
+  Also restored a missing net/http import in the existing memory-hosted tests
+  so the Windows test package compiles. See go-agent.md for helper contracts.
+
+## 2026-11-23 — Shell command timestamps
+
+- Command echoes and restored command headers now show submission date/time;
+  live operator events show recorded time and results show receipt time.
+- Offset-aware times render in UTC. Legacy timestamps without an offset retain
+  their wall time labeled server time; missing times remain omitted.
+- No agent execution-start timestamp is inferred. See
+  `shell-transcript-recovery.md` for timing semantics and the rendering helper.
+- Validation: shell label/timestamp, completion (53), recovery, and session
+  routing (9) tests passed, along with operator parity and JavaScript syntax.
+- Verification follow-up: reject malformed/non-ISO timestamps and impossible
+  calendar dates; show receipt time for unmatched results even without command
+  text, including artifacts and cloud uploads. The full `check-web-contracts`
+  suite and `check-parity` passed with localhost listener access; added midnight
+  rollover, leap-day, missing-history-time, and live-event regressions.
+
+## 2026-11-23 — One-shot plugin child support for memory-hosted sessions
+
+- Diagnosis: one-shot plugin commands on Go sessions (`__SCREENSHOT__`,
+  `__PE_LOAD__`, `__PLUGIN_COMMAND__`) run the PE plugin chain — the parent
+  fetches the plugin DLL over the authenticated beacon channel and executes
+  the `Run` export in a child process launched from `os.Args[0]`. A
+  memory-hosted session failed closed: inside a loader host that path names
+  `powershell.exe`.
+- Layering correction from review: plugin implementations belong in the
+  plugin repository (`Minimal-RMM-plugins/screenshot` — the cgo DLL with
+  the shared `int Run(const char*, char*, int)` ABI); the agent must contain
+  only generic loading machinery. All screenshot-specific dispatcher files
+  added along the way were removed — the `__SCREENSHOT__` dispatch in
+  `main.go` is just a command-to-plugin mapping again, and the hosting-mode
+  selection lives in the generic `loadPluginPE`.
+- Design pivots worth recording: staging the agent binary as a plugin-host
+  executable under `%TEMP%` (rejected — writing any agent image to disk
+  defeats the loader chain's no-trace goal); mapping the plugin inside the
+  agent process (rejected — the sacrificial child process is required so a
+  bad plugin implementation can never crash the agent or its host);
+  LoadLibrary in the PowerShell child (rejected — LoadLibrary requires a
+  file, forcing the plugin DLL onto disk when a zero-disk alternative
+  exists).
+- Shipped implementation: one-shot plugin invocations always execute in a
+  sacrificial child with nothing written to disk. `loadPluginPE` picks the
+  child executable by hosting mode: an on-disk session keeps the historical
+  copy-of-self child (unchanged `loadPluginPEContext` streaming); a
+  memory-hosted session hosts the identical `--plugin-child` contract in a
+  bounded **Windows PowerShell child** (System32 `powershell.exe`, the
+  binary the PowerShell cleanup worker already uses — shared resolver
+  renamed to `windowsPowerShellExecutable`). The DLL bytes travel the
+  standard length-prefixed stdin frame (`framePluginForChild`, shared with
+  the copy-of-self child), and the child maps them in memory with an
+  Add-Type compiled C# mapper mirroring the agent's manual mapper (PE32+
+  amd64 validation, sections, DIR64 relocations, imports,
+  DLL_PROCESS_ATTACH, export-table walk rejecting forwarders, the shared
+  `Run` delegate ABI) — the loading model the loader chain established for
+  streaming agent bytes into PowerShell. The child launches through the
+  same `runPluginCommand` identity path as every other plugin child, and
+  zero server or wire changes exist — every command looks identical from
+  the control plane. Because the selection is generic, `__PE_LOAD__` and
+  `__PLUGIN_COMMAND__` work from memory-hosted sessions too.
+- Scope guard: long-lived channel plugins (socks/tun) keep starting through
+  `loadPluginPEContext` (the pluginController path), the copy-of-self
+  child, and their `RMM_IN_MEMORY` guard — the PowerShell host serves
+  one-shot invocations only. Plugins opting into the Windows loader
+  (`RMMRequiresWindowsLoader`) fail with an explicit error from this
+  hosting mode (they genuinely require an on-disk library load).
+  `__SPAWNAS_STAGED__` remains the documented escape hatch. Add-Type CodeDom
+  compiler scratch under `%TEMP%` is the documented loader-chain exception.
+- Validation on the host: Go tests pin the generic loader decision (on-disk
+  keeps the copy-of-self loader; memory-hosted passes the hosting guard and
+  reaches the PowerShell host loader), the host script contract (no
+  filesystem touch, no path-based loading, quote doubling for the export
+  literal, the mapper and frame markers), and the shared stdin frame
+  round-trip. All rejected code paths were fully removed. Go tests, Windows
+  amd64 cross-builds, and the full `make check` pass.
+- Native Windows validation of the memory-hosted plugin path (the
+  PowerShell child mapping `Minimal-RMM-plugins/screenshot` and returning
+  the PNG from a loader-hosted session) remains open per the platform
+  policy. Docs updated: `go-agent.md` (generic one-shot plugin child
+  section + capability lists), `winrm-transfer.md`, `lateral-loader.md` §7,
+  `README.md` (wire row), and the `queue_screenshot` tool docstrings.
+
+## 2026-11-23 — Preserve download receipts and correct artifact ages
+
+- Repeated filenames now receive separate stored artifacts and URLs. Workspace
+  names derive from source stream identity so interrupted receipt replay remains
+  idempotent. Names remain retrievable through the artifact API's length limit.
+- Receipt timestamps now carry an explicit UTC offset. Legacy naive workspace
+  timestamps fall back to absolute file mtime; inventory sorting uses normalized
+  times. `_artifact_received_at` owns this compatibility normalization.
+- Added repeated single/chunked receipt, replay, long filename, timestamp, and
+  browser time zone regression coverage.
+- Validation: all 80 workspace tests, WebUI contracts, and operator parity
+  passed; `git diff --check` is clean.
+- Activation requires updated central/workspace services and a WebUI reload;
+  no additional agent rebuild is needed for these storage/time corrections.
+
+## 2026-11-23 — Live download progress and shell artifact saving
+
+- Added Go download progress results and central-to-workspace forwarding.
+  Workspace caches advisory updates separately from transcript events and serves
+  them to WebUI polling without advancing transcript IDs. Completed/failed
+  transfers clear updates; invalid advisory JSON cannot stall synchronization.
+- Fixed immediate browser object URL revocation in the shell artifact save
+  helper; added pending feedback and a duplicate-click guard.
+- Added Go, workspace broker/API, and JavaScript regression tests. Wired the
+  download UI and workspace restart tests into `make check-web-contracts`.
+- Validation: 77 workspace tests, the full Go suite, WebUI contracts, and
+  operator parity passed. Native Windows/browser download validation remains
+  outstanding; JavaScript tests exercise the rendered link's actual handler
+  with a simulated browser save API.
+- Deployment requires updated central/workspace services, reloaded WebUI assets,
+  and a rebuilt/redeployed Go agent for Go progress generation. Existing
+  PowerShell progress uses the same workspace forwarding path.
+
 ## 2026-11-23 — Staged spawnas for memory-hosted sources
 
 - Compatibility review: the legacy `__SPAWNAS__` command launches
