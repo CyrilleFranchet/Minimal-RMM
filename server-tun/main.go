@@ -300,7 +300,7 @@ func (h *relayHandler) handleTCPRequest(request *tcp.ForwarderRequest) {
 		request.Complete(true)
 		return
 	}
-	defer request.Complete(false)
+	request.Complete(false)
 
 	localConn := gonet.NewTCPConn(&queue, endpoint)
 	defer localConn.Close()

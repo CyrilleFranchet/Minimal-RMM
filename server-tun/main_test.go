@@ -14,6 +14,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 
 	M "github.com/xjasonlyu/tun2socks/v2/metadata"
 )
@@ -202,6 +203,9 @@ func TestTCPForwarderRelaysRemoteData(t *testing.T) {
 		proxy.closePeers()
 	}()
 
+	// An established stream must release the only pending handshake slot.
+	forwarder := tcp.NewForwarder(stackInstance, 0, 1, handler.handleTCPRequest)
+	stackInstance.SetTransportProtocolHandler(tcp.ProtocolNumber, forwarder.HandlePacket)
 	injectTCPsyn(t, link)
 	select {
 	case <-proxy.dialed:
@@ -242,6 +246,12 @@ func TestTCPForwarderRelaysRemoteData(t *testing.T) {
 		}
 		if string(payload) == "target-response" {
 			packet.DecRef()
+			injectTCPPacket(t, link, tcpPacketFields{SrcPort: 40124, DstPort: 444, SeqNum: 200, Flags: header.TCPFlagSyn})
+			select {
+			case <-proxy.dialed:
+			case <-time.After(time.Second):
+				t.Fatal("established stream retained pending handshake slot")
+			}
 			return
 		}
 		packet.DecRef()

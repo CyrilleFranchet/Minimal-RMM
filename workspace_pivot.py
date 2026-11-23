@@ -166,15 +166,16 @@ class WorkspacePivotManager:
                 session_id = str(row.get("session_id") or "")
                 if not session_id:
                     continue
+                # Apply acknowledgments before resubmitting retained controls.
+                responses = self.fetch_responses(session_id, channel)
+                if responses:
+                    manager.submit_agent_responses(session_id, responses)
+                if not self._running:
+                    return
                 tasks = manager.poll_tasks(session_id)
                 if tasks:
                     if not self.submit_tasks(session_id, channel, tasks):
                         manager.requeue_tasks(session_id, tasks)
-                if not self._running:
-                    return
-                responses = self.fetch_responses(session_id, channel)
-                if responses:
-                    manager.submit_agent_responses(session_id, responses)
 
     def _sync_loop(self) -> None:
         """Keep the workspace data plane moving without blocking HTTP handlers."""

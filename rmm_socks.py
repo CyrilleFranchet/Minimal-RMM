@@ -71,6 +71,7 @@ class SessionSocksBridge:
         self.task_queue: deque[dict[str, Any]] = deque()
         self.connect_events: dict[str, threading.Event] = {}
         self.connect_errors: dict[str, str] = {}
+        self._requested_connects: set[str] = set()
         self.tunnels: dict[str, dict[str, Any]] = {}
         self._pending_sends: dict[str, deque[dict[str, Any]]] = {}
         self._queued_udp_tasks = 0
@@ -193,6 +194,7 @@ class SessionSocksBridge:
                 ev.set()
             self.connect_events.clear()
             self.connect_errors.clear()
+            self._requested_connects.clear()
             self._pending_sends.clear()
             self._queued_udp_tasks = 0
             self._external_responses.clear()
@@ -285,6 +287,8 @@ class SessionSocksBridge:
 
     def _enqueue_task(self, task: dict[str, Any]) -> None:
         with self.lock:
+            if task.get("op") == "connect":
+                self._requested_connects.add(task["id"])
             if task.get("op") == "udp_send":
                 if self._queued_udp_tasks >= MAX_QUEUED_UDP_TASKS:
                     return
@@ -386,6 +390,12 @@ class SessionSocksBridge:
             if op == "ok":
                 self._drop_tasks(cid, "connect")
                 with self.lock:
+                    if cid not in self._requested_connects and cid not in self.tunnels:
+                        if self._running:
+                            close = {"op": "close", "id": cid}
+                            if close not in self.task_queue:
+                                self.task_queue.append(close)
+                        continue
                     if cid not in self.tunnels:
                         self.tunnels[cid] = {
                             "id": cid,
@@ -402,6 +412,9 @@ class SessionSocksBridge:
                 self._drop_tasks(cid, "connect")
                 msg = str(resp.get("msg") or "connect failed")
                 with self.lock:
+                    if cid not in self._requested_connects:
+                        continue
+                    self._requested_connects.discard(cid)
                     self.connect_errors[cid] = msg
                     ev = self.connect_events.get(cid)
                 if ev:
@@ -475,9 +488,28 @@ class SessionSocksBridge:
         with self.lock:
             if not self._running:
                 return False
+            controls = {
+                (task.get("id"), task.get("op")) for task in self.task_queue
+                if task.get("op") in ("connect", "close", "udp_close")
+            }
+            acknowledged = {
+                (response.get("id"), op)
+                for response in self._external_responses
+                for op in (
+                    ("connect",) if response.get("op") in ("ok", "error") else
+                    ("connect", "close") if response.get("op") in ("close", "closed") else
+                    ("udp_close",) if response.get("op") == "udp_closed" else ()
+                )
+            }
             for task in tasks:
-                if not isinstance(task, dict) or not task.get("op") or not task.get("id"):
+                if (not isinstance(task, dict) or not task.get("op")
+                        or not isinstance(task.get("id"), str) or not task["id"]):
                     continue
+                if task.get("op") in ("connect", "close", "udp_close"):
+                    key = (task["id"], task["op"])
+                    if key in controls or key in acknowledged:
+                        continue
+                    controls.add(key)
                 if task.get("op") == "udp_send":
                     if self._queued_udp_tasks >= MAX_QUEUED_UDP_TASKS:
                         continue
@@ -510,18 +542,19 @@ class SessionSocksBridge:
                 continue
             op = response.get("op")
             cid = str(response.get("id"))
-            if op == "ok":
-                self._drop_tasks(cid, "connect")
-            elif op == "error":
-                self._drop_tasks(cid, "connect")
-            elif op == "udp_closed":
-                self._drop_tasks(cid, "udp_close")
-            elif op in ("closed", "close"):
-                for task_op in ("connect", "send", "close"):
-                    self._drop_tasks(cid, task_op)
             with self.lock:
-                if self._running:
-                    self._external_responses.append(dict(response))
+                if not self._running:
+                    continue
+                acknowledged = (
+                    ("connect",) if op in ("ok", "error") else
+                    ("udp_close",) if op == "udp_closed" else
+                    ("connect", "send", "close") if op in ("closed", "close") else ()
+                )
+                self.task_queue = deque(
+                    task for task in self.task_queue
+                    if not (task.get("id") == cid and task.get("op") in acknowledged)
+                )
+                self._external_responses.append(dict(response))
 
     def drain_external_responses(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Return and remove raw agent responses destined for a workspace."""
@@ -544,6 +577,7 @@ class SessionSocksBridge:
             if cid and self.tunnels.get(cid) is tunnel:
                 self.tunnels.pop(cid, None)
             if cid:
+                self._requested_connects.discard(cid)
                 self._pending_sends.pop(cid, None)
                 self.task_queue = deque(
                     task
@@ -627,7 +661,23 @@ class SessionSocksBridge:
         if err:
             self.log(f"SOCKS tunnel {conn_id[:8]} failed: {err}", "WARNING")
             return False
+        if not ok:
+            self._cancel_connect(conn_id)
         return ok
+
+    def _cancel_connect(self, conn_id: str) -> None:
+        """Cancel timed-out work; subsequent unsolicited successes are closed."""
+        with self.lock:
+            self._requested_connects.discard(conn_id)
+            tunnel = self.tunnels.pop(conn_id, None)
+            self._pending_sends.pop(conn_id, None)
+            self.task_queue = deque(
+                task for task in self.task_queue if task.get("id") != conn_id
+            )
+            if self._running:
+                self.task_queue.append({"op": "close", "id": conn_id})
+        if tunnel:
+            self._close_tunnel(tunnel)
 
     def _handle_socks_client(self, client_sock: socket.socket) -> None:
         try:

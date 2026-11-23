@@ -129,6 +129,7 @@ class SocksFullDuplexTests(unittest.TestCase):
         bridge = SessionSocksBridge('full-duplex', '127.0.0.1', 0)
         self.bridges.append(bridge)
         bridge._running = True
+        bridge._enqueue_task({'op': 'connect', 'id': 'connection', 'host': 'example', 'port': 443})
         bridge.submit_responses([{'op': 'ok', 'id': 'connection'}])
         tunnel = bridge.tunnels['connection']
         self.assertTrue(bridge._attach_client(tunnel, observed))
@@ -224,12 +225,14 @@ class SocksBridgeTests(unittest.TestCase):
 
     def test_wait_connect_accepts_response_received_before_waiter_creation(self):
         bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
+        bridge._enqueue_task({"op": "connect", "id": "fast-connect", "host": "example", "port": 443})
         bridge.submit_responses([{"id": "fast-connect", "op": "ok"}])
 
         self.assertTrue(bridge._wait_connect("fast-connect"))
 
     def test_wait_connect_reports_error_received_before_waiter_creation(self):
         bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
+        bridge._enqueue_task({"op": "connect", "id": "fast-connect", "host": "example", "port": 443})
         bridge.submit_responses(
             [{"id": "fast-connect", "op": "error", "msg": "connection refused"}]
         )
@@ -358,6 +361,7 @@ class SocksBridgeTests(unittest.TestCase):
     def test_remote_data_is_buffered_until_local_client_attaches(self):
         bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
         bridge._running = True
+        bridge._enqueue_task({"op": "connect", "id": "early-data", "host": "example", "port": 443})
         bridge.submit_responses(
             [
                 {"id": "early-data", "op": "ok"},
@@ -374,6 +378,7 @@ class SocksBridgeTests(unittest.TestCase):
     def test_remote_close_after_connect_waits_for_socks_success_reply(self):
         bridge = SessionSocksBridge("test-session", "127.0.0.1", 0)
         bridge._running = True
+        bridge._enqueue_task({"op": "connect", "id": "fast-close", "host": "example", "port": 443})
         bridge.submit_responses(
             [
                 {"id": "fast-close", "op": "ok"},
@@ -403,6 +408,90 @@ class SocksBridgeTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 manager.start("test-session", port=0)
         self.assertIsNone(manager.get("test-session"))
+
+
+
+class ScanLoadRegressionTests(unittest.TestCase):
+    """Cover bounded control queues and timeout cancellation under scan load."""
+
+    def bridge(self, external=False):
+        bridge = SessionSocksBridge('scan', '127.0.0.1', 0, external=external)
+        bridge._running = True
+        self.addCleanup(bridge.stop)
+        return bridge
+
+    def test_repeated_workspace_controls_are_deduplicated_but_sends_are_not(self):
+        bridge = self.bridge(external=True)
+        controls = [{'op': op, 'id': 'flow'} for op in ('connect', 'close', 'udp_close')]
+        for _ in range(100):
+            bridge.submit_external_tasks(controls + [{'op': 'send', 'id': 'flow', 'data_b64': 'YQ=='}])
+        self.assertEqual(sum(task['op'] == 'send' for task in bridge.task_queue), 100)
+        tasks = bridge.fetch_tasks()
+        for control in controls:
+            self.assertEqual(tasks.count(control), 1)
+        self.assertEqual(sum(task['op'] == 'send' for task in tasks), 32)
+
+    def test_timeout_cancels_connect_and_closes_late_success(self):
+        bridge = self.bridge()
+        bridge._enqueue_task({'op': 'connect', 'id': 'flow', 'host': 'example', 'port': 443})
+        with patch('rmm_socks.threading.Event') as event:
+            event.return_value.wait.return_value = False
+            self.assertFalse(bridge._wait_connect('flow'))
+        self.assertEqual(bridge.fetch_tasks(), [{'op': 'close', 'id': 'flow'}])
+        # Even a close acknowledgment preceding a delayed success must not
+        # resurrect a connection that no longer has a local client.
+        bridge.submit_responses([{'op': 'closed', 'id': 'flow'}, {'op': 'ok', 'id': 'flow'}])
+        self.assertNotIn('flow', bridge.tunnels)
+        self.assertEqual(bridge.fetch_tasks(), [{'op': 'close', 'id': 'flow'}])
+
+    def test_timeout_closes_success_arriving_at_wait_boundary(self):
+        bridge = self.bridge()
+        bridge._enqueue_task({"op": "connect", "id": "flow", "host": "example", "port": 443})
+        def complete_before_timeout(_timeout=None, **kwargs):
+            bridge.submit_responses([{'op': 'ok', 'id': 'flow'}])
+            return False
+        with patch('rmm_socks.threading.Event') as event:
+            event.return_value.wait.side_effect = complete_before_timeout
+            self.assertFalse(bridge._wait_connect('flow'))
+        self.assertNotIn('flow', bridge.tunnels)
+        self.assertEqual(bridge.fetch_tasks(), [{'op': 'close', 'id': 'flow'}])
+
+    def test_malformed_control_id_is_ignored(self):
+        bridge = self.bridge(external=True)
+        bridge.submit_external_tasks([{'op': 'connect', 'id': ['invalid']}])
+        self.assertEqual(bridge.fetch_tasks(), [])
+
+    def test_unsolicited_success_never_creates_orphan(self):
+        bridge = self.bridge()
+        bridge.submit_responses([{'op': 'ok', 'id': 'old-flow'}])
+        self.assertNotIn('old-flow', bridge.tunnels)
+        self.assertEqual(bridge.fetch_tasks(), [{'op': 'close', 'id': 'old-flow'}])
+
+    def test_pending_acknowledgment_prevents_connect_requeue(self):
+        bridge = self.bridge(external=True)
+        task = {'op': 'connect', 'id': 'flow', 'host': 'example', 'port': 443}
+        bridge.submit_external_tasks([task])
+        bridge.submit_responses([{'op': 'ok', 'id': 'flow'}])
+        bridge.submit_external_tasks([task])
+        self.assertEqual(bridge.fetch_tasks(), [])
+        self.assertEqual(bridge.drain_external_responses(), [{'op': 'ok', 'id': 'flow'}])
+
+    def test_workspace_consumes_ack_before_resubmitting_connect(self):
+        from workspace_pivot import WorkspacePivotManager
+        submitted = []
+        with patch('workspace_pivot.threading.Thread.start'):
+            manager = WorkspacePivotManager(
+                'unused', lambda _sid, _channel, tasks: submitted.extend(tasks) or True,
+                lambda _sid, _channel: [{'op': 'ok', 'id': 'flow'}],
+            )
+        self.addCleanup(manager.stop_all)
+        bridge = self.bridge()
+        bridge._enqueue_task({'op': 'connect', 'id': 'flow', 'host': 'example', 'port': 443})
+        with patch.object(manager.socks, 'list_relays', return_value=[{'session_id': 'scan'}]), \
+                patch.object(manager.socks, 'get', return_value=bridge):
+            manager.sync_once()
+        self.assertIn('flow', bridge.tunnels)
+        self.assertEqual(submitted, [])
 
 
 if __name__ == "__main__":

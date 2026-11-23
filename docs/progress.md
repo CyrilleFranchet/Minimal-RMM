@@ -21,6 +21,21 @@
   `docs/wmi-com-lifecycle.md`. The retry is a mitigation, not a root-cause
   proof.
 
+## 2026-11-23 — TUN scan-load recovery
+
+- Deduplicate retained workspace controls at the central pivot broker.
+- Cancel timed-out CONNECTs and close late successes during a bounded delivery window.
+- Isolate TCP writes in bounded per-flow FIFOs, drain accepted bytes on close,
+  and read TCP sockets concurrently. Stop workers and sockets on shutdown.
+- Track live CONNECT ownership without an expiring abandonment cache, process
+  acknowledgments before controls, and suppress controls with queued ACKs.
+- Split response POSTs, retry only unsent suffixes, and release completed
+  helper handshakes from the forwarder limit.
+- Added queue, timeout-race, blocked-writer, and concurrent-reader regressions.
+- Deployment requires updated central/workspace Python services and a rebuilt,
+  installed `tun.dll` and `rmm-tun` helper, then restarting the TUN relay. Native
+  Windows/TUN scan validation remains an operator-side check.
+
 ## 2026-11-23 — Restore short HTTP connections in the Go agent
 
 - Added Go persistence parity with PowerShell: short connections by default,

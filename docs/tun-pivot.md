@@ -177,6 +177,48 @@ semantics remain unsupported. UDP protocols are supported through the SOCKS5
 UDP association, subject to the protocol's socket behavior and the agent's
 beacon latency.
 
+## Scan load and connection cleanup
+
+The central broker deduplicates retained `connect`, `close`, and `udp_close`
+controls by connection ID and operation. Repeated workspace syncs do not grow
+those queues while a target connection is pending; TCP payload sends remain
+ordered and are never deduplicated.
+
+The bridge tracks live CONNECT ownership from enqueue through cleanup. A
+success without an active request or tunnel is closed, even after a prolonged
+outage. `_cancel_connect` removes timed-out work and requests remote closure.
+The workspace applies agent acknowledgments before resending controls; the
+central broker also suppresses controls whose acknowledgment is still queued.
+Acknowledgment storage and task removal happen under the same lock.
+
+The external TUN plugin uses independent, ordered TCP writers. `queueWrite`
+creates one `tcpWriter` with a 32-payload FIFO per writing flow; each payload
+write has a five-second deadline. Ordinary close requests drain accepted bytes
+before closing. Overflow, write failure, and shutdown abort that flow.
+`closeFlow` cancels its worker, and `collectWrites` applies completion on the
+registry-owning relay loop. A blocked target does not hold up other flows.
+Cancelled CONNECT attempts keep their pending identity until their result is
+discarded, preventing a duplicate attempt while cancellation is outstanding.
+
+`readConnectionsData` reads TCP sockets concurrently using private worker state,
+then applies removals on the relay loop. Idle sockets share their read wait.
+UDP reads retain their existing behavior. `flushResponses` splits ordered
+responses into approximately 512 KiB HTTP bodies and returns only the unsent
+suffix on failure. A 413 response triggers smaller batches; an unsplittable
+single-entry 413 stops the plugin rather than retrying forever. HTTP response
+loss can still produce a replay because the transport has no byte-level ACK.
+
+The stack helper releases each pending-handshake slot immediately after the
+local handshake completes, allowing established streams to stay open without
+consuming the 2,048-request forwarder limit.
+
+Deploy all parts: restart the updated central and workspace services, rebuild
+and install both `tun.dll` and the `rmm-tun` helper, then stop and restart existing
+TUN relays. Updating source alone does not replace running binaries. Host tests
+cover queue retries, late results, concurrent reads, ordered writes, overflow,
+shutdown, HTTP response splitting, and handshake-slot reuse. A real Windows
+agent and privileged TUN scan remain necessary for end-to-end validation.
+
 ## Lifecycle and failure handling
 
 - `tun start` requires the Go agent's `tun-plugin` capability, the built
