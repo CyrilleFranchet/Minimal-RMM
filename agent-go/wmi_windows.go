@@ -353,6 +353,17 @@ func wmiComWorker() (chan func(), error) {
 		ready := make(chan error, 1)
 		go func() {
 			runtime.LockOSThread()
+			// Load the user profile BEFORE COM initialization: the HKCR
+			// merged view caches registry handles at CoInitializeEx time.
+			// If the user's hive is tombstoned (profile was loaded by a
+			// previous interactive session and then unloaded), COM caches
+			// the tombstoned handles and every subsequent class-store
+			// lookup returns ERROR_KEY_DELETED.  Remounting the hive first
+			// ensures COM sees live keys.  Best-effort: if the User
+			// Profile Service is unavailable, the DllGetClassObject bypass
+			// still handles the WbemLocator, though ConnectServer's
+			// internal DCOM proxy activation has no workaround.
+			_ = wmiEnsureProfileLoaded()
 			hr, _, _ := procCoInitializeEx.Call(0, coinitMultithreaded)
 			if hr != 0 && hr != 1 {
 				ready <- fmt.Errorf("CoInitializeEx failed: 0x%08x", hr)
