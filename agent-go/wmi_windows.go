@@ -52,6 +52,9 @@ var (
 	procCoSetProxyBlanket = ole32.NewProc("CoSetProxyBlanket")
 	procSysAllocString    = oleaut32.NewProc("SysAllocString")
 	procSysFreeString     = oleaut32.NewProc("SysFreeString")
+	userenv               = syscall.NewLazyDLL("userenv.dll")
+	procLoadUserProfileW  = userenv.NewProc("LoadUserProfileW")
+	procGetUserNameW      = advapi32.NewProc("GetUserNameW")
 )
 
 // initializeWMISecurity establishes process-wide thread-token cloaking once.
@@ -124,6 +127,68 @@ type variant struct {
 	reserved [6]byte
 	value    uintptr
 	tail     [8]byte
+}
+
+// profileInfoW mirrors the Windows PROFILEINFOW structure.
+type profileInfoW struct {
+	DwSize        uint32
+	DwFlags       uint32
+	LpUserName    *uint16
+	LpProfilePath *uint16
+	LpDefaultPath *uint16
+	LpServerName  *uint16
+	LpPolicyPath  *uint16
+	HProfile      syscall.Handle
+}
+
+// wmiEnsureProfileLoaded remounts the user's registry hive to clear COM
+// class-store tombstones (ERROR_KEY_DELETED / 0x800703FA).  Production uses
+// wmiLoadProfileOnce; Windows tests substitute a stub so the profile-reload
+// recovery path can be exercised without depending on the User Profile Service.
+var wmiEnsureProfileLoaded = wmiLoadProfileOnceGuarded
+
+var wmiProfileState struct {
+	sync.Once
+	err error
+}
+
+func wmiLoadProfileOnceGuarded() error {
+	wmiProfileState.Once.Do(func() {
+		wmiProfileState.err = wmiLoadProfileOnce()
+	})
+	return wmiProfileState.err
+}
+
+func wmiLoadProfileOnce() error {
+	var token syscall.Token
+	process, _ := syscall.GetCurrentProcess()
+	if err := syscall.OpenProcessToken(process,
+		syscall.TOKEN_QUERY|0x0004|0x0002, // TOKEN_IMPERSONATE|TOKEN_DUPLICATE
+		&token); err != nil {
+		return fmt.Errorf("open process token for profile loading: %w", err)
+	}
+	defer token.Close()
+
+	var size uint32 = 256
+	nameBuf := make([]uint16, size)
+	ok, _, callErr := procGetUserNameW.Call(
+		uintptr(unsafe.Pointer(&nameBuf[0])),
+		uintptr(unsafe.Pointer(&size)))
+	if ok == 0 {
+		return fmt.Errorf("GetUserNameW: %w", callErr)
+	}
+
+	pi := profileInfoW{LpUserName: &nameBuf[0]}
+	pi.DwSize = uint32(unsafe.Sizeof(pi))
+
+	r, _, callErr := procLoadUserProfileW.Call(
+		uintptr(token),
+		uintptr(unsafe.Pointer(&pi)))
+	if r == 0 {
+		return fmt.Errorf("LoadUserProfileW: %w", callErr)
+	}
+	// pi.HProfile is the HKEY for the loaded hive — deliberately leaked.
+	return nil
 }
 
 // comCallHR dispatches a COM interface method by vtable slot and returns the
@@ -489,13 +554,21 @@ func cocreateWbemLocatorWithRaw(raw func() (uintptr, uintptr)) (uintptr, error) 
 	}
 	if lastHR == hrErrorKeyDeleted {
 		// The class-store tombstone persisted through the bounded retry
-		// schedule.  Before giving up, try the direct WbemCreateLocator
-		// export from wbemsvc.dll — it bypasses COM class-store activation
-		// (and therefore the tombstoned registry key) entirely.
+		// schedule.  First, try to remount the user's registry hive — if
+		// it succeeds, the standard CoCreateInstance path works again (and
+		// so will ConnectServer and every other internal COM activation).
+		if profileErr := wmiEnsureProfileLoaded(); profileErr == nil {
+			if locator, hr := raw(); hr == 0 {
+				return locator, nil
+			}
+		}
+		// Profile reload unavailable or did not clear the tombstone —
+		// bypass COM class-store activation entirely via
+		// DllGetClassObject + IClassFactory from wbemprox.dll.
 		if directLoc, directHR := cocreateWbemLocatorFallback(); directHR == 0 {
 			return directLoc, nil
 		}
-		return 0, fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x: local class-store delete-pending state persisted through %d retries and the direct WbemCreateLocator fallback also failed",
+		return 0, fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x: local class-store delete-pending state persisted through %d retries; profile reload and DllGetClassObject fallback both failed",
 			lastHR, len(wmiCocreateRetryDelays))
 	}
 	return 0, fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x", lastHR)
@@ -575,10 +648,23 @@ func wmiCreateProcessChain(host, command string, identity *winrmCredentials, amb
 		authority = identityAuthority
 		authnService = rpcCAuthnWinnt
 	}
-	if err := comCall(locator, 3, namespace, identityUser, identityPassword, 0, 0,
+	connectHR := comCallHR(locator, 3, namespace, identityUser, identityPassword, 0, 0,
 		authority, 0,
-		uintptr(unsafe.Pointer(&services))); err != nil {
-		return fmt.Errorf("WMI connect to %s: %w", host, err)
+		uintptr(unsafe.Pointer(&services)))
+	if connectHR == hrErrorKeyDeleted {
+		// The DCOM proxy activation inside ConnectServer hit the same
+		// class-store tombstone that affects CoCreateInstance.  Unlike the
+		// locator (which we can bypass with DllGetClassObject), the proxy
+		// infrastructure is internal to COM — the only fix is to remount
+		// the user's registry hive so the tombstoned keys become live.
+		if profileErr := wmiEnsureProfileLoaded(); profileErr == nil {
+			connectHR = comCallHR(locator, 3, namespace, identityUser, identityPassword, 0, 0,
+				authority, 0,
+				uintptr(unsafe.Pointer(&services)))
+		}
+	}
+	if connectHR != 0 {
+		return fmt.Errorf("WMI connect to %s: COM method 3 failed: 0x%08x", host, connectHR)
 	}
 	defer comRelease(services)
 	// The blanket binds the SSPI identity of every WMI call on the proxy:

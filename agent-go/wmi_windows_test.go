@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"syscall"
@@ -198,11 +199,14 @@ func TestCocreateWbemLocatorFailsFastOnDeterministicHR(t *testing.T) {
 // terminal path: an unresolvable delete-pending state still reports the raw
 // HRESULT with the retry context, after exactly the scheduled attempts.
 func TestCocreateWbemLocatorExhaustedRetriesKeepsHR(t *testing.T) {
+	origProfileLoader := wmiEnsureProfileLoaded
 	defer func() {
 		cocreateWbemLocatorRaw = wmiCocreateRaw
 		cocreateWbemLocatorFallback = wmiDirectRaw
 		wmiCocreateRetrySleep = time.Sleep
+		wmiEnsureProfileLoaded = origProfileLoader
 	}()
+	wmiEnsureProfileLoaded = func() error { return fmt.Errorf("stubbed out") }
 	cocreateWbemLocatorFallback = func() (uintptr, uintptr) { return 0, 0x80004002 }
 	calls := 0
 	cocreateWbemLocatorRaw = func() (uintptr, uintptr) {
@@ -218,7 +222,7 @@ func TestCocreateWbemLocatorExhaustedRetriesKeepsHR(t *testing.T) {
 	if !strings.Contains(err.Error(), "retries") {
 		t.Fatalf("the exhaustion error must name the retries, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "fallback also failed") {
+	if !strings.Contains(err.Error(), "fallback both failed") {
 		t.Fatalf("the exhaustion error must name the failed fallback, got %v", err)
 	}
 	if calls != 1+len(wmiCocreateRetryDelays) || slept != len(wmiCocreateRetryDelays) {
@@ -232,11 +236,15 @@ func TestCocreateWbemLocatorExhaustedRetriesKeepsHR(t *testing.T) {
 // ERROR_KEY_DELETED, the direct WbemCreateLocator export succeeds without
 // the operator having to pass --direct-wbem.
 func TestCocreateWbemLocatorFallsBackToDirectOnKeyDeleted(t *testing.T) {
+	origProfileLoader := wmiEnsureProfileLoaded
 	defer func() {
 		cocreateWbemLocatorRaw = wmiCocreateRaw
 		cocreateWbemLocatorFallback = wmiDirectRaw
 		wmiCocreateRetrySleep = time.Sleep
+		wmiEnsureProfileLoaded = origProfileLoader
 	}()
+	// Profile reload fails — the fallback to DllGetClassObject must recover.
+	wmiEnsureProfileLoaded = func() error { return fmt.Errorf("profile service unavailable") }
 	cocreateCalls := 0
 	cocreateWbemLocatorRaw = func() (uintptr, uintptr) {
 		cocreateCalls++
@@ -261,5 +269,60 @@ func TestCocreateWbemLocatorFallsBackToDirectOnKeyDeleted(t *testing.T) {
 	if cocreateCalls != 1+len(wmiCocreateRetryDelays) {
 		t.Fatalf("CoCreateInstance calls = %d, want %d (initial + retries)",
 			cocreateCalls, 1+len(wmiCocreateRetryDelays))
+	}
+}
+
+// TestCocreateWbemLocatorProfileReloadRecovery pins the profile-reload path:
+// when CoCreateInstance exhausts the retry schedule on ERROR_KEY_DELETED and
+// the profile reload succeeds, the next CoCreateInstance must succeed without
+// falling through to the DllGetClassObject bypass.
+func TestCocreateWbemLocatorProfileReloadRecovery(t *testing.T) {
+	origProfileLoader := wmiEnsureProfileLoaded
+	defer func() {
+		cocreateWbemLocatorRaw = wmiCocreateRaw
+		cocreateWbemLocatorFallback = wmiDirectRaw
+		wmiCocreateRetrySleep = time.Sleep
+		wmiEnsureProfileLoaded = origProfileLoader
+	}()
+
+	profileLoaded := false
+	cocreateCalls := 0
+	// CoCreateInstance fails until the profile is loaded.
+	cocreateWbemLocatorRaw = func() (uintptr, uintptr) {
+		cocreateCalls++
+		if profileLoaded {
+			return 0xBEEF, 0
+		}
+		return 0, hrErrorKeyDeleted
+	}
+	wmiEnsureProfileLoaded = func() error {
+		profileLoaded = true
+		return nil
+	}
+	fallbackCalled := false
+	cocreateWbemLocatorFallback = func() (uintptr, uintptr) {
+		fallbackCalled = true
+		return 0xDEAD, 0
+	}
+	wmiCocreateRetrySleep = func(time.Duration) {}
+
+	locator, err := cocreateWbemLocator()
+	if err != nil {
+		t.Fatalf("profile reload must recover the activation: %v", err)
+	}
+	if locator != 0xBEEF {
+		t.Fatalf("locator = 0x%x, want 0xBEEF from the standard path after profile reload", locator)
+	}
+	if !profileLoaded {
+		t.Fatal("the profile must have been loaded")
+	}
+	if fallbackCalled {
+		t.Fatal("the DllGetClassObject fallback must NOT be called when profile reload succeeds")
+	}
+	// initial + retries + 1 post-profile-reload attempt
+	wantCalls := 1 + len(wmiCocreateRetryDelays) + 1
+	if cocreateCalls != wantCalls {
+		t.Fatalf("CoCreateInstance calls = %d, want %d (initial + retries + post-reload)",
+			cocreateCalls, wantCalls)
 	}
 }
