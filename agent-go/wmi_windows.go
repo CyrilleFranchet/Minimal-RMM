@@ -358,7 +358,7 @@ func wmiCreateProcess(host, command string, identity *winrmCredentials, ambient 
 
 // wmiCreateProcessEx is wmiCreateProcess with an opt-in directWbem flag.
 // When directWbem is true the locator is created via wmiDirectRaw (a direct
-// WbemCreateLocator call that bypasses COM class-store activation) instead of
+// DllGetClassObject+IClassFactory bypass of COM class-store activation) instead of
 // the default CoCreateInstance path; use it when CoCreateInstance fails with
 // ERROR_KEY_DELETED in a WinRM in-memory context.
 func wmiCreateProcessEx(host, command string, identity *winrmCredentials, ambient uintptr, wait time.Duration, directWbem bool) error {
@@ -411,19 +411,43 @@ func wmiCocreateRaw() (locator, hr uintptr) {
 	return locator, hr
 }
 
-// wmiDirectRaw creates the WbemLocator by calling WbemCreateLocator directly
-// from wbemsvc.dll, bypassing COM class-store activation and the per-user
-// CLSID registry keys whose handles can be tombstoned (STATUS_KEY_DELETED /
-// HRESULT 0x800703FA) in a WinRM in-memory context where the user profile
-// hive is not loaded. The function signature matches wmiCocreateRaw so it
-// can substitute for cocreateWbemLocatorRaw transparently.
+// iidIClassFactory is IID_IClassFactory ({00000001-0000-0000-C000-000000000046}),
+// the standard COM class-factory interface used by wmiDirectRaw to bypass
+// the registry class-store entirely.
+var iidIClassFactory = comGUID{0x00000001, 0x0000, 0x0000, [8]byte{0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}
+
+// wmiDirectRaw creates the WbemLocator by loading the InprocServer32 DLL
+// directly and calling DllGetClassObject + IClassFactory::CreateInstance,
+// bypassing COM class-store activation and the per-user CLSID registry
+// keys whose handles can be tombstoned (STATUS_KEY_DELETED / 0x800703FA)
+// in a WinRM in-memory context where the user profile hive is not loaded.
+// The pattern is: load wbemprox.dll (the registered InprocServer32 for
+// CLSID_WbemLocator on every supported Windows version), call its
+// DllGetClassObject with CLSID_WbemLocator and IID_IClassFactory, then
+// IClassFactory::CreateInstance to get the IWbemLocator. This works on
+// every Windows build because it goes straight to the implementing DLL
+// without touching the registry. The function signature matches
+// wmiCocreateRaw so it can substitute for cocreateWbemLocatorRaw
+// transparently.
 func wmiDirectRaw() (locator, hr uintptr) {
-	wbemsvc := syscall.NewLazyDLL("wbemsvc.dll")
-	proc := wbemsvc.NewProc("WbemCreateLocator")
-	if err := proc.Find(); err != nil {
-		return 0, 0x80004002 // E_NOINTERFACE: export not available
+	dll := syscall.NewLazyDLL("wbemprox.dll")
+	getClassObject := dll.NewProc("DllGetClassObject")
+	if err := getClassObject.Find(); err != nil {
+		return 0, 0x80040154 // REGDB_E_CLASSNOTREG
 	}
-	hr, _, _ = proc.Call(uintptr(unsafe.Pointer(&locator)))
+	var factory uintptr
+	hr, _, _ = getClassObject.Call(
+		uintptr(unsafe.Pointer(&clsidWbemLocator)),
+		uintptr(unsafe.Pointer(&iidIClassFactory)),
+		uintptr(unsafe.Pointer(&factory)))
+	if hr != 0 {
+		return 0, hr
+	}
+	defer comRelease(factory)
+	// IClassFactory::CreateInstance (vtable slot 3, after QI/AddRef/Release).
+	hr = comCallHR(factory, 3, 0,
+		uintptr(unsafe.Pointer(&iidIWbemLocator)),
+		uintptr(unsafe.Pointer(&locator)))
 	return locator, hr
 }
 
