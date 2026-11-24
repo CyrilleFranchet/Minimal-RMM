@@ -636,7 +636,7 @@ test('lateral opens its method menu after command completion and accepts keyboar
   f.key('ArrowDown'); f.key('Tab');
   assert.equal(f.input.value, '/lateral wmiexec ');
   assert.equal(f.input.attrs['aria-expanded'], 'false');
-  assert.equal(f.hint.textContent, '/lateral wmiexec <host> [-l csharp|powershell] [-i cred_id | -u identity [-p password]]');
+  assert.equal(f.hint.textContent, '/lateral wmiexec <host> [--direct-wbem] [-l csharp|powershell] [-i cred_id | -u identity [-p password]]');
 });
 
 test('lateral filters methods, supports clicks, and leaves the host untouched', () => {

@@ -395,6 +395,13 @@ var wmiCocreateRetrySleep = time.Sleep
 // substitute scripted HRESULTs to drive the retry path.
 var cocreateWbemLocatorRaw = wmiCocreateRaw
 
+// cocreateWbemLocatorFallback is the direct-activation fallback seam: when
+// the class-store retry schedule is exhausted, cocreateWbemLocatorWithRaw
+// calls this once before reporting the failure.  Production uses wmiDirectRaw;
+// Windows tests substitute a scripted stub so the exhaustion path can be
+// pinned without depending on wbemsvc.dll availability.
+var cocreateWbemLocatorFallback = wmiDirectRaw
+
 // wmiCocreateRaw performs one raw in-process activation of the WbemLocator
 // class and returns the out pointer and the HRESULT without interpretation.
 func wmiCocreateRaw() (locator, hr uintptr) {
@@ -457,7 +464,14 @@ func cocreateWbemLocatorWithRaw(raw func() (uintptr, uintptr)) (uintptr, error) 
 		wmiCocreateRetrySleep(delay)
 	}
 	if lastHR == hrErrorKeyDeleted {
-		return 0, fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x: local class-store delete-pending state persisted through %d retries",
+		// The class-store tombstone persisted through the bounded retry
+		// schedule.  Before giving up, try the direct WbemCreateLocator
+		// export from wbemsvc.dll — it bypasses COM class-store activation
+		// (and therefore the tombstoned registry key) entirely.
+		if directLoc, directHR := cocreateWbemLocatorFallback(); directHR == 0 {
+			return directLoc, nil
+		}
+		return 0, fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x: local class-store delete-pending state persisted through %d retries and the direct WbemCreateLocator fallback also failed",
 			lastHR, len(wmiCocreateRetryDelays))
 	}
 	return 0, fmt.Errorf("CoCreateInstance(WbemLocator) failed: 0x%08x", lastHR)

@@ -200,8 +200,10 @@ func TestCocreateWbemLocatorFailsFastOnDeterministicHR(t *testing.T) {
 func TestCocreateWbemLocatorExhaustedRetriesKeepsHR(t *testing.T) {
 	defer func() {
 		cocreateWbemLocatorRaw = wmiCocreateRaw
+		cocreateWbemLocatorFallback = wmiDirectRaw
 		wmiCocreateRetrySleep = time.Sleep
 	}()
+	cocreateWbemLocatorFallback = func() (uintptr, uintptr) { return 0, 0x80004002 }
 	calls := 0
 	cocreateWbemLocatorRaw = func() (uintptr, uintptr) {
 		calls++
@@ -216,8 +218,48 @@ func TestCocreateWbemLocatorExhaustedRetriesKeepsHR(t *testing.T) {
 	if !strings.Contains(err.Error(), "retries") {
 		t.Fatalf("the exhaustion error must name the retries, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "fallback also failed") {
+		t.Fatalf("the exhaustion error must name the failed fallback, got %v", err)
+	}
 	if calls != 1+len(wmiCocreateRetryDelays) || slept != len(wmiCocreateRetryDelays) {
 		t.Fatalf("calls = %d sleeps = %d, want %d attempts and %d sleeps",
 			calls, slept, 1+len(wmiCocreateRetryDelays), len(wmiCocreateRetryDelays))
+	}
+}
+
+// TestCocreateWbemLocatorFallsBackToDirectOnKeyDeleted pins the automatic
+// fallback: when CoCreateInstance exhausts the retry schedule on
+// ERROR_KEY_DELETED, the direct WbemCreateLocator export succeeds without
+// the operator having to pass --direct-wbem.
+func TestCocreateWbemLocatorFallsBackToDirectOnKeyDeleted(t *testing.T) {
+	defer func() {
+		cocreateWbemLocatorRaw = wmiCocreateRaw
+		cocreateWbemLocatorFallback = wmiDirectRaw
+		wmiCocreateRetrySleep = time.Sleep
+	}()
+	cocreateCalls := 0
+	cocreateWbemLocatorRaw = func() (uintptr, uintptr) {
+		cocreateCalls++
+		return 0, hrErrorKeyDeleted
+	}
+	fallbackCalled := false
+	cocreateWbemLocatorFallback = func() (uintptr, uintptr) {
+		fallbackCalled = true
+		return 0xABCD, 0
+	}
+	wmiCocreateRetrySleep = func(time.Duration) {}
+	locator, err := cocreateWbemLocator()
+	if err != nil {
+		t.Fatalf("the direct fallback must recover the activation: %v", err)
+	}
+	if locator != 0xABCD {
+		t.Fatalf("locator = 0x%x, want the fallback's out pointer", locator)
+	}
+	if !fallbackCalled {
+		t.Fatal("the direct fallback must have been called")
+	}
+	if cocreateCalls != 1+len(wmiCocreateRetryDelays) {
+		t.Fatalf("CoCreateInstance calls = %d, want %d (initial + retries)",
+			cocreateCalls, 1+len(wmiCocreateRetryDelays))
 	}
 }

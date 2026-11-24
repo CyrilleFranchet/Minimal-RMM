@@ -2391,7 +2391,7 @@ function updateShellCompletionHint() {
   closeShellCommandMenu();
   const lateralMethod = line.match(/^\s*\/lateral\s+(psexec|wmiexec|winrm)\s/i)?.[1].toLowerCase();
   if (lateralMethod) {
-    let lateralHint = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure] [--tethered]" : ""} [-l csharp|powershell]`;
+    let lateralHint = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure] [--tethered]" : ""}${lateralMethod === "wmiexec" ? " [--direct-wbem]" : ""} [-l csharp|powershell]`;
     if (["wmiexec", "winrm"].includes(lateralMethod)) lateralHint += " [-i cred_id | -u identity [-p password]]";
     hint.textContent = lateralHint;
     hint.classList.remove("hidden");
@@ -3327,7 +3327,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /rev2self                        Revert to the agent's own network identity
   /whoami [--tickets]              Report process, tokens, privileges, and logon session
   /uid                             Show the identity used by the selected Go agent
-  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered] [-i &lt;cred_id&gt; | -u &lt;identity&gt; [-p &lt;password&gt;]]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved); -i/-u forces the deployment identity for wmiexec/winrm (explicit credentials beat an active make_token and work from in-memory sources)
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered] [--direct-wbem] [-i &lt;cred_id&gt; | -u &lt;identity&gt; [-p &lt;password&gt;]]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved); --direct-wbem (wmiexec only) bypasses COM class-store activation; -i/-u forces the deployment identity for wmiexec/winrm (explicit credentials beat an active make_token and work from in-memory sources)
                                    -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
                                    winrm deployments are independent by default: the target escapes the shell job via a local WMI re-stage and the source closes its session after readiness.
                                    --tethered (winrm only) restores the classic lifetime, where the deployment dies with the source that holds its shell.
@@ -3548,7 +3548,8 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     const flags = restTokens.filter(arg => ["-s", "--https"].includes(arg));
     const insecureFlags = restTokens.filter(arg => ["-k", "--insecure"].includes(arg));
     const tetheredFlags = restTokens.filter(arg => arg === "--tethered");
-    const targets = restTokens.filter(arg => !["-s", "--https", "-k", "--insecure", "--tethered", "--independent"].includes(arg));
+    const directWbemFlags = restTokens.filter(arg => arg === "--direct-wbem");
+    const targets = restTokens.filter(arg => !["-s", "--https", "-k", "--insecure", "--tethered", "--independent", "--direct-wbem"].includes(arg));
     const loader = loaderValues.length ? loaderValues[0].toLowerCase() : "";
     const identityValues = identityCredValues.concat(identityUserValues, identityPasswordValues);
     const identityFlags = identityValues.length > 0;
@@ -3563,9 +3564,10 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         (insecureFlags.length && !flags.length) || targets.some(arg => arg.startsWith("-")) ||
         (flags.length && method !== "winrm") ||
         (tetheredFlags.length && method !== "winrm") || tetheredFlags.length > 1 ||
+        (directWbemFlags.length && method !== "wmiexec") || directWbemFlags.length > 1 ||
         loaderValues.length > 1 || (loader && !loaderPattern.test(loader)) ||
         (identityFlags && !["wmiexec", "winrm"].includes(method)) || !identityValid) {
-      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only; forces the deployment identity)]");
+      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only)] [--direct-wbem (wmiexec only)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only)]");
       return true;
     }
     if (!target.sessionId) {
@@ -3602,6 +3604,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
           ...(method === "winrm" ? { independent: !tetheredFlags.length } : {}),
           ...(flags.length ? { https: true } : {}),
           ...(insecureFlags.length ? { insecure: true } : {}),
+          ...(directWbemFlags.length ? { direct_wbem: true } : {}),
           ...(identityCredValues.length ? { identity_cred_id: identityCredValues[0] } : {}),
           ...(identityUser ? { identity_domain: identityDomain, identity_user: identityUser, identity_password: identityPasswordValues.length ? identityPasswordValues[0] : "" } : {}),
         }),
