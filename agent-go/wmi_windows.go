@@ -659,6 +659,25 @@ func wmiCreateProcessChain(host, command string, identity *winrmCredentials, amb
 		authority = identityAuthority
 		authnService = rpcCAuthnWinnt
 	}
+	// Set the proxy blanket on the LOCATOR before ConnectServer.
+	// ConnectServer is an RPC call on the locator proxy — its outbound
+	// authentication uses whatever security is bound to that proxy.
+	// When CoInitializeSecurity succeeded with EOAC_DYNAMIC_CLOAKING,
+	// new proxies inherit it and the locator blanket is redundant.
+	// When CoInitializeSecurity returned RPC_E_TOO_LATE (memory-hosted
+	// agents whose CLR host initialized COM first), the process-level
+	// cloaking was never applied and new proxies authenticate with the
+	// process token — the wrong identity for a make_token lateral move.
+	// Applying the blanket here ensures the ConnectServer RPC picks up
+	// the thread's impersonation token regardless of process-level state.
+	if identity == nil {
+		if hr, _, _ := procCoSetProxyBlanket.Call(
+			locator, authnSvc, rpcCAuthzNone, uintptr(unsafe.Pointer(serverPrincipal)),
+			rpcCAuthnLevelPktPrivacy, rpcCImpLevelImpersonate, 0, eoacDynamicCloaking,
+		); hr != 0 {
+			return fmt.Errorf("CoSetProxyBlanket(locator) failed: 0x%08x", hr)
+		}
+	}
 	connectHR := comCallHR(locator, 3, namespace, identityUser, identityPassword, 0, 0,
 		authority, 0,
 		uintptr(unsafe.Pointer(&services)))
