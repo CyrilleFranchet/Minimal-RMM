@@ -353,6 +353,15 @@ func wmiThreadTokenPresent() (bool, error) {
 // stalled chain itself still owns the worker until the OS call returns —
 // no user-mode code can preempt it, and the report says so).
 func wmiCreateProcess(host, command string, identity *winrmCredentials, ambient uintptr, wait time.Duration) error {
+	return wmiCreateProcessEx(host, command, identity, ambient, wait, false)
+}
+
+// wmiCreateProcessEx is wmiCreateProcess with an opt-in directWbem flag.
+// When directWbem is true the locator is created via wmiDirectRaw (a direct
+// WbemCreateLocator call that bypasses COM class-store activation) instead of
+// the default CoCreateInstance path; use it when CoCreateInstance fails with
+// ERROR_KEY_DELETED in a WinRM in-memory context.
+func wmiCreateProcessEx(host, command string, identity *winrmCredentials, ambient uintptr, wait time.Duration, directWbem bool) error {
 	requests, err := wmiComWorker()
 	if err != nil {
 		return fmt.Errorf("start the WMI COM worker: %w", err)
@@ -362,7 +371,7 @@ func wmiCreateProcess(host, command string, identity *winrmCredentials, ambient 
 	}
 	done := make(chan error, 1)
 	requests <- func() {
-		done <- wmiCreateProcessChain(host, command, identity, ambient)
+		done <- wmiCreateProcessChain(host, command, identity, ambient, directWbem)
 	}
 	select {
 	case err := <-done:
@@ -395,6 +404,22 @@ func wmiCocreateRaw() (locator, hr uintptr) {
 	return locator, hr
 }
 
+// wmiDirectRaw creates the WbemLocator by calling WbemCreateLocator directly
+// from wbemsvc.dll, bypassing COM class-store activation and the per-user
+// CLSID registry keys whose handles can be tombstoned (STATUS_KEY_DELETED /
+// HRESULT 0x800703FA) in a WinRM in-memory context where the user profile
+// hive is not loaded. The function signature matches wmiCocreateRaw so it
+// can substitute for cocreateWbemLocatorRaw transparently.
+func wmiDirectRaw() (locator, hr uintptr) {
+	wbemsvc := syscall.NewLazyDLL("wbemsvc.dll")
+	proc := wbemsvc.NewProc("WbemCreateLocator")
+	if err := proc.Find(); err != nil {
+		return 0, 0x80004002 // E_NOINTERFACE: export not available
+	}
+	hr, _, _ = proc.Call(uintptr(unsafe.Pointer(&locator)))
+	return locator, hr
+}
+
 // cocreateWbemLocator creates the local in-process WbemLocator, retrying the
 // ERROR_KEY_DELETED class-store failure on the bounded schedule decided by
 // cocreateRetryDelay. The call is purely local — it resolves CLSID_WbemLocator
@@ -410,9 +435,17 @@ func wmiCocreateRaw() (locator, hr uintptr) {
 // An activation that still fails after the schedule is exhausted keeps
 // reporting the raw HRESULT.
 func cocreateWbemLocator() (uintptr, error) {
+	return cocreateWbemLocatorWithRaw(cocreateWbemLocatorRaw)
+}
+
+// cocreateWbemLocatorWithRaw runs the activation loop using the supplied raw
+// function. Separating the loop from the global seam lets wmiCreateProcessChain
+// inject wmiDirectRaw per-call without touching the package-level seam that
+// tests substitute.
+func cocreateWbemLocatorWithRaw(raw func() (uintptr, uintptr)) (uintptr, error) {
 	var lastHR uintptr
 	for attempt := 0; ; attempt++ {
-		locator, hr := cocreateWbemLocatorRaw()
+		locator, hr := raw()
 		if hr == 0 {
 			return locator, nil
 		}
@@ -437,7 +470,7 @@ func cocreateWbemLocator() (uintptr, error) {
 // credentials were supplied, and a verified revert on every exit path —
 // a revert or verification failure joins the operation's error, so
 // cleanup failure never reports success.
-func wmiCreateProcessChain(host, command string, identity *winrmCredentials, ambient uintptr) (err error) {
+func wmiCreateProcessChain(host, command string, identity *winrmCredentials, ambient uintptr, directWbem bool) (err error) {
 	if present, err := wmiThreadTokenPresent(); err != nil {
 		return identityBoundaryFailure(fmt.Errorf("verify the WMI worker thread entry: %w", err))
 	} else if present {
@@ -478,7 +511,11 @@ func wmiCreateProcessChain(host, command string, identity *winrmCredentials, amb
 	defer sysFreeString(identityPassword)
 	defer sysFreeString(identityAuthority)
 	defer runtime.KeepAlive(identityBlanket)
-	locator, err := cocreateWbemLocator()
+	locatorRaw := cocreateWbemLocatorRaw
+	if directWbem {
+		locatorRaw = wmiDirectRaw
+	}
+	locator, err := cocreateWbemLocatorWithRaw(locatorRaw)
 	if err != nil {
 		return err
 	}

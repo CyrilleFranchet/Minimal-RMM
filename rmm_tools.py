@@ -809,6 +809,7 @@ def tool_lateral_move(
     identity_domain: str = "",
     identity_user: str = "",
     identity_password: str = "",
+    direct_wbem: bool = False,
 ) -> str:
     """Start a Go agent on another host through psexec, wmiexec, or winrm."""
     sid, info = _resolve_session_id(client, session_ref)
@@ -854,6 +855,9 @@ def tool_lateral_move(
             "error": "loader_reserved",
             "detail": "The powershell loader is reserved for a later release; use the default csharp loader.",
         })
+    if not isinstance(direct_wbem, bool) or (direct_wbem and method != "wmiexec"):
+        return _json_result({"ok": False, "error": "invalid_direct_wbem",
+                             "detail": "direct_wbem must be boolean and is supported only for wmiexec"})
     if not isinstance(https, bool) or (https and method != "winrm"):
         return _json_result({"ok": False, "error": "invalid_https",
                              "detail": "https must be boolean and is supported only for winrm"})
@@ -879,6 +883,7 @@ def tool_lateral_move(
         **({"independent": independent} if method == "winrm" else {}),
         **({"https": True} if https else {}),
         **({"insecure": True} if insecure else {}),
+        **({"direct_wbem": True} if direct_wbem else {}),
         **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
         **({"identity_domain": identity_domain, "identity_user": identity_user,
             "identity_password": identity_password}

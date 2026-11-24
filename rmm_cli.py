@@ -247,6 +247,7 @@ class RmmApiClient:
         identity_domain: str = "",
         identity_user: str = "",
         identity_password: str = "",
+        direct_wbem: bool = False,
     ):
         if not isinstance(https, bool) or (https and method.strip().lower() != "winrm"):
             raise ValueError("https must be a boolean and is supported only for winrm")
@@ -256,6 +257,8 @@ class RmmApiClient:
             raise ValueError("loader must be csharp or the reserved powershell value")
         if not isinstance(independent, bool):
             raise ValueError("independent must be a boolean")
+        if not isinstance(direct_wbem, bool) or (direct_wbem and method.strip().lower() != "wmiexec"):
+            raise ValueError("direct_wbem must be a boolean and is supported only for wmiexec")
         if method.strip().lower() != "winrm":
             # Independent lifetime is a winrm-scoped option and is ignored
             # for the other methods, matching the server-side normalization.
@@ -278,6 +281,7 @@ class RmmApiClient:
             **({"independent": independent} if method.strip().lower() == "winrm" else {}),
             **({"https": True} if https else {}),
             **({"insecure": True} if insecure else {}),
+            **({"direct_wbem": True} if direct_wbem else {}),
             **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
             **({
                 "identity_domain": identity_domain,
@@ -1337,6 +1341,8 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         die("--insecure requires --https", 1)
     if getattr(args, "tethered", False) and args.method != "winrm":
         die("--tethered is supported only for winrm", 1)
+    if getattr(args, "direct_wbem", False) and args.method != "wmiexec":
+        die("--direct-wbem is supported only for wmiexec", 1)
     identity_cred_id = (getattr(args, "identity_cred_id", None) or "").strip()
     identity_user = (getattr(args, "identity_user", None) or "").strip()
     identity_password = getattr(args, "identity_password", None) or ""
@@ -1366,6 +1372,7 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
         **({"identity_user": identity_user, "identity_password": identity_password}
            if (identity_user and not identity_cred_id) else {}),
+        **({"direct_wbem": True} if getattr(args, "direct_wbem", False) else {}),
     )
     if args.json:
         print_json(data)
@@ -2612,6 +2619,7 @@ def run_interactive(
                 flags = [arg for arg in rest_args if arg in ("-s", "--https")]
                 insecure_flags = [arg for arg in rest_args if arg in ("-k", "--insecure")]
                 tethered_flags = [arg for arg in rest_args if arg == "--tethered"]
+                direct_wbem_flags = [arg for arg in rest_args if arg == "--direct-wbem"]
                 identity_values = identity_cred_values + identity_user_values + identity_password_values
                 identity_flags = bool(identity_values)
                 # Either one credential ID, or a direct identity (password
@@ -2623,7 +2631,7 @@ def run_interactive(
                                    len(identity_password_values) <= 1 and
                                    ((identity_cred_values and not identity_user_values and not identity_password_values) or
                                     (identity_user_values and not identity_cred_values))))
-                plain_args = [arg for arg in rest_args if arg not in ("-s", "--https", "-k", "--insecure", "--tethered", "--independent")]
+                plain_args = [arg for arg in rest_args if arg not in ("-s", "--https", "-k", "--insecure", "--tethered", "--independent", "--direct-wbem")]
                 targets = plain_args
                 if (method not in ("psexec", "wmiexec", "winrm") or
                         len(targets) != 1 or len(flags) > 1 or len(insecure_flags) > 1 or
@@ -2631,11 +2639,12 @@ def run_interactive(
                         any(arg.startswith("-") for arg in targets) or
                         (flags and method != "winrm") or
                         (tethered_flags and method != "winrm") or
+                        (direct_wbem_flags and method != "wmiexec") or
                         len(loader_values) > 1 or
                         any(value not in ("csharp", "powershell") for value in loader_values) or
                         (identity_flags and method not in ("wmiexec", "winrm")) or
                         not identity_valid):
-                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only; forces the deployment identity)]")
+                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)] [--direct-wbem (wmiexec only; bypasses COM class-store for ERROR_KEY_DELETED in WinRM in-memory agents)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only; forces the deployment identity)]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -2652,6 +2661,7 @@ def run_interactive(
                     **({"independent": independent} if method == "winrm" else {}),
                     **({"https": True} if flags else {}),
                     **({"insecure": True} if insecure_flags else {}),
+                    **({"direct_wbem": True} if direct_wbem_flags else {}),
                     **({"identity_cred_id": identity_cred_values[0]} if identity_cred_values else {}),
                     **({"identity_user": identity_user_values[0],
                         "identity_password": (identity_password_values[0] if identity_password_values else "")}
@@ -3404,6 +3414,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Identity as DOMAIN\\user or plain user forcing the deployment identity (if no credential ID)")
     sp_lat.add_argument("--password", dest="identity_password", default=None,
                         help="Password for a direct identity (if no credential ID)")
+    sp_lat.add_argument("--direct-wbem", action="store_true", dest="direct_wbem",
+                        help="wmiexec only: call WbemCreateLocator directly from wbemsvc.dll, bypassing COM class-store activation; use when CoCreateInstance fails with ERROR_KEY_DELETED (0x800703FA) from a WinRM in-memory agent whose per-user registry hive is not loaded")
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")

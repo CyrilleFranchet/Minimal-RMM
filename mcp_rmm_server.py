@@ -616,8 +616,9 @@ def lateral_move(
     identity_domain: str = "",
     identity_user: str = "",
     identity_password: str = "",
+    direct_wbem: StrictBool = False,
 ) -> str:
-    """Start a Go agent on another host through psexec, wmiexec, or winrm. wmiexec and winrm deploy the server-staged workspace agent build in memory through the csharp loader (powershell is reserved). Winrm deployments are independent by default: the target escapes the WinRM shell job via a local WMI re-stage and the source closes the session right after readiness, so the deployment survives its source. independent=false (winrm only) restores the tethered lifetime that dies with its source; wmiexec deployments are independent by nature. identity_cred_id (workspace credential store) or identity_domain/identity_user/identity_password (wmiexec and winrm only) force the deployment's network identity: the agent passes the credentials explicitly through the WMI ConnectServer call and proxy blanket (NTLM) or the WinRM session, overriding any active make_token, so lateral moves work from in-memory sources and WMI hops without thread cloaking."""
+    """Start a Go agent on another host through psexec, wmiexec, or winrm. wmiexec and winrm deploy the server-staged workspace agent build in memory through the csharp loader (powershell is reserved). Winrm deployments are independent by default: the target escapes the WinRM shell job via a local WMI re-stage and the source closes the session right after readiness, so the deployment survives its source. independent=false (winrm only) restores the tethered lifetime that dies with its source; wmiexec deployments are independent by nature. identity_cred_id (workspace credential store) or identity_domain/identity_user/identity_password (wmiexec and winrm only) force the deployment's network identity: the agent passes the credentials explicitly through the WMI ConnectServer call and proxy blanket (NTLM) or the WinRM session, overriding any active make_token, so lateral moves work from in-memory sources and WMI hops without thread cloaking. direct_wbem=true (wmiexec only) calls WbemCreateLocator directly from wbemsvc.dll instead of going through CoCreateInstance and the COM class-store; use this when the source is a WinRM in-memory agent and CoCreateInstance fails with 0x800703FA (ERROR_KEY_DELETED) because the per-user registry hive was unloaded while COM held handles into it."""
     return tool_lateral_move(
         _client(),
         session_ref,
@@ -635,6 +636,7 @@ def lateral_move(
         identity_domain=identity_domain,
         identity_user=identity_user,
         identity_password=identity_password,
+        direct_wbem=direct_wbem,
     )
 
 
