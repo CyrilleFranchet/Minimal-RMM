@@ -242,8 +242,8 @@ Unknown slash commands never reach the remote shell.
 | `/make_token` | `make_token` | `POST …/make_token` |
 | `/rev2self` | `rev2self` | `POST …/rev2self` |
 | `/lateral` | `lateral_move` | `POST …/lateral` |
-| `/wmi_probe` | `wmi_probe` | `POST …/wmi-probe` |
 | `/uid` | `session_uid` | `POST …/uid` |
+| `/uidx` | `session_uidx` | `POST …/uidx` |
 | `/embeddings` | `run_embeddings` | `POST /embeddings/run` |
 | `/bloodhound` | `bloodhound` | `POST /bloodhound` |
 
@@ -292,8 +292,8 @@ Unknown slash commands never reach the remote shell.
 | Agent `__LATERAL__` (`POST …/lateral`) | `lateral_move` | Start a Go agent on another host (psexec/wmiexec/winrm) with a fresh session ID, a `loader` option (`csharp` default; `powershell` reserved and rejected explicitly on every surface), a winrm-scoped `independent` boolean (default true: the source closes its WinRM session after readiness; false restores the tethered lifetime), and an optional forced identity for wmiexec/winrm (`identity_cred_id` from the workspace credential store, or `identity_domain`/`identity_user`/`identity_password` direct credentials, mutually exclusive): the deployment authenticates with those credentials, overriding an active make_token; registration and responsiveness verification, Go (Windows) sessions only |
 | `GET /lateral/deployments` | `list_lateral_deployments` | Durable psexec deployment records with exact artifact names and cleanup state; CLI `lateral-deployments` |
 | `POST …/lateral/deployments/{id}/cleanup` | `retry_lateral_cleanup` | Idempotent cleanup retry for one recorded deployment; signed with the beacon-secret ownership tag so restarted sources and alternate executor sessions recover pending cleanup; CLI `lateral-cleanup` |
-| Agent `__WMI_PROBE__` (`POST …/wmi-probe`) | `wmi_probe` | Run the read-only WMI lifecycle diagnostic on a Go session (default pair plus explicit comparison; `held`/`cycled` COM-lifetime comparisons; `switch` the A → B → A account switch), staging nothing and reporting per-stage evidence with evidence-bound verdicts. The switch mode's two-account variant takes account-B credentials (`b_cred_id` from the workspace store or `b_domain`/`b_user`/`b_password`, mutually exclusive, switch mode only): they ride the beacon command's JSON body like `make_token`'s and operator events retain the identity and password. Operator transcripts retain the password |
 | Agent `__UID__` (`POST …/uid`) | `session_uid` | Identity report for make_token / rev2self verification, Go sessions only |
+| Agent `__UIDX__` (`POST …/uidx`) | `session_uidx` | Extended dual-identity inspection: process + network identity, logon type, auth LUID, identity split detection, Go sessions only |
 | Agent `__STOP__` | `stop_persistent` | |
 
 ## Intentional exceptions

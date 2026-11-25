@@ -14,8 +14,7 @@ import "time"
 // exhausted retries never imply a different cause, and which key was
 // tombstoned — the per-user classes hive, a machine classes key, or a handle
 // cached against a stale view — cannot be read out of the HRESULT. That
-// question takes registry-level evidence; see
-// docs/wmi-key-deleted-diagnosis.md.
+// question takes registry-level evidence; see docs/wmi-com-lifecycle.md.
 const hrErrorKeyDeleted uintptr = 0x800703FA
 
 // wmiCocreateRetryDelays bounds the retry schedule of the local WbemLocator

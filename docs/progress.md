@@ -224,33 +224,6 @@
   (per-user classes hive, machine classes key, stale predefined handle,
   COM-internal pinning). Aligned the `wmi_retry.go`/`wmi_windows.go` comments
   and the probe label with the same wording.
-- Added `docs/wmi-key-deleted-diagnosis.md`: evidence-based diagnostic report
-  for `0x800703FA` in local `CoCreateInstance` activation — facts-versus-
-  hypotheses table, numbered diagnostic steps (baseline recording, ProcMon/ETW
-  capture with operation/result/path/PID/TID/stack preserved, preceding-activity
-  retrieval for the deleter, layer attribution across registration lookup, DLL
-  loading, and component initialization), per-hypothesis evidence requirements
-  (profile unloading, registration replacement, retained invalid handle,
-  component-internal failure), controlled-comparison rules, verification of the
-  LogonUser / CLSCTX_NO_CUSTOM_MARSHAL / COSERVERINFO /
-  RegDisablePredefinedCache API distinctions against Microsoft documentation,
-  and a decision table with explicit insufficient-evidence states. A causal
-  finding must state the exact operation, affected key, responsible component,
-  triggering event, and reproduction conditions, or be labeled provisional.
-- Added `tools/wmi-keydeleted-repro/`: a standalone, read-only local COM
-  reproducer (separate from the lateral-movement loader chain) recording
-  baseline identity fields and the bare `CoCreateInstance(WbemLocator)` HRESULT
-  plus a read-only local WMI query, with an R0–R4 run matrix and capture
-  guidance. No registry or policy changes are proposed anywhere; profile
-  never loaded and key marked for deleted are kept as distinct observations.
-- Fixed and validated the reproducer source: an earlier edit had corrupted
-  the `PrintOpenProbe` signature into a trailing comment (cascade of syntax
-  errors); added the missing `<stdlib.h>` include and a properly allocated
-  namespace BSTR for `ConnectServer`. The file now compiles clean under
-  mingw-w64 cross-compilation (`-Wall -Wextra`, zero warnings outside the
-  intentional MSVC `#pragma comment` lines) and links into a Windows PE32+
-  console binary; build instructions for both `cl` and `g++` are in the tool
-  README.
 
 ## 2026-11-23 — WMI local activation: bounded retry for transient ERROR_KEY_DELETED
 

@@ -73,9 +73,49 @@ class SpawnSessionFlowTests(unittest.TestCase):
         self.assertTrue(result["identity_degraded"])
         self.assertTrue(result["verified"])
 
+    def test_enriched_spawn_fields_are_extracted(self):
+        self.ack_output = (self.handshake()
+                           + "\nspawn method=CreateProcessAsUser identity_degraded=false echelon=1 credential_exposure=none"
+                           + "\nspawn identity=LAB\\operator")
+        result, status = self.call()
+        self.assertEqual(status, "ok")
+        self.assertEqual(result["spawn_method"], "CreateProcessAsUser")
+        self.assertFalse(result["identity_degraded"])
+        self.assertEqual(result["spawn_echelon"], 1)
+        self.assertEqual(result["credential_exposure"], "none")
+        self.assertEqual(result["spawn_network_identity"], "LAB\\operator")
+
+    def test_echelon3_reports_lsass_credential_exposure(self):
+        self.ack_output = (self.handshake()
+                           + "\nspawn method=CreateProcessWithLogonW identity_degraded=false echelon=3 credential_exposure=lsass"
+                           + "\nspawn identity=CORP\\target")
+        result, _ = self.call()
+        self.assertEqual(result["spawn_echelon"], 3)
+        self.assertEqual(result["credential_exposure"], "lsass")
+        self.assertEqual(result["spawn_network_identity"], "CORP\\target")
+
+    def test_echelon4_fallback_reports_agent_exposure(self):
+        self.ack_output = (self.handshake()
+                           + "\nspawn method=CreateProcessA identity_degraded=true echelon=4 credential_exposure=agent")
+        result, _ = self.call()
+        self.assertEqual(result["spawn_echelon"], 4)
+        self.assertEqual(result["credential_exposure"], "agent")
+        self.assertNotIn("spawn_network_identity", result)
+
+    def test_legacy_spawn_output_without_echelon_still_parses(self):
+        """Backward compat: older agents emit only method + identity_degraded."""
+        self.ack_output = self.handshake() + "\nspawn method=CreateProcessA identity_degraded=false"
+        result, _ = self.call()
+        self.assertEqual(result["spawn_method"], "CreateProcessA")
+        self.assertFalse(result["identity_degraded"])
+        self.assertNotIn("spawn_echelon", result)
+        self.assertNotIn("credential_exposure", result)
+
     def test_spawn_failure_diagnostics_survive_a_successful_fallback(self):
         detail = {"active_token": True, "credentials_available": True, "token_type": "primary",
-                  "process_identity": "LAB\\operator", "password": "must-not-be-projected",
+                  "process_identity": "LAB\\operator", "network_identity": "CORP\\target",
+                  "echelon": 4, "credential_exposure": "agent",
+                  "password": "must-not-be-projected",
                   "process_privileges": {"SeImpersonatePrivilege": "absent", "unknown": "enabled"},
                   "attempts": [{"method": "CreateProcessAsUser", "success": False, "error_code": 1314, "error": "privilege not held"},
                                {"method": "CreateProcessA", "success": True}]}
@@ -85,6 +125,9 @@ class SpawnSessionFlowTests(unittest.TestCase):
         self.assertTrue(result["spawn_diagnostics"]["attempts"][1]["success"])
         self.assertNotIn("password", result["spawn_diagnostics"])
         self.assertEqual(result["spawn_diagnostics"]["process_privileges"], {"SeImpersonatePrivilege": "absent"})
+        self.assertEqual(result["spawn_diagnostics"]["network_identity"], "CORP\\target")
+        self.assertEqual(result["spawn_diagnostics"]["echelon"], 4)
+        self.assertEqual(result["spawn_diagnostics"]["credential_exposure"], "agent")
 
     def test_malformed_spawn_diagnostics_do_not_break_registration(self):
         for detail in ([], {"attempts": [{}]}, {"attempts": [{"method": [], "success": False}]},

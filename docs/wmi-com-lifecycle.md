@@ -133,10 +133,9 @@ registry-level evidence (Process Monitor or the
 Microsoft-Windows-Kernel-Registry ETW provider), correlated with the process
 identity and profile lifetime of the caller. A persistent failure calls for
 that evidence collection — never for a different assumed cause or stronger
-retries. The full procedure — facts-versus-hypotheses table, a read-only
-reproducer, numbered diagnostic steps, and the decision table mapping
-observations to conclusions — lives in
-[wmi-key-deleted-diagnosis.md](wmi-key-deleted-diagnosis.md).
+retries. Capture the failing registry operation, full key path, process and
+thread identity, call stack, and the preceding deletion or profile-lifetime
+event before assigning a cause.
 
 ## Alternatives and decision
 

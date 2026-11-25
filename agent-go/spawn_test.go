@@ -17,7 +17,7 @@ func TestSpawnDiagnosticsPreserveSingleAttemptFailure(t *testing.T) {
 		errors.New("private-error-content"),
 	} {
 		detail := &spawnDiagnostics{}
-		pid, _, _, err := dispatchSpawn(true, spawnMethods{original: func() (int, error) { return 0, launchErr }}, detail)
+		pid, _, _, _, err := dispatchSpawn(false, false, spawnMethods{original: func() (int, error) { return 0, launchErr }}, detail)
 		if pid != 0 || !errors.Is(err, launchErr) || len(detail.Attempts) != 1 || detail.Attempts[0].Success {
 			t.Fatalf("lost single-attempt failure: %#v %v", detail, err)
 		}
@@ -174,28 +174,149 @@ func TestSpawnCommandRejectsInvalidOrReusedIdentityBeforeLaunching(t *testing.T)
 	}
 }
 
-func TestSpawnUsesOnlyCreateProcessA(t *testing.T) {
-	for _, active := range []bool{false, true} {
-		for _, launchErr := range []error{nil, syscall.Errno(5), syscall.Errno(1314)} {
-			calls := 0
-			detail := &spawnDiagnostics{}
-			pid, method, degraded, err := dispatchSpawn(active, spawnMethods{original: func() (int, error) {
-				calls++
-				if launchErr != nil {
-					return 0, launchErr
-				}
-				return 42, nil
-			}}, detail)
-			if calls != 1 || len(detail.Attempts) != 1 || detail.Attempts[0].Method != "CreateProcessA" {
-				t.Fatalf("spawn must make exactly one attempt: calls=%d diagnostics=%+v", calls, detail)
-			}
-			if launchErr != nil {
-				if !errors.Is(err, launchErr) || pid != 0 {
-					t.Fatalf("creation failure lost: %d %v", pid, err)
-				}
-			} else if err != nil || pid != 42 || method != "CreateProcessA" || degraded != active {
-				t.Fatalf("unexpected spawn identity: %d %s %t %v", pid, method, degraded, err)
-			}
-		}
+func TestSpawnFallsBackToCreateProcessAWithoutToken(t *testing.T) {
+	// No active token and no creds: only echelon 4 is tried.
+	calls := 0
+	detail := &spawnDiagnostics{}
+	pid, method, degraded, exposure, err := dispatchSpawn(false, false, spawnMethods{
+		createProcessAsUser:    func() (int, error) { t.Fatal("echelon 1 called without token"); return 0, nil },
+		createProcessWithToken: func() (int, error) { t.Fatal("echelon 2 called without token"); return 0, nil },
+		createProcessWithLogon: func() (int, error) { t.Fatal("echelon 3 called without creds"); return 0, nil },
+		original: func() (int, error) {
+			calls++
+			return 42, nil
+		},
+	}, detail)
+	if calls != 1 || pid != 42 || method != "CreateProcessA" || err != nil {
+		t.Fatalf("expected single echelon-4 call: calls=%d pid=%d method=%s err=%v", calls, pid, method, err)
+	}
+	if degraded {
+		t.Fatal("identity_degraded must be false when no token was active")
+	}
+	if exposure != credentialExposureAgent {
+		t.Fatalf("echelon 4 must report agent exposure, got %q", exposure)
+	}
+	if len(detail.Attempts) != 1 || detail.Attempts[0].Method != "CreateProcessA" {
+		t.Fatalf("diagnostics must record one attempt: %+v", detail.Attempts)
+	}
+}
+
+func TestSpawnCascadeEchelon1Success(t *testing.T) {
+	detail := &spawnDiagnostics{}
+	pid, method, degraded, exposure, err := dispatchSpawn(true, true, spawnMethods{
+		createProcessAsUser:    func() (int, error) { return 100, nil },
+		createProcessWithToken: func() (int, error) { t.Fatal("echelon 2 tried after echelon 1 success"); return 0, nil },
+		createProcessWithLogon: func() (int, error) { t.Fatal("echelon 3 tried after echelon 1 success"); return 0, nil },
+		original:               func() (int, error) { t.Fatal("echelon 4 tried after echelon 1 success"); return 0, nil },
+	}, detail)
+	if err != nil || pid != 100 || method != "CreateProcessAsUser" || degraded || exposure != credentialExposureNone {
+		t.Fatalf("echelon 1 success: pid=%d method=%s degraded=%t exposure=%s err=%v", pid, method, degraded, exposure, err)
+	}
+	if len(detail.Attempts) != 1 {
+		t.Fatalf("expected 1 attempt, got %d", len(detail.Attempts))
+	}
+}
+
+func TestSpawnCascadeEchelon1FailsFallsToEchelon2(t *testing.T) {
+	detail := &spawnDiagnostics{}
+	pid, method, _, exposure, err := dispatchSpawn(true, true, spawnMethods{
+		createProcessAsUser:    func() (int, error) { return 0, syscall.Errno(1314) }, // ERROR_PRIVILEGE_NOT_HELD
+		createProcessWithToken: func() (int, error) { return 200, nil },
+		createProcessWithLogon: func() (int, error) { t.Fatal("echelon 3 tried"); return 0, nil },
+		original:               func() (int, error) { t.Fatal("echelon 4 tried"); return 0, nil },
+	}, detail)
+	if err != nil || pid != 200 || method != "CreateProcessWithTokenW" || exposure != credentialExposureNone {
+		t.Fatalf("echelon 2 fallback: pid=%d method=%s exposure=%s err=%v", pid, method, exposure, err)
+	}
+	if len(detail.Attempts) != 2 {
+		t.Fatalf("expected 2 attempts, got %d", len(detail.Attempts))
+	}
+	if detail.Attempts[0].Method != "CreateProcessAsUser" || detail.Attempts[0].Success {
+		t.Fatal("first attempt must be a failed CreateProcessAsUser")
+	}
+	if detail.Attempts[0].ErrorCode != 1314 {
+		t.Fatalf("first attempt error code must be 1314, got %d", detail.Attempts[0].ErrorCode)
+	}
+}
+
+func TestSpawnCascadeFullFallbackToEchelon3(t *testing.T) {
+	detail := &spawnDiagnostics{}
+	pid, method, _, exposure, err := dispatchSpawn(true, true, spawnMethods{
+		createProcessAsUser:    func() (int, error) { return 0, syscall.Errno(1314) },
+		createProcessWithToken: func() (int, error) { return 0, syscall.Errno(5) }, // ERROR_ACCESS_DENIED
+		createProcessWithLogon: func() (int, error) { return 300, nil },
+		original:               func() (int, error) { t.Fatal("echelon 4 tried"); return 0, nil },
+	}, detail)
+	if err != nil || pid != 300 || method != "CreateProcessWithLogonW" || exposure != credentialExposureLSASS {
+		t.Fatalf("echelon 3 fallback: pid=%d method=%s exposure=%s err=%v", pid, method, exposure, err)
+	}
+	if len(detail.Attempts) != 3 {
+		t.Fatalf("expected 3 attempts, got %d", len(detail.Attempts))
+	}
+}
+
+func TestSpawnCascadeFullFallbackToEchelon4(t *testing.T) {
+	detail := &spawnDiagnostics{}
+	pid, method, degraded, exposure, err := dispatchSpawn(true, true, spawnMethods{
+		createProcessAsUser:    func() (int, error) { return 0, syscall.Errno(1314) },
+		createProcessWithToken: func() (int, error) { return 0, syscall.Errno(5) },
+		createProcessWithLogon: func() (int, error) { return 0, syscall.Errno(1326) }, // ERROR_LOGON_FAILURE
+		original:               func() (int, error) { return 400, nil },
+	}, detail)
+	if err != nil || pid != 400 || method != "CreateProcessA" || !degraded || exposure != credentialExposureAgent {
+		t.Fatalf("echelon 4 fallback: pid=%d method=%s degraded=%t exposure=%s err=%v", pid, method, degraded, exposure, err)
+	}
+	if len(detail.Attempts) != 4 {
+		t.Fatalf("expected 4 attempts, got %d", len(detail.Attempts))
+	}
+}
+
+func TestSpawnNonElevatedSkipsEchelons1And2(t *testing.T) {
+	// active=false, creds=true: echelons 1&2 skipped, 3 tried directly.
+	detail := &spawnDiagnostics{}
+	pid, method, _, exposure, err := dispatchSpawn(false, true, spawnMethods{
+		createProcessAsUser:    func() (int, error) { t.Fatal("echelon 1 called"); return 0, nil },
+		createProcessWithToken: func() (int, error) { t.Fatal("echelon 2 called"); return 0, nil },
+		createProcessWithLogon: func() (int, error) { return 300, nil },
+		original:               func() (int, error) { t.Fatal("echelon 4 called"); return 0, nil },
+	}, detail)
+	if err != nil || pid != 300 || method != "CreateProcessWithLogonW" || exposure != credentialExposureLSASS {
+		t.Fatalf("non-elevated with creds: pid=%d method=%s exposure=%s err=%v", pid, method, exposure, err)
+	}
+}
+
+func TestSpawnEchelon4ReportsIdentityDegradedOnlyWhenTokenActive(t *testing.T) {
+	// active=true, all echelons fail → echelon 4 succeeds, identity_degraded=true.
+	_, _, degraded, _, _ := dispatchSpawn(true, false, spawnMethods{
+		createProcessAsUser:    func() (int, error) { return 0, syscall.Errno(1314) },
+		createProcessWithToken: func() (int, error) { return 0, syscall.Errno(5) },
+		original:               func() (int, error) { return 400, nil },
+	})
+	if !degraded {
+		t.Fatal("identity_degraded must be true when token was active but echelon 4 was used")
+	}
+	// active=false → echelon 4 succeeds, identity_degraded=false.
+	_, _, degraded, _, _ = dispatchSpawn(false, false, spawnMethods{
+		original: func() (int, error) { return 400, nil },
+	})
+	if degraded {
+		t.Fatal("identity_degraded must be false when no token was active")
+	}
+}
+
+func TestSpawnAllEchelonsFailReturnsLastError(t *testing.T) {
+	detail := &spawnDiagnostics{}
+	finalErr := syscall.Errno(2)
+	_, _, _, _, err := dispatchSpawn(true, true, spawnMethods{
+		createProcessAsUser:    func() (int, error) { return 0, syscall.Errno(1314) },
+		createProcessWithToken: func() (int, error) { return 0, syscall.Errno(5) },
+		createProcessWithLogon: func() (int, error) { return 0, syscall.Errno(1326) },
+		original:               func() (int, error) { return 0, finalErr },
+	}, detail)
+	if !errors.Is(err, finalErr) {
+		t.Fatalf("expected final echelon error, got %v", err)
+	}
+	if len(detail.Attempts) != 4 {
+		t.Fatalf("expected 4 attempts, got %d", len(detail.Attempts))
 	}
 }

@@ -177,14 +177,38 @@ with the requested ID and owner. `spawnEnvironment` replaces inherited runtime
 connection settings and workspace binding. Bare `__SPAWN__` remains supported
 for legacy direct commands and generates a new identity locally.
 
-On Windows, `startDetachedAgent` calls CreateProcessA exactly once. An active
-make_token thread token does not change the child process identity or transfer
-its network credentials. The API exposes `spawn_method=CreateProcessA` and
-sets `identity_degraded=true` when an active thread token is not propagated.
-The spawn path never enables process privileges or switches creation APIs.
-`dispatchSpawn` records the single attempt, including a Windows failure code.
-`spawnANSI` converts arguments to the system ANSI code page and rejects
-unrepresentable characters. `buildEnvBlock` sorts entries and preserves UTF-16.
+On Windows, `startDetachedAgent` implements a 4-echelon spawn cascade when an
+active `make_token` token is present. The cascade attempts, in order:
+
+1. **Echelon 1** — `CreateProcessAsUserW` with a duplicated primary token.
+   Requires `SeAssignPrimaryTokenPrivilege`. Preserves the type-9 logon
+   session (netonly semantics); no 4624 event, no LSASS credential deposit.
+   Credential exposure: `none`.
+
+2. **Echelon 2** — `CreateProcessWithTokenW` with `LOGON_NETCREDENTIALS_ONLY`.
+   Requires `SeImpersonatePrivilege`. Same OPSEC profile as echelon 1.
+   Credential exposure: `none`.
+
+3. **Echelon 3** — `CreateProcessWithLogonW` with stored plaintext credentials.
+   Falls back here when neither privilege is available. WARNING: performs a
+   full type-2 logon, generates a 4624 event, and deposits credentials in
+   LSASS. Credential exposure: `lsass`.
+
+4. **Echelon 4** — `CreateProcessA` under the agent's own identity. Unconditional
+   fallback. `identity_degraded=true` when a token was active but could not
+   be propagated. Credential exposure: `agent`.
+
+Without `make_token`, only echelon 4 runs. The token is duplicated to a primary
+token once in the outer scope under `tokenMu`, eliminating the race where
+`rev2self` could close `activeToken` between the lock release and the
+`DuplicateTokenEx` call. Each echelon closure re-duplicates from the owned
+handle for independent lifetime management.
+
+`dispatchSpawn` records each attempt with its method name and error.
+The operator acknowledgment includes `echelon=N` and
+`credential_exposure=none|lsass|agent` fields. `spawnANSI` converts arguments
+to the system ANSI code page and rejects unrepresentable characters.
+`buildEnvBlock` sorts entries and preserves UTF-16.
 
 `spawnWithLogonDetached` handles spawnas with CreateProcessWithLogonW and
 explicit username/password credentials. `runWithPipesLogonW` handles runas
@@ -450,6 +474,29 @@ platform result. `rev2self` reports `ok: false` for agent failure output,
 including unsupported platforms, consistently through REST, CLI, MCP, and WebUI. Surfaces: `POST /api/v1/sessions/{id}/uid`, CLI
 `uid` and `/uid`, WebUI `/uid`, MCP `session_uid`.
 
+### Extended identity inspection (`__UIDX__`)
+
+`__UIDX__` extends `__UID__` with deep identity diagnostics for type-9
+(netonly) logon sessions. It surfaces the identity split that occurs after
+`make_token`: local operations use the agent's process identity while
+network operations use the alternate credentials.
+
+The output includes:
+
+- Process identity (resolved from the process token)
+- Network identity (from the active thread token's logon session)
+- Logon type (e.g. type 9 = NewCredentials)
+- Authentication LUID
+- Identity split flag (true when local ≠ network identity)
+
+Non-Windows builds report the process identity only. The identity split flag
+is the key diagnostic: when true, operators know that `whoami` on a spawned
+child will show the agent's identity, but network operations (SMB, WMI, LDAP)
+will authenticate as the make_token identity.
+
+Surfaces: `POST /api/v1/sessions/{id}/uidx`, CLI `uidx` and `/uidx`,
+WebUI `/uidx`, MCP `session_uidx`.
+
 ### Lateral movement (`__LATERAL__`)
 
 `__LATERAL__` starts a fresh agent on another Windows host through one of
@@ -496,47 +543,12 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   bound the complete wait or cancel an executing Windows call.
   See [WMI COM lifetime](wmi-com-lifecycle.md) for architecture, idle network
   behavior, alternatives, test evidence, and acceptance gaps.
-- `__WMI_PROBE__ <host>` (`agent-go/wmi_probe.go`, `wmi_probe_windows.go`)
-  is the lab diagnostic for that failure, built into the Windows agent and
-  served by the generic exec route (no REST/CLI/MCP surface of its own).
-  It runs two read-only WMI round trips (`ConnectServer` plus a
-  `Win32_ComputerSystem` class fetch — no method execution, nothing written
-  on the target) under the active make_token identity, deliberately on the
-  ambient cloaked path, then a third through the explicit credentials.
-  Evidence discipline: every stage (impersonation, token capture,
-  `CoInitializeEx`, the once-per-process `CoInitializeSecurity` report,
-  locator creation, `ConnectServer`, blanket configuration, query,
-  cleanup) records a UTC timestamp, PID, OS thread ID, raw HRESULT, and
-  duration; stages that never executed report `not_run` instead of a
-  misleading zero HRESULT, so a denied connect shows no proxy and no
-  query. The thread token is snapshotted immediately before and after each
-  `ConnectServer` with `TokenId`, `AuthenticationId` (the logon session),
-  `ModifiedId` (the change detector an unchanged logon ID would miss),
-  type, impersonation level, and the user SID, compared against the
-  captured source token and across attempts. The original
-  `CoInitializeSecurity` HRESULT and the requested flags are preserved
-  separately from the classification: an accepted `RPC_E_TOO_LATE` is
-  reported as a foreign initialization the requested settings may never
-  have reached, never as applied. Successful connects are observed through
-  `CoQueryProxyBlanket` before and after the blanket is applied
-  (authentication service, principal, levels, capability flags — no
-  credential material). The verdict never names a cause the evidence does
-  not support. `proxyImpersonationLevelLabel` decodes COM proxy levels
-  separately from token impersonation levels, which use different numeric
-  values. COM initialization call counts use atomic access, and failed
-  apartment initialization is never balanced with `CoUninitialize`.
-  The Windows-only `wmi_probe_windows_test.go` regressions cover proxy/token
-  label distinctions, unexecuted queries, and conservative verdicts. A
-  reproduced denial reads "second ambient connection denied; cause
-  undetermined", lists what the unchanged identity does and
-  does not prove, and is followed by the target-side correlation checklist
-  (Security 4624/4625: account/domain, authentication package, logon
-  type, source address, and on 4625 the Status and SubStatus, with the
-  probes' UTC timestamps as window anchors; missing events prove
-  neither). The probe leaves the same per-process WMI client state behind
-  as an ambient wmiexec — which is the point of running it in the live
-  agent. Success of the explicit comparison establishes only that this
-  connection succeeded; it does not guarantee later deployments.
+- `__WMI_PROBE__` and its REST, CLI, MCP, and WebUI surfaces were removed.
+  Historical implementation and validation notes remain in
+  [the progress log](progress.md); they are not current operator contracts.
+
+#### Historical WMI-probe implementation details (removed)
+
 - The optional lifecycle modes (`__WMI_PROBE__ <host> held`,
   `__WMI_PROBE__ <host> cycled`, and `__WMI_PROBE__ <host> switch`; the
   parser accepts exactly those words) run their connections inside one
@@ -615,15 +627,16 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   both permission outcomes readable and names the presentation question:
   the critical failure is a step presenting the other account's name,
   settled only by the target's authentication events. The two-account
-  variant runs in the agent too: `__WMI_PROBE__ <host> switch` accepts an
+  variant ran in the agent too: `__WMI_PROBE__ <host> switch` accepted an
   optional JSON body (`{"domain","user","password"}`, account B) that
-  rides the beacon command like `__MAKE_TOKEN__`'s and is retained in
-  operator history. The body is supplied through the dedicated `POST /api/v1/sessions/{id}/wmi-probe`
+  rode the beacon command like `__MAKE_TOKEN__`'s and was retained in
+  operator history. The body was supplied through the deleted
+  `POST /api/v1/sessions/{id}/wmi-probe`
   route (`b_cred_id` from the workspace credential store or the direct
-  `b_*` fields, mutually exclusive, switch mode only), which audits the
-  identity and password; every surface reaches it (CLI `wmi-probe`,
-  interactive `/wmi_probe`, MCP `wmi_probe`, WebUI `/wmi_probe` with
-  credential-ID completion). The standalone binary keeps the same
+  `b_*` fields, mutually exclusive, switch mode only), which audited the
+  identity and password; the former CLI `wmi-probe`, interactive
+  `/wmi_probe`, MCP `wmi_probe`, and WebUI `/wmi_probe` surfaces included
+  credential-ID completion. The standalone binary kept the same
   contract through `RMM_WMI_PROBE_B_DOMAIN`/`_B_USER`/`_B_PASSWORD` with
   `RMM_WMI_PROBE_MODE=switch`. Verdicts keep the
   evidence discipline: suspects, never proven causes, with fresh-process
@@ -653,6 +666,7 @@ Execution model (`agent-go/lateral.go`, `lateral_windows.go`):
   make_token B → probe, read what the poisoned process presents for the
   second account. Pinned by
   `TestWMIProbeIdentitySwitchObservationStoresAndCompares`.
+
 - Loader deployments (`wmiexec_loader`, `winrm_loader`, `winrm_https_loader`,
   `winrm_https_insecure_loader` wire methods) fetch the masked,
   digest-verified agent artifact from the listener's staging endpoint and

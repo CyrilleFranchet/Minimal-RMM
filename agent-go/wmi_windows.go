@@ -436,15 +436,6 @@ func wmiThreadTokenPresent() (bool, error) {
 // stalled chain itself still owns the worker until the OS call returns —
 // no user-mode code can preempt it, and the report says so).
 func wmiCreateProcess(host, command string, identity *winrmCredentials, ambient uintptr, wait time.Duration) error {
-	return wmiCreateProcessEx(host, command, identity, ambient, wait, false)
-}
-
-// wmiCreateProcessEx is wmiCreateProcess with an opt-in directWbem flag.
-// When directWbem is true the locator is created via wmiDirectRaw (a direct
-// DllGetClassObject+IClassFactory bypass of COM class-store activation) instead of
-// the default CoCreateInstance path; use it when CoCreateInstance fails with
-// ERROR_KEY_DELETED in a WinRM in-memory context.
-func wmiCreateProcessEx(host, command string, identity *winrmCredentials, ambient uintptr, wait time.Duration, directWbem bool) error {
 	requests, err := wmiComWorker()
 	if err != nil {
 		return fmt.Errorf("start the WMI COM worker: %w", err)
@@ -454,7 +445,7 @@ func wmiCreateProcessEx(host, command string, identity *winrmCredentials, ambien
 	}
 	done := make(chan error, 1)
 	requests <- func() {
-		done <- wmiCreateProcessChain(host, command, identity, ambient, directWbem)
+		done <- wmiCreateProcessChain(host, command, identity, ambient)
 	}
 	select {
 	case err := <-done:
@@ -543,7 +534,7 @@ func wmiDirectRaw() (locator, hr uintptr) {
 // for deletion; which key — under the caller's profile (for example an
 // in-memory agent whose WinRM host kept the user token without owning the
 // profile hive) or under the machine classes store — only registry-level
-// evidence can tell, per docs/wmi-key-deleted-diagnosis.md. The deletion
+// evidence can tell, per docs/wmi-com-lifecycle.md. The deletion
 // completes only when the last handle to the key closes, so a failure that
 // persists through the schedule proves persistence, not a different cause.
 // An activation that still fails after the schedule is exhausted keeps
@@ -599,7 +590,7 @@ func cocreateWbemLocatorWithRaw(raw func() (uintptr, uintptr)) (uintptr, error) 
 // credentials were supplied, and a verified revert on every exit path —
 // a revert or verification failure joins the operation's error, so
 // cleanup failure never reports success.
-func wmiCreateProcessChain(host, command string, identity *winrmCredentials, ambient uintptr, directWbem bool) (err error) {
+func wmiCreateProcessChain(host, command string, identity *winrmCredentials, ambient uintptr) (err error) {
 	if present, err := wmiThreadTokenPresent(); err != nil {
 		return identityBoundaryFailure(fmt.Errorf("verify the WMI worker thread entry: %w", err))
 	} else if present {
@@ -640,11 +631,7 @@ func wmiCreateProcessChain(host, command string, identity *winrmCredentials, amb
 	defer sysFreeString(identityPassword)
 	defer sysFreeString(identityAuthority)
 	defer runtime.KeepAlive(identityBlanket)
-	locatorRaw := cocreateWbemLocatorRaw
-	if directWbem {
-		locatorRaw = wmiDirectRaw
-	}
-	locator, err := cocreateWbemLocatorWithRaw(locatorRaw)
+	locator, err := cocreateWbemLocatorWithRaw(cocreateWbemLocatorRaw)
 	if err != nil {
 		return err
 	}

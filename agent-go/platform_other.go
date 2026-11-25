@@ -24,13 +24,13 @@ func detachSpawnCommand(command *exec.Cmd) {
 }
 
 // startDetachedAgent supports host-side tests; managed agents remain Windows-only.
-func startDetachedAgent(command *exec.Cmd, diagnostics ...*spawnDiagnostics) (int, string, bool, error) {
+func startDetachedAgent(command *exec.Cmd, diagnostics ...*spawnDiagnostics) (int, string, bool, credentialExposure, error) {
 	if err := command.Start(); err != nil {
-		return 0, "", false, err
+		return 0, "", false, "", err
 	}
 	pid := command.Process.Pid
 	go func() { _ = command.Wait() }()
-	return pid, "exec", false, nil
+	return pid, "exec", false, credentialExposureAgent, nil
 }
 
 func loadPluginPE(*http.Client, *config, string, string, string) (string, error) {

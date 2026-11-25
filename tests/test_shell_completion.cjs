@@ -280,8 +280,17 @@ test('uid posts directly without arguments', async () => {
   assert.equal(rejected.calls.length, 0);
   assert.match(rejected.errors[0], /Usage: \/uid/);
 });
+test('uidx posts directly without arguments', async () => {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const f = fixture(); f.type('/uidx'); await f.context.runCommand(false); await settle();
+  assert.equal(f.calls[0][0], '/sessions/agent/uidx');
+  assert.deepEqual(f.history, ['/uidx']);
+  const rejected = fixture(); rejected.type('/uidx extra'); await rejected.context.runCommand(false);
+  assert.equal(rejected.calls.length, 0);
+  assert.match(rejected.errors[0], /Usage: \/uidx/);
+});
 test('identity results render only through session events, including failed operations', async () => {
-  for (const command of ['/uid', '/make_token LAB\\alice test-password', '/rev2self']) {
+  for (const command of ['/uid', '/uidx', '/make_token LAB\\alice test-password', '/rev2self']) {
     for (const ok of [true, false]) {
       const f = fixture();
       const outputs = [];
@@ -636,7 +645,7 @@ test('lateral opens its method menu after command completion and accepts keyboar
   f.key('ArrowDown'); f.key('Tab');
   assert.equal(f.input.value, '/lateral wmiexec ');
   assert.equal(f.input.attrs['aria-expanded'], 'false');
-  assert.equal(f.hint.textContent, '/lateral wmiexec <host> [--direct-wbem] [-l csharp|powershell] [-i cred_id | -u identity [-p password]]');
+  assert.equal(f.hint.textContent, '/lateral wmiexec <host> [-l csharp|powershell] [-i cred_id | -u identity [-p password]]');
 });
 
 test('lateral filters methods, supports clicks, and leaves the host untouched', () => {

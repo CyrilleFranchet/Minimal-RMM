@@ -251,12 +251,31 @@ func TestWindowsDetachedSpawn(t *testing.T) {
 		command := exec.Command(executable, "-test.run=^TestWindowsDetachedSpawn$")
 		command.Env = append(os.Environ(), "RMM_SPAWN_TEST_MARKER="+marker)
 		detachSpawnCommand(command)
-		pid, method, degraded, err := startDetachedAgent(command)
+		pid, method, degraded, exposure, err := startDetachedAgent(command)
 		if err != nil || pid <= 0 || method == "" {
 			t.Fatalf("native detached spawn failed: pid=%d method=%s err=%v", pid, method, err)
 		}
-		if method != "CreateProcessA" || degraded != active {
-			t.Fatalf("spawn changed API or failed to report thread-token isolation: %s degraded=%t", method, degraded)
+		if !active {
+			if method != "CreateProcessA" || degraded || exposure != credentialExposureAgent {
+				t.Fatalf("spawn without a token must use the agent identity: method=%s degraded=%t exposure=%s", method, degraded, exposure)
+			}
+		} else {
+			switch method {
+			case "CreateProcessAsUser", "CreateProcessWithTokenW":
+				if degraded || exposure != credentialExposureNone {
+					t.Fatalf("token spawn reported the wrong identity state: method=%s degraded=%t exposure=%s", method, degraded, exposure)
+				}
+			case "CreateProcessWithLogonW":
+				if degraded || exposure != credentialExposureLSASS {
+					t.Fatalf("credential spawn reported the wrong identity state: method=%s degraded=%t exposure=%s", method, degraded, exposure)
+				}
+			case "CreateProcessA":
+				if !degraded || exposure != credentialExposureAgent {
+					t.Fatalf("fallback spawn failed to report identity degradation: degraded=%t exposure=%s", degraded, exposure)
+				}
+			default:
+				t.Fatalf("unexpected spawn method %q", method)
+			}
 		}
 		deadline := time.Now().Add(10 * time.Second)
 		for {

@@ -79,8 +79,8 @@ RMM_CLI_COMMANDS = [
     "make_token",
     "rev2self",
     "lateral",
-    "wmi_probe",
     "uid",
+    "uidx",
     "whoami",
     "persist",
     "stop",
@@ -247,7 +247,6 @@ class RmmApiClient:
         identity_domain: str = "",
         identity_user: str = "",
         identity_password: str = "",
-        direct_wbem: bool = False,
     ):
         if not isinstance(https, bool) or (https and method.strip().lower() != "winrm"):
             raise ValueError("https must be a boolean and is supported only for winrm")
@@ -257,8 +256,6 @@ class RmmApiClient:
             raise ValueError("loader must be csharp or the reserved powershell value")
         if not isinstance(independent, bool):
             raise ValueError("independent must be a boolean")
-        if not isinstance(direct_wbem, bool) or (direct_wbem and method.strip().lower() != "wmiexec"):
-            raise ValueError("direct_wbem must be a boolean and is supported only for wmiexec")
         if method.strip().lower() != "winrm":
             # Independent lifetime is a winrm-scoped option and is ignored
             # for the other methods, matching the server-side normalization.
@@ -281,7 +278,6 @@ class RmmApiClient:
             **({"independent": independent} if method.strip().lower() == "winrm" else {}),
             **({"https": True} if https else {}),
             **({"insecure": True} if insecure else {}),
-            **({"direct_wbem": True} if direct_wbem else {}),
             **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
             **({
                 "identity_domain": identity_domain,
@@ -320,42 +316,19 @@ class RmmApiClient:
             timeout=timeout + 5,
         )
 
+    def session_uidx(self, session_id: str, timeout: float = 120):
+        return self.request(
+            "POST",
+            f"/api/v1/sessions/{session_id}/uidx",
+            {"timeout": timeout},
+            timeout=timeout + 5,
+        )
+
     def session_whoami(self, session_id: str, timeout: float = 120, tickets: bool = False):
         """Query process, tokens, privileges, and logon metadata on a Go agent."""
         return self.request(
             "POST", f"/api/v1/sessions/{session_id}/whoami",
             {"timeout": timeout, "tickets": tickets}, timeout=timeout + 5,
-        )
-
-    def wmi_probe(self, session_id: str, host: str, mode: str = "", b_cred_id: str = "",
-                  b_domain: str = "", b_user: str = "", b_password: str = "", timeout: float = 120):
-        """Run the read-only WMI lifecycle diagnostic on a Go session.
-
-        The switch mode validates account switching; the account-B
-        credentials come from the workspace credential store (b_cred_id) or
-        the direct fields, exactly like a forced lateral identity.
-        """
-        mode = (mode or "").strip().lower()
-        if mode and mode not in ("held", "cycled", "switch"):
-            raise ValueError("mode must be held, cycled, or switch")
-        b_domain = str(b_domain or "").strip()
-        b_user = str(b_user or "").strip()
-        if b_cred_id and (b_domain or b_user or b_password):
-            raise ValueError("Use either b_cred_id or the b_* fields, not both")
-        if not b_cred_id and not b_user and (b_domain or b_password):
-            raise ValueError("b_* credentials require a user")
-        if (b_cred_id or b_user) and mode != "switch":
-            raise ValueError("account-B credentials require the switch mode")
-        body = {
-            "host": host,
-            "mode": mode,
-            "timeout": timeout,
-            **({"b_cred_id": b_cred_id} if b_cred_id else {}),
-            **({"b_domain": b_domain, "b_user": b_user, "b_password": b_password}
-               if (b_user and not b_cred_id) else {}),
-        }
-        return self.request(
-            "POST", f"/api/v1/sessions/{session_id}/wmi-probe", body, timeout=timeout + 10,
         )
 
     # ── Credential store (workspace-scoped) ───────────────────────────────────
@@ -1341,8 +1314,6 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         die("--insecure requires --https", 1)
     if getattr(args, "tethered", False) and args.method != "winrm":
         die("--tethered is supported only for winrm", 1)
-    if getattr(args, "direct_wbem", False) and args.method != "wmiexec":
-        die("--direct-wbem is supported only for wmiexec", 1)
     identity_cred_id = (getattr(args, "identity_cred_id", None) or "").strip()
     identity_user = (getattr(args, "identity_user", None) or "").strip()
     identity_password = getattr(args, "identity_password", None) or ""
@@ -1372,7 +1343,6 @@ def cmd_lateral(client: RmmApiClient, state: dict, args):
         **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
         **({"identity_user": identity_user, "identity_password": identity_password}
            if (identity_user and not identity_cred_id) else {}),
-        **({"direct_wbem": True} if getattr(args, "direct_wbem", False) else {}),
     )
     if args.json:
         print_json(data)
@@ -1449,38 +1419,6 @@ def cmd_lateral_cleanup(client: RmmApiClient, state: dict, args):
     say(cleanup.get("output") or f"cleanup complete for {deployment_id}")
 
 
-def cmd_wmi_probe(client: RmmApiClient, state: dict, args):
-    sid = require_session(state, args.session)
-    host = (args.host or "").strip()
-    if not host or host.startswith("-"):
-        die("A target hostname or IP address is required", 1)
-    b_cred_id = (getattr(args, "b_cred_id", None) or "").strip()
-    b_user = (getattr(args, "b_user", None) or "").strip()
-    b_password = getattr(args, "b_password", None) or ""
-    if b_cred_id and (b_user or b_password):
-        die("Use either -i <b_cred_id> or --b-user/--b-password, not both", 1)
-    if (b_cred_id or b_user) and args.mode != "switch":
-        die("Account-B credentials are supported only with the switch mode", 1)
-    say(f"WMI probe {args.mode or 'isolated'} against {host} (waits for the next beacon)...", err=True)
-    code, data = client.wmi_probe(
-        sid, host, args.mode,
-        timeout=args.timeout,
-        **({"b_cred_id": b_cred_id} if b_cred_id else {}),
-        **({"b_user": b_user, "b_password": b_password} if (b_user and not b_cred_id) else {}),
-    )
-    if args.json:
-        print_json(data)
-        if code != 200 or not data.get("ok"):
-            raise SystemExit(1)
-        return
-    if code != 200:
-        detail = data.get("error") if isinstance(data, dict) else data
-        die(f"wmi probe failed ({code})" + (f": {detail}" if detail else ""), 1)
-    if not data.get("ok"):
-        die(f"wmi probe failed: {data.get('output')}", 1)
-    print(data.get("output") or "")
-
-
 def cmd_uid(client: RmmApiClient, state: dict, args):
     sid = require_session(state, args.session)
     say(f"Querying identity of {sid[:8]} (waits for the next beacon)...", err=True)
@@ -1491,6 +1429,19 @@ def cmd_uid(client: RmmApiClient, state: dict, args):
     if code != 200:
         detail = data.get("error") if isinstance(data, dict) else data
         die(f"uid failed ({code})" + (f": {detail}" if detail else ""), 1)
+    print(data.get("output") or "")
+
+
+def cmd_uidx(client: RmmApiClient, state: dict, args):
+    sid = require_session(state, args.session)
+    say(f"Querying extended identity of {sid[:8]} (waits for the next beacon)...", err=True)
+    code, data = client.session_uidx(sid, timeout=args.timeout)
+    if args.json:
+        print_json(data)
+        return
+    if code != 200:
+        detail = data.get("error") if isinstance(data, dict) else data
+        die(f"uidx failed ({code})" + (f": {detail}" if detail else ""), 1)
     print(data.get("output") or "")
 
 
@@ -2619,7 +2570,6 @@ def run_interactive(
                 flags = [arg for arg in rest_args if arg in ("-s", "--https")]
                 insecure_flags = [arg for arg in rest_args if arg in ("-k", "--insecure")]
                 tethered_flags = [arg for arg in rest_args if arg == "--tethered"]
-                direct_wbem_flags = [arg for arg in rest_args if arg == "--direct-wbem"]
                 identity_values = identity_cred_values + identity_user_values + identity_password_values
                 identity_flags = bool(identity_values)
                 # Either one credential ID, or a direct identity (password
@@ -2631,7 +2581,7 @@ def run_interactive(
                                    len(identity_password_values) <= 1 and
                                    ((identity_cred_values and not identity_user_values and not identity_password_values) or
                                     (identity_user_values and not identity_cred_values))))
-                plain_args = [arg for arg in rest_args if arg not in ("-s", "--https", "-k", "--insecure", "--tethered", "--independent", "--direct-wbem")]
+                plain_args = [arg for arg in rest_args if arg not in ("-s", "--https", "-k", "--insecure", "--tethered", "--independent")]
                 targets = plain_args
                 if (method not in ("psexec", "wmiexec", "winrm") or
                         len(targets) != 1 or len(flags) > 1 or len(insecure_flags) > 1 or
@@ -2639,12 +2589,11 @@ def run_interactive(
                         any(arg.startswith("-") for arg in targets) or
                         (flags and method != "winrm") or
                         (tethered_flags and method != "winrm") or
-                        (direct_wbem_flags and method != "wmiexec") or
                         len(loader_values) > 1 or
                         any(value not in ("csharp", "powershell") for value in loader_values) or
                         (identity_flags and method not in ("wmiexec", "winrm")) or
                         not identity_valid):
-                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)] [--direct-wbem (wmiexec only; bypasses COM class-store for ERROR_KEY_DELETED in WinRM in-memory agents)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only; forces the deployment identity)]")
+                    warn("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only; independent is the default)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only; forces the deployment identity)]")
                     continue
                 sid = session_or_none(state)
                 if not sid:
@@ -2661,7 +2610,6 @@ def run_interactive(
                     **({"independent": independent} if method == "winrm" else {}),
                     **({"https": True} if flags else {}),
                     **({"insecure": True} if insecure_flags else {}),
-                    **({"direct_wbem": True} if direct_wbem_flags else {}),
                     **({"identity_cred_id": identity_cred_values[0]} if identity_cred_values else {}),
                     **({"identity_user": identity_user_values[0],
                         "identity_password": (identity_password_values[0] if identity_password_values else "")}
@@ -2680,61 +2628,6 @@ def run_interactive(
                         if not data.get("registered"):
                             warn("Lateral registration was not confirmed.")
                     _refresh_completion_sessions(client, state)
-                continue
-            if cmd == "wmi_probe":
-                parts = line.split()[1:]
-                cred_values = []
-                user_values = []
-                password_values = []
-                targets = []
-                index = 0
-                while index < len(parts):
-                    if parts[index] in ("-i", "--cred") and index + 1 < len(parts):
-                        cred_values.append(parts[index + 1])
-                        index += 2
-                        continue
-                    if parts[index] in ("-u", "--b-user") and index + 1 < len(parts):
-                        user_values.append(parts[index + 1])
-                        index += 2
-                        continue
-                    if parts[index] in ("-p", "--b-password") and index + 1 < len(parts):
-                        password_values.append(parts[index + 1])
-                        index += 2
-                        continue
-                    targets.append(parts[index])
-                    index += 1
-                identity_values = cred_values + user_values + password_values
-                host = targets[0] if targets else ""
-                mode = targets[1] if len(targets) > 1 else ""
-                identity_valid = (not identity_values or
-                                  (len(cred_values) <= 1 and len(user_values) <= 1 and len(password_values) <= 1 and
-                                   ((cred_values and not user_values and not password_values) or
-                                    (user_values and not cred_values))))
-                if (not host or len(targets) > 2 or
-                        any(target.startswith("-") for target in targets) or
-                        (mode and mode not in ("held", "cycled", "switch")) or
-                        (identity_values and mode != "switch") or
-                        not identity_valid):
-                    warn("Usage: /wmi_probe <host> [held|cycled|switch] [-i <b_cred_id> | -u <b_user> [-p <b_password>] (switch only: validates two accounts)]")
-                    continue
-                sid = session_or_none(state)
-                if not sid:
-                    warn("No session selected")
-                    continue
-                say(f"WMI probe {mode or 'isolated'} against {host} (waits for the next beacon)...")
-                code, data = client.wmi_probe(
-                    sid, host, mode,
-                    **({"b_cred_id": cred_values[0]} if cred_values else {}),
-                    **({"b_user": user_values[0],
-                        "b_password": (password_values[0] if password_values else "")}
-                       if (user_values and not cred_values) else {}))
-                if code != 200:
-                    detail = data.get("error") if isinstance(data, dict) else data
-                    warn(f"wmi probe failed ({code})" + (f": {detail}" if detail else ""))
-                elif not data.get("ok"):
-                    warn(data.get("output") or "wmi probe failed")
-                else:
-                    say(data.get("output") or "(no output)")
                 continue
             if cmd == "whoami":
                 options = line.split()[1:]
@@ -2763,6 +2656,23 @@ def run_interactive(
                 if code != 200:
                     detail = data.get("error") if isinstance(data, dict) else data
                     warn(f"uid failed ({code})" + (f": {detail}" if detail else ""))
+                else:
+                    for line in (data.get("output") or "").splitlines() or ["(no output)"]:
+                        say(line)
+                continue
+            if cmd == "uidx":
+                if rest:
+                    warn("Usage: /uidx")
+                    continue
+                sid = session_or_none(state)
+                if not sid:
+                    warn("No session selected")
+                    continue
+                say("Querying extended identity (waits for the next beacon)...")
+                code, data = client.session_uidx(sid)
+                if code != 200:
+                    detail = data.get("error") if isinstance(data, dict) else data
+                    warn(f"uidx failed ({code})" + (f": {detail}" if detail else ""))
                 else:
                     for line in (data.get("output") or "").splitlines() or ["(no output)"]:
                         say(line)
@@ -3414,8 +3324,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Identity as DOMAIN\\user or plain user forcing the deployment identity (if no credential ID)")
     sp_lat.add_argument("--password", dest="identity_password", default=None,
                         help="Password for a direct identity (if no credential ID)")
-    sp_lat.add_argument("--direct-wbem", action="store_true", dest="direct_wbem",
-                        help="wmiexec only: call WbemCreateLocator directly from wbemsvc.dll, bypassing COM class-store activation; use when CoCreateInstance fails with ERROR_KEY_DELETED (0x800703FA) from a WinRM in-memory agent whose per-user registry hive is not loaded")
     sp_lat.add_argument("--no-verify", action="store_true", help="Skip checks and report an unconfirmed request, not deployment success")
     sp_lat.add_argument("--exec-timeout", type=float, default=300, help="Seconds to wait for the lateral execution result")
     sp_lat.add_argument("--register-timeout", type=float, default=60, help="Seconds to wait for the target session to register")
@@ -3439,28 +3347,15 @@ def build_parser() -> argparse.ArgumentParser:
                                 help="Optional executor session; defaults to the recorded source session")
     sp_lat_cleanup.set_defaults(func=cmd_lateral_cleanup)
 
-    sp_wmi_probe = sub.add_parser(
-        "wmi-probe",
-        parents=[shared],
-        help="Run the read-only WMI lifecycle diagnostic on a Go session",
-    )
-    sp_wmi_probe.add_argument("host", help="Target hostname or IP address")
-    sp_wmi_probe.add_argument("--mode", choices=("held", "cycled", "switch"), default="",
-                              help="Lifecycle comparison: held (COM held, impersonation held), cycled (COM held, impersonation reverted/reapplied), switch (A-B-A account switch)")
-    sp_wmi_probe.add_argument("--session", "-s", default=None, help="Source session ID")
-    sp_wmi_probe.add_argument("-i", dest="b_cred_id", default=None,
-                              help="Credential ID for account B (switch mode only: validates two accounts)")
-    sp_wmi_probe.add_argument("--b-user", dest="b_user", default=None,
-                              help="Account B as DOMAIN\\user or plain user (switch mode only, if no credential ID)")
-    sp_wmi_probe.add_argument("--b-password", dest="b_password", default=None,
-                              help="Password for account B (if no credential ID)")
-    sp_wmi_probe.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the probe report")
-    sp_wmi_probe.set_defaults(func=cmd_wmi_probe)
-
     sp_uid = sub.add_parser("uid", parents=[shared], help="Show the identity used by a Go agent session")
     sp_uid.add_argument("--session", "-s", default=None)
     sp_uid.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
     sp_uid.set_defaults(func=cmd_uid)
+
+    sp_uidx = sub.add_parser("uidx", parents=[shared], help="Show extended dual-identity inspection (process + network, logon type, identity split)")
+    sp_uidx.add_argument("--session", "-s", default=None)
+    sp_uidx.add_argument("--timeout", type=float, default=120, help="Seconds to wait for the agent result")
+    sp_uidx.set_defaults(func=cmd_uidx)
 
     sp_whoami = sub.add_parser("whoami", parents=[shared], help="Report Windows process, tokens, privileges, and logon session")
     sp_whoami.add_argument("--session", "-s", default=None)

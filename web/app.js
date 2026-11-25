@@ -11,7 +11,7 @@ const SHELL_HISTORY_MAX = 100;
 const SHELL_DISPATCH_PREFIXES = ["cmd: ", "PS: ", "powershell: ", "pwsh: "];
 
 /** Operator meta commands — handled locally instead of being sent to the agent shell. */
-const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "spawnas", "runas", "creds", "make_token", "rev2self", "lateral", "wmi_probe", "uid", "whoami", "embeddings", "bloodhound"];
+const SHELL_META_COMMANDS = ["help", "?", "exfil", "download", "screenshot", "pe", "spawn", "spawnas", "runas", "creds", "make_token", "rev2self", "lateral", "uid", "uidx", "whoami", "embeddings", "bloodhound"];
 
 const BLOODHOUND_ACTIONS = ["preflight", "create", "collect", "import", "status", "verify", "query", "queries", "report", "result", "ui", "health", "ensure", "reset", "auth", "reset_ce", "library_search", "library_get"];
 window.rmmBloodHoundActions = BLOODHOUND_ACTIONS;
@@ -2169,7 +2169,7 @@ function longestCommonPrefix(strings) {
 }
 
 const CREDENTIAL_ID_COMPLETION_COMMANDS = {
-  make_token: ["-i"], spawnas: ["-i"], runas: ["-i"], lateral: ["-i"], wmi_probe: ["-i"], "creds del": ["-i"],
+  make_token: ["-i"], spawnas: ["-i"], runas: ["-i"], lateral: ["-i"], "creds del": ["-i"],
 };
 const shellCredentialCompletion = { rows: [], expires: 0, pending: null, scope: null };
 
@@ -2190,8 +2190,6 @@ function shellCredentialContext(line) {
   if (["make_token", "spawnas", "runas"].includes(key) && words.length !== 1) return null;
   if (key === "creds del" && words.length !== 2) return null;
   if (key === "lateral" && (words.length < 3 || words.includes("-i"))) return null;
-  // The wmi probe accepts the store selector only with the switch mode.
-  if (key === "wmi_probe" && !["held", "cycled", "switch"].includes((words[1] || "").toLowerCase())) return null;
   return { base: match[1] + match[2] + " ", prefix: match[3] };
 }
 
@@ -2391,7 +2389,7 @@ function updateShellCompletionHint() {
   closeShellCommandMenu();
   const lateralMethod = line.match(/^\s*\/lateral\s+(psexec|wmiexec|winrm)\s/i)?.[1].toLowerCase();
   if (lateralMethod) {
-    let lateralHint = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure] [--tethered]" : ""}${lateralMethod === "wmiexec" ? " [--direct-wbem]" : ""} [-l csharp|powershell]`;
+    let lateralHint = `/lateral ${lateralMethod} <host>${lateralMethod === "winrm" ? " [-s|--https] [-k|--insecure] [--tethered]" : ""} [-l csharp|powershell]`;
     if (["wmiexec", "winrm"].includes(lateralMethod)) lateralHint += " [-i cred_id | -u identity [-p password]]";
     hint.textContent = lateralHint;
     hint.classList.remove("hidden");
@@ -2517,7 +2515,7 @@ function appendShellError(text) {
 
 function shellCommandLabel(command) {
   const text = String(command || "").trim();
-  const match = text.match(/^__(LATERAL|LATERAL_CLEANUP|SPAWN|SPAWNAS|RUNAS|MAKE_TOKEN|REV2SELF|UID|SCREENSHOT)__(?=\s|$)/);
+  const match = text.match(/^__(LATERAL|LATERAL_CLEANUP|SPAWN|SPAWNAS|RUNAS|MAKE_TOKEN|REV2SELF|UID|UIDX|SCREENSHOT)__(?=\s|$)/);
   if (!match) return text;
   const label = `/${match[1].toLowerCase()}`;
   const args = text.slice(match[0].length).trim();
@@ -3203,6 +3201,9 @@ function renderSpawnResult(data) {
   ];
   if (data.spawn_pid != null) lines.push(`PID: ${data.spawn_pid}`);
   if (data.spawn_method) lines.push(`Method: ${data.spawn_method}`);
+  if (data.spawn_echelon != null) lines.push(`Echelon: ${data.spawn_echelon}`);
+  if (data.credential_exposure) lines.push(`Credential exposure: ${data.credential_exposure}`);
+  if (data.spawn_network_identity) lines.push(`Network identity: ${data.spawn_network_identity}`);
   for (const attempt of data.spawn_diagnostics?.attempts || []) {
     lines.push(`${attempt.method}: ${attempt.success ? "started" : `failed${attempt.error_code ? ` (Windows ${attempt.error_code})` : ""}: ${attempt.error || "unknown error"}`}`);
   }
@@ -3327,7 +3328,8 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   /rev2self                        Revert to the agent's own network identity
   /whoami [--tickets]              Report process, tokens, privileges, and logon session
   /uid                             Show the identity used by the selected Go agent
-  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered] [--direct-wbem] [-i &lt;cred_id&gt; | -u &lt;identity&gt; [-p &lt;password&gt;]]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved); --direct-wbem (wmiexec only) bypasses COM class-store activation; -i/-u forces the deployment identity for wmiexec/winrm (explicit credentials beat an active make_token and work from in-memory sources)
+  /uidx                            Extended identity: process + network identity, logon type, auth LUID, identity split
+  /lateral &lt;psexec|wmiexec|winrm&gt; &lt;host&gt; [-s|--https] [-k|--insecure] [-l|--loader csharp|powershell] [--tethered] [-i &lt;cred_id&gt; | -u &lt;identity&gt; [-p &lt;password&gt;]]   HTTPS/5986 for winrm only; wmiexec/winrm deploy the staged build in memory via the csharp loader (powershell is reserved); -i/-u forces the deployment identity for wmiexec/winrm (explicit credentials beat an active make_token and work from in-memory sources)
                                    -k requires -s and skips CA/name/revocation checks; certificate dates still apply.
                                    winrm deployments are independent by default: the target escapes the shell job via a local WMI re-stage and the source closes its session after readiness.
                                    --tethered (winrm only) restores the classic lifetime, where the deployment dies with the source that holds its shell.
@@ -3548,8 +3550,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     const flags = restTokens.filter(arg => ["-s", "--https"].includes(arg));
     const insecureFlags = restTokens.filter(arg => ["-k", "--insecure"].includes(arg));
     const tetheredFlags = restTokens.filter(arg => arg === "--tethered");
-    const directWbemFlags = restTokens.filter(arg => arg === "--direct-wbem");
-    const targets = restTokens.filter(arg => !["-s", "--https", "-k", "--insecure", "--tethered", "--independent", "--direct-wbem"].includes(arg));
+    const targets = restTokens.filter(arg => !["-s", "--https", "-k", "--insecure", "--tethered", "--independent"].includes(arg));
     const loader = loaderValues.length ? loaderValues[0].toLowerCase() : "";
     const identityValues = identityCredValues.concat(identityUserValues, identityPasswordValues);
     const identityFlags = identityValues.length > 0;
@@ -3564,10 +3565,9 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         (insecureFlags.length && !flags.length) || targets.some(arg => arg.startsWith("-")) ||
         (flags.length && method !== "winrm") ||
         (tetheredFlags.length && method !== "winrm") || tetheredFlags.length > 1 ||
-        (directWbemFlags.length && method !== "wmiexec") || directWbemFlags.length > 1 ||
         loaderValues.length > 1 || (loader && !loaderPattern.test(loader)) ||
         (identityFlags && !["wmiexec", "winrm"].includes(method)) || !identityValid) {
-      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only)] [--direct-wbem (wmiexec only)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only)]");
+      showError("Usage: /lateral <psexec|wmiexec|winrm> <host> [-s|--https] [-k|--insecure (requires -s)] [-l|--loader csharp|powershell] [--tethered (winrm only)] [-i <cred_id> | -u <identity> [-p <password>] (wmiexec/winrm only)]");
       return true;
     }
     if (!target.sessionId) {
@@ -3604,7 +3604,6 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
           ...(method === "winrm" ? { independent: !tetheredFlags.length } : {}),
           ...(flags.length ? { https: true } : {}),
           ...(insecureFlags.length ? { insecure: true } : {}),
-          ...(directWbemFlags.length ? { direct_wbem: true } : {}),
           ...(identityCredValues.length ? { identity_cred_id: identityCredValues[0] } : {}),
           ...(identityUser ? { identity_domain: identityDomain, identity_user: identityUser, identity_password: identityPasswordValues.length ? identityPasswordValues[0] : "" } : {}),
         }),
@@ -3623,79 +3622,6 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       pollSessionEvents().catch(() => {});
     } catch (error) {
       if (target.isCurrent()) showError(error.message || "Lateral request failed.");
-    }
-    return true;
-  }
-
-  if (verb === "wmi_probe") {
-    const credValues = [];
-    const userValues = [];
-    const passwordValues = [];
-    const targets = [];
-    for (let index = 0; index < rest.length; index++) {
-      if (["-i", "--cred"].includes(rest[index])) {
-        if (index + 1 >= rest.length) { credValues.push("<missing>"); break; }
-        credValues.push(rest[index + 1]);
-        index++;
-        continue;
-      }
-      if (["-u", "--b-user"].includes(rest[index])) {
-        if (index + 1 >= rest.length) { userValues.push("<missing>"); break; }
-        userValues.push(rest[index + 1]);
-        index++;
-        continue;
-      }
-      if (["-p", "--b-password"].includes(rest[index])) {
-        if (index + 1 >= rest.length) { passwordValues.push("<missing>"); break; }
-        passwordValues.push(rest[index + 1]);
-        index++;
-        continue;
-      }
-      targets.push(rest[index]);
-    }
-    const identityValues = credValues.concat(userValues, passwordValues);
-    const host = targets[0] || "";
-    const mode = targets.length > 1 ? targets[1].toLowerCase() : "";
-    const identityValid = !identityValues.length ||
-      (credValues.length <= 1 && userValues.length <= 1 && passwordValues.length <= 1 &&
-       ((credValues.length && !userValues.length && !passwordValues.length) ||
-        (userValues.length && !credValues.length)));
-    if (!host || targets.length > 2 || targets.some((target) => target.startsWith("-")) ||
-        (mode && !["held", "cycled", "switch"].includes(mode)) ||
-        (identityValues.length && mode !== "switch") || !identityValid) {
-      showError("Usage: /wmi_probe <host> [held|cycled|switch] [-i <b_cred_id> | -u <b_user> [-p <b_password>] (switch only: validates two accounts)]");
-      return true;
-    }
-    if (!target.sessionId) {
-      showError("Select a Go agent session before running the WMI probe.");
-      return true;
-    }
-    echoCommand();
-    if (target.isCurrent()) {
-      appendShellLine("output", `<pre>WMI probe ${escapeHtml(mode || "isolated")} against ${escapeHtml(host)} — waiting for the next beacon…</pre>`);
-    }
-    try {
-      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/wmi-probe`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          host, mode,
-          ...(credValues.length ? { b_cred_id: credValues[0] } : {}),
-          ...(userValues.length ? { b_user: userValues[0], b_password: passwordValues.length ? passwordValues[0] : "" } : {}),
-        }),
-      });
-      if (!target.isCurrent()) return true;
-      if (status !== 200) {
-        showError(data?.error || `HTTP ${status}`);
-        return true;
-      }
-      if (!data.ok) {
-        showError(data.output || "wmi probe failed");
-        return true;
-      }
-      const report = (data.output || "").trim() || "(no output)";
-      appendShellLine("output", `<pre>${escapeHtml(report)}</pre>`);
-    } catch (error) {
-      if (target.isCurrent()) showError(error.message || "WMI probe request failed.");
     }
     return true;
   }
@@ -3748,6 +3674,32 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       pollSessionEvents().catch(() => {});
     } catch (error) {
       if (target.isCurrent()) showError(error.message || "uid request failed.");
+    }
+    return true;
+  }
+
+  if (verb === "uidx") {
+    if (rest.length) {
+      showError("Usage: /uidx");
+      return true;
+    }
+    if (!target.sessionId) {
+      showError("Select a Go agent session first.");
+      return true;
+    }
+    echoCommand();
+    try {
+      const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/uidx`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+      });
+      if (!target.isCurrent()) return true;
+      if (status !== 200) {
+        showError(data?.error || `HTTP ${status}`);
+        return true;
+      }
+      pollSessionEvents().catch(() => {});
+    } catch (error) {
+      if (target.isCurrent()) showError(error.message || "uidx request failed.");
     }
     return true;
   }

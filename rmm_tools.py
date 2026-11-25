@@ -809,7 +809,6 @@ def tool_lateral_move(
     identity_domain: str = "",
     identity_user: str = "",
     identity_password: str = "",
-    direct_wbem: bool = False,
 ) -> str:
     """Start a Go agent on another host through psexec, wmiexec, or winrm."""
     sid, info = _resolve_session_id(client, session_ref)
@@ -855,9 +854,6 @@ def tool_lateral_move(
             "error": "loader_reserved",
             "detail": "The powershell loader is reserved for a later release; use the default csharp loader.",
         })
-    if not isinstance(direct_wbem, bool) or (direct_wbem and method != "wmiexec"):
-        return _json_result({"ok": False, "error": "invalid_direct_wbem",
-                             "detail": "direct_wbem must be boolean and is supported only for wmiexec"})
     if not isinstance(https, bool) or (https and method != "winrm"):
         return _json_result({"ok": False, "error": "invalid_https",
                              "detail": "https must be boolean and is supported only for winrm"})
@@ -883,7 +879,6 @@ def tool_lateral_move(
         **({"independent": independent} if method == "winrm" else {}),
         **({"https": True} if https else {}),
         **({"insecure": True} if insecure else {}),
-        **({"direct_wbem": True} if direct_wbem else {}),
         **({"identity_cred_id": identity_cred_id} if identity_cred_id else {}),
         **({"identity_domain": identity_domain, "identity_user": identity_user,
             "identity_password": identity_password}
@@ -981,6 +976,19 @@ def tool_session_uid(client: RmmApiClient, session_ref: str, timeout: float = 12
     return _json_result({"ok": True, "session_id": sid, "output": data.get("output")})
 
 
+def tool_session_uidx(client: RmmApiClient, session_ref: str, timeout: float = 120) -> str:
+    """Extended dual-identity inspection: process identity, network identity, logon type, auth LUID, identity split."""
+    sid, info = _resolve_session_id(client, session_ref)
+    if not sid:
+        return _json_result({"ok": False, **info})
+    code, data = client.session_uidx(sid, timeout=timeout)
+    if code == 408:
+        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__UIDX__"})
+    if code != 200:
+        return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
+    return _json_result({"ok": True, "session_id": sid, "output": data.get("output")})
+
+
 def tool_session_whoami(client: RmmApiClient, session_ref: str, timeout: float = 120, tickets: bool = False) -> str:
     """Read a Windows identity report, optionally including ticket metadata."""
     if not isinstance(tickets, bool):
@@ -995,70 +1003,6 @@ def tool_session_whoami(client: RmmApiClient, session_ref: str, timeout: float =
     if code != 200:
         return _json_result({"ok": False, "status": code, "session_id": sid, "data": data})
     return _json_result({"ok": bool(data.get("ok", True)), "session_id": sid, "output": data.get("output")})
-
-
-def tool_wmi_probe(
-    client: RmmApiClient,
-    session_ref: str,
-    host: str,
-    mode: str = "",
-    b_cred_id: str = "",
-    b_domain: str = "",
-    b_user: str = "",
-    b_password: str = "",
-    timeout: float = 120,
-) -> str:
-    """Run the read-only WMI lifecycle diagnostic on a Go agent session."""
-    sid, info = _resolve_session_id(client, session_ref)
-    if not sid:
-        return _json_result({"ok": False, **info})
-    host = (host or "").strip()
-    mode = (mode or "").strip().lower() if isinstance(mode, str) else ""
-    if mode and mode not in ("held", "cycled", "switch"):
-        return _json_result({
-            "ok": False,
-            "error": "invalid_mode",
-            "detail": "mode must be held, cycled, or switch",
-        })
-    b_cred_id = (b_cred_id or "").strip() if isinstance(b_cred_id, str) else ""
-    b_domain = (b_domain or "").strip() if isinstance(b_domain, str) else ""
-    b_user = (b_user or "").strip() if isinstance(b_user, str) else ""
-    b_password = b_password if isinstance(b_password, str) else ""
-    if b_cred_id and (b_domain or b_user or b_password):
-        return _json_result({
-            "ok": False,
-            "error": "invalid_identity",
-            "detail": "use either b_cred_id or the b_* credentials, not both",
-        })
-    if b_cred_id or b_user or b_domain or b_password:
-        if mode != "switch":
-            return _json_result({
-                "ok": False,
-                "error": "invalid_identity_method",
-                "detail": "account-B credentials require the switch mode",
-            })
-        if not b_cred_id and not b_user:
-            return _json_result({"ok": False, "error": "invalid_identity",
-                                 "detail": "direct account-B credentials require a user"})
-    if not host:
-        return _json_result({"ok": False, "error": "invalid_host"})
-    code, data = client.wmi_probe(
-        sid,
-        host,
-        mode,
-        timeout=timeout,
-        **({"b_cred_id": b_cred_id} if b_cred_id else {}),
-        **({"b_domain": b_domain, "b_user": b_user, "b_password": b_password}
-           if (b_user and not b_cred_id) else {}),
-    )
-    if code == 408:
-        return _json_result({"ok": False, "error": "timeout", "session_id": sid, "command": "__WMI_PROBE__"})
-    if code != 200 or not data.get("ok"):
-        detail = data.get("error") if isinstance(data, dict) else data
-        output = data.get("output") if isinstance(data, dict) else ""
-        return _json_result({"ok": False, "status": code, "session_id": sid,
-                             "detail": detail, "output": output or ""})
-    return _json_result({"ok": True, "session_id": sid, "output": data.get("output", "")})
 
 
 # ── Credential store tools ────────────────────────────────────────────────────
@@ -1341,18 +1285,12 @@ TOOL_HANDLERS = {
     "session_whoami": lambda c, a: tool_session_whoami(
         c, a["session_ref"], float(a.get("timeout", 120)), a.get("tickets", False),
     ),
-    "wmi_probe": lambda c, a: tool_wmi_probe(
+    "session_uid": lambda c, a: tool_session_uid(
         c,
         a["session_ref"],
-        a["host"],
-        mode=a.get("mode", ""),
-        b_cred_id=a.get("b_cred_id", ""),
-        b_domain=a.get("b_domain", ""),
-        b_user=a.get("b_user", ""),
-        b_password=a.get("b_password", ""),
-        timeout=float(a.get("timeout", 120)),
+        float(a.get("timeout", 120)),
     ),
-    "session_uid": lambda c, a: tool_session_uid(
+    "session_uidx": lambda c, a: tool_session_uidx(
         c,
         a["session_ref"],
         float(a.get("timeout", 120)),
@@ -2211,27 +2149,6 @@ OPENAI_TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "wmi_probe",
-            "description": "Run the read-only WMI lifecycle diagnostic on a live Go agent session: read-only WMI connections under the active make_token identity with per-stage evidence (UTC timestamps, OS thread, raw HRESULTs, durations, token snapshots around every connect, unexecuted stages reported as not_run), ending in a verdict that never attributes a cause the evidence does not support and a target-side event correlation checklist. Default: two ambient probes plus one explicit-credential comparison. mode=held or cycled run the COM-lifetime comparisons; mode=switch runs the A to B to A account-switch sequence (account A is the active make_token, account B the process identity), or validates two distinct accounts when account-B credentials are supplied (switch mode only). Deploys nothing, writes nothing to the target.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "session_ref": {"type": "string"},
-                    "host": {"type": "string", "description": "Target hostname or IP address"},
-                    "mode": {"type": "string", "enum": ["held", "cycled", "switch"], "default": "", "description": "Lifecycle comparison; empty runs the default isolated pair"},
-                    "b_cred_id": {"type": "string", "description": "Workspace credential ID for account B (switch mode only); alternative to the b_* fields."},
-                    "b_domain": {"type": "string", "default": "", "description": "Domain of account B (switch mode only)"},
-                    "b_user": {"type": "string", "description": "Account B as user or DOMAIN\\user (switch mode only)"},
-                    "b_password": {"type": "string", "description": "Plaintext password for account B"},
-                    "timeout": {"type": "number", "default": 120},
-                },
-                "required": ["session_ref", "host"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "session_whoami",
             "description": "Read Windows Go agent process, process/thread tokens, groups, privileges, and associated logon session. Optional Kerberos ticket metadata only; does not change identity or privileges.",
             "parameters": {
@@ -2250,6 +2167,21 @@ OPENAI_TOOLS: list[dict] = [
         "function": {
             "name": "session_uid",
             "description": "Show the identity a Go agent runs under (process user) plus the active make_token network identity, if any. Use it to verify make_token and rev2self. PowerShell sessions are rejected.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_ref": {"type": "string"},
+                    "timeout": {"type": "number", "default": 120},
+                },
+                "required": ["session_ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "session_uidx",
+            "description": "Extended dual-identity inspection on a Go agent: process identity, network identity, logon type, authentication LUID, and identity split detection. Surfaces the type-9 logon trap where local ≠ network identity after make_token.",
             "parameters": {
                 "type": "object",
                 "properties": {

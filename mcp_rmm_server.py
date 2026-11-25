@@ -107,8 +107,8 @@ from rmm_tools import (
     tool_list_lateral_deployments,
     tool_retry_lateral_cleanup,
     tool_session_uid,
+    tool_session_uidx,
     tool_session_whoami,
-    tool_wmi_probe,
     tool_start_socks,
     tool_start_tun,
     tool_stop_persistent,
@@ -616,9 +616,8 @@ def lateral_move(
     identity_domain: str = "",
     identity_user: str = "",
     identity_password: str = "",
-    direct_wbem: StrictBool = False,
 ) -> str:
-    """Start a Go agent on another host through psexec, wmiexec, or winrm. wmiexec and winrm deploy the server-staged workspace agent build in memory through the csharp loader (powershell is reserved). Winrm deployments are independent by default: the target escapes the WinRM shell job via a local WMI re-stage and the source closes the session right after readiness, so the deployment survives its source. independent=false (winrm only) restores the tethered lifetime that dies with its source; wmiexec deployments are independent by nature. identity_cred_id (workspace credential store) or identity_domain/identity_user/identity_password (wmiexec and winrm only) force the deployment's network identity: the agent passes the credentials explicitly through the WMI ConnectServer call and proxy blanket (NTLM) or the WinRM session, overriding any active make_token, so lateral moves work from in-memory sources and WMI hops without thread cloaking. direct_wbem=true (wmiexec only) calls WbemCreateLocator directly from wbemsvc.dll instead of going through CoCreateInstance and the COM class-store; use this when the source is a WinRM in-memory agent and CoCreateInstance fails with 0x800703FA (ERROR_KEY_DELETED) because the per-user registry hive was unloaded while COM held handles into it."""
+    """Start a Go agent on another host through psexec, wmiexec, or winrm. wmiexec and winrm deploy the server-staged workspace agent build in memory through the csharp loader (powershell is reserved). Winrm deployments are independent by default: the target escapes the WinRM shell job via a local WMI re-stage and the source closes the session right after readiness, so the deployment survives its source. independent=false (winrm only) restores the tethered lifetime that dies with its source; wmiexec deployments are independent by nature. identity_cred_id (workspace credential store) or identity_domain/identity_user/identity_password (wmiexec and winrm only) force the deployment's network identity: the agent passes the credentials explicitly through the WMI ConnectServer call and proxy blanket (NTLM) or the WinRM session, overriding any active make_token, so lateral moves work from in-memory sources and WMI hops without thread cloaking."""
     return tool_lateral_move(
         _client(),
         session_ref,
@@ -636,7 +635,6 @@ def lateral_move(
         identity_domain=identity_domain,
         identity_user=identity_user,
         identity_password=identity_password,
-        direct_wbem=direct_wbem,
     )
 
 
@@ -663,21 +661,16 @@ def session_uid(session_ref: str, timeout: float = 120) -> str:
 
 @mcp.tool()
 @_offload_tool
-def session_whoami(session_ref: str, timeout: float = 120, tickets: bool = False) -> str:
-    """Read Windows process, tokens, groups, privileges, and logon metadata; optionally ticket metadata."""
-    return tool_session_whoami(_client(), session_ref, timeout=timeout, tickets=tickets)
+def session_uidx(session_ref: str, timeout: float = 120) -> str:
+    """Extended dual-identity inspection: process identity, network identity, logon type, authentication LUID, and identity split detection. Surfaces the type-9 logon trap where local ≠ network identity after make_token."""
+    return tool_session_uidx(_client(), session_ref, timeout=timeout)
 
 
 @mcp.tool()
 @_offload_tool
-def wmi_probe(session_ref: str, host: str, mode: str = "", b_cred_id: str = "",
-              b_domain: str = "", b_user: str = "", b_password: str = "", timeout: float = 120) -> str:
-    """Run the read-only WMI lifecycle diagnostic on a live Go agent session: read-only WMI connections under the active make_token identity with per-stage evidence (timestamps, thread identity, raw HRESULTs, token snapshots, not_run markers) and a verdict that never attributes a cause the evidence does not support. mode=held/cycled run the COM lifetime vs impersonation-cycling comparisons; mode=switch runs the A to B to A account-switch sequence, validating two distinct accounts when account-B credentials are supplied (b_cred_id from the workspace store, or b_domain/b_user/b_password — switch mode only). Deploys nothing."""
-    return tool_wmi_probe(
-        _client(), session_ref, host,
-        mode=mode, b_cred_id=b_cred_id, b_domain=b_domain,
-        b_user=b_user, b_password=b_password, timeout=timeout,
-    )
+def session_whoami(session_ref: str, timeout: float = 120, tickets: bool = False) -> str:
+    """Read Windows process, tokens, groups, privileges, and logon metadata; optionally ticket metadata."""
+    return tool_session_whoami(_client(), session_ref, timeout=timeout, tickets=tickets)
 
 
 # ── Credential store (workspace-scoped, password metadata and explicit reveal) ───

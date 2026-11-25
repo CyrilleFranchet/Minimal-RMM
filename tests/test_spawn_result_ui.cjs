@@ -36,6 +36,18 @@ test('spawn summary exposes identity downgrade separately from registration', ()
   assert.doesNotMatch(context.renderSpawnResult({identity_degraded:false}), /WARNING:/);
 });
 
+test('spawn summary surfaces echelon, credential exposure and network identity', () => {
+  const html = context.renderSpawnResult({
+    spawn_echelon: 3,
+    credential_exposure: 'lsass',
+    spawn_network_identity: 'LAB\\<operator>',
+  });
+  assert.match(html, /Echelon: 3/);
+  assert.match(html, /Credential exposure: lsass/);
+  assert.match(html, /Network identity: LAB\\&lt;operator&gt;/);
+  assert.doesNotMatch(html, /LAB\\<operator>/);
+});
+
 test('spawn summary includes failures before successful fallback with escaped errors', () => {
   const html = context.renderSpawnResult({spawn_diagnostics:{attempts:[
     {method:'CreateProcessAsUser',success:false,error_code:1314,error:'<privilege error>'},

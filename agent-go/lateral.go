@@ -50,11 +50,6 @@ type lateralPayload struct {
 	HTTPS          bool             `json:"https,omitempty"`
 	Insecure       bool             `json:"insecure,omitempty"`
 	Identity       *lateralIdentity `json:"identity,omitempty"`
-	// DirectWbem bypasses COM class-store activation for the WMI locator
-	// by calling WbemCreateLocator directly from wbemsvc.dll, skipping the
-	// CLSID registry lookup that fails with ERROR_KEY_DELETED in a WinRM
-	// in-memory context where the per-user classes hive is not loaded.
-	DirectWbem bool `json:"direct_wbem,omitempty"`
 	winrmIdentity  *winrmCredentials
 	// ambientToken carries the lateral worker's captured identity handle
 	// (uintptr transport: the field compiles on every platform) to the WMI

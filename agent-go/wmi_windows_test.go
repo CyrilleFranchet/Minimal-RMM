@@ -233,8 +233,8 @@ func TestCocreateWbemLocatorExhaustedRetriesKeepsHR(t *testing.T) {
 
 // TestCocreateWbemLocatorFallsBackToDirectOnKeyDeleted pins the automatic
 // fallback: when CoCreateInstance exhausts the retry schedule on
-// ERROR_KEY_DELETED, the direct WbemCreateLocator export succeeds without
-// the operator having to pass --direct-wbem.
+// ERROR_KEY_DELETED, the direct DllGetClassObject export succeeds
+// automatically.
 func TestCocreateWbemLocatorFallsBackToDirectOnKeyDeleted(t *testing.T) {
 	origProfileLoader := wmiEnsureProfileLoaded
 	defer func() {
