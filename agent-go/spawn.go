@@ -36,14 +36,15 @@ func spawnSessionID(parent string) string {
 // of interleaving appends into the parent's default log path.
 func spawnEnvironment(cfg *config, sessionID string) []string {
 	overrides := map[string]string{
-		"RMM_BASE_URL":           cfg.BaseURL,
-		"RMM_BEACON_SECRET":      cfg.BeaconSecret,
-		"RMM_SESSION_ID":         sessionID,
-		"RMM_AGENT_WORKSPACE_ID": cfg.WorkspaceID,
-		"RMM_SLEEP_SECONDS":      strconv.Itoa(cfg.SleepSeconds),
-		"RMM_JITTER_PERCENT":     strconv.Itoa(cfg.JitterPercent),
-		"RMM_PERSISTENT_HTTP":    strconv.FormatBool(cfg.PersistentHTTP),
-		"RMM_TLS_VERSION":        cfg.TLSVersion,
+		"RMM_BASE_URL":               cfg.BaseURL,
+		"RMM_BEACON_SECRET":          cfg.BeaconSecret,
+		"RMM_SESSION_ID":             sessionID,
+		"RMM_AGENT_WORKSPACE_ID":     cfg.WorkspaceID,
+		"RMM_SLEEP_SECONDS":          strconv.Itoa(cfg.SleepSeconds),
+		"RMM_JITTER_PERCENT":         strconv.Itoa(cfg.JitterPercent),
+		"RMM_PERSISTENT_HTTP":        strconv.FormatBool(cfg.PersistentHTTP),
+		"RMM_TLS_VERSION":            cfg.TLSVersion,
+		"RMM_TLS_SESSION_RESUMPTION": strconv.FormatBool(cfg.TLSSessionResumption),
 	}
 	if cfg.HTTPProxy != "" {
 		overrides["RMM_HTTP_PROXY"] = cfg.HTTPProxy

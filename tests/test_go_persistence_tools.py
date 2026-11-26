@@ -7,6 +7,17 @@ import rmm_tools
 
 
 class GoPersistenceToolTests(unittest.TestCase):
+    def test_tls_resumption_dispatch_validation(self):
+        client = Mock()
+        client.build_go_agent.return_value = (200, {})
+        for arguments, expected in (({}, False), ({"tls_session_resumption": True}, True)):
+            result = rmm_tools.TOOL_HANDLERS["build_go_agent"](client, arguments)
+            self.assertTrue(json.loads(result)["ok"])
+            self.assertIs(client.build_go_agent.call_args.kwargs["config"]["tls_session_resumption"], expected)
+        client.reset_mock()
+        for value in (None, "false", 0, 1, {}):
+            self.assertFalse(json.loads(rmm_tools.TOOL_HANDLERS["build_go_agent"](client, {"tls_session_resumption": value}))["ok"])
+        client.build_go_agent.assert_not_called()
     def test_dispatch_preserves_default_and_explicit_boolean(self):
         client = Mock()
         client.build_go_agent.return_value = (200, {})

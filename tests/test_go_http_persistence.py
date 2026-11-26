@@ -11,6 +11,30 @@ import server_rmm
 
 
 class GoHTTPPersistenceTests(unittest.TestCase):
+    def test_tls_resumption_is_embedded_and_in_launchers(self):
+        for value in (False, True):
+            for stageless in (False, True):
+                with self.subTest(value=value, stageless=stageless), tempfile.TemporaryDirectory() as directory:
+                    commands = []
+                    def compile_fixture(command, **kwargs):
+                        commands.append(command)
+                        Path(command[command.index("-o") + 1]).write_bytes(b"MZfixture")
+                        return SimpleNamespace(returncode=0, stdout="", stderr="")
+                    with patch.object(server_rmm, "GO_AGENT_BUILD_DIR", directory), \
+                            patch.object(server_rmm.shutil, "which", side_effect=lambda name: "go" if name == "go" else None):
+                        result = server_rmm.build_go_agent("windows", "amd64", {"base_url": "https://example.invalid", "tls_session_resumption": value},
+                            process_owner=SimpleNamespace(run=compile_fixture), stageless=stageless, staging_fn=lambda _: "fixture-stage")
+                    expected = "1" if value else "0"
+                    encoded = base64.b64encode(expected.encode()).decode()
+                    self.assertIn(f"main.defaultTLSSessionResumptionB64={encoded}", " ".join(commands[-1]))
+                    with zipfile.ZipFile(result["path"]) as archive:
+                        launcher = "run-agent.ps1" if stageless else "run-stage1.ps1"
+                        self.assertIn(f"$env:RMM_TLS_SESSION_RESUMPTION = '{expected}'", archive.read(launcher).decode())
+
+    def test_invalid_tls_resumption_is_rejected(self):
+        for value in (None, "true", 0, 1, {}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "tls_session_resumption"):
+                server_rmm._build_go_agent_from_source(".", "go", "windows", "amd64", {"tls_session_resumption": value}, None, True, None)
     def test_build_embeds_mode_and_launcher_overrides_stale_environment(self):
         for value, stageless in ((v, s) for v in (None, False, True) for s in (False, True)):
             with self.subTest(persistent_http=value, stageless=stageless), tempfile.TemporaryDirectory() as directory:

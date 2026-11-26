@@ -64,16 +64,18 @@ func TestSpawnSessionIDIsIndependentOfParent(t *testing.T) {
 func TestSpawnEnvironmentOverridesIdentityAndConnection(t *testing.T) {
 	t.Setenv("RMM_SESSION_ID", "inherited-session")
 	t.Setenv("RMM_TLS_VERSION", "1.3")
+	t.Setenv("RMM_TLS_SESSION_RESUMPTION", "false")
 	t.Setenv("RMM_LOG_FILE", "")
 	cfg := &config{
-		BaseURL:        "http://127.0.0.1:8787",
-		BeaconSecret:   "beacon-secret",
-		SessionID:      "parent-session",
-		HTTPProxy:      "socks5://127.0.0.1:1080",
-		PersistentHTTP: true,
-		TLSVersion:     "1.2",
-		SleepSeconds:   45,
-		JitterPercent:  20,
+		BaseURL:              "http://127.0.0.1:8787",
+		BeaconSecret:         "beacon-secret",
+		SessionID:            "parent-session",
+		HTTPProxy:            "socks5://127.0.0.1:1080",
+		PersistentHTTP:       true,
+		TLSVersion:           "1.2",
+		TLSSessionResumption: true,
+		SleepSeconds:         45,
+		JitterPercent:        20,
 	}
 	env := spawnEnvironment(cfg, "child-session")
 	lookup := make(map[string]string)
@@ -95,6 +97,9 @@ func TestSpawnEnvironmentOverridesIdentityAndConnection(t *testing.T) {
 	}
 	if lookup["RMM_TLS_VERSION"] != "1.2" {
 		t.Fatal("spawn environment lost the selected TLS version")
+	}
+	if lookup["RMM_TLS_SESSION_RESUMPTION"] != "true" {
+		t.Fatal("spawn environment lost TLS session resumption")
 	}
 	if lookup["RMM_SLEEP_SECONDS"] != "45" || lookup["RMM_JITTER_PERCENT"] != "20" {
 		t.Fatalf("spawn env must pin current beacon timing, got %#v", lookup)

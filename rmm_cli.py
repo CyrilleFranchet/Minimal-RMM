@@ -1696,7 +1696,8 @@ def cmd_agent(client: RmmApiClient, state: dict, args):
         )
     elif action == "go-build":
         config = {"persistent_http": getattr(args, "persistent_http", False),
-                  "tls_version": getattr(args, "tls_version", "default")}
+                  "tls_version": getattr(args, "tls_version", "default"),
+                  "tls_session_resumption": getattr(args, "tls_session_resumption", False)}
         if getattr(args, "workspace_id", None):
             config["workspace_id"] = args.workspace_id
         code, data = client.build_go_agent(
@@ -3488,6 +3489,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_agent_go.add_argument("--workspace-id", help="Administrator-selected owner; workspace authentication binds this automatically")
     sp_agent_go.add_argument("--persistent-http", action="store_true", help="Reuse HTTP connections across beacon requests (default: close after each request)")
     sp_agent_go.add_argument("--tls-version", choices=["default", "1.2", "1.3"], default="default", help="TLS version for agent beacon requests (default: negotiate)")
+    sp_agent_go.add_argument("--tls-session-resumption", action="store_true", help="Enable TLS session resumption for Go agent connections")
     sp_agent_go.set_defaults(func=cmd_agent)
     sp_agent_stage = sp_agent_sub.add_parser(
         "go-stage", parents=[shared],

@@ -49,6 +49,7 @@
       jitterPercent: jitterValue(),
       httpProxy: $("#agent-go-proxy")?.value.trim() || "",
       persistentHttp: Boolean($("#agent-go-persistent-http")?.checked),
+      tlsSessionResumption: Boolean($("#agent-go-tls-session-resumption")?.checked),
       tlsVersion: $("#agent-go-tls-version")?.value || "default",
       goos: $("#agent-goos")?.value || "windows",
       goarch: $("#agent-goarch")?.value || "amd64",
@@ -87,6 +88,8 @@
     const stagelessEl = $("#agent-go-stageless");
     const persistentEl = $("#agent-go-persistent-http");
     if (persistentEl) persistentEl.checked = prefs.persistentHttp === true;
+    const resumptionEl = $("#agent-go-tls-session-resumption");
+    if (resumptionEl) resumptionEl.checked = prefs.tlsSessionResumption === true;
     if (stagelessEl) stagelessEl.checked = prefs.stageless || false;
     const debugEl = $("#agent-go-debug");
     if (debugEl) debugEl.checked = prefs.debug || false;
@@ -259,6 +262,7 @@
             jitter_percent: jitterValue(),
             http_proxy: $("#agent-go-proxy")?.value.trim() || "",
             persistent_http: Boolean($("#agent-go-persistent-http")?.checked),
+            tls_session_resumption: Boolean($("#agent-go-tls-session-resumption")?.checked),
             tls_version: $("#agent-go-tls-version")?.value || "default",
           },
         }),
@@ -309,6 +313,7 @@
     $("#agent-go-stageless")?.addEventListener("change", savePrefs);
     $("#agent-go-debug")?.addEventListener("change", savePrefs);
     $("#agent-go-persistent-http")?.addEventListener("change", savePrefs);
+    $("#agent-go-tls-session-resumption")?.addEventListener("change", savePrefs);
     $("#agent-go-download")?.addEventListener("click", async (event) => {
       event.preventDefault();
       await download();

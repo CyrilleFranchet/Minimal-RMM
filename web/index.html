@@ -196,6 +196,10 @@
               <option value="1.3">TLS 1.3 only</option>
             </select>
             <p class="agent-gen-hint" id="agent-go-tls-hint">The staged launcher uses its own TLS settings; this selection applies to the Go agent.</p>
+            <label class="agent-gen-check" for="agent-go-tls-session-resumption">
+              <input type="checkbox" id="agent-go-tls-session-resumption" aria-describedby="agent-go-tls-hint">
+              TLS session resumption
+            </label>
             <label class="agent-gen-check" for="agent-go-persistent-http">
               <input type="checkbox" id="agent-go-persistent-http">
               Persistent HTTP (reuse TCP)

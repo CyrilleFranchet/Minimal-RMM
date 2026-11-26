@@ -37,6 +37,19 @@ test('TLS selection persists and reaches build request', async () => {
   assert.equal(tls13.calls.find(call => call.url.endsWith('/build')).body.config.tls_version, '1.3');
 });
 
+test('TLS resumption defaults off and survives preferences and submission', async () => {
+  const defaults = fixture();
+  await defaults.click('build');
+  assert.equal(defaults.calls.find(call => call.url.endsWith('/build')).body.config.tls_session_resumption, false);
+  const ui = fixture({prefs: {tlsSessionResumption: true}});
+  assert.equal(ui.get('tls-session-resumption').checked, true);
+  await ui.click('build');
+  assert.equal(ui.calls.find(call => call.url.endsWith('/build')).body.config.tls_session_resumption, true);
+  ui.get('tls-session-resumption').checked = false;
+  ui.get('tls-session-resumption').handlers.change();
+  assert.equal(JSON.parse(ui.storage.get('rmm_go_agent_prefs')).tlsSessionResumption, false);
+});
+
 test('Go generator exposes the debug build checkbox and inherited tracing label', () => {
   const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
   assert.match(html, /<label for="agent-go-debug"[^>]*>[\s\S]*?<input type="checkbox" id="agent-go-debug"> Debug build \(child agents inherit\)/);

@@ -7,12 +7,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -117,6 +119,68 @@ func TestTLSVersionConfiguration(t *testing.T) {
 				t.Fatalf("got %q, want %q", cfg.TLSVersion, tc.want)
 			}
 		})
+	}
+}
+
+func TestTLSSessionResumptionConfiguration(t *testing.T) {
+	old := defaultTLSSessionResumptionB64
+	t.Cleanup(func() { defaultTLSSessionResumptionB64 = old })
+	t.Setenv("RMM_BASE_URL", "https://example.invalid")
+	t.Setenv("RMM_BEACON_SECRET", "test")
+	for _, tc := range []struct {
+		embedded, environment string
+		want                  bool
+	}{
+		{"", "", false}, {"1", "", true}, {"1", "false", false}, {"0", "yes", true},
+	} {
+		defaultTLSSessionResumptionB64 = base64.StdEncoding.EncodeToString([]byte(tc.embedded))
+		t.Setenv("RMM_TLS_SESSION_RESUMPTION", tc.environment)
+		cfg, err := loadConfig()
+		if err != nil || cfg.TLSSessionResumption != tc.want {
+			t.Fatalf("embedded=%q environment=%q: config=%+v err=%v", tc.embedded, tc.environment, cfg, err)
+		}
+	}
+}
+
+func TestTLSSessionResumptionAcrossConnections(t *testing.T) {
+	for _, version := range []struct {
+		name  string
+		value uint16
+	}{{"1.2", tls.VersionTLS12}, {"1.3", tls.VersionTLS13}, {"default", tls.VersionTLS13}} {
+		for _, enabled := range []bool{false, true} {
+			t.Run(version.name+"/"+strconv.FormatBool(enabled), func(t *testing.T) {
+				var seen []bool
+				server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					seen = append(seen, r.TLS.DidResume)
+					_, _ = w.Write([]byte("ok"))
+				}))
+				server.TLS = &tls.Config{MinVersion: version.value, MaxVersion: version.value}
+				server.StartTLS()
+				defer server.Close()
+				client := newHTTPClient(&config{TLSVersion: version.name, TLSSessionResumption: enabled})
+				defer client.CloseIdleConnections()
+				transport := client.Transport.(*http.Transport)
+				if transport.TLSClientConfig == nil {
+					transport.TLSClientConfig = &tls.Config{}
+				}
+				roots := x509.NewCertPool()
+				roots.AddCert(server.Certificate())
+				transport.TLSClientConfig.RootCAs = roots
+				for i := 0; i < 2; i++ {
+					resp, err := client.Get(server.URL)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+						t.Fatal(err)
+					}
+					resp.Body.Close()
+				}
+				if len(seen) != 2 || seen[0] || seen[1] != enabled {
+					t.Fatalf("resumption enabled=%v, handshakes=%v", enabled, seen)
+				}
+			})
+		}
 	}
 }
 

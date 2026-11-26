@@ -79,6 +79,7 @@ For the workspace ID, an explicitly empty variable clears the embedded value:
 | `RMM_HTTP_PROXY` | no | direct connection |
 | `RMM_PERSISTENT_HTTP` | no | `0` (one TCP connection per HTTP request) |
 | `RMM_TLS_VERSION` | no | `default` (Go's normal TLS negotiation) |
+| `RMM_TLS_SESSION_RESUMPTION` | no | `0` (TLS session cache disabled) |
 
 Go agent builds can select `default`, `1.2`, or `1.3` for the beacon HTTP
 transport through the WebUI, build API (`config.tls_version`), CLI
@@ -89,6 +90,16 @@ This setting also follows spawned Go agents. The staged launcher's initial downl
 and SOCKS/TUN plugin connections use separate transports and are not controlled
 by this option. TLS version alone does not reproduce another client's handshake
 fingerprint or enable TLS session resumption.
+
+Enable TLS session resumption separately in the Go generator, with
+`config.tls_session_resumption: true` in the build API, `--tls-session-resumption`
+in `agent go-build`, or `tls_session_resumption` in MCP/AI `build_go_agent`.
+The agent retains TLS session state in memory for reuse across new beacon HTTP
+connections. A server may decline resumption, and restarting the agent clears
+its cache. Nonempty `RMM_TLS_SESSION_RESUMPTION` overrides the embedded choice;
+`1`, `true`, `yes`, and `on` enable it. Spawned agents inherit the setting, not
+the cache. The staged launcher's initial download and plugin transports remain
+independent. TLS resumption and HTTP connection reuse are separate settings.
 
 Go agents default to short HTTP connections, matching PowerShell. This also
 closes the agent-to-Cloudflare connection after each request; closing only the

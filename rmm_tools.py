@@ -658,6 +658,7 @@ def tool_build_go_agent(
     debug: bool = False,
     persistent_http: bool = False,
     tls_version: str = "default",
+    tls_session_resumption: bool = False,
 ) -> str:
     """Build the repository Go agent with the server's active connection settings embedded."""
     config = {
@@ -667,6 +668,7 @@ def tool_build_go_agent(
         "http_proxy": http_proxy,
         "persistent_http": persistent_http,
         "tls_version": tls_version,
+        "tls_session_resumption": tls_session_resumption,
     }
     if workspace_id:
         config["workspace_id"] = workspace_id
@@ -676,6 +678,8 @@ def tool_build_go_agent(
         return _json_result({"ok": False, "error": "persistent_http must be a boolean"})
     if tls_version not in ("default", "1.2", "1.3"):
         return _json_result({"ok": False, "error": "tls_version must be default, 1.2, or 1.3"})
+    if not isinstance(tls_session_resumption, bool):
+        return _json_result({"ok": False, "error": "tls_session_resumption must be a boolean"})
     code, data = client.build_go_agent(
         goos=goos,
         goarch=goarch,
@@ -1242,6 +1246,7 @@ TOOL_HANDLERS = {
         a.get("debug", False),
         a.get("persistent_http", False),
         a.get("tls_version", "default"),
+        a.get("tls_session_resumption", False),
     ),
     "stage_status": lambda c, a: tool_stage_status(c, a["staging_id"]),
     "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
@@ -1951,6 +1956,7 @@ OPENAI_TOOLS: list[dict] = [
                 "debug": {"type": "boolean", "default": False, "description": "Build the main agent with the rmmdebug build tag in a full-agent ZIP. Spawn, spawnas, and lateral descendants inherit tracing automatically. Normal builds exclude diagnostic implementation."},
                 "persistent_http": {"type": "boolean", "default": False, "description": "Reuse HTTP connections across beacon requests. Default false closes each request connection, including connections to Cloudflare."},
                 "tls_version": {"type": "string", "enum": ["default", "1.2", "1.3"], "default": "default", "description": "TLS version for the Go agent; the stage1 launcher uses its own TLS settings."},
+                "tls_session_resumption": {"type": "boolean", "default": False, "description": "Enable TLS session resumption for Go agent HTTP connections; the staged launcher uses a separate transport."},
             }},
         },
     },
