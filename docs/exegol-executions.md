@@ -10,20 +10,49 @@ The AI MCP session wraps Exegol's `execute_command_in_container` tool in
 operations, retain their original behavior. Other external tools, including
 `execute_remote_command`, keep their native synchronous execution behavior.
 
-The original container-command schema is preserved. RMM persists a random
+The container-command schema adds an optional `clock_offset_seconds` integer
+from -604800 to 604800. RMM persists a random
 execution ID before sending a launch request, then polls status automatically
 without spending model rounds. Each MCP helper request has a 30-second timeout;
 polling normally waits two seconds between requests. A transport timeout stops
 waiting and returns `outcome_unknown` with the saved ID, not a claim that the
 command failed or stopped. No launch request is automatically retried.
 
-The adapter exposes three synthetic Exegol tools to the AI session:
+The adapter exposes four synthetic Exegol tools to the AI session:
 
 | Tool | Arguments | Behavior |
 | --- | --- | --- |
+| `inspect_exegol_dc_time` | `container_name`, `dc` | Query NTP on UDP 123 from the container and return UTC times, offset, measurement time, and round-trip estimate. |
 | `list_exegol_executions` | None | Return the latest 100 owner-local handles and last observed states. |
 | `get_exegol_execution` | `execution_id`, optional byte `offset` and `limit` | Refresh state and retrieve up to 65536 output bytes. |
 | `cancel_exegol_execution` | `execution_id` | Persist cancellation intent; inspect the returned state and poll until termination is confirmed. |
+
+For suspected Kerberos clock skew, the AI can inspect DC time and explicitly
+pass the rounded DC-minus-container offset as `clock_offset_seconds` on the
+affected command, or use an offset supplied by the operator. This wraps that
+command in `faketime --exclude-monotonic` and leaves the supervisor on real
+time. The offset is not applied automatically or saved for later commands;
+re-measure when it may be stale. NTP requires UDP 123 reachability, which is
+not guaranteed by a TCP-only pivot. Probe failure is explicit. The container
+needs `python3`, `timeout`, and `faketime`; unavailable dependencies cause the
+command or probe to fail rather than falling back to a system clock change.
+The probe allows up to 10 seconds per address within a 45-second socket
+deadline, plus DNS time within an overall 55-second command timeout. The
+configured execution deadline can end it sooner. It tries resolved addresses,
+handles NTP era
+rollover using the local clock as a reference, and frames its result so shell
+startup output does not corrupt it. An unresolved probe for the same container
+and DC reuses its execution handle; recover an unknown outcome with
+`get_exegol_execution` before launching another probe. NTP is unauthenticated; treat the measured
+offset as an estimate from the selected server, not as a trusted time source.
+Some executables do not honor libfaketime, and ticket caches and other
+applications may use different clock domains. Verify the actual client.
+
+The adapter rejects common explicit system clock changes and instructs the AI
+not to change system time. This check is best effort, not a security boundary:
+arbitrary shell code and other upstream tools can bypass it. Restrict container
+capabilities and privileges separately if changing host time must be prevented.
+Direct Exegol MCP users and non-container upstream tools bypass this adapter.
 
 Ask the AI to inspect the existing execution ID after a disconnect. If its ID
 is unavailable, list executions first. Never repeat a command just to retrieve
@@ -86,8 +115,8 @@ instead of appending another. This keeps the active tool's start/evidence
 references available during long commands while still checking interruption
 on every poll and retaining meaningful state transitions.
 
-`DurableExegolBackend` enters and closes the original backend, preserves its
-tools, and adds recovery schemas from `recovery_tools`. `call_tool` validates
+`DurableExegolBackend` enters and closes the original backend, extends the
+container execution schema and adds schemas from `recovery_tools`. `call_tool` validates
 arguments, claims an execution, and follows status/output. `request` sends a
 bounded helper call, verifies the execution-specific response frame, and
 records a `checkpoint`; shell startup banners cannot hide the framed response.

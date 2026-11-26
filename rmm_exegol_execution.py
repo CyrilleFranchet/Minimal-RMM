@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sqlite3
 import stat
 import time
@@ -25,6 +26,57 @@ STATES = TERMINAL | {'prepared', 'starting', 'running', 'outcome_unknown', 'not_
 PAGE_BYTES = 65536
 SAFE_ERRORS = frozenset({'output_limit_exceeded', 'supervisor_failed', 'termination_unconfirmed',
                          'supervisor_unavailable', 'supervisor_launch_failed'})
+
+# This catches common accidental clock changes, not arbitrary shell programs.
+CLOCK_SET = re.compile(r'(?i)(?:\bdate\s+(?:-[uR]+\s+)*(?:-[^\s]*s\b|--set(?:\s|=)|\d{8,})|'
+                       r'\btimedatectl\s+set-(?:time|ntp)\b|\b(?:hwclock|ntpdate|'
+                       r'rdate)\s+(?:-[^\s]*[sw]\b|--set\b)|\bntpdate\s+(?!-[^\s]*q\b)|'
+                       r'\b(?:clock_settime|settimeofday)\b)')
+
+NTP_PROBE = r'''import datetime,json,socket,struct,sys,time
+host,marker=sys.argv[1:3]
+try:
+    infos=socket.getaddrinfo(host,123,type=socket.SOCK_DGRAM)
+    deadline=time.monotonic()+45
+    for index,(family,kind,proto,_,address) in enumerate(infos):
+        try:
+            remaining=deadline-time.monotonic()
+            if remaining<=0: break
+            with socket.socket(family,kind,proto) as s:
+                s.settimeout(min(10,remaining/(len(infos)-index)))
+                s.connect(address)
+                packet=bytearray(48); packet[0]=0x23
+                t1=time.time(); stamp=t1+2208988800
+                struct.pack_into('!II',packet,40,int(stamp)%2**32,int((stamp%1)*2**32))
+                s.send(packet); response=s.recv(512); t4=time.time()
+            if (len(response)<48 or response[0]&7!=4 or response[0]>>6==3 or
+                not 1<=response[1]<=15 or response[24:32]!=packet[40:48] or
+                response[32:40]==bytes(8) or response[40:48]==bytes(8)):
+                continue
+            def timestamp(pos):
+                seconds,fraction=struct.unpack_from('!II',response,pos)
+                reference=t1+2208988800
+                era=round((reference-seconds)/2**32)
+                return seconds+era*2**32-2208988800+fraction/2**32
+            t2,t3=timestamp(32),timestamp(40)
+            offset=((t2-t1)+(t3-t4))/2
+            delay=(t4-t1)-(t3-t2)
+            if abs(offset)>604800 or t3<t2 or not -0.05<=delay<=20:
+                continue
+            break
+        except (OSError,ValueError,OverflowError,struct.error):
+            continue
+    else:
+        raise OSError('no reachable time server')
+    if remaining<=0:
+        raise OSError('time server deadline exceeded')
+    print(marker+json.dumps({'ok':True,'source':'ntp','dc':host,'offset_seconds':offset,
+        'round_trip_seconds':delay,'measured_at_utc':datetime.datetime.fromtimestamp(t4,datetime.timezone.utc).isoformat(),
+        'dc_time_utc':datetime.datetime.fromtimestamp(t4+offset,datetime.timezone.utc).isoformat(),
+        'local_time_utc':datetime.datetime.fromtimestamp(t4,datetime.timezone.utc).isoformat()}))
+except (OSError,ValueError,OverflowError,IndexError,struct.error):
+    print(marker+json.dumps({'ok':False,'error':'dc_time_unavailable','guidance':'Check UDP 123 routing or supply an operator-provided offset.'}))
+'''
 
 
 def execution_scope(base_url, token, headers, exegol_url, exegol_token):
@@ -116,6 +168,9 @@ def recovery_tools():
                                'additionalProperties': False}}}
     key = {'execution_id': {'type': 'string', 'pattern': '^[a-f0-9]{32}$'}}
     return [
+        tool('inspect_exegol_dc_time', 'Measure a DC clock using NTP over UDP 123 from the Exegol container. '
+             'If unavailable, ask the operator for an offset; do not alter system time.',
+             {'container_name': {'type': 'string'}, 'dc': {'type': 'string'}}, ['container_name', 'dc']),
         tool('list_exegol_executions', 'List your recent durable Exegol execution handles. '
              'States are last observations; use get_exegol_execution to refresh.', {}, []),
         tool('get_exegol_execution', 'Inspect an existing execution and read one output page. '
@@ -148,7 +203,10 @@ class DurableExegolBackend:
             'A pending or unknown result is not command failure. Recover its execution_id '
             'with get_exegol_execution; do not repeat the command. '
             'Stopping the AI job stops waiting; cancel_exegol_execution explicitly stops a command. '
-            'Use list_exegol_executions to recover handles after reconnecting.')
+            'Use list_exegol_executions to recover handles after reconnecting. '
+            'Never change host or container system time. For suspected Kerberos skew, use '
+            'inspect_exegol_dc_time, then set clock_offset_seconds only on the affected command. '
+            'If measurement fails, request an operator-provided offset. Do not retry automatically.')
 
     async def __aenter__(self):
         await self.backend.__aenter__()
@@ -160,6 +218,10 @@ class DurableExegolBackend:
                         tool['function']['description'] += (
                             ' Runs with durable tracking and automatic polling. Results include execution_id. '
                             'After an unknown response, recover that ID instead of relaunching.')
+                        tool['function']['parameters']['properties']['clock_offset_seconds'] = {
+                            'type': 'integer', 'minimum': -604800, 'maximum': 604800,
+                            'description': 'Optional measured or operator-provided DC minus local offset in seconds; '
+                                           'applies faketime only to this command.'}
                 names = {tool['function']['name'] for tool in self._openai_tools}
                 extra = recovery_tools()
                 if names.intersection(tool['function']['name'] for tool in extra):
@@ -230,10 +292,41 @@ class DurableExegolBackend:
 
     async def call_tool(self, name, arguments):
         """Dispatch ordinary tools unchanged and supervise only container commands."""
-        if name not in {EXECUTE, 'list_exegol_executions', 'get_exegol_execution', 'cancel_exegol_execution'}:
+        if name not in {EXECUTE, 'inspect_exegol_dc_time', 'list_exegol_executions', 'get_exegol_execution', 'cancel_exegol_execution'}:
             return await self.backend.call_tool(name, arguments)
         if not isinstance(arguments, dict):
             return json.dumps({'ok': False, 'error': 'invalid_execution_arguments'})
+        if name == 'inspect_exegol_dc_time':
+            container, dc = arguments.get('container_name'), arguments.get('dc')
+            if (not isinstance(container, str) or not container or len(container) > 255
+                    or not isinstance(dc, str) or not 1 <= len(dc) <= 253
+                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]*', dc)):
+                return json.dumps({'ok': False, 'error': 'invalid_time_probe_arguments'})
+            marker = 'RMM_DC_TIME_' + hashlib.sha256(
+                json.dumps([self.store.scope, container, dc]).encode()).hexdigest()[:32] + ':'
+            command = ('timeout 55s python3 -c ' + shlex.quote(NTP_PROBE) + ' '
+                       + shlex.quote(dc) + ' ' + shlex.quote(marker))
+            response = json.loads(await self.call_tool(EXECUTE, {'container_name': container, 'command': command}))
+            if response.get('state') != 'completed' or response.get('exit_code') != 0:
+                guidance = ('Use get_exegol_execution with this execution ID to recover its outcome; '
+                            'do not launch another probe while the outcome is unknown.'
+                            if response.get('state') in {'outcome_unknown', 'not_found'} else
+                            'Check UDP 123 routing or provide an operator-measured offset.')
+                return json.dumps({'ok': False, 'error': 'dc_time_probe_failed',
+                                   'execution_id': response.get('execution_id'),
+                                   'state': response.get('state'),
+                                   'guidance': guidance})
+            try:
+                output = response['output']
+                if output.count(marker) != 1:
+                    raise ValueError('missing time probe frame')
+                result, _ = json.JSONDecoder().raw_decode(output.split(marker, 1)[1])
+                if not isinstance(result, dict) or type(result.get('ok')) is not bool:
+                    raise ValueError('invalid result')
+            except (ValueError, KeyError):
+                return json.dumps({'ok': False, 'error': 'invalid_dc_time_response'})
+            result['execution_id'] = response['execution_id']
+            return json.dumps(result)
         if name == 'list_exegol_executions':
             return json.dumps({'executions': self.store.list()})
         if name != EXECUTE:
@@ -252,10 +345,19 @@ class DurableExegolBackend:
             return json.dumps(self.page_result(result))
 
         container, command = arguments.get('container_name'), arguments.get('command')
+        clock_offset = arguments.get('clock_offset_seconds')
         if (not isinstance(container, str) or not container or len(container) > 255
                 or not isinstance(command, str) or not command.strip() or '\x00' in command
-                or len(command.encode()) > 65536):
+                or len(command.encode()) > 65536
+                or (clock_offset is not None and (type(clock_offset) is not int or abs(clock_offset) > 604800))):
             return json.dumps({'ok': False, 'error': 'invalid_execution_arguments'})
+        if CLOCK_SET.search(command):
+            return json.dumps({'ok': False, 'error': 'system_clock_change_disallowed',
+                               'guidance': 'Use inspect_exegol_dc_time and clock_offset_seconds instead.'})
+        if clock_offset is not None:
+            command = ('faketime --exclude-monotonic -f ' + shlex.quote(f'{clock_offset:+d}')
+                       + ' zsh -c ' + shlex.quote('autoload -Uz compinit; compinit; source ~/.zshrc; eval "$1"')
+                       + ' rmm-faketime ' + shlex.quote(command))
         timeout = int(getenv('RMM_EXEGOL_EXECUTION_TIMEOUT', '3600'))
         from rmm_exegol_supervisor import build_request
         try:

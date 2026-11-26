@@ -53,6 +53,17 @@ Do not send `nmap`, `proxychains`, or other Exegol commands through RMM
 direct remote-command tool merely to replace an RMM command on a host already
 managed by the beacon.
 
+## Kerberos clock skew
+
+Never change the host or container system clock or configure time synchronization
+to work around Kerberos skew. Diagnose a suspected mismatch using the available
+Exegol MCP time diagnostic; report failures and the measured source and offset.
+When correction is needed, use the scoped time offset on a supervised Exegol
+command. Do not silently retry a failed command, and do not assume another
+Exegol tool or a statically linked executable honors the offset. If the
+diagnostic or scoped execution is unavailable, explain the limitation and ask
+the operator for the appropriate time information instead of changing clocks.
+
 ## When a pivot is required
 
 An RMM command does not require SOCKS or TUN: the authenticated beacon already

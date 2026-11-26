@@ -3,7 +3,14 @@ import asyncio
 import base64
 import json
 import os
+import re
 import sqlite3
+import socket
+import struct
+import io
+from contextlib import redirect_stdout
+import sys
+import time
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,7 +18,115 @@ from unittest.mock import AsyncMock, patch
 
 from rmm_ai_jobs import JobInterrupted, _safe_activity
 from rmm_ai_concurrency import run_tool_batch
-from rmm_exegol_execution import DurableExegolBackend, ExecutionStore, execution_scope
+from rmm_exegol_execution import DurableExegolBackend, ExecutionStore, NTP_PROBE, execution_scope
+
+
+class NtpProbeTests(unittest.TestCase):
+    def test_valid_and_invalid_wire_responses(self):
+        for mode in ('valid', 'unsynchronized', 'stratum', 'zero', 'offset', 'delay', 'origin'):
+            with self.subTest(mode=mode):
+                class FakeSocket:
+                    def __init__(self, *args): pass
+                    def __enter__(self): return self
+                    def __exit__(self, *args): pass
+                    def settimeout(self, value): pass
+                    def connect(self, address): pass
+                    def send(self, request): self.request = request
+                    def recv(self, size):
+                        reply = bytearray(48)
+                        reply[0] = 0xe4 if mode == 'unsynchronized' else 0x24
+                        reply[1] = 16 if mode == 'stratum' else 1
+                        reply[24:32] = self.request[40:48] if mode != 'origin' else bytes(8)
+                        now = time.time() + 2208988800 + (700000 if mode == 'offset' else 0)
+                        def stamp(pos, value):
+                            struct.pack_into('!II', reply, pos, int(value), int((value % 1) * 2**32))
+                        if mode != 'zero':
+                            stamp(32, now)
+                            stamp(40, now + (3 if mode == 'delay' else 0))
+                        return reply
+                output_stream = io.StringIO()
+                with patch.object(socket, 'getaddrinfo', return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 0, '', ('127.0.0.1', 123))]), \
+                     patch.object(socket, 'socket', FakeSocket), patch.object(sys, 'argv', ['probe', '127.0.0.1', 'FRAME:']), \
+                     redirect_stdout(output_stream):
+                    exec(NTP_PROBE, {})
+                output = json.loads(output_stream.getvalue().removeprefix('FRAME:'))
+                self.assertEqual(output['ok'], mode == 'valid')
+                if mode == 'valid':
+                    self.assertLess(abs(output['offset_seconds']), 1)
+                    self.assertEqual(output['source'], 'ntp')
+                else:
+                    self.assertEqual(output['error'], 'dc_time_unavailable')
+
+    def test_ipv4_fallback_and_ntp_era_rollover(self):
+        now = 2200000000.25
+        class FakeSocket:
+            def __init__(self, family, *args): self.family = family
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def settimeout(self, value): pass
+            def connect(self, address):
+                if self.family == socket.AF_INET6: raise OSError('unreachable')
+            def send(self, request): self.request = request
+            def recv(self, size):
+                reply = bytearray(48)
+                reply[0], reply[1] = 0x24, 1
+                reply[24:32] = self.request[40:48]
+                reply[32:40] = reply[40:48] = self.request[40:48]
+                return reply
+        output = io.StringIO()
+        addresses = [(socket.AF_INET6, socket.SOCK_DGRAM, 0, '', ('::1', 123)),
+                     (socket.AF_INET, socket.SOCK_DGRAM, 0, '', ('127.0.0.1', 123))]
+        with patch.object(socket, 'getaddrinfo', return_value=addresses), \
+             patch.object(socket, 'socket', FakeSocket), patch.object(time, 'time', return_value=now), \
+             patch.object(sys, 'argv', ['probe', 'dc', 'FRAME:']), redirect_stdout(output):
+            exec(NTP_PROBE, {})
+        result = json.loads(output.getvalue().removeprefix('FRAME:'))
+        self.assertTrue(result['ok'])
+        self.assertAlmostEqual(result['offset_seconds'], 0)
+
+    def test_invalid_response_falls_back_to_next_address(self):
+        class FakeSocket:
+            def __init__(self, *args): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def settimeout(self, value): pass
+            def connect(self, address): self.address = address
+            def send(self, request): self.request = request
+            def recv(self, size):
+                if self.address[0] == '127.0.0.1': return bytes(48)
+                reply = bytearray(48)
+                reply[0], reply[1] = 0x24, 1
+                reply[24:32] = reply[32:40] = reply[40:48] = self.request[40:48]
+                return reply
+        addresses = [(socket.AF_INET, socket.SOCK_DGRAM, 0, '', (ip, 123))
+                     for ip in ('127.0.0.1', '127.0.0.2')]
+        output = io.StringIO()
+        with patch.object(socket, 'getaddrinfo', return_value=addresses), \
+             patch.object(socket, 'socket', FakeSocket), \
+             patch.object(sys, 'argv', ['probe', 'dc', 'FRAME:']), redirect_stdout(output):
+            exec(NTP_PROBE, {})
+        self.assertTrue(json.loads(output.getvalue().removeprefix('FRAME:'))['ok'])
+
+    def test_probe_allows_time_for_a_slow_tunnel(self):
+        timeouts = []
+        class FakeSocket:
+            def __init__(self, *args): pass
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def settimeout(self, value): timeouts.append(value)
+            def connect(self, address): pass
+            def send(self, request): self.request = request
+            def recv(self, size):
+                reply = bytearray(48)
+                reply[0], reply[1] = 0x24, 1
+                reply[24:32] = reply[32:40] = reply[40:48] = self.request[40:48]
+                return reply
+        addresses = [(socket.AF_INET, socket.SOCK_DGRAM, 0, '', ('127.0.0.1', 123))]
+        with patch.object(socket, 'getaddrinfo', return_value=addresses), \
+             patch.object(socket, 'socket', FakeSocket), \
+             patch.object(sys, 'argv', ['probe', 'dc', 'FRAME:']), redirect_stdout(io.StringIO()):
+            exec(NTP_PROBE, {})
+        self.assertEqual(timeouts, [10])
 
 
 class FakeExegol:
@@ -308,10 +423,12 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_schema_preserved_and_lifecycle_backend_not_changed(self):
         async with self.backend:
-            self.assertEqual(self.backend.openai_tools[0]['function']['parameters'],
-                             self.raw.openai_tools[0]['function']['parameters'])
+            params = self.backend.openai_tools[0]['function']['parameters']
+            self.assertIn('clock_offset_seconds', params['properties'])
+            self.assertNotIn('clock_offset_seconds', self.raw.openai_tools[0]['function']['parameters']['properties'])
             names = {t['function']['name'] for t in self.backend.openai_tools}
-            self.assertTrue({'get_exegol_execution', 'cancel_exegol_execution', 'list_exegol_executions'} <= names)
+            self.assertTrue({'get_exegol_execution', 'cancel_exegol_execution', 'list_exegol_executions',
+                             'inspect_exegol_dc_time'} <= names)
             self.assertEqual(await self.backend.call_tool('list_exegol_containers', {}), 'unmodified')
         self.assertEqual(len(self.raw.openai_tools), 1)
 
@@ -321,6 +438,75 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
             result = json.loads(await self.backend.call_tool('execute_command_in_container', args))
             self.assertEqual(result['error'], 'invalid_execution_arguments')
         self.assertEqual(self.raw.calls, [])
+
+    async def test_clock_offset_is_scoped_and_validated_before_dispatch(self):
+        for value in (True, 604801, -604801, '60'):
+            result = json.loads(await self.backend.call_tool('execute_command_in_container',
+                                {**self.args, 'clock_offset_seconds': value}))
+            self.assertEqual(result['error'], 'invalid_execution_arguments')
+        self.assertEqual(self.raw.calls, [])
+        result = json.loads(await self.backend.call_tool('execute_command_in_container',
+                            {**self.args, 'clock_offset_seconds': -60}))
+        self.assertEqual(result['state'], 'completed')
+        self.assertIn('faketime --exclude-monotonic -f -60 zsh -c ', self.raw.calls[0]['command'])
+        self.assertIn("rmm-faketime 'printf fixture'", self.raw.calls[0]['command'])
+        self.assertIn('source ~/.zshrc', self.raw.calls[0]['command'])
+
+    async def test_common_clock_changes_are_rejected(self):
+        for command in ('date -s 2026-01-01', 'date -u -s 2026-01-01',
+                        'timedatectl set-time 12:00', 'ntpdate -s 10.0.0.1', 'ntpdate 10.0.0.1'):
+            result = json.loads(await self.backend.call_tool('execute_command_in_container',
+                                {**self.args, 'command': command}))
+            self.assertEqual(result['error'], 'system_clock_change_disallowed')
+        self.assertEqual(self.raw.calls, [])
+
+    async def test_time_probe_validates_target_and_uses_supervised_command(self):
+        invalid = json.loads(await self.backend.call_tool('inspect_exegol_dc_time',
+                             {'container_name': 'fixture', 'dc': 'dc; touch /tmp/x'}))
+        self.assertEqual(invalid['error'], 'invalid_time_probe_arguments')
+        self.assertEqual(self.raw.calls, [])
+        original = self.raw.call_tool
+        async def probe(name, arguments):
+            raw = await original(name, arguments)
+            request = json.loads(arguments['command'])
+            if request['action'] == 'start':
+                marker = re.search(r'RMM_DC_TIME_[0-9a-f]{32}:', request['command']).group()
+                self.raw.executions[request['execution_id']] = ('shell banner\n' + marker + '{"ok":true,"offset_seconds":42}\n').encode()
+            return raw
+        self.raw.call_tool = probe
+        result = json.loads(await self.backend.call_tool('inspect_exegol_dc_time',
+                            {'container_name': 'fixture', 'dc': 'dc.example.test'}))
+        self.assertEqual(result['offset_seconds'], 42)
+        self.assertIn('timeout 55s python3 -c', self.raw.calls[0]['command'])
+
+    async def test_time_probe_reports_unavailable_and_unknown_without_relaunch(self):
+        original = self.raw.call_tool
+        async def probe(name, arguments):
+            raw = await original(name, arguments)
+            request = json.loads(arguments['command'])
+            if request['action'] == 'start':
+                marker = re.search(r'RMM_DC_TIME_[0-9a-f]{32}:', request['command']).group()
+                self.raw.executions[request['execution_id']] = (marker + '{"ok":false,"error":"dc_time_unavailable"}').encode()
+            return raw
+        self.raw.call_tool = probe
+        result = json.loads(await self.backend.call_tool('inspect_exegol_dc_time',
+                            {'container_name': 'fixture', 'dc': '10.0.0.1'}))
+        self.assertEqual(result['error'], 'dc_time_unavailable')
+        self.raw.lose_start = True
+        result = json.loads(await self.backend.call_tool('inspect_exegol_dc_time',
+                            {'container_name': 'fixture', 'dc': '10.0.0.2'}))
+        self.assertEqual(result['state'], 'outcome_unknown')
+        self.assertTrue(result['execution_id'])
+        self.assertIn('get_exegol_execution', result['guidance'])
+        self.assertIn('do not launch another probe', result['guidance'])
+        self.assertEqual(sum(request['action'] == 'start' for request in self.raw.calls), 2)
+        first_id = result['execution_id']
+        marker = re.search(r'RMM_DC_TIME_[0-9a-f]{32}:', self.raw.calls[-1]['command']).group()
+        self.raw.executions[first_id] = (marker + '{"ok":false,"error":"dc_time_unavailable"}').encode()
+        result = json.loads(await self.backend.call_tool('inspect_exegol_dc_time',
+                            {'container_name': 'fixture', 'dc': '10.0.0.2'}))
+        self.assertEqual(result['execution_id'], first_id)
+        self.assertEqual(sum(request['action'] == 'start' for request in self.raw.calls), 2)
 
     def test_store_and_activity_do_not_reveal_command_or_credentials(self):
         row, _ = self.backend.store.claim('fixture', 'private command', 3600)
