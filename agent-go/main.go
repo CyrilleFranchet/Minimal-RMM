@@ -454,6 +454,11 @@ func pollOnce(
 		return errors.New("session terminated by server")
 	}
 	output, resultType := execute(reply.Command, cfg, client)
+	if resultType == "output" {
+		err = sendTextResult(client, cfg, reply.Command, output)
+		_ = register(client, cfg)
+		return err
+	}
 	query := values(cfg)
 	query.Set("type", resultType)
 	_, err = request(client, cfg, http.MethodPost, "/result", query, []byte(output))

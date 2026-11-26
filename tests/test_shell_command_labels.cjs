@@ -79,3 +79,18 @@ assert.match(lines.at(-1), /Recorded: 2026-11-23 15:04:05 UTC/);
 context.appendEvent({id:5,type:'operator',body:'exec: hostname'}, {history:true});
 assert.doesNotMatch(log.children.at(-1).children[0].innerHTML,/Submitted:/);
 console.log('Timestamp validation and unmatched result tests passed');
+
+// Queued results must update their matching blocks even when returned out of order.
+vm.runInContext(source.slice(source.indexOf('function normalizeCmdKey('), source.indexOf('function normalizeRemotePath(')), context);
+context.state.pendingCommandBlocks = [];
+const first = context.createCommandBlock('echo first', {meta:'(queued)'});
+const second = context.createCommandBlock('echo second', {meta:'(queued)'});
+context.appendEvent({id:6, type:'output', command:'echo second', body:'second'});
+assert.equal(second.filled, true);
+assert.equal(second.metaLine, null);
+assert.equal(second.resultEl.children.at(-1).innerHTML, 'second');
+assert.equal(first.filled, false);
+context.appendEvent({id:7, type:'output', command:'echo first', body:'first'});
+assert.equal(first.filled, true);
+assert.equal(first.metaLine, null);
+assert.equal(first.resultEl.children.at(-1).innerHTML, 'first');

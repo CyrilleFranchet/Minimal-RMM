@@ -1478,3 +1478,9 @@ process names are escaped as text. `sessionLiveDetail()` formats the live header
 which refreshes when session updates arrive. Unknown process fields have no
 label. Archived values describe the process at the time the session was saved.
 Stage1 is a separate launcher and needs no change to report the Go agent's name.
+
+## Command result correlation
+
+The Go agent includes the original command in each text result sent to the
+server. The WebUI uses it to place output under the matching queued command
+and clear its queued indicator. Deploy a rebuilt agent to apply this behavior.
