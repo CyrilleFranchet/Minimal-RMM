@@ -493,6 +493,31 @@ class ScanLoadRegressionTests(unittest.TestCase):
         self.assertIn('flow', bridge.tunnels)
         self.assertEqual(submitted, [])
 
+    def test_workspace_requeues_identical_data_on_regular_bridge(self):
+        bridge = self.bridge()
+        control = {'op': 'connect', 'id': 'flow', 'host': 'example', 'port': 443}
+        send = {'op': 'send', 'id': 'flow', 'data_b64': 'YQ=='}
+        datagram = {
+            'op': 'udp_send', 'id': 'udp-flow', 'host': 'example',
+            'port': 53, 'data_b64': 'Yg==',
+        }
+        with bridge.lock:
+            bridge.task_queue.extend([control, send, send, datagram])
+            bridge._queued_udp_tasks = 1
+
+        drained = bridge.fetch_tasks()
+        with bridge.lock:
+            bridge.task_queue.append(dict(send))
+        bridge.requeue_tasks(drained)
+
+        with bridge.lock:
+            queued = list(bridge.task_queue)
+            queued_udp = bridge._queued_udp_tasks
+        self.assertEqual(sum(task == control for task in queued), 1)
+        self.assertEqual(sum(task == send for task in queued), 3)
+        self.assertEqual(sum(task == datagram for task in queued), 1)
+        self.assertEqual(queued_udp, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

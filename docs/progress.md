@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-11-25 — Preserve workspace pivot data across transport failures
+
+- Failed workspace-to-central task submissions now restore TCP and UDP data on
+  ordinary workspace bridges. Retained controls remain deduplicated by
+  connection and operation, while equal-valued payloads are restored as
+  distinct ordered tasks.
+- The TUN plugin now uploads response batches on one ordered background worker
+  while the relay loop continues polling for new tasks. A bounded 32-batch
+  queue applies backpressure during prolonged outages, and cancellation stops
+  an in-flight HTTP upload when the relay exits.
+- Regression coverage verifies regular-bridge requeue behavior, repeated
+  payload preservation, UDP accounting, and polling during a blocked response
+  upload.
+
 ## 2026-11-23 — Second review of plugin child identity
 
 - Two source reviews identified and fixed a contained launcher edge case:

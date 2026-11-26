@@ -519,17 +519,23 @@ class SessionSocksBridge:
 
     def requeue_tasks(self, tasks: list[dict[str, Any]]) -> None:
         """Put a failed workspace task batch back without duplicating retained controls."""
-        if not self.external_mode or not isinstance(tasks, list):
+        if not isinstance(tasks, list):
             return
         with self.lock:
             for task in reversed(tasks):
                 if not isinstance(task, dict) or not task.get("op") or not task.get("id"):
                     continue
-                if task in self.task_queue:
+                op = task.get("op")
+                if op in ("connect", "close", "udp_close") and any(
+                    queued.get("id") == task.get("id") and queued.get("op") == op
+                    for queued in self.task_queue
+                ):
                     continue
-                if task.get("op") == "udp_send":
-                    if self._queued_udp_tasks >= MAX_QUEUED_UDP_TASKS:
-                        continue
+                if op not in ("send", "udp_send", "connect", "close", "udp_close") and task in self.task_queue:
+                    continue
+                if op == "udp_send":
+                    # The datagram already passed the admission limit before it
+                    # was drained. Restore it even if newer work filled the queue.
                     self._queued_udp_tasks += 1
                 self.task_queue.appendleft(dict(task))
 

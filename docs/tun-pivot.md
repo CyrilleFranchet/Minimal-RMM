@@ -190,6 +190,9 @@ outage. `_cancel_connect` removes timed-out work and requests remote closure.
 The workspace applies agent acknowledgments before resending controls; the
 central broker also suppresses controls whose acknowledgment is still queued.
 Acknowledgment storage and task removal happen under the same lock.
+When a workspace handoff fails, the local bridge restores every drained TCP
+and UDP payload in order. Only retained controls are deduplicated; repeated
+equal-valued payloads remain distinct tasks.
 
 The external TUN plugin uses independent, ordered TCP writers. `queueWrite`
 creates one `tcpWriter` with a 32-payload FIFO per writing flow; each payload
@@ -207,6 +210,15 @@ responses into approximately 512 KiB HTTP bodies and returns only the unsent
 suffix on failure. A 413 response triggers smaller batches; an unsplittable
 single-entry 413 stops the plugin rather than retrying forever. HTTP response
 loss can still produce a replay because the transport has no byte-level ACK.
+`uploadResponseBatches` owns those ordered POSTs on a background worker, so a
+slow response upload does not prevent the relay loop from polling new tasks.
+Its 32-batch input queue bounds queued work and deliberately applies
+backpressure if an outage lasts long enough to fill it. Context-aware polling
+and posting use `getPollContext`, `flushResponsesContext`,
+`postResponsesContext`, and `requestContext` to cancel an in-flight request
+when the relay stops. While a data batch is queued, the relay pauses target
+socket reads but continues polling and processing agent tasks; TCP socket
+backpressure therefore preserves queue capacity for connection acknowledgments.
 
 The stack helper releases each pending-handshake slot immediately after the
 local handshake completes, allowing established streams to stay open without
