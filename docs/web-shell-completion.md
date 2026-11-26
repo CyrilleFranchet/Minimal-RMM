@@ -32,10 +32,24 @@ reuse an existing command echo when present. Each submission is shown once,
 including retries. Delayed failures do not appear in a different session after
 switching sessions.
 
+Valid slash commands reserve a result area when submitted. Direct API output,
+request errors, and matching session events render inside that command's area, even if
+another command is entered before the response arrives. Ctrl+Enter remote
+execution uses the same command block. Agent event commands with an internal
+marker and JSON payload match the marker's block. Invalid syntax still uses a
+plain echo followed by its error.
+
 Inside `dispatchShellMetaCommand`, `echoCommand` retains each valid command's
-existing display options and prevents duplicate echoes. `showError` ensures a
-command echo exists, creating a plain echo only when needed, then displays the
-error. Both operations use the captured session target.
+existing display options and prevents duplicate echoes. Its `writeLine` and
+`writeOutput` helpers add direct responses to the reserved area. `showError`
+ensures a command echo exists, creating a plain echo only when needed, then
+displays the error. These operations use the captured session target.
+Queue helpers pass request failures back to `showError` for shell submissions;
+panel actions continue to display their errors directly in the shell.
+`showQueueError` also closes the rejected command block and removes its queued
+or progress status, so a later retry with the same command receives its own
+result. `queueRequest` sends network failures from slash queue requests through
+the same path.
 
 ## History sources
 

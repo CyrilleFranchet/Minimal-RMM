@@ -12,12 +12,12 @@ function element() {
     addEventListener: (name, fn) => { listeners[name] = fn; }, setSelectionRange() {}, focus() {},
   };
 }
-function fixture() {
+function fixture({anchorBlocks = false} = {}) {
   const input = element(), menu = element(), hint = element(), errors = [], calls = [], history = [], lines = [];
   const nodes = { '#shell-input': input, '#shell-command-menu': menu, '#shell-completion-hint': hint, '#shell-prompt': element() };
   let lastShellLine = null;
   const context = { document: { createElement: element }, $: key => nodes[key],
-    state: { echoedCommands: new Set(), viewMode: 'live', selectedId: 'agent', selectionGeneration: 1, shellTabCycle: { anchor: null, candidates: [], index: -1 } },
+    state: { echoedCommands: new Set(), pendingCommandBlocks: [], viewMode: 'live', selectedId: 'agent', selectionGeneration: 1, shellTabCycle: { anchor: null, candidates: [], index: -1 } },
     getShellHistoryList: () => ['whoami', '/screenshot'], resetShellHistoryNav() {}, resetShellTabCycle() {},
     navigateShellHistory: () => { throw new Error('History must not handle menu navigation'); },
     api: async (...args) => { if (!(args[0] === '/creds' && args.length === 1)) calls.push(args); return { status: 200, data: {} }; },
@@ -25,7 +25,15 @@ function fixture() {
       if (history.at(-1) !== cmd) history.push(cmd);
     },
     appendShellLine: (kind, html) => { lines.push({kind, html}); lastShellLine = element(); return lastShellLine; }, escapeHtml: text => text,
-    createCommandBlock() {}, setTimeout() {}, pollSessionEvents: async () => {},
+    createCommandBlock: (cmd, options = {}) => {
+      if (!anchorBlocks) { lines.push({kind: 'echo', html: cmd}); return null; }
+      const line = {kind: 'block', html: cmd, children: []};
+      const block = {filled: false, matchKeys: options.matchKeys || [cmd],
+        resultEl: {appendChild: child => line.children.push(child)}};
+      lines.push(line);
+      context.state.pendingCommandBlocks.push(block);
+      return block;
+    }, scrollShellIfNearBottom() {}, setTimeout() {}, pollSessionEvents: async () => {},
   };
   vm.createContext(context);
   vm.runInContext(source.match(/const SHELL_META_COMMANDS = \[.*?\];/s)[0] +
@@ -386,6 +394,59 @@ test('invalid command text uses the existing escaped echo renderer', async () =>
   assert.match(f.lines[0].html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.ok(!f.lines[0].html.includes('<img'));
   assert.equal(f.calls.length, 0);
+});
+
+test('a delayed valid result stays before a later invalid command', async () => {
+  const f = fixture({anchorBlocks: true});
+  let finish;
+  f.context.api = async () => new Promise(resolve => { finish = resolve; });
+  f.type('/creds purge');
+  const valid = f.context.runCommand(false);
+  assert.deepEqual(f.lines.map(line => line.kind), ['block']);
+  f.type('/unknown');
+  await f.context.runCommand(false);
+  assert.deepEqual(f.lines.map(line => line.kind), ['block', 'echo', 'error']);
+  finish({status: 200, data: {deleted: 2}});
+  await valid;
+  assert.equal(f.lines[0].children[0].innerHTML, 'deleted 2 credentials');
+  assert.equal(f.lines[2].text, 'Unknown internal command. Type / for commands or /help for usage.');
+});
+
+test('a rejected queued slash command keeps its error in its original block', async () => {
+  const f = fixture({anchorBlocks: true});
+  let finish;
+  f.context.api = async () => new Promise(resolve => { finish = resolve; });
+  f.type('/download C:\\Lab\\file.txt');
+  const queued = f.context.runCommand(false);
+  f.type('/unknown');
+  await f.context.runCommand(false);
+  finish({status: 403, data: {error: 'denied'}});
+  await queued;
+  assert.deepEqual(f.lines.map(line => line.kind), ['block', 'echo', 'error']);
+  assert.equal(f.lines[0].children[0].innerHTML, 'denied');
+  assert.equal(f.context.state.pendingCommandBlocks[0].filled, true);
+
+  f.context.api = async () => ({status: 200, data: {}});
+  f.type('/download C:\\Lab\\file.txt');
+  await f.context.runCommand(false);
+  vm.runInContext(source.slice(source.indexOf('function normalizeCmdKey('), source.indexOf('function normalizeRemotePath(')), f.context);
+  const resultBlock = f.context.findPendingCommandBlock({type: 'output', command: 'download C:\\Lab\\file.txt'});
+  assert.equal(resultBlock, f.context.state.pendingCommandBlocks[1]);
+});
+
+test('a failed queue request closes its block without appending after an invalid command', async () => {
+  const f = fixture({anchorBlocks: true});
+  let fail;
+  f.context.api = async () => new Promise((resolve, reject) => { fail = reject; });
+  f.type('/screenshot');
+  const queued = f.context.runCommand(false);
+  f.type('/unknown');
+  await f.context.runCommand(false);
+  fail(new Error('offline'));
+  await queued;
+  assert.equal(f.lines[0].children[0].innerHTML, 'offline');
+  assert.equal(f.context.state.pendingCommandBlocks[0].filled, true);
+  assert.deepEqual(f.lines.map(line => line.kind), ['block', 'echo', 'error']);
 });
 
 test('panel screenshot/download history is replayable; exfil mode labels are excluded', async () => {

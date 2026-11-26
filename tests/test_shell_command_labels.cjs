@@ -82,15 +82,22 @@ console.log('Timestamp validation and unmatched result tests passed');
 
 // Queued results must update their matching blocks even when returned out of order.
 vm.runInContext(source.slice(source.indexOf('function normalizeCmdKey('), source.indexOf('function normalizeRemotePath(')), context);
+assert.equal(context.commandKeysMatch('__LATERAL__', '__LATERAL__\n{"method":"winrm"}'), true);
 context.state.pendingCommandBlocks = [];
+const identity = context.createCommandBlock('/uid', {matchKeys:['/uid', '__UID__']});
+const invalid = node();
+log.appendChild(invalid);
+context.appendEvent({id:6, type:'output', command:'__UID__', body:'LAB\\alice'});
+assert.equal(identity.resultEl.children.at(-1).innerHTML, 'LAB\\alice');
+assert.equal(log.children.at(-1), invalid);
 const first = context.createCommandBlock('echo first', {meta:'(queued)'});
 const second = context.createCommandBlock('echo second', {meta:'(queued)'});
-context.appendEvent({id:6, type:'output', command:'echo second', body:'second'});
+context.appendEvent({id:7, type:'output', command:'echo second', body:'second'});
 assert.equal(second.filled, true);
 assert.equal(second.metaLine, null);
 assert.equal(second.resultEl.children.at(-1).innerHTML, 'second');
 assert.equal(first.filled, false);
-context.appendEvent({id:7, type:'output', command:'echo first', body:'first'});
+context.appendEvent({id:8, type:'output', command:'echo first', body:'first'});
 assert.equal(first.filled, true);
 assert.equal(first.metaLine, null);
 assert.equal(first.resultEl.children.at(-1).innerHTML, 'first');

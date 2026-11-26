@@ -1504,6 +1504,7 @@ function commandKeysMatch(blockKey, evCmd) {
   const b = normalizeCmdKey(evCmd);
   if (!a || !b) return false;
   if (a === b) return true;
+  if (/^__[A-Z_]+__$/.test(a) && b.startsWith(`${a} `)) return true;
   if (a.startsWith("exfil ") && b.startsWith("exfil ")) {
     const remote = a.slice(6).split(" ")[0];
     if (remote && b.includes(remote)) return true;
@@ -3124,7 +3125,7 @@ function captureShellTarget(sessionId = state.selectedId) {
     state.selectedId === sessionId && state.selectionGeneration === generation };
 }
 
-async function postDownloadQueue(remote, target = captureShellTarget()) {
+async function postDownloadQueue(remote, target = captureShellTarget(), onError = appendShellError) {
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(target.sessionId)}/download`,
     {
@@ -3135,14 +3136,14 @@ async function postDownloadQueue(remote, target = captureShellTarget()) {
   );
   if (!target.isCurrent()) return false;
   if (status !== 200) {
-    appendShellError(data.error || `HTTP ${status}`);
+    onError(data.error || `HTTP ${status}`);
     return false;
   }
   pollSessionEvents().catch(() => {});
   return true;
 }
 
-async function postExfilQueue(remote, profile, mode = "auto", target = captureShellTarget()) {
+async function postExfilQueue(remote, profile, mode = "auto", target = captureShellTarget(), onError = appendShellError) {
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(target.sessionId)}/exfil`,
     {
@@ -3153,28 +3154,28 @@ async function postExfilQueue(remote, profile, mode = "auto", target = captureSh
   );
   if (!target.isCurrent()) return false;
   if (status !== 200) {
-    appendShellError(data.error || `HTTP ${status}`);
+    onError(data.error || `HTTP ${status}`);
     return false;
   }
   pollSessionEvents().catch(() => {});
   return data;
 }
 
-async function postScreenshotQueue(target = captureShellTarget()) {
+async function postScreenshotQueue(target = captureShellTarget(), onError = appendShellError) {
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(target.sessionId)}/screenshot`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
   );
   if (!target.isCurrent()) return false;
   if (status !== 200) {
-    appendShellError(data.error || `HTTP ${status}`);
+    onError(data.error || `HTTP ${status}`);
     return false;
   }
   pollSessionEvents().catch(() => {});
   return true;
 }
 
-async function postPeQueue(plugin, exportName, pluginInput, target = captureShellTarget()) {
+async function postPeQueue(plugin, exportName, pluginInput, target = captureShellTarget(), onError = appendShellError) {
   const { status, data } = await api(
     `/sessions/${encodeURIComponent(target.sessionId)}/pe`,
     {
@@ -3185,7 +3186,7 @@ async function postPeQueue(plugin, exportName, pluginInput, target = captureShel
   );
   if (!target.isCurrent()) return false;
   if (status !== 200) {
-    appendShellError(data.error || `HTTP ${status}`);
+    onError(data.error || `HTTP ${status}`);
     return false;
   }
   pollSessionEvents().catch(() => {});
@@ -3218,17 +3219,64 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
   // Recognize the verb before parsing so malformed quoting cannot escape to the agent.
   if (!cmd.trimStart().startsWith("/")) return false;
   let echoed = false;
+  let commandBlock = null;
+  const verb = cmd.trim().split(/\s+/, 1)[0].slice(1).toLowerCase();
+  const eventCommand = {
+    spawn: "__SPAWN__", make_token: "__MAKE_TOKEN__", rev2self: "__REV2SELF__",
+    lateral: "__LATERAL__", whoami: "__WHOAMI__", uid: "__UID__",
+    uidx: "__UIDX__", spawnas: "__SPAWNAS__", runas: "__RUNAS__",
+  }[verb];
   const echoCommand = (options) => {
     if (echoed || !target.isCurrent()) return;
-    appendShellEcho(cmd, options);
+    commandBlock = appendShellEcho(cmd, options || {
+      block: true, matchKeys: eventCommand ? [cmd, eventCommand] : [cmd],
+    });
+    if (commandBlock && !eventCommand && !options) {
+      state.pendingCommandBlocks = state.pendingCommandBlocks.filter((block) => block !== commandBlock);
+    }
     echoed = true;
+  };
+  const writeLine = (kind, html) => {
+    if (!commandBlock) return appendShellLine(kind, html);
+    const line = document.createElement("div");
+    line.className = `shell-line shell-line-${kind}`;
+    line.innerHTML = html;
+    commandBlock.resultEl.appendChild(line);
+    scrollShellIfNearBottom();
+    return line;
+  };
+  const writeOutput = (value) => {
+    if (!commandBlock) return appendShellOutput(value);
+    for (const line of String(value || "(no output)").split("\n")) {
+      writeLine("output", escapeHtml(line));
+    }
   };
   const showError = (message) => {
     if (!target.isCurrent()) return;
-    echoCommand();
-    appendShellError(message);
+    if (!echoed) {
+      appendShellEcho(cmd);
+      echoed = true;
+    }
+    if (commandBlock) writeLine("error", escapeHtml(message));
+    else appendShellError(message);
   };
-  const verb = cmd.trim().split(/\s+/, 1)[0].slice(1).toLowerCase();
+  const showQueueError = (message) => {
+    showError(message);
+    if (!commandBlock) return;
+    commandBlock.filled = true;
+    commandBlock.metaLine?.remove();
+    commandBlock.metaLine = null;
+    commandBlock.progressEl?.remove();
+    commandBlock.progressEl = null;
+  };
+  const queueRequest = async (request, fallback) => {
+    try {
+      return await request;
+    } catch (error) {
+      if (target.isCurrent()) showQueueError(error.message || fallback);
+      return false;
+    }
+  };
   if (!SHELL_META_COMMANDS.includes(verb)) {
     showError("Unknown internal command. Type / for commands or /help for usage.");
     return true;
@@ -3247,12 +3295,13 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
         else body.options = JSON.parse(value);
       }
       if (!body.options || Array.isArray(body.options) || typeof body.options !== "object") throw new Error("Options must be a JSON object.");
+      echoCommand();
       const result = await api("/bloodhound", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       if (target.isCurrent()) {
         echoCommand();
-        appendShellLine("output", `<pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>`);
+        writeLine("output", `<pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>`);
       }
     } catch (error) {
       if (target.isCurrent()) showError(`${error.message} Usage: /bloodhound ACTION [--run-id ID] [--options-json '{"key":"value"}']`);
@@ -3283,6 +3332,10 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
       showError("Select a session before running embeddings.");
       return true;
     }
+    echoCommand({
+      block: true, kind: "pe", meta: "(embeddings queued — waiting for next beacon)",
+      matchKeys: [cmd],
+    });
     try {
       const { status, data } = await api("/embeddings/run", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3290,16 +3343,13 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) {
-        showError(data?.error || `HTTP ${status}`);
+        showQueueError(data?.error || `HTTP ${status}`);
         return true;
       }
-      echoCommand({
-        block: true, kind: "pe", meta: "(embeddings queued — waiting for next beacon)",
-        matchKeys: [cmd, data.queued].filter(Boolean),
-      });
+      if (commandBlock && data.queued) commandBlock.matchKeys.push(normalizeCmdKey(data.queued));
       pollSessionEvents().catch(() => {});
     } catch (error) {
-      if (target.isCurrent()) showError(error.message || "Could not queue embeddings.");
+      if (target.isCurrent()) showQueueError(error.message || "Could not queue embeddings.");
     }
     return true;
   }
@@ -3310,7 +3360,7 @@ async function dispatchShellMetaCommand(cmd, target = captureShellTarget()) {
       return true;
     }
     echoCommand();
-    appendShellLine(
+    writeLine(
       "output",
       `<pre>Local commands:
   /help | /?                         Show this help
@@ -3355,7 +3405,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       meta: "(download queued)",
       matchKeys: [`download ${remote}`, `__DOWNLOAD__ ${remote}`],
     });
-    await postDownloadQueue(remote, target);
+    await queueRequest(postDownloadQueue(remote, target, showQueueError), "Could not queue download.");
     return true;
   }
 
@@ -3377,7 +3427,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         `exfil ${remote} --profile ${profile}`,
       ],
     });
-    const data = await postExfilQueue(remote, profile, "auto", target);
+    const data = await queueRequest(postExfilQueue(remote, profile, "auto", target, showQueueError), "Could not queue exfiltration.");
     if (target.isCurrent() && data && data.execution_mode) {
       const block = state.pendingCommandBlocks.find(
         (item) => !item.filled && item.kind === "exfil" && item.remotePath === remote
@@ -3398,7 +3448,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       meta: "(screenshot queued)",
       matchKeys: ["screenshot", "__SCREENSHOT__"],
     });
-    await postScreenshotQueue(target);
+    await queueRequest(postScreenshotQueue(target, showQueueError), "Could not queue screenshot.");
     return true;
   }
 
@@ -3417,7 +3467,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       meta: "(plugin load queued)",
       matchKeys: [cmd, queued],
     });
-    await postPeQueue(plugin, exportName, pluginInput, target);
+    await queueRequest(postPeQueue(plugin, exportName, pluginInput, target, showQueueError), "Could not queue plugin load.");
     return true;
   }
 
@@ -3432,7 +3482,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     }
     echoCommand();
     if (target.isCurrent()) {
-      appendShellLine("output", "<pre>Spawning detached agent — waiting for the next beacon (this can take a few minutes)…</pre>");
+      writeLine("output", "<pre>Spawning detached agent — waiting for the next beacon (this can take a few minutes)…</pre>");
     }
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/spawn`, {
@@ -3443,7 +3493,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         showError(data?.error || `HTTP ${status}`);
         return true;
       }
-      appendShellLine("output", renderSpawnResult(data));
+      writeLine("output", renderSpawnResult(data));
       if (data.registered === false) {
         showError("Spawn unconfirmed: the expected agent has not registered. Inspect existing evidence before retrying.");
       }
@@ -3593,7 +3643,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     }
     echoCommand();
     if (target.isCurrent()) {
-      appendShellLine("output", `<pre>Lateral ${escapeHtml(method)} to ${escapeHtml(host)} — waiting for the next beacon (this can take a few minutes)…</pre>`);
+      writeLine("output", `<pre>Lateral ${escapeHtml(method)} to ${escapeHtml(host)} — waiting for the next beacon (this can take a few minutes)…</pre>`);
     }
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/lateral`, {
@@ -3714,11 +3764,11 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         if (!target.isCurrent()) return true;
         if (status !== 200) { showError(`creds list failed (${status})`); return true; }
         const creds = data?.creds ?? [];
-        if (!creds.length) { appendShellOutput("no credentials stored"); return true; }
+        if (!creds.length) { writeOutput("no credentials stored"); return true; }
         for (const c of creds) {
           const identity = c.label ?? "?";
           const credId = String(c.cred_id ?? c.id ?? "");
-          const line = appendShellLine("output", "");
+          const line = writeLine("output", "");
           const idGroup = document.createElement("span");
           idGroup.className = "credential-id-group";
           const idText = document.createElement("span");
@@ -3753,19 +3803,19 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
         const { status, data } = await api("/creds", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain, user, password: args[2] }) });
         if (!target.isCurrent()) return true;
         if (status !== 200) { showError(`creds add failed (${status}): ${data?.error ?? ""}`); return true; }
-        appendShellOutput(`stored ${data?.cred_id} (${args[1]})`);
+        writeOutput(`stored ${data?.cred_id} (${args[1]})`);
       } else if (sub === "purge") {
         if (args.length !== 1) { showError("Usage: /creds purge"); return true; }
         const { status, data } = await api("/creds", { method: "DELETE" });
         if (!target.isCurrent()) return true;
         if (status !== 200) { showError(`creds purge failed (${status})`); return true; }
-        appendShellOutput(`deleted ${data?.deleted ?? 0} credentials`);
+        writeOutput(`deleted ${data?.deleted ?? 0} credentials`);
       } else if (sub === "del") {
         if (args.length !== 3 || args[1] !== "-i" || !args[2]?.trim() || args[2].startsWith("-")) { showError("Usage: /creds del -i <cred_id>"); return true; }
         const { status, data } = await api(`/creds/${encodeURIComponent(args[2])}`, { method: "DELETE" });
         if (!target.isCurrent()) return true;
         if (status !== 200 && status !== 404) { showError(`creds del failed (${status})`); return true; }
-        appendShellOutput(data?.message ?? (status === 200 ? "deleted" : "not found"));
+        writeOutput(data?.message ?? (status === 200 ? "deleted" : "not found"));
       } else {
         showError("Usage: /creds list | /creds add &lt;identity&gt; &lt;password&gt; | /creds del -i &lt;cred_id&gt; | /creds purge");
       }
@@ -3780,7 +3830,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     if (!parsed) { showError("Usage: /spawnas -i <cred_id> | /spawnas <DOMAIN\\user | user> <password>"); return true; }
     if (!target.sessionId) { showError("Select a Go agent session before spawnas."); return true; }
     echoCommand();
-    appendShellOutput("Spawning agent under new identity…");
+    writeOutput("Spawning agent under new identity…");
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/spawnas`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3790,7 +3840,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       if (status !== 200) { showError(`spawnas failed (${status}): ${data?.error ?? ""}`); return true; }
       // The session event stream renders the agent's launch result.
       if (data?.verify) {
-        appendShellOutput(`registered: ${data?.registered ? "yes" : "no"}`);
+        writeOutput(`registered: ${data?.registered ? "yes" : "no"}`);
         if (data?.registered === false) showError("spawnas registration was not confirmed.");
       }
       pollSessionEvents().catch(() => {});
@@ -3805,7 +3855,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
     if (!parsed) { showError("Usage: /runas -i <cred_id> <command...> | /runas <DOMAIN\\user | user> <password> <command...>"); return true; }
     if (!target.sessionId) { showError("Select a Go agent session before runas."); return true; }
     echoCommand();
-    appendShellOutput("Running command under new identity…");
+    writeOutput("Running command under new identity…");
     try {
       const { status, data } = await api(`/sessions/${encodeURIComponent(target.sessionId)}/runas`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3813,7 +3863,7 @@ cmd:, PS:, powershell:, or pwsh: (including the space) to choose the agent-side 
       });
       if (!target.isCurrent()) return true;
       if (status !== 200) { showError(`runas failed (${status}): ${data?.error ?? ""}`); return true; }
-      for (const ln of (data?.output ?? "(no output)").split("\n")) appendShellOutput(ln);
+      for (const ln of (data?.output ?? "(no output)").split("\n")) writeOutput(ln);
     } catch (error) {
       if (target.isCurrent()) showError(error.message || "runas request failed.");
     }
@@ -3839,7 +3889,7 @@ async function runCommand(wait) {
   if (target.isCurrent()) {
     clearShellInput();
     appendShellEcho(cmd, {
-      block: !wait,
+      block: true,
       meta: wait ? null : "(queued — waiting for next beacon)",
     });
     input.disabled = true;

@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-26 — Keep shell results with their submitted commands
+
+- Valid WebUI slash commands and Ctrl+Enter executions now reserve command
+  blocks at submission. Delayed API responses, errors, and matching agent
+  events render in the original block, ahead of later invalid commands.
+- Internal agent markers with payloads match their command blocks. Invalid
+  syntax retains a plain echo and error; session-switch guards remain in place.
+- Rejected queued requests close their command blocks, so a later retry of the
+  same command cannot place its result under the rejected attempt.
+- Added a delayed-response ordering regression and marker matching coverage.
+  See [Web shell completion](web-shell-completion.md).
+
 ## 2026-11-25 — Preserve workspace pivot data across transport failures
 
 - Failed workspace-to-central task submissions now restore TCP and UDP data on
