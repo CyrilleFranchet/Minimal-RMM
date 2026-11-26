@@ -36,6 +36,30 @@ class GoHTTPPersistenceTests(unittest.TestCase):
                     launcher = "run-agent.ps1" if stageless else "run-stage1.ps1"
                     self.assertIn(f"$env:RMM_PERSISTENT_HTTP = '{expected}'", archive.read(launcher).decode())
 
+    def test_tls_versions_embed_and_override_launcher_environment(self):
+        for version in ("default", "1.2", "1.3"):
+            for stageless in (False, True):
+                with self.subTest(version=version, stageless=stageless), tempfile.TemporaryDirectory() as directory:
+                    commands = []
+                    def compile_fixture(command, **kwargs):
+                        commands.append(command)
+                        Path(command[command.index("-o") + 1]).write_bytes(b"MZfixture")
+                        return SimpleNamespace(returncode=0, stdout="", stderr="")
+                    with patch.object(server_rmm, "GO_AGENT_BUILD_DIR", directory), \
+                            patch.object(server_rmm.shutil, "which", side_effect=lambda name: "go" if name == "go" else None):
+                        result = server_rmm.build_go_agent("windows", "amd64", {"base_url": "https://example.invalid", "tls_version": version},
+                            process_owner=SimpleNamespace(run=compile_fixture), stageless=stageless, staging_fn=lambda _: "fixture-stage")
+                    encoded = base64.b64encode(version.encode()).decode()
+                    self.assertIn(f"main.defaultTLSVersionB64={encoded}", " ".join(commands[-1]))
+                    with zipfile.ZipFile(result["path"]) as archive:
+                        launcher = "run-agent.ps1" if stageless else "run-stage1.ps1"
+                        self.assertIn(f"$env:RMM_TLS_VERSION = '{version}'", archive.read(launcher).decode())
+
+    def test_invalid_tls_version_is_rejected_before_compilation(self):
+        for value in ("1.1", "", None, 12, {}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "tls_version"):
+                server_rmm._build_go_agent_from_source(".", "go", "windows", "amd64", {"tls_version": value}, None, True, None)
+
     def test_nonboolean_mode_is_rejected_before_compilation(self):
         for value in ("false", "true", 0, 1, None, {}):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "persistent_http must be a boolean"):

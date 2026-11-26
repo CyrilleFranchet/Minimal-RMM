@@ -517,7 +517,8 @@ body.sidebar-resizing iframe {
   margin-top: 0.25rem;
 }
 
-.agent-go-options select {
+.agent-go-options select,
+#agent-go-tls-version {
   width: 100%;
   padding: 0.4rem 0.5rem;
   background: var(--bg);

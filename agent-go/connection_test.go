@@ -1,9 +1,13 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +16,109 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func TestTLSVersionNegotiation(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), DNSNames: []string{"test.local"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, version              string
+		serverMin, serverMax, want uint16
+		fail                       bool
+	}{
+		{"1.2 accepted", "1.2", tls.VersionTLS12, tls.VersionTLS13, tls.VersionTLS12, false},
+		{"1.3 accepted", "1.3", tls.VersionTLS12, tls.VersionTLS13, tls.VersionTLS13, false},
+		{"1.2 rejects 1.3-only server", "1.2", tls.VersionTLS13, tls.VersionTLS13, 0, true},
+		{"1.3 rejects 1.2-only server", "1.3", tls.VersionTLS12, tls.VersionTLS12, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newHTTPClient(&config{TLSVersion: tc.version})
+			transport := client.Transport.(*http.Transport)
+			transport.TLSClientConfig.RootCAs = x509.NewCertPool()
+			transport.TLSClientConfig.RootCAs.AddCert(cert)
+			transport.TLSClientConfig.ServerName = "test.local"
+			defer client.CloseIdleConnections()
+			clientPipe, serverPipe := net.Pipe()
+			defer clientPipe.Close()
+			defer serverPipe.Close()
+			_ = clientPipe.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = serverPipe.SetDeadline(time.Now().Add(5 * time.Second))
+			serverTLS := tls.Server(serverPipe, &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}, MinVersion: tc.serverMin, MaxVersion: tc.serverMax})
+			serverErr := make(chan error, 1)
+			go func() { serverErr <- serverTLS.Handshake() }()
+			clientTLS := tls.Client(clientPipe, transport.TLSClientConfig)
+			clientErr := clientTLS.Handshake()
+			if tc.fail {
+				if clientErr == nil {
+					t.Fatal("incompatible TLS versions negotiated successfully")
+				}
+				if err := <-serverErr; err == nil {
+					t.Fatal("server accepted incompatible TLS version")
+				}
+				return
+			}
+			if clientErr != nil {
+				t.Fatal(clientErr)
+			}
+			if err := <-serverErr; err != nil {
+				t.Fatal(err)
+			}
+			if got := clientTLS.ConnectionState().Version; got != tc.want {
+				t.Fatalf("negotiated %x, want %x", got, tc.want)
+			}
+		})
+	}
+	if got := newHTTPClient(&config{TLSVersion: "default"}).Transport.(*http.Transport).TLSClientConfig; got != nil {
+		t.Fatal("default must preserve Go's TLS settings")
+	}
+}
+
+func TestTLSVersionConfiguration(t *testing.T) {
+	old := defaultTLSVersionB64
+	t.Cleanup(func() { defaultTLSVersionB64 = old })
+	t.Setenv("RMM_BASE_URL", "http://example.invalid")
+	t.Setenv("RMM_BEACON_SECRET", "test-secret")
+	for _, tc := range []struct {
+		embedded, environment, want string
+		invalid                     bool
+	}{
+		{"", "", "default", false},
+		{"1.2", "", "1.2", false},
+		{"1.2", "1.3", "1.3", false},
+		{"1.3", "default", "default", false},
+		{"", "1.1", "", true},
+	} {
+		t.Run(tc.embedded+"/"+tc.environment, func(t *testing.T) {
+			defaultTLSVersionB64 = base64.StdEncoding.EncodeToString([]byte(tc.embedded))
+			t.Setenv("RMM_TLS_VERSION", tc.environment)
+			cfg, err := loadConfig()
+			if tc.invalid {
+				if err == nil {
+					t.Fatal("invalid version accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.TLSVersion != tc.want {
+				t.Fatalf("got %q, want %q", cfg.TLSVersion, tc.want)
+			}
+		})
+	}
+}
 
 func TestBeaconConnectionPersistence(t *testing.T) {
 	for _, tc := range []struct {

@@ -49,6 +49,7 @@
       jitterPercent: jitterValue(),
       httpProxy: $("#agent-go-proxy")?.value.trim() || "",
       persistentHttp: Boolean($("#agent-go-persistent-http")?.checked),
+      tlsVersion: $("#agent-go-tls-version")?.value || "default",
       goos: $("#agent-goos")?.value || "windows",
       goarch: $("#agent-goarch")?.value || "amd64",
       stageless: $("#agent-go-stageless")?.checked || false,
@@ -75,6 +76,7 @@
       "#agent-go-sleep": prefs.sleepSeconds,
       "#agent-go-jitter": prefs.jitterPercent,
       "#agent-go-proxy": prefs.httpProxy,
+      "#agent-go-tls-version": prefs.tlsVersion,
       "#agent-goos": "windows",
       "#agent-goarch": prefs.goarch,
     };
@@ -257,6 +259,7 @@
             jitter_percent: jitterValue(),
             http_proxy: $("#agent-go-proxy")?.value.trim() || "",
             persistent_http: Boolean($("#agent-go-persistent-http")?.checked),
+            tls_version: $("#agent-go-tls-version")?.value || "default",
           },
         }),
       });
@@ -300,7 +303,7 @@
       "#agent-goos",
       "#agent-goarch",
     ].forEach((selector) => $(selector)?.addEventListener("input", savePrefs));
-    ["#agent-goos", "#agent-goarch"].forEach((selector) =>
+    ["#agent-goos", "#agent-goarch", "#agent-go-tls-version"].forEach((selector) =>
       $(selector)?.addEventListener("change", savePrefs),
     );
     $("#agent-go-stageless")?.addEventListener("change", savePrefs);

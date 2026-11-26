@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -36,6 +37,7 @@ type config struct {
 	WorkspaceID    string
 	HTTPProxy      string
 	PersistentHTTP bool
+	TLSVersion     string
 	SleepSeconds   int
 	JitterPercent  int
 	MaxRetries     int
@@ -70,6 +72,7 @@ var (
 	defaultWorkspaceIDB64    string
 	defaultHTTPProxyB64      string
 	defaultPersistentHTTPB64 string
+	defaultTLSVersionB64     string
 	defaultSleepSecondsB64   string
 	defaultJitterPercentB64  string
 	logMu                    sync.Mutex
@@ -362,6 +365,7 @@ func loadConfig() (*config, error) {
 		WorkspaceID:    strings.TrimSpace(envOr("RMM_AGENT_WORKSPACE_ID", embeddedValue(defaultWorkspaceIDB64))),
 		HTTPProxy:      strings.TrimSpace(envOr("RMM_HTTP_PROXY", embeddedValue(defaultHTTPProxyB64))),
 		PersistentHTTP: enabledHTTPPersistence(envOr("RMM_PERSISTENT_HTTP", embeddedValue(defaultPersistentHTTPB64))),
+		TLSVersion:     strings.TrimSpace(envOr("RMM_TLS_VERSION", embeddedValue(defaultTLSVersionB64))),
 		SleepSeconds:   envInt("RMM_SLEEP_SECONDS", envIntValue(defaultSleepSecondsB64, 60)),
 		JitterPercent:  envInt("RMM_JITTER_PERCENT", envIntValue(defaultJitterPercentB64, 30)),
 		MaxRetries:     envInt("RMM_MAX_RETRIES", 3),
@@ -373,6 +377,12 @@ func loadConfig() (*config, error) {
 	}
 	if cfg.BaseURL == "" || cfg.BeaconSecret == "" {
 		return nil, errors.New("RMM_BASE_URL and RMM_BEACON_SECRET are required")
+	}
+	if cfg.TLSVersion == "" {
+		cfg.TLSVersion = "default"
+	}
+	if cfg.TLSVersion != "default" && cfg.TLSVersion != "1.2" && cfg.TLSVersion != "1.3" {
+		return nil, errors.New("RMM_TLS_VERSION must be default, 1.2, or 1.3")
 	}
 	if cfg.SessionID == "" {
 		// The server accepts only token-safe session IDs. Hostnames may contain
@@ -468,6 +478,12 @@ func pollOnce(
 
 func newHTTPClient(cfg *config) *http.Client {
 	transport := &http.Transport{DisableKeepAlives: !cfg.PersistentHTTP}
+	switch cfg.TLSVersion {
+	case "1.2":
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12}
+	case "1.3":
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13}
+	}
 	if cfg.HTTPProxy != "" {
 		if proxyURL, err := url.Parse(cfg.HTTPProxy); err == nil && proxyURL.Scheme != "" && proxyURL.Host != "" {
 			transport.Proxy = http.ProxyURL(proxyURL)

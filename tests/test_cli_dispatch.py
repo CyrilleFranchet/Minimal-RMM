@@ -130,10 +130,10 @@ class CliDispatchTests(unittest.TestCase):
         client = Mock()
         client.build_go_agent.return_value = (200, {"filename": "agent.zip"})
         self.invoke(["agent", "go-build"], client)
-        self.assertEqual(client.build_go_agent.call_args.kwargs["config"], {"persistent_http": False})
-        self.invoke(["agent", "go-build", "--persistent-http", "--workspace-id", "lab"], client)
+        self.assertEqual(client.build_go_agent.call_args.kwargs["config"], {"persistent_http": False, "tls_version": "default"})
+        self.invoke(["agent", "go-build", "--persistent-http", "--workspace-id", "lab", "--tls-version", "1.2"], client)
         self.assertEqual(client.build_go_agent.call_args.kwargs["config"],
-                         {"persistent_http": True, "workspace_id": "lab"})
+                         {"persistent_http": True, "workspace_id": "lab", "tls_version": "1.2"})
 
     def test_debug_build_requests_separate_full_agent_artifact(self):
         client = Mock()

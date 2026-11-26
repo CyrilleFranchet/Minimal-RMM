@@ -729,6 +729,9 @@ def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, proces
     persistent_http = agent_config.get("persistent_http", False)
     if not isinstance(persistent_http, bool):
         raise ValueError("persistent_http must be a boolean")
+    tls_version = agent_config.get("tls_version", "default")
+    if tls_version not in ("default", "1.2", "1.3"):
+        raise ValueError("tls_version must be default, 1.2, or 1.3")
     config_values = {}
     for key in ("base_url", "beacon_secret", "session_id", "http_proxy", "workspace_id"):
         value = str(agent_config.get(key) or "").strip()
@@ -884,6 +887,7 @@ def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, proces
         "defaultWorkspaceIDB64": config_values["workspace_id"],
         "defaultHTTPProxyB64": config_values["http_proxy"],
         "defaultPersistentHTTPB64": "1" if persistent_http else "0",
+        "defaultTLSVersionB64": tls_version,
         "defaultSleepSecondsB64": str(sleep_seconds),
         "defaultJitterPercentB64": str(jitter_percent),
     }
@@ -947,6 +951,7 @@ def _build_go_agent_from_source(root, go_bin, goos, goarch, agent_config, proces
             "$ErrorActionPreference = 'Stop'\n"
             "$stage1 = Join-Path $PSScriptRoot 'stage1.exe'\n"
             f"$env:RMM_PERSISTENT_HTTP = '{'1' if persistent_http else '0'}'\n"
+            f"$env:RMM_TLS_VERSION = '{tls_version}'\n"
             "$proc = Start-Process -FilePath $stage1 -PassThru "
             f"-ArgumentList '--stage','{staging_id}','--session','{session_id}'\n"
             "$proc.WaitForExit()\n"
@@ -1021,6 +1026,7 @@ Authorized lab use only.
         "RMM_JITTER_PERCENT": str(jitter_percent),
         "RMM_HTTP_PROXY": config_values["http_proxy"],
         "RMM_PERSISTENT_HTTP": "1" if persistent_http else "0",
+        "RMM_TLS_VERSION": tls_version,
     }
     if goos == "windows":
         launcher_config = "".join(

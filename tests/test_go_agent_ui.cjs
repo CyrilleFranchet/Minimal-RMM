@@ -18,6 +18,25 @@ test('Go persistence defaults off and opt-in survives preferences and build subm
   assert.equal(JSON.parse(ui.storage.get('rmm_go_agent_prefs')).persistentHttp, false);
 });
 
+test('TLS selection persists and reaches build request', async () => {
+  const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
+  assert.match(html, /<select id="agent-go-tls-version" aria-describedby="agent-go-tls-hint">/);
+  assert.match(html, /id="agent-go-tls-hint">The staged launcher uses its own TLS settings/);
+  const defaults = fixture();
+  await defaults.click('build');
+  assert.equal(defaults.calls.find(call => call.url.endsWith('/build')).body.config.tls_version, 'default');
+  const ui = fixture({prefs: {tlsVersion: '1.2'}});
+  assert.equal(ui.get('tls-version').value, '1.2');
+  await ui.click('build');
+  assert.equal(ui.calls.find(call => call.url.endsWith('/build')).body.config.tls_version, '1.2');
+  ui.get('tls-version').value = '1.3';
+  ui.get('tls-version').handlers.change();
+  assert.equal(JSON.parse(ui.storage.get('rmm_go_agent_prefs')).tlsVersion, '1.3');
+  const tls13 = fixture({prefs: {tlsVersion: '1.3'}});
+  await tls13.click('build');
+  assert.equal(tls13.calls.find(call => call.url.endsWith('/build')).body.config.tls_version, '1.3');
+});
+
 test('Go generator exposes the debug build checkbox and inherited tracing label', () => {
   const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
   assert.match(html, /<label for="agent-go-debug"[^>]*>[\s\S]*?<input type="checkbox" id="agent-go-debug"> Debug build \(child agents inherit\)/);

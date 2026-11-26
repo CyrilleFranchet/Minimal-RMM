@@ -189,6 +189,13 @@
             <input type="number" id="agent-go-jitter" min="0" max="100" value="30" title="Percentage of variation applied to the check-in interval." aria-description="Percentage of variation applied to the check-in interval.">
             <label for="agent-go-proxy">HTTP proxy (optional)</label>
             <input type="text" id="agent-go-proxy" placeholder="http://proxy.corp:8080" autocomplete="off">
+            <label for="agent-go-tls-version">Agent TLS version</label>
+            <select id="agent-go-tls-version" aria-describedby="agent-go-tls-hint">
+              <option value="default">Default negotiation</option>
+              <option value="1.2">TLS 1.2 only</option>
+              <option value="1.3">TLS 1.3 only</option>
+            </select>
+            <p class="agent-gen-hint" id="agent-go-tls-hint">The staged launcher uses its own TLS settings; this selection applies to the Go agent.</p>
             <label class="agent-gen-check" for="agent-go-persistent-http">
               <input type="checkbox" id="agent-go-persistent-http">
               Persistent HTTP (reuse TCP)

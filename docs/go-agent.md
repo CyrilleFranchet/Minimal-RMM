@@ -78,6 +78,17 @@ For the workspace ID, an explicitly empty variable clears the embedded value:
 | `RMM_JITTER_PERCENT` | no | `30` |
 | `RMM_HTTP_PROXY` | no | direct connection |
 | `RMM_PERSISTENT_HTTP` | no | `0` (one TCP connection per HTTP request) |
+| `RMM_TLS_VERSION` | no | `default` (Go's normal TLS negotiation) |
+
+Go agent builds can select `default`, `1.2`, or `1.3` for the beacon HTTP
+transport through the WebUI, build API (`config.tls_version`), CLI
+(`agent go-build --tls-version`), and MCP/AI `build_go_agent` tool. An exact
+version restricts both the minimum and maximum; connections fail if the server
+does not support it. Nonempty `RMM_TLS_VERSION` overrides the embedded selection.
+This setting also follows spawned Go agents. The staged launcher's initial download
+and SOCKS/TUN plugin connections use separate transports and are not controlled
+by this option. TLS version alone does not reproduce another client's handshake
+fingerprint or enable TLS session resumption.
 
 Go agents default to short HTTP connections, matching PowerShell. This also
 closes the agent-to-Cloudflare connection after each request; closing only the
