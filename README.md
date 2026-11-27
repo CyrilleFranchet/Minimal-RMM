@@ -283,7 +283,7 @@ Beacon endpoints require `X-RMM-Beacon-Token: <RMM_BEACON_SECRET>` (or query `be
 | `GET` | `/workspace/sessions/{id}/{socks\|tun}/responses` | — | Drain agent responses for a workspace-local pivot |
 | `GET` | `/sessions` | — | List active sessions |
 | `GET` | `/sessions/{id}` | — | Session detail (`id` = full GUID or unique prefix) |
-| `DELETE` | `/sessions/{id}` | — | Kill session (client gets `__EXIT__` on next beacon) |
+| `DELETE` | `/sessions/{id}` | — | Kill session (the agent exits after receiving `403 TERMINATED` or `__EXIT__` on a subsequent beacon) |
 | `PATCH` | `/sessions/{id}/config` | `{"sleep_seconds":60,"jitter_percent":30}` | Beacon tuning |
 | `POST` | `/sessions/{id}/commands` | `{"command":"…","type":"oneshot\|persistent"}` | Queue command |
 | `POST` | `/sessions/{id}/exec` | `{"command":"…","timeout":120}` | Queue and **wait** for next result event |

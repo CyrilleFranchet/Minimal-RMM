@@ -512,11 +512,13 @@ function Invoke-RmmRestMethod {
                 if ($firstLine) { $msg += " $firstLine" }
             }
             Write-RmmLog "HTTP $statusNum on $Method $origUri — $msg" -Level ERROR
-            throw [System.Net.WebException]::new(
+            $protocolError = [System.Net.WebException]::new(
                 $msg,
                 $null,
                 [System.Net.WebExceptionStatus]::ProtocolError,
                 $http)
+            $protocolError.Data["RmmSessionTerminated"] = ($statusNum -eq 403 -and $errBody -ceq "TERMINATED")
+            throw $protocolError
         }
         $rs = $http.GetResponseStream()
         $reader = New-Object System.IO.StreamReader($rs, [System.Text.Encoding]::UTF8)
@@ -528,6 +530,8 @@ function Invoke-RmmRestMethod {
     } catch [System.Net.WebException] {
         $we = $_.Exception
         $eb = ''
+        $st = 0
+        $terminated = $we.Data['RmmSessionTerminated'] -eq $true
         $logLevel = if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore') { 'DEBUG' } else { 'ERROR' }
         if ($we.Response) {
             $st = [int]$we.Response.StatusCode
@@ -536,27 +540,26 @@ function Invoke-RmmRestMethod {
             $hint = Get-RmmHttpStatusHint -StatusCode $st
             if ($hint) { Write-RmmLog $hint -Level $(if ($logLevel -eq 'DEBUG') { 'DEBUG' } else { 'WARN' }) }
             $eb = Get-RmmHttpErrorBody -Response $httpResp
+            if ($st -eq 403 -and $eb -ceq "TERMINATED") { $terminated = $true }
             Write-RmmHttpErrorDetails -Response $httpResp -Body $eb -StatusCode $st -AlwaysShow:($st -ge 500)
         } else {
             Write-RmmLog "WebException on $Method $origUri — $($we.Message)" -Level $logLevel
         }
         $enriched = $we.Message
         if ($we.Response) {
-            $st = [int]$we.Response.StatusCode
             $hint = Get-RmmHttpStatusHint -StatusCode $st
             if ($hint) { $enriched += " $hint" }
         }
         if ($eb) {
             $summary = Format-RmmHttpErrorBody -Body $eb -Response $httpResp -MaxText 300
-            if ($summary) {
-                $firstLine = ($summary -split [Environment]::NewLine | Where-Object { $_ } | Select-Object -First 1)
-                if ($firstLine) { $enriched += " $firstLine" }
-            }
+            if ($summary) { $enriched += " $summary" }
         }
         if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore' -or $RestErrorAction -eq 'Continue') {
             return $null
         }
-        throw [System.Exception]::new($enriched, $we)
+        $wrapped = [System.Exception]::new($enriched, $we)
+        $wrapped.Data["RmmSessionTerminated"] = $terminated
+        throw $wrapped
     } catch {
         if ($RestErrorAction -eq 'SilentlyContinue' -or $RestErrorAction -eq 'Ignore' -or $RestErrorAction -eq 'Continue') {
             return $null
@@ -1885,19 +1888,11 @@ function Get-RmmWebExceptionResponse {
 
 function Test-RmmSessionTerminated {
     param($ErrorRecord)
-    try {
-        $resp = Get-RmmWebExceptionResponse -ErrorRecord $ErrorRecord
-        if ($resp -and [int]$resp.StatusCode -eq 403) {
-            $body = Get-RmmHttpErrorBody -Response $resp
-            if ($body -match 'TERMINATED') { return $true }
-        }
-        # Invoke-RmmRestMethod reads the error body before throwing; the stream may be empty here.
-        $ex = $ErrorRecord.Exception
-        while ($null -ne $ex) {
-            if ([string]$ex.Message -match 'TERMINATED') { return $true }
-            $ex = $ex.InnerException
-        }
-    } catch {}
+    $ex = $ErrorRecord.Exception
+    while ($null -ne $ex) {
+        if ($ex.Data['RmmSessionTerminated'] -eq $true) { return $true }
+        $ex = $ex.InnerException
+    }
     return $false
 }
 
